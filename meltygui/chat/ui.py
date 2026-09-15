@@ -9,32 +9,48 @@ from contextlib import contextmanager
 from pathlib import Path
 import uuid
 
-import imgui
+import meltygui_imgui as imgui
 import numpy as np
-from src.lsd.gl_gui.hdr_color import pack_color
-from src.lsd.gl_gui import window_api as glfw
+from meltygui.hdr_color import pack_color
+import meltygui.window_api as glfw
 
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.chat.messages import (Message, AssistantMessage, UserMessage, ToolCall,
-    ReasoningMessage, PythonString, CodeString, Reference, ImageReference, user_message, BashString, ToolOutput,
-    FileTags, CommandExecution, input_text)
-from src.lsd.gl_gui.chat import images as chat_images
-from src.lsd.gl_gui.model.file_meta import FileMeta, file_meta_store
-from src.lsd.gl_gui.view.playground.fast_file_explorer import set_row_tint
-from src.lsd.gl_gui.toggles import Tint, Toggles
-from src.lsd.gl_gui.fonts import Font
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.view.core_views.columns import ColumnLayout, RowLayout
-from src.lsd.gl_gui.view.core_views.drag_drop import DragDrop
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple_fast, draw_bg
-from src.lsd.gl_gui.view.core_views.headers import flat_button
-from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
-from src.lsd.gl_gui.view.core_views.texture_view import draw_texture
-from src.lsd.gl_gui.view.core_views.text_editor import draw_text
-from src.lsd.gl_gui.view.playground import internet_accounts
+from meltygui.runtime import Melty
+from meltygui.chat.messages import Message
+from meltygui.chat.messages import AssistantMessage
+from meltygui.chat.messages import UserMessage
+from meltygui.chat.messages import ToolCall
+from meltygui.chat.messages import ReasoningMessage
+from meltygui.chat.messages import PythonString
+from meltygui.chat.messages import CodeString
+from meltygui.chat.messages import Reference
+from meltygui.chat.messages import ImageReference
+from meltygui.chat.messages import user_message
+from meltygui.chat.messages import BashString
+from meltygui.chat.messages import ToolOutput
+from meltygui.chat.messages import FileTags
+from meltygui.chat.messages import CommandExecution
+from meltygui.chat.messages import input_text
+import meltygui.chat.images as chat_images
+from meltygui.models.file_meta import FileMeta
+from meltygui.models.file_meta import file_meta_store
+from meltygui.files.explorer import set_row_tint
+from meltygui.toggles import Tint
+from meltygui.toggles import Toggles
+from meltygui.fonts import Font
+from meltygui.state.object import DictConversion
+from meltygui.views.columns import ColumnLayout
+from meltygui.views.columns import RowLayout
+from meltygui.views.drag_drop import DragDrop
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.core_decoration import no_save
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.views.values import draw_tuple_fast
+from meltygui.views.values import draw_bg
+from meltygui.views.headers import flat_button
+from meltygui.views.blit_offscreen import add_shadow
+from meltygui.views.texture_view import draw_texture
+from meltygui.editor.text import draw_text
+import meltygui.accounts.ui as internet_accounts
 
 
 @no_save("revision", "viewports", "text_layouts", "rename")
@@ -76,7 +92,7 @@ def image_cache():
     """The transcript's pictures, decoded once per process (chat/images.py)."""
     cache = getattr(Melty, "chat_image_cache", None)
     if cache is None:
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         cache = Melty.chat_image_cache = chat_images.ImageCache(wake=request_render)
     return cache
 
@@ -200,7 +216,7 @@ def _tint_slot(draw_state, key, tint, x, y, hovered, default_tint, setter, show_
     in and opens the picker; `show_brush` False draws none — the selected
     conversation and a hovered heading show theirs, the rest stay tidy).
     Returns True when a tint was written."""
-    from src.lsd.gl_gui.view.playground.fast_file_explorer import tint_control
+    from meltygui.files.explorer import tint_control
     size = Melty.px(13)
     text_y = y + max(0.0, (size - imgui.get_text_line_height()) / 2)
     return tint_control(draw_state, key, tuple(tint) if tint else None, x, y, size, text_y, hovered,
@@ -356,7 +372,7 @@ def _visible(y, height, clip):
 
 @lru_cache(maxsize=128)
 def _tint_style(tint):
-    from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
+    from meltygui.views.utils.imgui_style_manager_class import ImGuiStyleManager
     style = ImGuiStyleManager()
     style.current_rgb = tint[:3]
     style.hsv = colorsys.rgb_to_hsv(*tint[:3])
@@ -609,7 +625,7 @@ def chat_sources(accounts):
 
 
 def conversation_source_tag(kind, chat):
-    from src.lsd.gl_gui.chat.chat_proxy import writer_conflict
+    from meltygui.chat.chat_proxy import writer_conflict
     label = "Claude" if kind.name == "anthropic" else kind.chat_label
     locked = chat.get("locked", writer_conflict(getattr(chat, "error", None)))
     return label + " \uf023" if locked else label
@@ -677,7 +693,7 @@ def draw_chat_sidebar(sources, draw_state, state, width, height, cutoff=None, ne
     ``new_conversation(account_id, proxy, project)`` serves every heading's
     + (a conversation in that folder, in the source of the run's newest
     conversation)."""
-    from src.lsd.gl_gui.chat.chat_proxy import ChatProxy
+    from meltygui.chat.chat_proxy import ChatProxy
     if isinstance(sources, ChatProxy):
         sources = [(state.account, sources, None, "")]
     if not hasattr(state, "folder_expanded"):
@@ -986,7 +1002,7 @@ def _terminal_layout(state, key, message, width):
 @render_func(tint=(0.2, 0.8, 0.4), use_cache=True, show_bg=False, with_header=None,
              with_footer=None, shadow=False, imgui_padding=False, disable_scroll=True)
 def draw_chat_terminal(input_value, draw_state=None):
-    from src.lsd.gl_gui.view.playground.terminal_playground import _resolve
+    from meltygui.widgets.terminal import _resolve
     grid, char_width, line_height = input_value
     x, y = draw_state.abs_left + Melty.px(4), draw_state.abs_top + Melty.px(4)
     draw_list = imgui.get_window_draw_list()
@@ -1546,8 +1562,9 @@ def draw_messages(messages, draw_state, state, key, width, height,
                                      full_height - summary_height - Melty.px(4),
                                      underlying, shadow=bash_shadow if isinstance(message, CommandExecution) else None)
             if tags:
-                from src.lsd.gl_gui.view.playground.open_files import draw_changed_file_header
-                from src.lsd.gl_gui.model.file_meta import FileMeta, file_meta_store
+                from meltygui.editor.file_header import draw_changed_file_header
+                from meltygui.models.file_meta import FileMeta
+                from meltygui.models.file_meta import file_meta_store
                 metadata = file_meta_store()     # shared with the studio's tints
                 painted = FileMeta.painted_tint if metadata else None
                 for filename, counts, tag_x, tag_y, tag_width in tags:
@@ -1995,7 +2012,7 @@ def switch_new_chat_project(state, proxies, project):
                       "created_at": chat.get("created_at", 0), "updated": chat.get("updated", 0)}
     proxy[new_key].metadata.update({field: value for field, value in chat.metadata.items()
         if field in ("permissions", "model", "effort", "model_explicit", "model_selected_at",
-                     "permissions_selected_at", "effort_selected_at")})
+                     "permissions_selected_at", "effort_selected_at", "service_tier", "service_tier_selected_at")})
     state.drafts[state.account + ":" + new_key] = state.drafts.pop(state.account + ":" + key, "")
     state.selected[state.account] = new_key
     state.projects[state.account] = project
@@ -2112,7 +2129,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
 
     def wake():
         # Like Fast Dock's external-change edge: the worker has queued new data.
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         if Melty.cache is not None:
             Melty.cache.invalidate_up_by_obj(state, force=True)
             if getattr(draw_state, "_tile_id", None) is not None:
@@ -2180,7 +2197,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
                 changed = True
                 # The sessions for this frame were opened above with the old
                 # set: the next frame (asked for now) draws the new one.
-                from src.lsd.gl_gui.utils.glfw_utils import request_render
+                from meltygui.utils.glfw_utils import request_render
                 request_render()
             tab_x += tab_width + Melty.px(4)
         y += tab_height + Melty.px(Toggles.Chat.header_margin)
@@ -2191,10 +2208,11 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
             """A fresh conversation in that source: in `project` (a heading's +),
             else `new_project` when the app was started for one, else its
             selected conversation's project, else `default_project`."""
+            from meltygui.paths import application_root
             key = str(uuid.uuid4())
             current = chats.get(state.selected.get(account_id))
             project = (project or new_project or (current["project"] if current else None)
-                       or state.projects.get(account_id) or default_project or str(Path(__file__).resolve().parents[5]))
+                       or state.projects.get(account_id) or default_project or str(application_root()))
             created = time.time()
             chats[key] = {"title": "New conversation", "project": project,
                           "created_at": created, "updated": created}
@@ -2271,7 +2289,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
             requests_height = min(Melty.px(240), body_height * 0.35) if chat["requests"] else 0
             status_message = chat.error or ("Loading conversation…" if chat.loading else "")
             if chat.get("locked") and not status_message:
-                from src.lsd.gl_gui.chat.writer_locks import lock_message
+                from meltygui.chat.writer_locks import lock_message
                 status_message = lock_message(chat.get("lock_owner"))
             locked = chat.get("locked", False)
             status_pad = Melty.px(12) if locked and status_message else 0
@@ -2340,7 +2358,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
                 changed = True
             buttons_y = y
             y += action_extra_height
-            from src.lsd.gl_gui.view.core_views.new_core_view import draw_dropdown
+            from meltygui.views.values import draw_dropdown
             permissions = {"Ask permission": "ask", "Full access": "full"}
             if not getattr(proxy, "inherits_defaults", False) and is_new_chat(chat) and meta.get("model") in (None, "", "default"):
                 default_model = getattr(proxy, "default_model", None)
@@ -2380,8 +2398,13 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
                 model_choices = grouped_models
             else:
                 model_choices = models
+            from meltygui.chat.codex_settings import effective_settings
+            from meltygui.chat.codex_settings import fast_service_tier
+            effective = effective_settings(chat, defaults, getattr(proxy, "default_model", None)) if kind.name == "codex" else {}
+            fast_tier = fast_service_tier(proxy, effective.get("model")) if kind.name == "codex" else None
+            fast_width = Melty.px(80) if fast_tier else 0
             has_effort = kind.name in ("codex", "anthropic")
-            effort_width = Melty.px(150) if has_effort and not project_editable else 0
+            effort_width = Melty.px(150) + fast_width if has_effort and not project_editable else 0
             controls_start = 0 if working else Melty.px(95)
             control_x = x + controls_start
             control_count = 3 if project_editable else 2
@@ -2390,6 +2413,8 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
                 current = meta.get(field, "default" if inherits_defaults else default)
                 if inherits_defaults and (not current or field == "model" and not meta.get("model_explicit")):
                     current = "default"
+                if field == "model" and kind.name == "codex" and chat.get("codex_settings"):
+                    current = effective.get("model") or current
                 labels = models if field == "model" else permissions
                 label = next((label for label, value in labels.items() if value == current),
                              current if current and current != "default" else "Loading models…")
@@ -2431,8 +2456,20 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
                 model = meta.get("model")
                 if model in (None, "", "default") or inherits_defaults and not meta.get("model_explicit"):
                     model = defaults.get("model") or getattr(proxy, "default_model", None)
+                if kind.name == "codex":
+                    model = effective.get("model") or model
+                if fast_tier:
+                    tier = effective.get("service_tier", getattr(proxy, "model_default_service_tiers", {}).get(model))
+                    fast = tier == fast_tier or tier in ("fast", "priority") and fast_tier in ("fast", "priority")
+                    if _button(draw_state, "fast:" + draft_key, "✓ Fast" if fast else "Fast",
+                               control_x, y + effort_extra_height, fast_width - Melty.px(6), chat_tint,
+                               selected=fast, height=Melty.px(30), shadow=False):
+                        meta["service_tier"] = None if fast else fast_tier
+                        meta["service_tier_selected_at"] = time.time()
+                        changed = True
+                    control_x += fast_width
                 levels = chat_effort_levels(kind, proxy, model)
-                effort = meta.get("effort")
+                effort = effective.get("effort") if kind.name == "codex" else meta.get("effort")
                 if effort in (None, "", "default") or effort not in levels:
                     if kind.name == "codex":
                         effort = defaults.get("model_reasoning_effort") or getattr(proxy, "model_default_efforts", {}).get(model)
@@ -2448,6 +2485,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
                     max(Melty.px(80), x + width - control_x), Melty.px(30), chat_tint)
                 if edited:
                     meta["effort"] = effort
+                    meta["effort_selected_at"] = time.time()
                     changed = True
             imgui.set_cursor_screen_pos((x, buttons_y))
             imgui.dummy(1, Melty.px(30) + controls_extra_height)
@@ -2458,7 +2496,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
         state.revision += 1
         # A click's effect (a row expanded, a filter picked) lays out on the
         # NEXT frame; ask for it now instead of waiting for the next input.
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()
     return changed, input_value
     if changed:

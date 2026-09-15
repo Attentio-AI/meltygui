@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """The studio's context-menu playground as an app: fields drawn with
 draw_any, a right-click menu on each (`@window` -> `@glfw_window`)."""
-import imgui
-from melty import glfw_window
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+import meltygui_imgui as imgui
+from meltygui import glfw_window
+from meltygui.rendering.core import render_func
+from meltygui.views.values import draw_any
 
 demo = {"greeting": "right-click me", "count": 3}
 

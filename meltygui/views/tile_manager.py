@@ -33,20 +33,27 @@ previews joining a leaf sibling across its whole edge; release removes
 that neighbour and expands the dragged-from tile. Returning inside the
 source or leaving the neighbour cancels the join.
 """
-import imgui
+import meltygui_imgui as imgui
 
-from src.lsd.gl_gui import mouse_cursor
-from src.lsd.gl_gui.hdr_color import pack_color
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
-from src.lsd.gl_gui.view.core_views.columns import (ColumnLayout, RowLayout,
-                                                    MIN_COLUMN_WIDTH,
-                                                    MIN_ROW_HEIGHT,
-                                                    _ensure_window_state,
-                                                    _pending, _views, _specs, _bands, frame_edges, layout_window, _drag_inc)
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import (
-    Core, no_save)
-from src.lsd.gl_gui.view.invalidation_tracker import Note
+import meltygui.mouse_cursor as mouse_cursor
+from meltygui.hdr_color import pack_color
+from meltygui.state.object import DictConversion
+from meltygui.views.blit_offscreen import snap_int
+from meltygui.views.columns import ColumnLayout
+from meltygui.views.columns import RowLayout
+from meltygui.views.columns import MIN_COLUMN_WIDTH
+from meltygui.views.columns import MIN_ROW_HEIGHT
+from meltygui.views.columns import _ensure_window_state
+from meltygui.views.columns import _pending
+from meltygui.views.columns import _views
+from meltygui.views.columns import _specs
+from meltygui.views.columns import _bands
+from meltygui.views.columns import frame_edges
+from meltygui.views.columns import layout_window
+from meltygui.views.columns import _drag_inc
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.rendering.decorators.core_decoration import no_save
+from meltygui.debug.invalidation_tracker import Note
 
 _NOTE = dict(name="draw_tiles", tint=(0.55, 0.85, 0.45))
 

@@ -4,14 +4,15 @@ from collections import defaultdict
 from enum import Enum
 from traceback import _parse_value_tb
 
-from src.lsd.gl_gui import window_api as glfw
-import imgui
-from imgui import ImGuiError
+import meltygui.window_api as glfw
+import meltygui_imgui as imgui
+from meltygui_imgui import ImGuiError
 
-from src.lsd.gl_gui.model.model_enums import RelaxedEnum
-from src.lsd.gl_gui.utils.glfw_utils import _needs_render, print_stack_trace
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
-from src.lsd.gl_gui.utils.singleton import singleton
+from meltygui.state.enums import RelaxedEnum
+from meltygui.utils.glfw_utils import _needs_render
+from meltygui.utils.glfw_utils import print_stack_trace
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.utils.singleton import singleton
 
 
 class GroupType(Enum):
@@ -611,7 +612,7 @@ def print_colored_traceback(exc_type=None, exc_value=None, exc_traceback=None, l
 
     for idx, frame in enumerate(stack[:-1]):
         line_number = frame.lineno
-        filename = frame.filename.removeprefix("/home/lukas/Desktop/latent-descent/")
+        filename = frame.filename
         line = frame.line
         function_name = frame.name
         green = COLORS['GREEN']
@@ -628,7 +629,7 @@ def print_colored_traceback(exc_type=None, exc_value=None, exc_traceback=None, l
 
     for idx, frame in enumerate(exception_stack):
         line_number = frame.lineno
-        filename = frame.filename.removeprefix("/home/lukas/Desktop/latent-descent/")
+        filename = frame.filename
         line = frame.line
         function_name = frame.name
         green = COLORS['GREEN']

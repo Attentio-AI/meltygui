@@ -35,8 +35,8 @@ own cursor image — that owner reports through ``note_external_cursor``.
 import os
 import struct
 
-from src.lsd.gl_gui import window_api as glfw
-import imgui
+import meltygui.window_api as glfw
+import meltygui_imgui as imgui
 
 ARROW = imgui.MOUSE_CURSOR_ARROW
 TEXT = imgui.MOUSE_CURSOR_TEXT_INPUT
@@ -64,7 +64,7 @@ RESIZE_SE = 106     # bottom-right corner
 RESIZE_NE = 107     # top-right corner
 RESIZE_SW = 108     # bottom-left corner
 # The window-move shape: shown where a left drag would move a window - a
-# melty window's move handle (core_render's `window_move` on_action) and
+# meltygui window's move handle (core_render's `window_move` on_action) and
 # the OS window's drag strip / drag-anywhere background (titlebar.py) -
 # gated by `cursor_gate="left_mouse_dragged"` so it only appears where that
 # handle would actually CAPTURE the drag. It is on screen most of the time,
@@ -338,7 +338,7 @@ def apply(window, early=False):
     if not early:
         _requested = None        # consumed; re-asserted per frame by its owner
     if not immediate:
-        from src.lsd.gl_gui.melty import Melty
+        from meltygui.runtime import Melty
         shape = Melty.event_handler.cursor_shape
         if shape is None:
             shape = ARROW

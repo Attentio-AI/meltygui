@@ -5,7 +5,7 @@ an external package such as melty_agents). Registering it against an
 account kind gives that kind's accounts a conversation list in the Chat
 window; nothing else in the UI knows which package supplied it.
 
-    from melty.chat import register_chat_backend
+    from meltygui.chat import register_chat_backend
 
     def claude_chats(account, metadata=None, wake=None):
         return ClaudeCodeChats(account["id"], metadata, wake, account=account)

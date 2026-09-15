@@ -46,9 +46,9 @@ def hotswap_file(path, source=None):
     """
     # Imported lazily: this module is loaded by the MCP server, which must not
     # drag in the (imgui-heavy) editor stack unless a hotswap is actually asked for.
-    from src.lsd.gl_gui.view.core_conversion.file_converters import _recompile_module
-    from src.lsd.gl_gui.view.core_conversion.address import is_editable_source
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import invalidate_usage_cache
+    from meltygui.code.file_converters import _recompile_module
+    from meltygui.code.address import is_editable_source
+    from meltygui.code.libcst_conversion import invalidate_usage_cache
 
     p = Path(path).resolve()
     if not is_editable_source(p):
@@ -96,7 +96,7 @@ def hotswap_file(path, source=None):
 
     # Wake the render loop so the new code runs on the next frame.
     try:
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()
     except Exception:
         pass

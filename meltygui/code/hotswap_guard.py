@@ -29,7 +29,7 @@ objects are unregistered on rollback / re-register, keeping that window tiny.
 import types
 
 try:
-    from src.lsd.gl_gui.utils.glfw_utils import request_render
+    from meltygui.utils.glfw_utils import request_render
 except Exception:  # pragma: no cover - keep the guard importable in isolation
     def request_render():
         pass

@@ -363,7 +363,7 @@ def _hypr_poll_monitors(path):
 
 def _hypr_poll_interval():
     try:
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         hz = float(Toggles.Melty.hyprland_feed_poll_hz)
     except Exception:
         hz = 120.0
@@ -419,7 +419,7 @@ def _current_frame():
 
 def _active_surface_title():
     try:
-        from src.lsd.gl_gui.surface import Surface
+        from meltygui.surface import Surface
     except Exception:
         return None
     active = Surface.active

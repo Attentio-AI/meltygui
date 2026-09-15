@@ -11,11 +11,11 @@ change, so Melty.read_code at render time is both fresh and cheap.
 import difflib
 from pathlib import Path
 
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.pending_save import _diff_lines_with_numbers
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.utils.glfw_utils import request_render
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.editor.pending_save import _diff_lines_with_numbers
 
 
 class ExternalChanges:
@@ -50,7 +50,8 @@ class ExternalChanges:
         event, with the code_cache text as it was BEFORE the event popped it.
         old_text=None means the studio never read the file — nothing to
         baseline against, so it isn't tracked."""
-        from src.lsd.gl_gui.melty import FileWatch, Melty
+        from meltygui.runtime import FileWatch
+        from meltygui.runtime import Melty
         if FileWatch.is_self_write(src_path):
             return              # an in-process save, not an outside program
         # An external write obsoletes any cached NO-OP pending edits for this
@@ -58,7 +59,7 @@ class ExternalChanges:
         # content on every span reload. Before the old_text gate - the queue
         # must clear even for a file the studio never cached. Hopped to the
         # render thread; frame time invalidates the queue.
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         Melty.post_to_render(lambda p=src_path: PendingSave.drop_noop_entries_for(p))
         if old_text is None:
             return
@@ -76,8 +77,8 @@ class ExternalChanges:
         # The conflict window shares the same edge: external drift may now
         # overlap a pending span. Lazy import (merge_files imports this module).
         try:
-            from src.lsd.gl_gui.view.core_views.merge_files import MergeFiles
-            MergeFiles.wake()
+            from meltygui.extensions import call
+            call('conflicts_changed')
         except Exception:
             pass
         request_render()
@@ -107,8 +108,7 @@ class ExternalChanges:
         # The sync point moved with this absorb: the merge window's original
         # world (symbol_roster.World over synced/originals) re-keys on it.
         try:
-            from src.lsd.gl_gui.view.core_conversion.symbol_roster import (
-                bump_disk_generation)
+            from meltygui.code.symbol_roster import bump_disk_generation
             bump_disk_generation()
         except Exception:
             pass
@@ -133,18 +133,18 @@ class ExternalChanges:
         fading check mark + summary), so any caller of this alias gets the
         exact button-click UI. Kept for backward compatibility — the MCP
         recompile tool now calls PendingSave.recompile_all_ui directly."""
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         return PendingSave.recompile_all_ui()
 
 
-# Hotswap / dual-identity guard. A hotswap re-executes this file - under the
-# BARE 'lsd....' namespace, while melty's _on_file_event uses the 'src.lsd....' one -
+# Hotswap / dual-identity guard. A hotswap re-executes this module — under the
+# BARE 'lsd....' name, while meltygui's _on_event hook imports the 'src.lsd....' one -
 # so without this the window body and the event feed end up on two different
 # ExternalChanges classes (split-brain: events land in a dict the window never
 # reads). Alias the mutable state from whichever twin is already loaded, so
 # every identity shares ONE originals dict and a hotswap never wipes the queue.
 import sys as _sys
-for _n in ("src.lsd.gl_gui.view.core_views.external_changes",
+for _n in ("meltygui.editor.external_changes",
            "lsd.gl_gui.view.core_views.external_changes"):
     _twin = getattr(_sys.modules.get(_n), "ExternalChanges", None)
     if _twin is not None and _twin is not ExternalChanges:
@@ -158,7 +158,8 @@ for _n in ("src.lsd.gl_gui.view.core_views.external_changes",
 @window(disable_scroll=False, tint=(0.16296297311782837, 0.21243055828288198, 0.2611111), icon=None)
 @render_func()
 def draw_external_changes(draw_state=None):
-    from src.lsd.gl_gui.melty import Melty, FileWatch
+    from meltygui.runtime import Melty
+    from meltygui.runtime import FileWatch
     ExternalChanges._window_ds = draw_state
     RenderFuncs.draw_function(ExternalChanges.dismiss_all, tint=(0, 0, 0, 1), show_bg=False, shadow=False, icon=None)
 

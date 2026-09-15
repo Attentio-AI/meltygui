@@ -21,7 +21,7 @@ import json
 # ----------------------------------------------------------------------------
 
 def _melty():
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     return Melty
 
 
@@ -147,7 +147,7 @@ def _tile_state(ds):
         return None
     tracker_note = None
     try:
-        from src.lsd.gl_gui.view.invalidation_tracker import InvalidateTracker
+        from meltygui.debug.invalidation_tracker import InvalidateTracker
         note = InvalidateTracker.invalidations.get(key)
         if note is not None:
             tracker_note = {"name": note.name, "reason": note.reason, "frame": note.frame}
@@ -311,7 +311,7 @@ def _subscriptions_for(tile_id):
     handler = getattr(Melty, "event_handler", None)
     if handler is None:
         return []
-    from src.lsd.gl_gui.events import input_handler as IH
+    import meltygui.events.input_handler as IH
     subs = []
     for view_id, priority, keys in list(getattr(handler, "_hovered", [])):
         owner = IH._view_id_to_tile_id.get(view_id, view_id)
@@ -429,8 +429,8 @@ def collect_param_sources(view, param=""):
     ds, error = resolve_view(view)
     if ds is None:
         return {"frame": Melty.frame_count, "error": error}
-    from src.lsd.gl_gui.view.core_views import anywhere as A
-    from src.lsd.gl_gui.view.core_views.new_core_view import param_source_matrix
+    import meltygui.views.anywhere as A
+    from meltygui.views.values import param_source_matrix
     try:
         srcs = A._sources_for(ds)
     except Exception as exc:
@@ -545,7 +545,7 @@ def collect_tile_cache(view="", history_frames=0, limit=100):
 
 def run_query(collect, model_server, timeout=10.0):
     """Run a no-arg collector on the render thread and return JSON text."""
-    from src.lsd.gl_gui.mcp_eval import request_call
+    from meltygui.mcp_eval import request_call
     result, error = request_call(collect, model_server, timeout=timeout)
     if error:
         return json.dumps({"error": error}, indent=1)

@@ -2,7 +2,7 @@ import functools
 from typing import Callable, Any
 from collections import deque, defaultdict
 
-from src.lsd.gl_gui.melty import Melty
+from meltygui.runtime import Melty
 
 
 def profile(func: Callable) -> Callable:

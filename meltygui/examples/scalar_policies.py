@@ -1,11 +1,14 @@
 """One nested view under three font/shadow accumulation policies."""
-import imgui
+import meltygui_imgui as imgui
 
-from melty import Style, default_scalar_accumulation, glfw_window, pressed
-from melty.examples.style_layouts import panel
-from src.lsd.gl_gui.fonts import Font
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.headers import draw_header
+from meltygui import Style
+from meltygui import default_scalar_accumulation
+from meltygui import glfw_window
+from meltygui import pressed
+from meltygui.examples.style_layouts import panel
+from meltygui.fonts import Font
+from meltygui.rendering.core import render_func
+from meltygui.views.headers import draw_header
 
 
 def subtract(context, residual):
@@ -34,11 +37,11 @@ def nested(depth=0):
 
 
 @glfw_window(name='Font and shadow policies', width=1140, height=550,
-             show_name=True, with_header=draw_header, app_id='melty-gui-playground',
+             show_name=True, with_header=draw_header, app_id='meltygui-gui-playground',
              style=Style((.30, .32, .36), absolute=True))
 @render_func(use_cache=False)
 def scalar_policy_window(input_value, draw_state):
-    from melty.examples.gui_playground import toggle_styles
+    from meltygui.examples.gui_playground import toggle_styles
     if pressed('ctrl+d'):
         toggle_styles()
     imgui.text('Same nested view: +2 size, +100 weight, +2 shadow at every child. Ctrl+D toggles styles.')

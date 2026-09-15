@@ -1,6 +1,6 @@
 """project_code — dict-proxy access to the studio's code, at PENDING truth.
 
-    from src.lsd.gl_gui.view.core_conversion.project_code import project_code
+    from meltygui.code.project_code import project_code
     span = project_code[path].get_lines(first, last)   # 0-based, end-EXCLUSIVE
     text = span["value"]          # read: pending overlay over the code cache
     span["value"] = new_text      # write: queues into PendingSave, never disk
@@ -26,11 +26,11 @@ _sync_spans.
 
 from pathlib import Path
 
-from src.lsd.gl_gui.view.core_conversion.address import Address
+from meltygui.code.address import Address
 
 
 def _pending_generation(path):
-    from src.lsd.gl_gui.view.core_conversion.live_instrument import _pending_gen
+    from meltygui.code.live_instrument import _pending_gen
     return _pending_gen(str(path))
 
 
@@ -138,9 +138,8 @@ class FileCode:
         the moment an external edit landed (08-31). Memoized on the pending
         generation + the disk/sync generation (bumped by FileWatch events
         and sync-frame advances). None when unreadable."""
-        from src.lsd.gl_gui.view.core_conversion.symbol_roster import (
-            disk_generation)
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.code.symbol_roster import disk_generation
+        from meltygui.editor.pending_save import PendingSave
         sig = (_pending_generation(self.path), disk_generation())
         memo = self._memo
         if memo is not None and memo[0] == sig:
@@ -229,11 +228,11 @@ class FileCode:
         the editor-keystroke shape). Records the disk baseline on the first
         queue (no-op detection + merge base) and arms the flush-time conflict
         fingerprint, both exactly as a load through code_file_io would."""
-        from src.lsd.gl_gui.melty import Melty
-        from src.lsd.gl_gui.view.core_conversion.address import is_writable_file
-        from src.lsd.gl_gui.view.core_conversion.new_codecs import (
-            codec_for_path, _span_fingerprint)
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.runtime import Melty
+        from meltygui.code.address import is_writable_file
+        from meltygui.code.new_codecs import codec_for_path
+        from meltygui.code.new_codecs import _span_fingerprint
+        from meltygui.editor.pending_save import PendingSave
         codec = codec_for_path(self.path)
         if codec is None or not codec.editable:
             print(f"[project_code] refusing write: no editable codec for "

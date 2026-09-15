@@ -13,7 +13,10 @@ from __future__ import annotations
 import os
 import re
 
-from src.lsd.gl_gui.fim import FimRequest, FimResult, FimSession, fim_provider
+from meltygui.completion.service import FimRequest
+from meltygui.completion.service import FimResult
+from meltygui.completion.service import FimSession
+from meltygui.completion.service import fim_provider
 
 SYSTEM = """You are a code completion engine inside an editor. The user message contains:
 1. optional context blocks (other definitions, observed runtime types, values from the last run)
@@ -38,7 +41,8 @@ def account_client_kwargs(account="default") -> dict:
     neither — the SDK's own env / active-profile chain then applies. No
     SDK import, no network."""
     try:
-        from src.lsd.gl_gui.view.playground.internet_accounts import KINDS, account as account_entry
+        from meltygui.accounts.ui import KINDS
+        from meltygui.accounts.ui import account as account_entry
         entry = account_entry("anthropic", account)
     except Exception:
         return {}
@@ -57,7 +61,7 @@ def has_credentials(account="default") -> bool:
         return True
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
         return True
-    from src.lsd.gl_gui.fim_providers.anthropic_oauth import active_profile_present
+    from meltygui.completion.providers.anthropic_oauth import active_profile_present
     try:
         return active_profile_present()
     except OSError:
@@ -82,7 +86,7 @@ class ClaudeSession(FimSession):
         if not has_credentials(account):
             raise RuntimeError("no Anthropic sign-in or API key — Internet Accounts → Sign in")
         import anthropic
-        from src.lsd.gl_gui.fim_providers.anthropic_requests import sdk_middleware
+        from meltygui.completion.providers.anthropic_requests import sdk_middleware
         kw = {"timeout": timeout_s, "max_retries": 1,
               "middleware": [sdk_middleware()]}   # announces every request (except retry)
         kw.update(account_client_kwargs(account))

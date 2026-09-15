@@ -7,14 +7,14 @@ screen points the SAME way, since the labels have to land on the rendered
 edges. Run: venv/bin/python -m pytest tests/test_voxel_roll_gl.py -q
 """
 import sys, os, math
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import numpy as np
 import pytest
 import OpenGL.GL as gl
 
-from src.lsd.gl_gui.gl_state import GLState
-from src.lsd.gl_gui.view.playground.voxel_playground import voxel_pass, _axis_edges
+from meltygui.gl_state import GLState
+from meltygui.tensor.voxels import voxel_pass
+from meltygui.tensor.voxels import _axis_edges
 
 
 @pytest.fixture

@@ -3,11 +3,11 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
-from src.lsd.gl_gui import window_api as glfw
-import imgui
+import meltygui.window_api as glfw
+import meltygui_imgui as imgui
 
-from imgui.integrations import compute_fb_scale
-from imgui.integrations.opengl import ProgrammablePipelineRenderer
+from meltygui_imgui.integrations import compute_fb_scale
+from meltygui_imgui.integrations.opengl import ProgrammablePipelineRenderer
 
 class WindowRenderer(ProgrammablePipelineRenderer):
     def __init__(self, window, attach_callbacks:bool=True):

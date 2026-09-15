@@ -10,19 +10,24 @@ import inspect
 import types
 from pathlib import Path
 
-import imgui
+import meltygui_imgui as imgui
 
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.modes import Modes
-from src.lsd.gl_gui.notifications import notify
-from src.lsd.gl_gui.toggles import Actions
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core, defaults
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.global_search import SearchHit, _category_tint, _jump_to_symbol_def
-from src.lsd.gl_gui.view.core_views.new_core_view import (draw_any, draw_button, draw_type, search_index)
-from src.lsd.gl_gui.view.core_views.text_editor import draw_text
+from meltygui.runtime import Melty
+from meltygui.modes import Modes
+from meltygui.notifications import notify
+from meltygui.toggles import Actions
+from meltygui.utils.glfw_utils import request_render
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.rendering.decorators.core_decoration import defaults
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.editor.source_ui import SearchHit
+from meltygui.editor.source_ui import _category_tint
+from meltygui.extensions import jump_to_symbol as _jump_to_symbol_def
+from meltygui.views.values import draw_any
+from meltygui.views.values import draw_button
+from meltygui.views.values import draw_type
+from meltygui.editor.text import draw_text
 
 
 @window
@@ -206,25 +211,3 @@ class ActionRunner:
     _focus_requested = False  # one-shot: focus the first str param next frame
 
 
-@search_index(kind="Actions")
-def action_index():
-    """Every function on the Actions class (toggles.py). Activating a hit
-    opens the ActionRunner parameter popup rather than jumping anywhere.
-    Rebuilt per call (a handful of rows, same as the window index), so
-    hotswapped actions appear live."""
-    tint = _category_tint("Actions")
-    hits = []
-    for name, fn, icon in _action_funcs():
-        try:
-            src_path = Path(inspect.getfile(fn))
-        except Exception:
-            src_path = None
-        hits.append(SearchHit(
-            _sig_label(name, fn), tint, (lambda f=fn: activate_action(f)),
-            kind="Actions", match=name, icon=icon,
-            # Shift+click: open the action's def in the editor (same jump the
-            # symbol index does - co_firstlineno, resolved off-thread).
-            goto=(None if src_path is None
-                  else (lambda f=fn, p=src_path: _jump_to_symbol_def(f, p))),
-            file=(src_path.name if src_path is not None else None)))
-    return hits

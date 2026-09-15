@@ -26,20 +26,21 @@ import shutil
 import subprocess
 import threading
 
-from src.lsd.gl_gui.lifecycle import module_is_live
+from meltygui.lifecycle import module_is_live
 import time
 from pathlib import Path
 
-import imgui
+import meltygui_imgui as imgui
 
-from src.lsd.gl_gui.modes import Modes
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.playground.terminal_playground import Terminal, draw_terminal_screen
+from meltygui.modes import Modes
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.utils.glfw_utils import request_render
+from meltygui.code.render_host import RenderHost
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.widgets.terminal import Terminal
+from meltygui.widgets.terminal import draw_terminal_screen
 
 _SESSION_PREFIX = "claude-d-"
 
@@ -97,7 +98,8 @@ def _kill_session(session):
     threading.Thread(target=go, daemon=True).start()
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[5]
+from meltygui.paths import application_root
+_REPO_ROOT = application_root()
 _studio_session_counter = itertools.count(1)
 
 
@@ -170,8 +172,8 @@ def launch_claude_session(prompt_text=None):
 def open_claude_terminals_window():
     """Open + front the studio's Claude Terminals window (render thread only —
     same open pattern as screenshot.process_captures)."""
-    from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.screenshot import _find_window
+    from meltygui.runtime import Melty
+    from meltygui.screenshot import _find_window
     mw = _find_window("draw_claude_terminals")
     if mw is None:
         return

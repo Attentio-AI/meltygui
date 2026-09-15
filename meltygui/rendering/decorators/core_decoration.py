@@ -2,13 +2,13 @@ import inspect
 
 
 class _MockNode:
-    """A lazy reference to a location reachable from the mock melty, e.g.
-    ``melty.type_defaults[cls]`` or ``melty.cache.invalidate_up_by_obj``.
+    """A lazy reference to a location reachable from the mock meltygui, e.g.
+    ``meltygui.type_defaults[cls]`` or ``meltygui.cache.invalidate_up_by_obj``.
 
     Attribute/item access returns further nodes so chains keep building; writes
     (``__setattr__`` / ``__setitem__``) and calls (``__call__``) append an entry
     to the shared op-log instead of touching anything real. ``path`` is the chain
-    of steps needed to reach this location from the melty root.
+    of steps needed to reach this location from the meltygui root.
     """
 
     def __init__(self, ops, path):
@@ -40,7 +40,7 @@ class _MockNode:
 
     def __call__(self, *args, **kwargs):
         self._ops.append((self._path, "call", (args, kwargs)))
-        # Allow chaining off the return value (e.g. melty.foo(a).bar = x). The
+        # Allow chaining off the return value (e.g. meltygui.foo(...).bar = x). The
         # call's args travel with the step so replay can reproduce it faithfully.
         return _MockNode(self._ops, self._path + (("call", args, kwargs),))
 
@@ -48,7 +48,7 @@ class _MockNode:
 class MockMelty:
     """Stand-in for ``Melty`` used before ``Melty.init()`` runs.
 
-    ``core_decoration.py`` must not import ``melty`` (circular import), so all
+    ``core_decoration.py`` must not import ``meltygui`` (circular import), so all
     pre-init access to Melty — chiefly the ``@defaults`` decorator writing
     ``type_defaults[cls] = meta`` at class-definition time — goes through this
     recorder. Every write and call is appended to a flat op-log; ``replay``
@@ -97,7 +97,7 @@ class MockMelty:
             fn(*args, **kwargs)
 
     def replay(self, target):
-        """Re-apply every recorded interaction against the real melty ``target``.
+        """Re-apply every recorded interaction against the real meltygui ``target``.
 
         Best-effort: the only op that must land is ``@defaults`` writing
         ``type_defaults[cls] = meta``. Other entries are incidental side effects
@@ -144,7 +144,7 @@ def defaults(*args, **kwargs):
 
     def decorator(cls):
 
-        # from src.lsd.gl_gui.views.core_views.core_meta import Meta
+        # from meltygui.views.core_meta import Meta
         if attr is None:
             # DecorationManager.melty.type_defaults[cls] = Meta(**kwargs)
             for key in kwargs:
@@ -241,7 +241,7 @@ class auto_eval:
         return type(self)(self.fget, self.fset, fdel)
 
     def _on_change(self, obj, old_value, new_value):
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         deep_refresh_names = getattr(self, '__deep_refresh__', set())
 
         if Core.melty.silence_invalidate:
@@ -264,7 +264,7 @@ class auto_eval:
             if visible and not self.name.startswith('_') \
                     and self.name != "driver" and Core.melty.frame_count > 3:
                 Core.melty.last_attr = self.name
-                from src.lsd.gl_gui.view.invalidation_tracker import Note
+                from meltygui.debug.invalidation_tracker import Note
                 if do_deep_refresh:
                     note = Note(name="Core decoration", reason="invalidate_up_by_obj", tint=(0, 0, 1))
                     Core.melty.cache.invalidate_up_by_obj(obj=obj, name=self.name, max_depth=6, force=True, note=note)
@@ -399,7 +399,7 @@ def hotkey(key):
         params = sig.parameters
 
         if isinstance(key, int):
-            from src.lsd.gl_gui.model.core_model.draw_state import Hotkey
+            from meltygui.state.draw_state import Hotkey
             the_hotkey = Hotkey(key=key)
         else:
             the_hotkey = key

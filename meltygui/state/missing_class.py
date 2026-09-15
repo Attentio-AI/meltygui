@@ -3,7 +3,7 @@ import importlib
 import logging
 from functools import lru_cache
 
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
+from meltygui.state.object import DictConversion
 
 
 @lru_cache(maxsize=None)
@@ -19,6 +19,8 @@ def missing_saved_class(class_path):
 def restore_saved_class(class_path):
     # Try the original path again on every load, so restoring the source also
     # restores real instances from a session saved with placeholders.
+    from meltygui.state.module_names import canonical_name
+    class_path = canonical_name(class_path)
     parts = class_path.split(".")
     for boundary in range(len(parts) - 1, 0, -1):
         try:

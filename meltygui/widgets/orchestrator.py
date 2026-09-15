@@ -33,21 +33,23 @@ import collections
 import time
 import types
 
-from src.lsd.gl_gui import window_api as glfw
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui.window_api as glfw
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.events.input_handler import set_input_tap
-from src.lsd.gl_gui.notifications import notify
-from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.view.core_views.core_undo import (UndoManager, NavUndo,
-                                                      WindowChange, WindowMoveChange)
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from meltygui.runtime import Melty
+from meltygui.toggles import Toggles
+from meltygui.utils.glfw_utils import request_render
+from meltygui.events.input_handler import set_input_tap
+from meltygui.notifications import notify
+from meltygui.views.blit_offscreen import add_shadow
+from meltygui.rendering.core import render_func
+from meltygui.state.object import DictConversion
+from meltygui.state.undo import UndoManager
+from meltygui.state.undo import NavUndo
+from meltygui.state.undo import WindowChange
+from meltygui.state.undo import WindowMoveChange
+from meltygui.rendering.decorators.window_decoration import window
 
 # input_id -> imgui io.mouse_down index (the buttons stamp_io overrides).
 _IMGUI_BUTTON = {"left_mouse": 0, "right_mouse": 1, "middle_mouse": 2}
@@ -223,7 +225,7 @@ def make_cue(change, stack_name, event_index, take, press_window=None, since=0):
     a FRACTION of it — what re-targets a take onto a sibling field), and the
     applicability signature (editor + value_type — what licenses reusing
     this take on a different field of the same widget kind)."""
-    from src.lsd.gl_gui.view.playground.selectors import name_chain
+    from meltygui.widgets.selectors import name_chain
     ds = getattr(change, "draw_state", None)
     anchored = _cue_anchor_window(change, press_window=press_window)
     anchor = _cue_anchor(change, press_window=press_window)
@@ -376,7 +378,7 @@ def make_effect_cue(entry, take, press_window=None):
     summoned sits raised and topmost OVER the dock row, so a
     resolve-at-cue-time anchored to the summoned window, not the dock.
     leaf_rect / press_frac from the published control rect (flat_button)."""
-    from src.lsd.gl_gui.view.playground.selectors import name_chain
+    from meltygui.widgets.selectors import name_chain
     press = _last_press_abs(take)
     window_ds = press_window if press_window is not None else (
         _window_under(press[0], press[1]) if press is not None else None)
@@ -483,7 +485,7 @@ def _cue_anchor_window(change, press_window=None):
 def _key_label(key, mods=0):
     """Human name for a glfw key (+held modifiers): printable GLFW codes ARE
     ASCII, the rest come from the backend's name table."""
-    from src.lsd.gl_gui.events.event_backends import ImGuiBackend
+    from meltygui.events.event_backends import ImGuiBackend
     if 32 <= key < 127:
         name = chr(key)
     else:
@@ -837,7 +839,8 @@ def failure_report(failure):
     if failure.cue_index is not None and failure.cue_index < len(cues):
         failed_cue = cues[failure.cue_index]
         if cue_has_target(failed_cue):
-            from src.lsd.gl_gui.view.playground.change_value import describe_target, list_preconditions
+            from meltygui.widgets.change_value import describe_target
+            from meltygui.widgets.change_value import list_preconditions
             path = tuple(cue_get(failed_cue, "chain") or [cue_get(failed_cue, "name") or "?"])
             gesture, frac = cue_gesture(failed_cue), cue_press_frac(failed_cue)
             lines += ["", "TARGET (at report time — what the solver sees for the failed command):"]
@@ -1022,7 +1025,7 @@ class Orchestrator:
     _real_down = set()
     # Per-pump engine trace while recording (last 90 pumps) - dumped into the
     # failure reason as ENGINE TRACE so a copied report shows which link of
-    # the injection chain (io stamp → imgui hover → melty hover → handler
+    # the injection chain (io stamp → imgui hover → meltygui hover → handler
     # dispatch → cue activation) broke.
     _trace = collections.deque(maxlen=600)
     _trace_injected = []        # events injected during the current pump
@@ -1044,7 +1047,7 @@ class Orchestrator:
     def refresh_preconditions(cls, store):
         """Re-list the watched commands' preconditions (from orchestrator_sync).
         Returns True when any row changed."""
-        from src.lsd.gl_gui.view.playground.change_value import list_preconditions
+        from meltygui.widgets.change_value import list_preconditions
         changed = False
         fresh = {}
         for watch_key in list(cls._precondition_watch):
@@ -1065,7 +1068,7 @@ class Orchestrator:
                     # press point the solver will use and the window it
                     # finds in front there - a wrong leaf / point / front
                     # window is visible at a glance instead of a silent pass
-                    from src.lsd.gl_gui.view.playground.change_value import describe_target
+                    from meltygui.widgets.change_value import describe_target
                     facts = describe_target(path, gesture=gesture, press_frac=frac)
                     rows = [{"key": ("hittable", facts.get("resolved") or "?"), "kind": "hittable",
                              "node": facts.get("resolved") or "?",
@@ -1561,7 +1564,7 @@ class Orchestrator:
             if cls._replay_index in cls._remaps:
                 # the gesture that set an overridden value: the servo plays
                 # it (press → probe → drive to the new value → release)
-                from src.lsd.gl_gui.view.playground.change_value import ValueTask
+                from meltygui.widgets.change_value import ValueTask
                 up_index, cue_index, value = cls._remaps.pop(cls._replay_index)
                 cue = cues[cue_index]
                 path = tuple(cue_get(cue, "chain") or [cue_get(cue, "name") or "?"])
@@ -1978,7 +1981,7 @@ class Orchestrator:
         cue re-arms behind it. The task's own abort (no fix applied) lands
         as the cue's failure. False when the cue's gesture cannot be found
         (no press to replay)."""
-        from src.lsd.gl_gui.view.playground.change_value import ValueTask
+        from meltygui.widgets.change_value import ValueTask
         orchestration = cls.replaying
         events = orchestration.events
         at = min(cue_get(cue, "at", 0), len(events))
@@ -2217,7 +2220,7 @@ class Orchestrator:
         button probe, so a lost release can't wedge the engine."""
         if not cls._real_down:
             return False
-        from src.lsd.gl_gui.events.input_handler import _BUTTON_PROBE
+        from meltygui.events.input_handler import _BUTTON_PROBE
         probe = _BUTTON_PROBE.get("fn")
         for button in list(cls._real_down):
             if probe is not None and probe(button) is False:
@@ -2282,7 +2285,7 @@ class Orchestrator:
                     # a wall-clock glide: ("glide", from, to, t0, duration) -
                     # _drain_glide emits the eased position each pump until
                     # the duration elapses, then the queued event itself
-                    from src.lsd.gl_gui.view.playground.change_value import glide_seconds
+                    from meltygui.widgets.change_value import glide_seconds
                     cls._glide_queue.append(("glide", (sx, sy), (x, y), time.monotonic(),
                                              glide_seconds(distance)))
                     cls._glide_queue.append(event)
@@ -2755,7 +2758,7 @@ def draw_orchestrator(input_value=None, draw_state=None, style_manager=None,
         if is_recording:
             Orchestrator.stop_recording()
         else:
-            from src.lsd.gl_gui.model.app_model import Orchestration
+            from meltygui.models.orchestration import Orchestration
             target = Orchestration()
             target.name = f"Orchestration {len(orchestrations) + 1}"
             orchestrations[target.id] = target
@@ -2966,7 +2969,7 @@ def draw_orchestrator(input_value=None, draw_state=None, style_manager=None,
                         run_pre, _ = _button(row_left + precondition_indent - px(22), row_y,
                                              px(18.0), px(16.0), play_icon, tint, icon_only=True)
                     if run_pre and not is_recording and not engine_busy:
-                        from src.lsd.gl_gui.view.playground.change_value import precondition_task
+                        from meltygui.widgets.change_value import precondition_task
                         cue = orchestration.cues[ordinal]
                         path = tuple(cue_get(cue, "chain") or [cue_get(cue, "name") or "?"])
                         Orchestrator.submit(precondition_task(

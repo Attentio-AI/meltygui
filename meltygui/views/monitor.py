@@ -2,9 +2,9 @@ import subprocess
 import threading
 import time
 
-from src.lsd.gl_gui.mcp_server import _LOG_RESULT_CAP
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from meltygui.mcp_server import _LOG_RESULT_CAP
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.rendering.decorators.window_decoration import window
 
 _SENTINEL = object()
 

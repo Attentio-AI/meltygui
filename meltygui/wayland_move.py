@@ -37,14 +37,14 @@ import ctypes
 import os
 import struct
 
-from src.lsd.gl_gui import window_api as glfw
+import meltygui.window_api as glfw
 
 # Two scopes, both surviving hotswap (module re-exec reuses the dicts).
 #
 # _STATE is the WINDOW's: the proxies GLFW owns for one OS window (its
-# xdg_toplevel, xdg_surface, wl_surface, native window) and the per-window
-# protocol opcodes. surface.py swaps them per Surface (MODULE_GLOBALS), so a
-# melty app with several windows sees the active window's proxies.
+# xdg_toplevel, xdg_surface, wl_surface, EGL window) and the per-window
+# request opcodes. surface.py swaps it per Surface (MODULE_GLOBALS), so a
+# meltygui app with multiple windows sees the active window's here.
 #
 # _CONN is the CONNECTION's - one per wl_display, never swapped: the seat
 # and pointer bound for the press serials, the registry, the compositor,

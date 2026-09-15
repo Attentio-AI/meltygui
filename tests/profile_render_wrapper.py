@@ -22,11 +22,8 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(ROOT, 'src'))
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, 'server'))
 
-import imgui
+import meltygui_imgui as imgui
 
 imgui.create_context()
 _io = imgui.get_io()
@@ -34,11 +31,11 @@ _io.display_size = (1920, 1080)
 _io.delta_time = 1.0 / 60.0
 _io.fonts.get_tex_data_as_rgba32()
 
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.view.core_views import core_render
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.blit_offscreen import TileCacheMasked
-from src.lsd.gl_gui.model.core_model.draw_state import DrawState
+from meltygui.runtime import Melty
+import meltygui.rendering.core as core_render
+from meltygui.rendering.core import render_func
+from meltygui.views.blit_offscreen import TileCacheMasked
+from meltygui.state.draw_state import DrawState
 
 PC = time.perf_counter_ns
 MAXD = 64
@@ -92,7 +89,7 @@ def _init_melty():
         Melty.original_frame_padding = style.frame_padding
 
     try:
-        from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
+        from meltygui.views.utils.imgui_style_manager_class import ImGuiStyleManager
         Melty.style_manager = ImGuiStyleManager()
     except Exception as e:
         print(f"(real ImGuiStyleManager unavailable, using stub: {e})")
@@ -105,7 +102,7 @@ def _init_melty():
     Melty.vis = vis
     Melty.draw_state_registry = vis.root.draw_state_registry
 
-    # Host melty-window so views get a parent_window (like in the real app)
+    # Host meltygui-window so views get a parent_window (like in the real app)
     HOST_DS = DrawState()
     HOST_DS.name = "ProfileHost"
     HOST_DS.left_offset = 0

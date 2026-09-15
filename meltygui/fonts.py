@@ -6,13 +6,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional, Tuple
 
-import imgui
+import meltygui_imgui as imgui
 import numpy as np
 
-from src.lsd.gl_gui.model.model_enums import RelaxedEnum
+from meltygui.state.enums import RelaxedEnum
 
 _RESOURCES = Path(__file__).parent / "resources"
-_DEJAVU_SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+_DEJAVU_SANS = str(_RESOURCES / "dejavu" / "DejaVuSans.ttf")
 
 # Font Awesome 5+ private use range; trailing 0 terminates the imgui's list.
 _FA_ICON_RANGE: Tuple[int, ...] = (0xF000, 0xFFFF, 0)
@@ -159,7 +159,7 @@ def detect_auto_scale(window=None) -> float:
     primary monitor when the window is None or sits off every monitor
     (mid-drag between screens). 1.0 on any glfw failure."""
     try:
-        from src.lsd.gl_gui import window_api as glfw
+        import meltygui.window_api as glfw
         target = None
         if window is not None:
             wx, wy = glfw.get_window_pos(window)
@@ -191,8 +191,8 @@ def _native_faces(path: str, weight: int) -> dict:
     if available is None:
         faces = {weight: path}
         if path == _DEJAVU_SANS:
-            faces = {200: '/usr/share/fonts/truetype/dejavu/DejaVuSans-ExtraLight.ttf',
-                     400: _DEJAVU_SANS, 700: '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'}
+            faces = {200: str(_RESOURCES / 'dejavu' / 'DejaVuSans-ExtraLight.ttf'),
+                     400: _DEJAVU_SANS, 700: str(_RESOURCES / 'dejavu' / 'DejaVuSans-Bold.ttf')}
         elif path == _JETBRAINS_MONO:
             faces = {400: _JETBRAINS_MONO}
             for w, label in ((100, 'Thin'), (200, 'ExtraLight'), (300, 'Light'),
@@ -326,7 +326,7 @@ class FontManager:
         # drawn first). Evicting anything a window drew recently re-queues it
         # on that window's next frame: one bake per frame, the atlas thrash of
         # 09-13 (eight windows, ~30 variants, a 24-entry keep list).
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         alive = sorted((base for base in self._variant_last_used if base in include),
                        key=self._variant_last_used.get, reverse=True)
         stale_before = self._flush_count - Toggles.Fonts.variant_idle_flushes
@@ -404,8 +404,8 @@ class FontManager:
         real handle arrives next frame and the flush invalidates every
         cached tile. A failed font sits in _handles as None and never
         re-queues."""
-        from src.lsd.gl_gui.melty import Melty
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.runtime import Melty
+        from meltygui.toggles import Toggles
         if (Toggles.dynamic_styles and Melty.font_style_stack
                 and isinstance(font, (Font, FontSpec))):
             font = self.styled_font(font, Melty.font_style_stack[-1])
@@ -436,7 +436,7 @@ class FontManager:
         group = _GROUP_OF.get(font, (font,))
         base = group[0]
         spec = base if isinstance(base, FontSpec) else base.value
-        from src.lsd.gl_gui.style import evaluate_font_style
+        from meltygui.style import evaluate_font_style
         if context[:4] == (0.0, 0.0, False, False):
             return font
         size, weight = evaluate_font_style(context, spec.size, spec.weight)

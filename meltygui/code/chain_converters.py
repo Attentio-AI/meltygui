@@ -10,7 +10,7 @@ These are NEW functions — the old converters in file_converters.py
 and libcst_conversion.py stay untouched for backward compat.
 """
 import inspect
-from src.lsd.gl_gui.notifications import lag_traced
+from meltygui.notifications import lag_traced
 
 import os
 import pickle
@@ -21,32 +21,44 @@ import tokenize
 import types
 from pathlib import PosixPath, Path
 
-import imgui
+import meltygui_imgui as imgui
 import libcst as cst
 
-from src.lsd.gl_gui.melty import FileWatch, Melty
-from src.lsd.gl_gui.background import Background
-from src.lsd.gl_gui.model.core_model.draw_state import Pin, Anchor
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
-from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
-from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_conversion.address import (
-    Address, to_address, update_address_cache, _evict_linecache,
-    shift_sibling_linenos,
-)
-from src.lsd.gl_gui.view.core_conversion.file_converters import (
-    _detect_newline, _split_lines, _recompile, _recompile_class, _recompile_module,
-)
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-    cst_module_to_dict, dict_to_cst_module, GeneralParse, CallParse, CodeLine,
-    ClassParse, FunctionParse, NO_DEFAULT,
-)
-from src.lsd.gl_gui.perf_trace import trace as _ptrace, span as _pspan
-from src.lsd.gl_gui.view.core_views.headers import draw_header
-from src.lsd.gl_gui.view.core_views.text_editor import draw_text
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
+from meltygui.runtime import FileWatch
+from meltygui.runtime import Melty
+from meltygui.background import Background
+from meltygui.state.draw_state import Pin
+from meltygui.state.draw_state import Anchor
+from meltygui.toggles import Toggles
+from meltygui.utils.glfw_utils import request_render
+from meltygui.utils.glfw_utils import print_stack_trace
+from meltygui.code.cache_tree import UNSET_VALUE
+from meltygui.code.path_finder import Pending
+from meltygui.code.path_finder import PendingState
+from meltygui.rendering.core import render_func
+from meltygui.code.address import Address
+from meltygui.code.address import to_address
+from meltygui.code.address import update_address_cache
+from meltygui.code.address import _evict_linecache
+from meltygui.code.address import shift_sibling_linenos
+from meltygui.code.file_converters import _detect_newline
+from meltygui.code.file_converters import _split_lines
+from meltygui.code.file_converters import _recompile
+from meltygui.code.file_converters import _recompile_class
+from meltygui.code.file_converters import _recompile_module
+from meltygui.code.libcst_conversion import cst_module_to_dict
+from meltygui.code.libcst_conversion import dict_to_cst_module
+from meltygui.code.libcst_conversion import GeneralParse
+from meltygui.code.libcst_conversion import CallParse
+from meltygui.code.libcst_conversion import CodeLine
+from meltygui.code.libcst_conversion import ClassParse
+from meltygui.code.libcst_conversion import FunctionParse
+from meltygui.code.libcst_conversion import NO_DEFAULT
+from meltygui.perf_trace import trace as _ptrace
+from meltygui.perf_trace import span as _pspan
+from meltygui.views.headers import draw_header
+from meltygui.editor.text import draw_text
+from meltygui.rendering.decorators.core_decoration import defaults
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -189,7 +201,7 @@ def class_to_address(input_value: type, draw_state, changed=False):
     if not isinstance(input_value, type) or input_value.__module__ in ('builtins', '_collections_abc'):
         return changed, None
     # A runtime-generated bubbling class has no source of its own - resolve its base.
-    from src.lsd.gl_gui.view.core_conversion.bubbling import base_of_bubbling
+    from meltygui.code.bubbling import base_of_bubbling
     input_value = base_of_bubbling(input_value)
     try:
         import inspect
@@ -236,7 +248,7 @@ def class_to_address_incl_overrides(input_value: type, draw_state, changed=False
     if not isinstance(input_value, type) or input_value.__module__ in ('builtins', '_collections_abc'):
         return changed, None
     try:
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _parse_override_comment
+        from meltygui.code.libcst_conversion import _parse_override_comment
         source_file = inspect.getfile(input_value)
         FileWatch.register_draw_state(draw_state, Path(source_file))
         try:
@@ -351,7 +363,7 @@ def _parser_tag():
     so flipping Toggles.TextEditor.melty_syntax never serves the OTHER
     parser's parse (a libcst gp reverses through libcst, a core_syntax gp
     through its text residual — both work, but the toggle should be seen)."""
-    return "melty" if Toggles.TextEditor.melty_syntax else "libcst"
+    return "meltygui" if Toggles.TextEditor.melty_syntax else "libcst"
 
 
 def chain_parse_cache_has(span_key, disk_mtime):
@@ -395,7 +407,7 @@ def chain_parse_cache_put(span_key, disk_mtime, gp):
     if not isinstance(gp, dict):
         return
     key = (*span_key, "chain",
-           "melty" if gp.get("__origin__") is not None else "libcst")
+           "meltygui" if gp.get("__origin__") is not None else "libcst")
     # Detach what a fresh session re-derives anyway: the live address (source
     # objects don't pickle) and the attached symbol index (~40% of the blob -
     # _ensure_symbol_index re-attaches it from the symbol-usage cache in ~1ms
@@ -448,8 +460,9 @@ def _harvest_live_span_parses():
     mtime so the next launch hits. Any coordinate drift just yields a
     harmless miss (mtime/key won't match), never a wrong serve."""
     try:
-        from src.lsd.gl_gui.view.core_conversion.new_converters import (
-            _code_host_cache, host_code_state, ModesState)
+        from meltygui.code.new_converters import _code_host_cache
+        from meltygui.code.new_converters import host_code_state
+        from meltygui.code.new_converters import ModesState
     except Exception:
         return
     stored = 0
@@ -476,7 +489,7 @@ def _harvest_live_span_parses():
             # recurring multi-second cold parse of exactly the file being
             # worked on.
             if getattr(cs, "_pending_save", False):
-                from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+                from meltygui.editor.pending_save import PendingSave
                 _path = str(addr.path)
                 if any(str(getattr(a, "path", None)) == _path
                        for a in PendingSave.pending_saves):
@@ -730,8 +743,9 @@ def _do_save(input_value, code_str, ensure_import=None):
     (class / function / module) — never CallerCodec, since the chain hands us a
     full-span code_str, not a bare call expression. TypeCodec (plain span splice)
     is the fallback when the source type isn't separately registered."""
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
-    from src.lsd.gl_gui.view.core_conversion.new_codecs import type_to_codec, TypeCodec
+    from meltygui.editor.pending_save import PendingSave
+    from meltygui.code.new_codecs import type_to_codec
+    from meltygui.code.new_codecs import TypeCodec
     source = input_value.source
     codec = next((type_to_codec[k] for k in type(source).__mro__ if k in type_to_codec),
                  TypeCodec) if source is not None else TypeCodec
@@ -1078,7 +1092,7 @@ def run_button(input_value: any, with_kwargs=None, draw_state=None, clicked=Fals
     running = draw_state._running is input_value if run_in_background else False
 
     fa_run_arrow = ""
-    from src.lsd.gl_gui.view.core_views.new_core_view import button
+    from meltygui.views.values import button
     if clicked or running or button(f"{fa_run_arrow} {input_value.__name__}##{draw_state.unique}",
                                     height=30, draw=True, value=0.4, saturation=1.5,
                                     name=f"{input_value.__name__}{draw_state.unique}_run")[0]:
@@ -1106,11 +1120,11 @@ def address_to_general_parse(input_value: Address, pending=False, unique=None, c
     if draw_state.frame_count < 2 and auto_load:
         load = True
 
-    from src.lsd.gl_gui.view.core_views.new_core_view import button
+    from meltygui.views.values import button
     file_name = input_value.path.name if input_value.path is not None else "Unknown file"
     folder_icon = ""
     # if button(f"{folder_icon} {file_name}", height=30, value=0.4, saturation=1.5)[0]:
-    #     from src.lsd.gl_gui.utils.jump_to_editor import open_in_intellij
+    #     from meltygui.utils.jump_to_code import open_in_intellij
     #     line_number = input_value.start + 1 if input_value.start is not None else None
     #     threading.Thread(
     #         target=open_in_intellij,
@@ -1175,8 +1189,8 @@ def general_parse_to_address(input_value: GeneralParse=None, pending=False, draw
     # PendingSave cache. The materialized edit is written through to it below, and
     # every trigger reads from it via `_edited_source`, falling back to the passed
     # value only when the cache is cold (never edited / just loaded).
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
-    from src.lsd.gl_gui.view.core_conversion.new_codecs import type_to_codec
+    from meltygui.editor.pending_save import PendingSave
+    from meltygui.code.new_codecs import type_to_codec
     codec = next((type_to_codec[k] for k in type(source).__mro__ if k in type_to_codec), None) \
         if source is not None else None
 
@@ -1225,7 +1239,7 @@ def general_parse_to_address(input_value: GeneralParse=None, pending=False, draw
         PendingSave.queue_save(address, codec, data=code_str, ensure_import=ensure_import)
     if show_recompile:
         if source is not None:
-            from src.lsd.gl_gui.view.mode import Mode
+            from meltygui.debug.mode import Mode
             recompiled, _ = run_button(do_recompile, clicked=recompile and pending, name=f"do_recompile{unique}",
                         with_kwargs={"input_value": address.source,
                                  "code_str": _edited_source(code_str),
@@ -1301,7 +1315,8 @@ def focus(input_value, path=(), default=None, kind=None, draw_state=None, unique
     GeneralParse dict (code-comment / decoration tint), a draw_state, or a data
     class instance.
     """
-    from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple, button
+    from meltygui.views.values import draw_tuple
+    from meltygui.views.values import button
 
     changed, new_value = False, input_value
     if not path:
@@ -1354,7 +1369,7 @@ def focus(input_value, path=(), default=None, kind=None, draw_state=None, unique
         imgui.same_line()
         if button(f"{_addr.path.name}:{_line}##{unique}", height=24, name=f"jump{base}{leaf_key}{unique}")[0]:
             import threading
-            from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
+            from meltygui.utils.jump_to_code import open_in_intellij
             threading.Thread(target=open_in_intellij, args=(str(_addr.path),),
                              kwargs={"line_number": _line}, daemon=True).start()
 
@@ -1422,9 +1437,9 @@ def _is_dispatch_frame(filename, func_name):
     base = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
     if base in _DISPATCH_SKIP:                                  # render_func wrapper
         return True
-    # Func-name-specific (NOT whole-file): new_core_view.py / melty.py also hold
+    # Func-name-specific (NOT whole file): new_core_view.py / meltygui.py also hold
     # real user app code, so only their dispatch frames are skipped.
-    if base == "melty.py" and func_name == "draw":             # Melty.draw re-dispatch
+    if base == "meltygui.py" and func_name == "draw":             # Melty.draw re-dispatch
         return True
     if base == "new_core_view.py" and func_name == "draw_any":  # draw_any dispatch
         return True

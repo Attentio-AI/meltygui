@@ -1,26 +1,26 @@
-"""melty apps: ``@glfw_window`` turns a draw function into an OS window.
+"""meltygui apps: ``@glfw_window`` turns a draw function into an OS window.
 
-    from melty import glfw_window, draw_text, pressed
+    from meltygui import glfw_window, draw_text, pressed
 
     @glfw_window
     def editor():
         changed, new = draw_text(text)
         ...
 
-The first decoration boots melty: the start-up shortcuts (warm_start.py),
+The first decoration boots meltygui: the start-up shortcuts (warm_start.py),
 glfw.init and a hidden owner window (the GL share group's root and the imgui
-context that owns the font atlas) on the calling thread, and melty's heavy
+context that owns the font atlas) on the calling thread, and meltygui's heavy
 imports on a background thread — the two overlap, as hdr-viewer measured.
 Every decoration registers its function; the loop starts when the main
 module's top level finishes (a trace hook on that frame's return — atexit
 is too late: threading is already shut down), or explicitly with ``run()``.
 
-Each window is a Surface (surface.py): frameless with melty's own title bar,
+Each window is a Surface (surface.py): frameless with meltygui's own title bar,
 window controls, corner cut and shadow unless Toggles.Melty.wayland_show_frame
 asks for the compositor's frame. Windows are peers: closing one closes it
 alone, the loop ends when the last is gone. Child windows come from
 ``draw_something(glfw_window=True)`` inside a body (the render wrapper) and
-follow their parent like nested melty windows.
+follow their parent like nested meltygui windows.
 
 Every launch appends a phase timing table to ~/.cache/<app_id>/startup.log;
 MELTY_BENCH=1 also prints it and exits after the first frame.
@@ -70,34 +70,27 @@ def _write_startup_log(app_id, subject):
 def _default_app_id():
     main = sys.modules.get('__main__')
     path = getattr(main, '__file__', None)
-    return pathlib.Path(path).stem.replace('_', '-') if path else 'melty-app'
-
-
-def _repo_root():
-    return pathlib.Path(__file__).resolve().parents[3]
+    return pathlib.Path(path).stem.replace('_', '-') if path else 'meltygui-app'
 
 
 def boot(app_id=None):
-    """Start melty: shortcuts, glfw, the owner window, the import thread.
+    """Start meltygui: shortcuts, glfw, the owner window, the import thread.
     Idempotent; the first @glfw_window calls it."""
     if _state['booted']:
         if app_id and app_id != _state['app_id']:
-            print(f"melty: app_id {app_id!r} ignored — already booted as {_state['app_id']!r} "
+            print(f"meltygui: app_id {app_id!r} ignored — already booted as {_state['app_id']!r} "
                   f"(the first boot names the session and cache directories)", file=sys.stderr)
         return
     _state['booted'] = True
     _state['app_id'] = app_id or _default_app_id()
     cache = pathlib.Path(os.environ.get('XDG_CACHE_HOME') or pathlib.Path.home() / '.cache') / _state['app_id']
     _state['cache'] = cache
-    root = str(_repo_root())
-    if root not in sys.path:
-        sys.path.insert(0, root)
     _register_editable(getattr(sys.modules.get('__main__'), '__file__', None))
     os.environ.setdefault('GDK_BACKEND', 'wayland')
-    from src.lsd.gl_gui import warm_start
+    import meltygui.warm_start as warm_start
     warm_start.prepare(cache)
-    from src.lsd.gl_gui import window_api as glfw
-    from src.lsd.gl_gui.toggles import Toggles
+    import meltygui.window_api as glfw
+    from meltygui.toggles import Toggles
     backend = glfw.select_backend(Toggles.windows.native_os_windows)
     if backend == 'wayland':
         sys._lsd_wayland_libdecor_disabled = True
@@ -106,18 +99,18 @@ def boot(app_id=None):
     # creation went 80 -> 150 ms). Shorten it until the imports are done.
     _state['switch_interval'] = sys.getswitchinterval()
     sys.setswitchinterval(0.0002)
-    thread = threading.Thread(target=_run_imports, name='melty-imports', daemon=True)
+    thread = threading.Thread(target=_run_imports, name='meltygui-imports', daemon=True)
     thread.start()
     _state['imports'] = thread
     mark(f'{backend} window API ready')
-    # libdecor loads its C plugin at init (~60 ms) and the frameless window
-    # then shows it: melty's frame hint (Toggles.Melty.wayland_native_frame)
+    # libdecor loads its GTK plugin at init (~60 ms) and the frameless window
+    # never shows it: meltygui's own hint (Toggles.Melty.wayland_native_frame)
     # disables it and records that for titlebar.py, whose chrome only runs
     # on the native frame. MELTY_LIBDECOR=1 keeps libdecor (compositors
     # without xdg-decoration), which also means the compositor's frame.
     if backend == 'glfw' and os.environ.get('MELTY_LIBDECOR'):
         sys._lsd_wayland_libdecor_disabled = False
-    from src.lsd.gl_gui.utils.glfw_utils import apply_wayland_frame_hint
+    from meltygui.utils.glfw_utils import apply_wayland_frame_hint
     apply_wayland_frame_hint()
     if not glfw.init():
         raise SystemExit('glfw.init failed')
@@ -128,7 +121,7 @@ def boot(app_id=None):
     glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 4)
     glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
     glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
-    owner = glfw.create_window(1, 1, 'melty owner', None, None)
+    owner = glfw.create_window(1, 1, 'meltygui owner', None, None)
     if not owner:
         raise SystemExit('glfw.create_window (owner) failed')
     glfw.default_window_hints()
@@ -145,13 +138,14 @@ def _run_imports():
         # PyOpenGL only imports numpy during the first renderer call,
         # after the driver work could have overlapped it. No GL calls here.
         from OpenGL.arrays import numpymodule  # noqa: F401
-        import imgui  # noqa: F401
+        import meltygui_imgui as imgui  # noqa: F401
         import OpenGL.GL  # noqa: F401
         mark('imgui/numpy/GL imported (bg)')
-        from src.lsd.gl_gui import melty  # noqa: F401
-        from src.lsd.gl_gui import surface  # noqa: F401
-        from src.lsd.gl_gui.view.core_views import text_editor, texture_view  # noqa: F401
-        mark('melty imported (bg)')
+        import meltygui.runtime as runtime  # noqa: F401
+        import meltygui.surface as surface  # noqa: F401
+        import meltygui.editor.text as text_editor
+        import meltygui.views.texture_view as texture_view  # noqa: F401
+        mark('meltygui imported (bg)')
     except BaseException as e:  # re-raised on the main thread
         _state['import_error'] = e
 
@@ -169,15 +163,15 @@ def _wait_imports():
 
 def _init_melty():
     """Once, after the imports: the owner imgui context with the font atlas,
-    the global style manager, melty's flags."""
-    from src.lsd.gl_gui import window_api as glfw
-    import imgui
-    from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.fonts import FontManager
-    from src.lsd.gl_gui.surface import Surface
-    from src.lsd.gl_gui.toggles import Toggles
-    from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
-    from src.lsd.gl_gui import warm_start
+    the global style manager, meltygui's flags."""
+    import meltygui.window_api as glfw
+    import meltygui_imgui as imgui
+    from meltygui.runtime import Melty
+    from meltygui.fonts import FontManager
+    from meltygui.surface import Surface
+    from meltygui.toggles import Toggles
+    from meltygui.views.utils.imgui_style_manager_class import ImGuiStyleManager
+    import meltygui.warm_start as warm_start
     owner = _state['owner']
     glfw.make_context_current(owner)
     Surface.owner_window = owner
@@ -201,7 +195,7 @@ def _init_melty():
     Melty.adopt_registered_windows(session)
     Surface.session = session
     mark('session loaded')
-    # melty boots in "annotation mode" (view calls return carriers, nothing
+    # meltygui boots in "annotation mode" (view calls return carriers, nothing
     # renders) until the studio's Melty.init() clears it. That init also
     # starts file watchers and a jedi worker we do not need.
     Melty.annotation_mode = False
@@ -209,19 +203,19 @@ def _init_melty():
     if os.environ.get('MELTY_NO_OS_FRAME'):
         Toggles.Melty.push_os_window_edges = False
     Surface.app_id = _state['app_id']
-    from src.lsd.gl_gui import geometry_feed
+    import meltygui.geometry_feed as geometry_feed
     geometry_feed.start()          # for rects: the size fit, child placement, os_frame
-    mark('melty configured')
+    mark('meltygui configured')
 
 
 def _load_session():
     """The app's AppSession (app_session.load), read once: by the first
     `persisted` call or by _init_melty, whichever comes first. Needs the
-    melty imports (the pickled classes), so it waits for them."""
+    meltygui imports (the pickled classes), so it waits for them."""
     session = _state.get('session')
     if session is None:
         _wait_imports()
-        from src.lsd.gl_gui import app_session
+        import meltygui.app_session as app_session
         session = app_session.load(_state['app_id'])
         _state['session'] = session
         mark('session loaded')
@@ -236,7 +230,7 @@ def persisted(name, factory, *, app_id=None):
     when the loop exits, so it must be a DictConversion — its public,
     non-@no_save fields persist, exactly as a studio model field does.
 
-        open_files = melty.persisted('open_files', OpenFiles, app_id='melty-code-editor')
+        open_files = meltygui.persisted('open_files', OpenFiles, app_id='meltygui-code-editor')
 
     `app_id` names the session file when this runs before the first
     `@glfw_window` (the usual place — the object feeds the window's body);
@@ -258,7 +252,7 @@ def _register_editable(file):
     and its files hotswap, exactly like the checkout's."""
     if not file:
         return
-    from src.lsd.gl_gui.view.core_conversion.address import add_editable_root
+    from meltygui.code.address import add_editable_root
     add_editable_root(file)
 
 
@@ -268,8 +262,8 @@ def _register_projects():
     studio or another app counts here) is editable source too, like the
     app's own tree. The store is a small pickle; read once at init."""
     try:
-        from src.lsd.gl_gui.model.file_meta import project_roots
-        from src.lsd.gl_gui.view.core_conversion.address import add_editable_root
+        from meltygui.extensions import source_folders as project_roots
+        from meltygui.code.address import add_editable_root
         for root in project_roots():
             add_editable_root(root)
     except Exception:
@@ -285,7 +279,7 @@ def glfw_window(fn=None, *, name=None, width=1280, height=800, app_id=None, on_c
     ``on_close(surface)`` is asked when the window is told to close (the
     title bar's ×, the compositor, `glfw.set_window_should_close`): return
     False to keep it (hide it, say — a chat app with a turn streaming).
-    These are the universal melty names (`@window`, every view's kwargs),
+    These are the universal meltygui names (`@window`, every view's kwargs),
     never `title=` or `size=` (Lukas 09-12).
 
     Every other keyword argument is the root VIEW's, exactly as `@window`'s
@@ -329,7 +323,7 @@ def _root_body(fn, name, view_kwargs=None, config=None):
     root (its filling view sizes itself to the window). A RENDER FUNC (the
     @window playgrounds: `@glfw_window` over `@render_func`, the direct
     swap) is drawn as the window's root view the way the studio draws a
-    @window: a melty view filling the window, with the background and
+    @window: a meltygui view filling the window, with the background and
     layout context its children (draw_rows, draw_any, fields) expect —
     minus the closable chrome, which the OS window provides.
 
@@ -354,7 +348,7 @@ def _root_body(fn, name, view_kwargs=None, config=None):
         if tint is None:
             fn()
             return
-        from src.lsd.gl_gui.melty import Melty
+        from meltygui.runtime import Melty
         previous = Melty.style_manager.get_tint()
         Melty.style_manager.set_imgui_tint(*tint[:4])
         try:
@@ -366,12 +360,14 @@ def _root_body(fn, name, view_kwargs=None, config=None):
 
 def _searchable_body(body):
     """The root body plus the app's global search (app_search.draw: a no-op
-    unless melty.global_search enabled it and this is its window), drawn
+    unless meltygui.global_search enabled it and this is its window), drawn
     AFTER the body so the search window floats above the root."""
     def searchable(surface):
         body(surface)
-        from src.lsd.gl_gui import app_search
-        app_search.draw(surface)
+        from meltygui.extensions import call
+        from meltygui.editor.source_preview import draw_pending_preview
+        draw_pending_preview()
+        call('root_draw', surface)
     return searchable
 
 
@@ -379,11 +375,11 @@ def _draw_root(fn, name, value=None, **kwargs):
     """Draw the render func ``fn`` as the window's root view, filling it:
     what `@glfw_window` over `@render_func` does each frame. ``value`` is
     the view's input value (None: the view owns its state); ``kwargs`` are
-    the decorator's view kwargs. ``with_header=draw_header`` puts the melty
+    the decorator's view kwargs. ``with_header=draw_header`` puts the meltygui
     header in the chrome row beside the window controls
     (surface.root_view_kwargs)."""
-    from src.lsd.gl_gui.surface import root_view_kwargs
-    # A closable melty window (the studio's ModelessWindow), pinned to
+    from meltygui.surface import root_view_kwargs
+    # A closable meltygui window (the studio's Mode.MODE_WINDOW), pinned to
     # the surface: layouts (draw_rows / draw_columns) register their
     # children on the enclosing view, so the root must be one.
     return fn(value, **root_view_kwargs(name or fn.__name__, **kwargs))
@@ -453,14 +449,14 @@ def run():
     _state['ran'] = True
     if not _state['booted']:
         boot()
-    from src.lsd.gl_gui import window_api as glfw
+    import meltygui.window_api as glfw
     _wait_imports()
     _init_melty()
-    from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.surface import Surface
-    from src.lsd.gl_gui import app_search
+    from meltygui.runtime import Melty
+    from meltygui.surface import Surface
+    from meltygui.extensions import call
     if _ROOTS:
-        app_search.install(_ROOTS[0][1]['name'])
+        call('root_ready', _ROOTS[0][1]['name'])
     for fn, kw in _ROOTS:
         view_kwargs = kw.get('view_kwargs') or {}
         # A plain-function body draws straight onto the surface, so its
@@ -470,7 +466,7 @@ def run():
         Surface(kw['name'], _searchable_body(_root_body(fn, kw['name'], view_kwargs, config=kw)),
                 width=kw['width'], height=kw['height'], tint=ground_tint, on_close=kw.get('on_close'))
     mark(f'{len(Surface.all)} window(s) created')
-    from src.lsd.gl_gui.utils import glfw_utils
+    import meltygui.utils.glfw_utils as glfw_utils
     bench = os.environ.get('MELTY_BENCH')
     first = True
     frames = 0
@@ -502,7 +498,7 @@ def run():
                     # MELTY_FRAMETIME=1 prints a line per frame with the render
                     # thread's time for it (the budget for 120 fps is 8.3 ms).
                     spent = (time.perf_counter() - started) * 1000
-                    print(f'melty: frame {frames} {spent:.1f} ms', flush=True)
+                    print(f'meltygui: frame {frames} {spent:.1f} ms', flush=True)
                 _close_stale_children()
             for surface in list(Surface.all):
                 _present_children(surface)
@@ -544,7 +540,7 @@ def _flush_pending_saves():
     exits through here, so flush here too — before the surfaces go, while
     the imgui context the codecs' notifications expect is still alive. A
     failed frame skips it: nothing written from a broken state."""
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    from meltygui.editor.pending_save import PendingSave
     if not PendingSave.pending_saves:
         return
     _debug(f'flushing {len(PendingSave.pending_saves)} pending save(s)')
@@ -558,7 +554,7 @@ def _save_session():
     session = _state.get('session')
     if session is None:
         return
-    from src.lsd.gl_gui import app_session
+    import meltygui.app_session as app_session
     path = app_session.save(session, _state['app_id'])
     _debug(f'session saved to {path}' if path else 'session save failed')
 
@@ -566,8 +562,8 @@ def _save_session():
 def _open_requested_children():
     """Child surfaces the render wrapper asked for (glfw_window=True) since
     the last tick: Melty.surface_requests, filled by surface_window_request."""
-    from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.surface import Surface
+    from meltygui.runtime import Melty
+    from meltygui.surface import Surface
     requests = Melty.surface_requests
     while requests:
         req = requests.pop(0)
@@ -585,7 +581,7 @@ def _open_requested_children():
 
 def _child_body(req):
     def body(surface):
-        from src.lsd.gl_gui.melty import Melty
+        from meltygui.runtime import Melty
         Melty.draw_surface_root(req, surface)
     return body
 
@@ -594,7 +590,7 @@ def _close_stale_children():
     """Immediate mode: a child whose glfw_window=True call was not made
     this tick closes (its parent stopped drawing it); the next call
     reopens it."""
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     for req in list(Melty.surface_windows.values()):
         child = req.surface
         if child is not None and req.tick != Melty.app_tick:
@@ -605,7 +601,7 @@ def _close_stale_children():
 def _note_closed(surface):
     """A surface on its way out. An OS close of a child (the title bar's
     X, the compositor) leaves its request CLOSED: the parent's calls
-    return (False, None) from then on, as a closed melty window's do. A
+    return (False, None) from then on, as a closed meltygui window's do. A
     stale child (not drawn this tick) just drops its surface."""
     req = surface.request
     if req is not None:
@@ -627,7 +623,7 @@ def _debug(msg):
 
 
 def _present_children(parent):
-    """Children follow their parent exactly as nested melty windows do:
+    """Children follow their parent exactly as nested meltygui windows do:
     the request's window_pos is the parent-relative offset. Each tick the
     child's target rect = the parent's screen rect (geometry feed) + the
     offset, sent to the compositor when it differs from what was last
@@ -637,8 +633,10 @@ def _present_children(parent):
     read but never sent."""
     if not parent.children:
         return
-    from src.lsd.gl_gui import window_api as glfw
-    from src.lsd.gl_gui import geometry_feed, titlebar, wayland_move
+    import meltygui.window_api as glfw
+    import meltygui.geometry_feed as geometry_feed
+    import meltygui.titlebar as titlebar
+    import meltygui.wayland_move as wayland_move
     prect = geometry_feed.surface_rect(parent.title)
     if prect is None:
         return
@@ -696,8 +694,8 @@ def pressed(combo):
     """Edge-triggered ``'ctrl+s'``-style check against this frame's key
     events of the active window (GLFW press + repeat, so a held chord
     repeats). Modifiers must match exactly."""
-    from src.lsd.gl_gui import window_api as glfw
-    from src.lsd.gl_gui.melty import Melty
+    import meltygui.window_api as glfw
+    from meltygui.runtime import Melty
     parts = [p.strip().lower() for p in combo.split('+') if p.strip()]
     mods = 0
     key = None
@@ -714,5 +712,5 @@ def pressed(combo):
 
 def content_size():
     """The (width, height) a root-level view fills in the active window."""
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     return Melty.root_fill

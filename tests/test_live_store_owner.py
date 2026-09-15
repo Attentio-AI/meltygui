@@ -14,15 +14,16 @@ import os
 import sys
 import types
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
-import torch
+torch = pytest.importorskip("torch")
 
-from src.lsd.gl_gui.view.core_conversion import chain_converters as cc
-from src.lsd.gl_gui.view.core_conversion.live_instrument import run_instrumented
-from src.lsd.gl_gui.view.core_conversion.live_view import (
-    adopt_live_store, live_values_for, run_capture, current_run_owner)
+import meltygui.code.chain_converters as cc
+from meltygui.code.live_instrument import run_instrumented
+from meltygui.code.live_view import adopt_live_store
+from meltygui.code.live_view import live_values_for
+from meltygui.code.live_view import run_capture
+from meltygui.code.live_view import current_run_owner
 
 MOD_SRC = '''
 import torch
@@ -79,7 +80,7 @@ def _accumulate_unwatched():
     """Headless: no live widget watches any key, so loop sites would park
     the 'Rerun to visualize …' hint instead of stacking. Flip the gate."""
     from unittest.mock import patch
-    import src.lsd.gl_gui.view.core_conversion.live_view as lv
+    import meltygui.code.live_view as lv
     with patch.object(lv, "ACCUMULATE_UNWATCHED", True):
         yield
 

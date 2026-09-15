@@ -1,9 +1,9 @@
 import time
-from src.lsd.gl_gui import window_api as glfw
+import meltygui.window_api as glfw
 from typing import Callable, Union, Tuple
 from enum import Enum
 
-from src.lsd.gl_gui.utils.glfw_utils import request_render
+from meltygui.utils.glfw_utils import request_render
 
 
 class EaseType(Enum):

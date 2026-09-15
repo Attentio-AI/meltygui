@@ -21,7 +21,7 @@ _lock = threading.Lock()
 def _build_namespace(extra=None):
     ns = {"__builtins__": __builtins__}
     try:
-        from src.lsd.gl_gui.melty import Melty
+        from meltygui.runtime import Melty
         ns["Melty"] = Melty
         # Conveniences reachable from Melty: the studio (vis) and the root
         # AppModel (vis.root). Everything here derives from Melty.
@@ -89,7 +89,7 @@ def request_eval(code, model_server, timeout=10.0):
     with _lock:
         _pending.append(req)
     try:
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()  # force a frame so the request is served soon
     except Exception:
         pass
@@ -123,7 +123,7 @@ def request_call(fn, model_server, timeout=10.0):
     with _lock:
         _pending.append(req)
     try:
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()
     except Exception:
         pass

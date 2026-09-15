@@ -23,18 +23,24 @@ from typing import Any
 import libcst as cst
 from libcst._nodes.internal import CodegenState as _CodegenState
 
-from src.lsd.gl_gui.fonts import Font
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.modes import Modes, _LazyMode
-from src.lsd.gl_gui.notifications import notify, lag_traced
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
-from src.lsd.gl_gui.view.core_conversion.path_finder import convert, PendingState
-from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
-from src.lsd.gl_gui.perf_trace import (trace as _ptrace, trace_rl as _ptrace_rl,
-                                       span as _pspan, once as _ponce)
+from meltygui.fonts import Font
+from meltygui.runtime import Melty
+from meltygui.modes import Modes
+from meltygui.modes import _LazyMode
+from meltygui.notifications import notify
+from meltygui.notifications import lag_traced
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.utils.glfw_utils import print_stack_trace
+from meltygui.code.path_finder import convert
+from meltygui.code.path_finder import PendingState
+from meltygui.code.path_finder import Pending
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.core_decoration import defaults
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.perf_trace import trace as _ptrace
+from meltygui.perf_trace import trace_rl as _ptrace_rl
+from meltygui.perf_trace import span as _pspan
+from meltygui.perf_trace import once as _ponce
 
 
 def register(fn):
@@ -657,25 +663,27 @@ def _submit_interactive(worker, *args) -> _Future:
     return out
 
 
-def _jedi_project():
-    """A jedi Project scoped to latent-descent src.
+_jedi_projects = {}
 
-    Scoping the project PATH to the src dir (rather than the old `path="."`,
-    which resolved to the subprocess CWD and walked a huge tree) keeps jedi's
-    reference search inside our code — ~13x faster get_references, same results.
-    The repo root is on added_sys_path so `from src.lsd... import X` still
-    resolves during inference."""
+
+def _jedi_project(file_path=None):
+    """A cached Jedi project using the file owner's source paths and venv."""
     import jedi
-    src = _SRC_PREFIX.rstrip("/lsd")  # .../latent-descent/src
-    repo = str(_Path(src).parent)  # .../latent-descent
-    return jedi.Project(path=src, added_sys_path=[repo, src])
+    from meltygui.code.source_context import analysis_project
+    project = analysis_project(path=file_path)
+    held = _jedi_projects.get(project.key)
+    if held is None:
+        held = _jedi_projects[project.key] = jedi.Project(
+            path=project.root, environment_path=project.environment,
+            added_sys_path=list(project.source_paths))
+    return held
 
 
 def _jedi_script(file_path, code=None):
-    """jedi.Script on the src-scoped project. `code` (in-memory source) overrides
+    """jedi.Script on the file’s owning project. `code` (in-memory source) overrides
     the on-disk file so unsaved edits are analyzed; path still drives resolution."""
     import jedi
-    return jedi.Script(code=code, path=str(file_path), project=_jedi_project())
+    return jedi.Script(code=code, path=str(file_path), project=_jedi_project(file_path))
 
 
 def shutdown_jedi_pool():
@@ -814,8 +822,10 @@ def _jedi_complete_worker(code: str, line: int, col: int, path: str = None):
     module/class/function/instance/param/keyword/statement/property/path)."""
     import jedi
     try:
-        kw = {"path": path, "project": _jedi_project()} if path else {}
-        comps = jedi.Interpreter(code, [_completion_namespace()], **kw).complete(line, col)
+        kw = {"path": path, "project": _jedi_project(path)} if path else {}
+        script = (jedi.Script(code, **kw) if path else
+                  jedi.Interpreter(code, [_completion_namespace()]))
+        comps = script.complete(line, col)
     except Exception:
         return []
     return [(c.name, c.type) for c in comps if c.name]
@@ -837,10 +847,11 @@ def _full_file_context(text: str, address):
     None when the span has no usable file context (a plain buffer, an unreadable
     file) — callers fall back to the dedented-span mode."""
     try:
-        if (address is None or getattr(address, "path", None) is None
-                or getattr(address, "start", None) is None):
+        if address is None or getattr(address, "path", None) is None:
             return None
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        if getattr(address, "start", None) is None:
+            return text, 0, str(address.path)
+        from meltygui.editor.pending_save import PendingSave
         file_text = PendingSave.current_file_text(address.path)
         if file_text is None:
             return None
@@ -888,8 +899,10 @@ def _jedi_signatures_worker(code: str, line: int, col: int, path: str = None):
     'x', 'y=0', '*args')."""
     import jedi
     try:
-        kw = {"path": path, "project": _jedi_project()} if path else {}
-        sigs = jedi.Interpreter(code, [_completion_namespace()], **kw).get_signatures(line, col)
+        kw = {"path": path, "project": _jedi_project(path)} if path else {}
+        script = (jedi.Script(code, **kw) if path else
+                  jedi.Interpreter(code, [_completion_namespace()]))
+        sigs = script.get_signatures(line, col)
     except Exception:
         return []
     out = []
@@ -1042,7 +1055,7 @@ def _prune_symbol_store():
     widest span — the widest overlaps whatever span gets opened next); bounded
     at ONE per path so the unbounded-growth bug stays fixed."""
     try:
-        from src.lsd.gl_gui.toggles import Toggles  # lazy: avoid import cycle
+        from meltygui.toggles import Toggles  # lazy: breaks import cycle
         _keep_seeds = Toggles.TextEditor.SymbolUsages.stale_gen_incremental
     except Exception:
         _keep_seeds = True
@@ -1377,10 +1390,11 @@ def _src_mod_map() -> dict:
     now = _t.monotonic()
     if cached is not None and now - built_at < _SRC_MOD_MAP_TTL:
         return cached
+    from meltygui.code.address import is_editable_source
     mod_map = {}
     for mod in list(sys.modules.values()):
         f = getattr(mod, "__file__", None)
-        if not (f and f.startswith(_SRC_PREFIX)):
+        if not (f and is_editable_source(f)):
             continue
         try:
             rp = _Path(f).resolve()
@@ -1614,7 +1628,7 @@ def _file_index_refs(path, module, text=None, tree=None, imports=None,
             mtime = path.stat().st_mtime
         except OSError:
             return []
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         sig = (mtime, PendingSave.pending_gen_for(path))
         cached = _index_refs_cache.get(path)
         if cached is None or cached[0] != sig:
@@ -1896,7 +1910,7 @@ def _file_parse_artifacts(resolved, owning, text):
     Returns None when the text won't parse (caller bails, as before). The shared
     tree is safe: _collect_targets / _collect_refs / _imported_name_objects /
     _local_class_bindings all walk it read-only (no node mutation)."""
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    from meltygui.editor.pending_save import PendingSave
     try:
         mtime = resolved.stat().st_mtime
     except OSError:
@@ -2169,7 +2183,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     # in sync. `local_keys` also lets the bare-name scan skip resolving a local
     # against the module namespace (a local shadows a same-named global). Gated by
     # Toggles.TextEditor.SymbolUsages.local_symbol_usages.
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     if Toggles.TextEditor.SymbolUsages.local_symbol_usages:
         local_bounds, local_global, local_parent, (local_lo, local_hi) = (
             _local_var_bindings(file_tree, start_line, end_line))
@@ -2532,7 +2546,7 @@ def usage_data_for_line(file_path: str, line: int) -> dict:
     # the same context _compute_symbol_usages uses. None (read error) lets
     # _symbol_refs_index fall back to its own read. Other files in the
     # cross-file caller scan are disk-aware inside _file_symbol_refs.
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    from meltygui.editor.pending_save import PendingSave
     raw = _symbol_refs_index(str(resolved), line, line,
                              text=PendingSave.current_file_text(resolved))
     if raw is _PARSE_FAILED or not raw:
@@ -2614,7 +2628,7 @@ def compute_symbol_usages_for_address(address, fast_only=False):
     and defer the expensive recompute behind the cooperative yield."""
     if DISABLE_JEDI or address is None or getattr(address, "path", None) is None:
         return _NEEDS_RECOMPUTE if fast_only else {}
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    from meltygui.editor.pending_save import PendingSave
     resolved = _Path(address.path).resolve()
     start = (getattr(address, "start", 0) or 0) + 1  # address.start is a 0-indexed slice bound
     end = getattr(address, "end", None)
@@ -2641,8 +2655,8 @@ def usages_fresh_for_address(address) -> bool:
     stayed unindexed — and untinted — until an unrelated index-gen bump."""
     if DISABLE_JEDI or address is None or getattr(address, "path", None) is None:
         return True   # nothing will ever recompute - don't keep the nudge locked
-    from src.lsd.gl_gui.toggles import Toggles
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    from meltygui.toggles import Toggles
+    from meltygui.editor.pending_save import PendingSave
     resolved = _Path(address.path).resolve()
     start = (getattr(address, "start", 0) or 0) + 1
     end = getattr(address, "end", None)
@@ -2705,8 +2719,8 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     is debounced to _SHIFT_MAT_MIN_S: mid-burst probes serve the unshifted base
     uncached (the editor splice-remaps its display independently) and the
     composite shift lands at most one window later."""
-    from src.lsd.gl_gui.toggles import Toggles  # lazy to avoid import cycle
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    from meltygui.toggles import Toggles  # lazy: avoid import cycle
+    from meltygui.editor.pending_save import PendingSave
     _t_probe = _time.monotonic()
     accurate = Toggles.jedi_correctness
     try:
@@ -3706,7 +3720,7 @@ def _park_while_frame(max_park_s=_FRAME_PARK_MAX_S):
     cur = threading.current_thread()
     if cur is threading.main_thread():
         return 0.0
-    from src.lsd.gl_gui import gl_state
+    import meltygui.gl_state as gl_state
     glt = getattr(gl_state, "_gl_thread", None)  # read, don't claim
     if glt is None or cur is glt:
         return 0.0
@@ -3724,7 +3738,7 @@ def _park_while_frame(max_park_s=_FRAME_PARK_MAX_S):
 
 
 def _yield_to_ui():
-    from src.lsd.gl_gui.toggles import Toggles  # lazy: avoid import cycle
+    from meltygui.toggles import Toggles  # lazy: avoid import cycle
     if not Toggles.yield_to_ui:
         return
     # The incremental span reconvert is the LIGHT path built to run during
@@ -3764,7 +3778,7 @@ def _yield_to_ui():
     cur = threading.current_thread()
     if cur is threading.main_thread():
         return
-    from src.lsd.gl_gui import gl_state
+    import meltygui.gl_state as gl_state
     glt = getattr(gl_state, "_gl_thread", None)  # read, don't claim (is_current_thread claims)
     if glt is None or cur is glt:
         return
@@ -3965,7 +3979,7 @@ class _position_map:
     def __enter__(self):
         self._prev = getattr(_span_scope, "positions", None)
         try:
-            from src.lsd.gl_gui.toggles import Toggles  # TODO: avoid import cycle
+            from meltygui.toggles import Toggles  # lazy to avoid import cycle
             if Toggles.new_position_map:
                 _span_scope.positions = _build_ast_span_map(self._module, self._source)
             else:
@@ -4480,7 +4494,7 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
     source_code = input_value if text_input else (kwargs.get("_source") or input_value.code)
     _t_codegen = time.monotonic()
     if text_input:
-        from src.lsd.gl_gui.view.core_conversion.core_syntax import parse_to_dict
+        from meltygui.code.core_syntax import parse_to_dict
         # SAME src name scope as the libcst branch, so enum members / callables
         # resolve to the same live objects either way.
         with _module_scope(_build_src_scope()):
@@ -4617,8 +4631,8 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
     # file's cached spans so a re-click is a true refresh.
     _sym_note = None
     if address is not None:
-        from src.lsd.gl_gui.toggles import Toggles  # TODO: avoid import cycle
-        # The drag probe (max_wait=0) drops the index pass while the user is
+        from meltygui.toggles import Toggles  # lazy to avoid import cycle
+        # The drag probe (max_wait=0) drops the auto pass while the user is
         # mid-gesture (a structured tint drag echoes through chain_in, which
         # would run this compute DURING the drag): the gp ships unstamped, and
         # the editor-side nudge re-indexes it the moment the drag ends.
@@ -4672,7 +4686,7 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
             symbols=_sym_note or "off")
     _slept_ms = getattr(_yield_slept, 't', 0.0) * 1000
     _im = globals().get("_inc_memo")
-    _inc_mark = (" melty" if text_input else
+    _inc_mark = (" meltygui" if text_input else
                  " inc" if (_im is not None
                             and getattr(_im, "pair", None) is not None) else "")
     _work_ms = _total_ms - _slept_ms
@@ -4726,7 +4740,7 @@ def _funcdef_span_incremental(prev_gp, old_mod, a, b, pre, suf, new_src):
     numbering (`x#1`), ordering and spans come out exact; the memo only skips
     re-deriving values whose nodes survive the splice. The first reconvert
     after a plain full parse finds an empty memo and just seeds it."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     try:
         fd = old_mod.body[0]
         body = list(getattr(fd.body, "body", None) or ())
@@ -5043,7 +5057,7 @@ def cst_dict_incremental_update(prev_gp, old_src, new_src):
     codegen, ~a sixth of the full-parse cost) — any header/footer/comment
     attribution drift falls back to the full parse instead of corrupting the
     round-trip. All validation happens before any in-place mutation."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     try:
         # Normalize FIRST (see _norm_blank_lines): the held module was parsed
         # from dedent-normalized text, so raw-space diffs would misplace the
@@ -5304,8 +5318,8 @@ def dict_to_cst_module(input_value: dict) -> cst.Module:
         # core_syntax parse: the fallback does text surgery on the existing
         # source (see core_syntax.general_parse_to_str) - returns a STR,
         # which cst_module_to_str / cst_module_to_string pass through.
-        from src.lsd.gl_gui.view.core_conversion.core_syntax import (
-            general_parse_to_str, CoreSyntaxError)
+        from meltygui.code.core_syntax import general_parse_to_str
+        from meltygui.code.core_syntax import CoreSyntaxError
         try:
             return general_parse_to_str(input_value)
         except CoreSyntaxError as e:
@@ -8704,7 +8718,11 @@ def _attr_no_trigger(obj, attr):
     return getattr(obj, attr, None)
 
 
-_SRC_PREFIX = str(_Path(__file__).resolve().parents[4]) + "/"  # .../latent-descent/src/
+
+
+
+from meltygui.paths import application_root
+_SRC_PREFIX = str(application_root()) + "/"
 
 
 def _build_src_scope():
@@ -8714,19 +8732,20 @@ def _build_src_scope():
     out of scope and intentionally left as raw source. Built once per analysis —
     its size is bounded by the project's symbol count, not the file size, and it
     replaces the per-usage sys.modules scans entirely."""
+    from meltygui.code.address import is_editable_source
     src_mods = {}
     for modname, mod in list(sys.modules.items()):
         if mod is None:
             continue
         f = getattr(mod, "__file__", None)
-        if f and f.startswith(_SRC_PREFIX):
+        if f and is_editable_source(f):
             src_mods[modname] = mod
     src_names = set(src_mods)
 
     scope = {}
     for modname, mod in src_mods.items():
-        # The module itself, keyed by its import leaf (a.b.melty -> "melty"), so
-        # dotted names like `melty.Melty` resolve through it.
+        # The module itself, keyed by its import leaf (a.b.melty -> "meltygui"), so
+        # dotted names like `meltygui.Melty` resolve through it.
         scope.setdefault(modname.rsplit(".", 1)[-1], mod)
         d = getattr(mod, "__dict__", None)
         if not d:
@@ -8830,7 +8849,7 @@ def _resolve_callable_by_parts(parts):
     Authoritative: resolves the root through the src scope and walks the rest —
     no sys.modules scan. Out-of-src roots stay unresolved.
 
-      ["melty", "Melty", "draw"] → src module melty -> Melty -> draw
+      ["meltygui", "Melty", "draw"] → src module meltygui -> Melty -> draw
       ["MyClass", "method"]      → MyClass.method (MyClass defined in src)
     """
     scope = _active_scope()
@@ -9378,7 +9397,7 @@ def _graft_attribute_formatting(new_attr, old_attr):
 # leans on (_threading, _index_refs_cache, _src_mod_map, _file_index_refs) is
 # already defined when this runs at import time.
 import time as _time
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window as _window
+from meltygui.rendering.decorators.window_decoration import window as _window
 
 
 def build_index_cache() -> tuple:
@@ -9472,7 +9491,7 @@ def _bump_generation():
 
 
 # ── File-watch driven index updates ───────────────────────────
-# The PRIMARY change detector: FileWatch (melty.py) raises events for every
+# The PRIMARY change detector: FileWatch (meltygui.py) raises events for every
 # .py under the src tree (the recursive watch scheduled in
 # _register_index_watch below), so we re-index exactly the files that
 # changed - no scanning. The warmer daemon's periodic pass remains only as a
@@ -9553,10 +9572,10 @@ def _register_index_watch():
     __name__, the recursive watch by a marker in _watched_dirs (fresh sets on
     a restart-in-place re-create both against the new Observer)."""
     try:
-        from src.lsd.gl_gui.melty import FileWatch
+        from meltygui.runtime import FileWatch
         listeners = getattr(FileWatch, "global_listeners", None)
         if listeners is None:
-            return  # older melty.py still loaded - reconcile pass covers us
+            return  # older meltygui.py still running - reconcile pass covers us
         listeners[:] = [f for f in listeners
                         if getattr(f, "__name__", "") != "_on_watch_event"]
         listeners.append(_on_watch_event)
@@ -9565,7 +9584,7 @@ def _register_index_watch():
             # One inotify instance for the whole src tree; per-dir emitters
             # under it are retired (FileWatch.watch_recursive).
             FileWatch.watch_recursive(_SRC_PREFIX)
-        elif marker not in FileWatch._watched_dirs:   # older melty.py loaded
+        elif marker not in FileWatch._watched_dirs:   # older meltygui.py loaded
             FileWatch.observer.schedule(FileWatch.handler, _SRC_PREFIX,
                                         recursive=True)
             FileWatch._watched_dirs.add(marker)

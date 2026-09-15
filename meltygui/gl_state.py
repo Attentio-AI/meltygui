@@ -24,7 +24,7 @@ by `flush_deletes()` (called from Melty.end_frame on the render thread with
 the context current), because `release()` / `__del__` can fire from any
 thread and GL calls off the main thread are invalid.
 
-Lifecycle events (wired in melty.py):
+Lifecycle events (wired in meltygui.py):
 - window delete  → GLState.on_window_deleted(window_ds): every live state
   whose owner draw_state sits under that window releases its resources. The
   draw_state (and the GLState in its misc) persists, so a re-created window
@@ -43,7 +43,7 @@ import weakref
 
 import numpy as np
 import OpenGL.GL as gl
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
+from meltygui.rendering.decorators.core_decoration import defaults
 
 
 def _persistent(name, factory):
@@ -65,7 +65,7 @@ def current_context():
     state born in one context must run in that context — with several OS
     windows (surface.py) the same name means a different object elsewhere."""
     try:
-        from src.lsd.gl_gui import window_api as glfw
+        import meltygui.window_api as glfw
         import ctypes
         ctx = glfw.get_current_context()
         return ctypes.cast(ctx, ctypes.c_void_p).value if ctx else None
@@ -335,7 +335,7 @@ class GLState:
         with _queue_lock:
             _delete_queue.append((key, rec.value, rec.deleter, self._context))
 
-    # ── lifecycle hooks (called from pty.py) ──────────────────────────
+    # ── lifecycle callbacks (called from meltygui.py) ──────────────────────────
 
     @staticmethod
     def flush_deletes():

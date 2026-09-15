@@ -1,6 +1,6 @@
 from typing import Any
 
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from meltygui.rendering.decorators.window_decoration import window
 
 
 @window

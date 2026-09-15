@@ -12,9 +12,9 @@ back up into the Melty hub.
 
 CodeGenerator regenerates the _RenderFuncs class in THIS file so every registered
 render func shows up as a real, IDE-visible member — kept in its own file so the
-generator only ever rewrites this small module, never melty.py.
+generator only ever rewrites this small module, never meltygui.py.
 """
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
+from meltygui.rendering.decorators.core_decoration import Core
 
 
 class _LazyRenderFunc:
@@ -94,7 +94,6 @@ class _RenderFuncs:
     cst_to_ref = _LazyRenderFunc("cst_to_ref")
     dict_to_cst = _LazyRenderFunc("dict_to_cst")
     do_recompile = _LazyRenderFunc("do_recompile")
-    draw_app_model = _LazyRenderFunc("draw_app_model")
     draw_blank = _LazyRenderFunc("draw_blank")
     draw_bool = _LazyRenderFunc("draw_bool")
     draw_collection = _LazyRenderFunc("draw_collection")
@@ -114,8 +113,6 @@ class _RenderFuncs:
     draw_function = _LazyRenderFunc("draw_function")
     draw_int = _LazyRenderFunc("draw_int")
     draw_jump_to = _LazyRenderFunc("draw_jump_to")
-    draw_lsd_studio = _LazyRenderFunc("draw_lsd_studio")
-    draw_main = _LazyRenderFunc("draw_main")
     draw_managed_window = _LazyRenderFunc("draw_managed_window")
     draw_mapping_proxy = _LazyRenderFunc("draw_mapping_proxy")
     draw_module = _LazyRenderFunc("draw_module")
@@ -136,7 +133,6 @@ class _RenderFuncs:
     draw_tuple = _LazyRenderFunc("draw_tuple")
     draw_type = _LazyRenderFunc("draw_type")
     draw_usage = _LazyRenderFunc("draw_usage")
-    draw_vis = _LazyRenderFunc("draw_vis")
     draw_with_modes = _LazyRenderFunc("draw_with_modes")
     empty = _LazyRenderFunc("empty")
     eval_function = _LazyRenderFunc("eval_function")
@@ -190,7 +186,7 @@ class _RenderFuncs:
 
 
 # Reference render funcs by symbol without importing their module:
-#     from src.lsd.gl_gui.render_funcs import RenderFuncs
+#     from meltygui.rendering.registry import RenderFuncs
 #     @window(render_func=RenderFuncs.draw_type)
 RenderFuncs = _RenderFuncs()
 
@@ -224,11 +220,11 @@ class CodeGenerator:
         idempotent). `expr_for(name)` returns the assignment's RHS source.
         Returns the written Address."""
         import libcst as cst
-        from src.lsd.gl_gui.view.core_conversion.address import to_address
-        from src.lsd.gl_gui.view.core_conversion.file_converters import (
-            load_text, save_span_fn)
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-            cst_classdef_to_dict, dict_to_cst_classdef)
+        from meltygui.code.address import to_address
+        from meltygui.code.file_converters import load_text
+        from meltygui.code.file_converters import save_span_fn
+        from meltygui.code.libcst_conversion import cst_classdef_to_dict
+        from meltygui.code.libcst_conversion import dict_to_cst_classdef
 
         class _StripClassVars(cst.CSTTransformer):
             def leave_SimpleStatementLine(self, original, updated):
@@ -270,8 +266,8 @@ class CodeGenerator:
     @staticmethod
     def update_modes():
         """Regenerate _Modes (in modes.py) from the live Mode enum."""
-        from src.lsd.gl_gui.view.mode import Mode
-        from src.lsd.gl_gui.modes import _Modes
+        from meltygui.debug.mode import Mode
+        from meltygui.modes import _Modes
         names = sorted(n for n in Mode.__members__ if n.isidentifier())
         return CodeGenerator._regenerate(
             _Modes, names, lambda n: f'_LazyMode("{n}")')

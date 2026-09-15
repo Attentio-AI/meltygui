@@ -10,15 +10,18 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import numpy as np
 import pytest
-import torch
+torch = pytest.importorskip("torch")
 
-from src.lsd.gl_gui.shaped import (
-    Shaped, best_match, mro_distance, shape_matches, value_dtype, value_shape,
-    SEQ_DTYPE_SCAN_CAP)
+from meltygui.rendering.shaped import Shaped
+from meltygui.rendering.shaped import best_match
+from meltygui.rendering.shaped import mro_distance
+from meltygui.rendering.shaped import shape_matches
+from meltygui.rendering.shaped import value_dtype
+from meltygui.rendering.shaped import value_shape
+from meltygui.rendering.shaped import SEQ_DTYPE_SCAN_CAP
 
 
 # ---------------------------------------------------------------- grammar --
@@ -220,8 +223,8 @@ def test_best_match_real_type_override():
 # ------------------------------------------------------ through Melty --
 
 @pytest.fixture
-def melty():
-    from src.lsd.gl_gui.melty import Melty
+def meltygui():
+    from meltygui.runtime import Melty
     saved = (dict(Melty.default_funcs_by_shape), dict(Melty.default_lenses_by_shape),
              dict(Melty.default_funcs_by_name), dict(Melty.default_funcs_by_type))
     yield Melty
@@ -231,29 +234,29 @@ def melty():
     Melty.default_funcs_by_type.clear(); Melty.default_funcs_by_type.update(saved[3])
 
 
-def test_melty_precedence_name_over_shape_over_type(melty):
+def test_melty_precedence_name_over_shape_over_type(meltygui):
     by_name = object(); by_shape = object(); by_type_name = object(); by_type = object()
-    melty.default_funcs_by_name["pos"] = by_name
-    melty.default_funcs_by_shape[Shaped(tuple, (3,), float)] = by_shape
-    melty.default_funcs_by_name["tuple"] = by_type_name
-    melty.default_funcs_by_type[tuple] = by_type
-    look = melty.get_default_view_function
+    meltygui.default_funcs_by_name["pos"] = by_name
+    meltygui.default_funcs_by_shape[Shaped(tuple, (3,), float)] = by_shape
+    meltygui.default_funcs_by_name["tuple"] = by_type_name
+    meltygui.default_funcs_by_type[tuple] = by_type
+    look = meltygui.get_default_view_function
     v = (0.1, 0.2, 0.3)
     assert look(real_type=tuple, attrib_key="pos", value=v) is by_name          # name wins
     assert look(real_type=tuple, attrib_key="vec##x", value=v) is by_shape     # shape beats type tiers
     assert look(real_type=tuple, attrib_key="vec##x", value=(1, 2, 3)) is by_type_name  # no shape match → type name
-    del melty.default_funcs_by_name["tuple"]
+    del meltygui.default_funcs_by_name["tuple"]
     assert look(real_type=tuple, attrib_key="vec##x", value=(1, 2, 3)) is by_type
     assert look(real_type=tuple, attrib_key="vec##x", value=None) is by_type   # None has no shape
 
 
-def test_melty_tensor_rank_routing(melty):
+def test_melty_tensor_rank_routing(meltygui):
     lines = object(); voxels = object(); fallback = object()
-    melty.default_funcs_by_shape[LINES1] = lines
-    melty.default_funcs_by_shape[LINES2] = lines
-    melty.default_funcs_by_shape[VOXELS] = voxels
-    melty.default_funcs_by_name["Tensor"] = fallback
-    look = lambda t: melty.get_default_view_function(real_type=type(t), attrib_key="t", value=t)
+    meltygui.default_funcs_by_shape[LINES1] = lines
+    meltygui.default_funcs_by_shape[LINES2] = lines
+    meltygui.default_funcs_by_shape[VOXELS] = voxels
+    meltygui.default_funcs_by_name["Tensor"] = fallback
+    look = lambda t: meltygui.get_default_view_function(real_type=type(t), attrib_key="t", value=t)
     assert look(torch.zeros(8)) is lines
     assert look(torch.zeros(8, 8)) is lines
     assert look(torch.zeros(8, 8, 8)) is voxels
@@ -261,25 +264,26 @@ def test_melty_tensor_rank_routing(melty):
     assert look(torch.tensor(0.5)) is fallback
 
 
-def test_melty_lens_resolution(melty):
+def test_melty_lens_resolution(meltygui):
     by_type = object(); by_shape = object()
-    melty.default_lenses_by_type[tuple] = by_type
+    meltygui.default_lenses_by_type[tuple] = by_type
     try:
-        melty.default_lenses_by_shape[Shaped(tuple, (3,), float)] = by_shape
-        assert melty.get_default_lens_function((0.1, 0.2, 0.3)) is by_shape
-        assert melty.get_default_lens_function((1, 2)) is by_type
-        assert melty.get_default_lens_function("x") is None
+        meltygui.default_lenses_by_shape[Shaped(tuple, (3,), float)] = by_shape
+        assert meltygui.get_default_lens_function((0.1, 0.2, 0.3)) is by_shape
+        assert meltygui.get_default_lens_function((1, 2)) is by_type
+        assert meltygui.get_default_lens_function("x") is None
     finally:
-        melty.default_lenses_by_type.pop(tuple, None)
+        meltygui.default_lenses_by_type.pop(tuple, None)
 
 
 def test_registered_app_defaults_route_the_two_use_cases():
     """The real registrations: draw_tuple for float 3/4-tuples, draw_line_graph
     for 1-D/2-D tensors, draw_voxels for 3-D+ (importing the views registers
     them)."""
-    from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.view.core_views import new_core_view
-    from src.lsd.gl_gui.view.playground import line_graph_playground, voxel_playground
+    from meltygui.runtime import Melty
+    import meltygui.views.values as new_core_view
+    import meltygui.views.line_graph as line_graph_playground
+    import meltygui.tensor.voxels as voxel_playground
 
     look = lambda v, key="value": Melty.get_default_view_function(real_type=type(v), attrib_key=key, value=v)
     assert look((0.2, 0.5, 1.0)) is new_core_view.draw_tuple

@@ -1,11 +1,11 @@
 """
 Hotswap applies SOURCE edits and preserves RUNTIME state.
 
-Reproduces the melty.py hotswap failure (2026-08-23): `class Melty` keeps all
+Reproduces the meltygui.py hotswap failure (2026-08-23): `class Melty` keeps all
 runtime state in class attributes (`cache = None`, ...), and `_hotswap_class`
 copied every freshly-compiled initializer over the live class, so a swap reset
 `Melty.cache` to None and the next frame died in `Melty.cache.invalidate_up`.
-melty.py also ends with `Core.melty = Melty`, which the re-exec bound to the
+meltygui.py also ends with `Core.melty = Melty`, which the re-exec bound to the
 THROWAWAY class.
 
 The rule: a plain data attribute (class or module level) keeps its live value
@@ -25,13 +25,12 @@ import unittest
 from pathlib import Path
 
 _root = os.path.join(os.path.dirname(__file__), '..')
-sys.path.insert(0, os.path.join(_root, 'src'))
-sys.path.insert(0, _root)
 
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.view.core_conversion.file_converters import (
-    _recompile_module, _recompile_class, stamp_module_baseline, _attr_source_map,
-)
+from meltygui.runtime import Melty
+from meltygui.code.file_converters import _recompile_module
+from meltygui.code.file_converters import _recompile_class
+from meltygui.code.file_converters import stamp_module_baseline
+from meltygui.code.file_converters import _attr_source_map
 
 SOURCE_V1 = """\
 import types
@@ -183,8 +182,8 @@ class HotswapPreservesRuntimeState(unittest.TestCase):
         self.assertEqual(Single().describe(), "span")
 
     def test_real_melty_module_swap(self):
-        import src.lsd.gl_gui.melty as melty_mod
-        from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
+        import meltygui.runtime as melty_mod
+        from meltygui.rendering.decorators.core_decoration import Core
         path = Path(melty_mod.__file__)
         source = path.read_text(encoding="utf-8")
         stamp_module_baseline(melty_mod, source)

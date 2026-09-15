@@ -6,8 +6,9 @@ from collections import OrderedDict
 from typing import Dict, Any, Optional, Tuple
 import ctypes
 
-from src.shader_library.shader_manager.base import GLType
-from src.shader_library.shader_manager.compiler import ProgramCompiler, CompiledProgram
+from meltygui.graphics.base import GLType
+from meltygui.graphics.compiler import ProgramCompiler
+from meltygui.graphics.compiler import CompiledProgram
 
 
 def _get_gl():

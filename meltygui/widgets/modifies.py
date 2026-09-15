@@ -2,22 +2,26 @@ import inspect
 import types
 from pathlib import Path
 
-import imgui
+import meltygui_imgui as imgui
 
-from src.lsd.gl_gui.modes import Modes
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.view.core_conversion.new_converters import (
-    code_file_io, convert_in_and_out_value, string_to_cst_module, cst_module_to_string,
-    cst_module_to_dict, dict_to_cst_module)
-from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
-from src.lsd.gl_gui.view.core_views.columns import draw_columns
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_any, draw_collection
-from src.lsd.gl_gui.view.core_views.text_editor import draw_text
-from src.lsd.gl_gui.view.invalidation_tracker import Note
-from src.lsd.gl_gui.view.mode import Mode
+from meltygui.modes import Modes
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.toggles import Toggles
+from meltygui.code.new_converters import code_file_io
+from meltygui.code.new_converters import convert_in_and_out_value
+from meltygui.code.new_converters import string_to_cst_module
+from meltygui.code.new_converters import cst_module_to_string
+from meltygui.code.new_converters import cst_module_to_dict
+from meltygui.code.new_converters import dict_to_cst_module
+from meltygui.code.render_host import RenderHost
+from meltygui.views.columns import draw_columns
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.views.values import draw_any
+from meltygui.views.values import draw_collection
+from meltygui.editor.text import draw_text
+from meltygui.debug.invalidation_tracker import Note
+from meltygui.debug.mode import Mode
 
 class ModifiesPlayground:
 
@@ -79,7 +83,7 @@ class InCode:
 # span through the framework pair: two full 102KB str→cst→dict conversions per
 # session (~430ms of duplicated background work, visible in the perf-trace
 # timeline). One cache, one pair, one parse.
-from src.lsd.gl_gui.view.core_conversion.new_converters import code_hosts_for
+from meltygui.code.new_converters import code_hosts_for
 
 string_proxy, dict_proxy = code_hosts_for(draw_text)
 

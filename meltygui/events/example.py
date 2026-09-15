@@ -1,7 +1,7 @@
 """
 Example: InputHandler with various backends.
 """
-from src.lsd.gl_gui.events.input_handler import InputHandler
+from meltygui.events.input_handler import InputHandler
 
 
 def demo_basic():
@@ -48,7 +48,7 @@ def demo_basic():
 
 def demo_json_backend():
     """Demo using JsonBackend for toolkit integration."""
-    from event_backends import JsonBackend
+    from meltygui.events.event_backends import JsonBackend
     
     handler = InputHandler()
     backend = JsonBackend(handler)
@@ -75,7 +75,7 @@ def demo_json_backend():
 def demo_pynput():
     """Demo with real hardware (requires pynput)."""
     try:
-        from event_backends import PynputBackend, HAS_PYNPUT
+        from meltygui.events.event_backends import PynputBackend, HAS_PYNPUT
         if not HAS_PYNPUT:
             raise ImportError()
     except ImportError:

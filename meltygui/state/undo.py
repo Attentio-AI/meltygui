@@ -3,15 +3,15 @@ import time
 import weakref
 from enum import Enum
 
-import imgui
+import meltygui_imgui as imgui
 
-from src.lsd.gl_gui.model.model_enums import RelaxedEnum
-from src.lsd.gl_gui.modes import Modes
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.headers import draw_header
+from meltygui.state.enums import RelaxedEnum
+from meltygui.modes import Modes
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.utils.glfw_utils import request_render
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.views.headers import draw_header
 
 
 class Change:
@@ -92,7 +92,7 @@ class SetterChange(Change):
         try:
             self.setter(self.old if undo else self.new)
         finally:
-            from src.lsd.gl_gui.utils.glfw_utils import request_render
+            from meltygui.utils.glfw_utils import request_render
             cache = getattr(Core.melty, "cache", None)
             if cache is not None and getattr(self.draw_state, "_tile_id", None) is not None:
                 cache.invalidate_up(self.draw_state._tile_id, force=True)
@@ -342,40 +342,6 @@ class WindowMoveChange(Change):
         request_render()
 
 
-class CompareChange(Change):
-    """A Compare-With selection step in a code-editor window. `old`/`new`
-    are the PERSISTED compare tokens ('' none, 'HEAD', 'local', 'latest',
-    or a commit id) — the moving 'latest' token replays as 'latest', not a
-    frozen hash. No draw_state: replay posts a model command
-    (OpenFiles.compare_request) that the target editor instance's body
-    adopts next frame (externals never write draw_states directly)."""
-
-    def __init__(self, instance, old_token, new_token, t=0.0, group_id=0,
-                 frame=0):
-        super().__init__(None, old_token, new_token, t=t, group_id=group_id,
-                         frame=frame)
-        self.instance = instance
-
-    @property
-    def display_name(self):
-        return f"compare {(self.new or 'none')[:12]}"
-
-    def apply(self, undo):
-        root = getattr(Core.melty.vis, "root", None)
-        open_files = getattr(root, "open_files", None)
-        if open_files is None:
-            return
-        open_files.compare_request = (self.instance,
-                                      self.old if undo else self.new)
-        from src.lsd.gl_gui.view.playground.open_files import editor_window_draw_state
-        win = editor_window_draw_state(self.instance)
-        if win is not None:
-            win.closed = False
-            Core.melty.move_window_to_front(win)
-            if Core.melty.cache is not None and win._tile_id is not None:
-                Core.melty.cache.invalidate_up(win._tile_id, force=True,
-                                               max_depth=4)
-        request_render()
 
 
 @window(view_func=RenderFuncs.draw_undo_manager, live=True)
@@ -502,7 +468,7 @@ class UndoManager:
             pos, typed = last.edit_end, edit.text
         else:
             return None                                     # edited elsewhere
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         if Toggles.CodeEditor.undo_word_steps and _word_starts(last.edge_char + typed):
             return None
         return pos
@@ -655,7 +621,7 @@ class NavUndo:
 
     @classmethod
     def _recordable(cls):
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         return (Toggles.CodeEditor.undo_navigation and not cls._restoring
                 and Core.melty.frame_count >= UndoManager.settle_for)
 
@@ -692,15 +658,10 @@ class NavUndo:
                                  frame=Core.melty.frame_count))
 
     @classmethod
-    def record_compare(cls, instance, old_token, new_token):
+    def record_compare(cls, instance, old_token, new_token, repo_root=None):
         """Push a Compare-With selection step (editor dropdown / clear ×)."""
-        cls.quiet_caret()
-        if not cls._recordable() or old_token == new_token:
-            return
-        cls.stack.push(CompareChange(instance, old_token, new_token,
-                                     t=time.time(),
-                                     group_id=cls.stack.new_group_id(),
-                                     frame=Core.melty.frame_count))
+        from meltygui.extensions import call
+        call('compare_history', instance, old_token, new_token, repo_root=repo_root)
 
     @classmethod
     def record_window(cls, window_ds, closed_before, closed_after):
@@ -754,7 +715,7 @@ class NavUndo:
         cls._last_caret = current
         if last is None or not cls._recordable():
             return
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         if not Toggles.CodeEditor.undo_navigation_caret:
             return
         frame = Core.melty.frame_count
@@ -774,14 +735,15 @@ class NavUndo:
         string; line None = coalesce on time alone."""
         pos = draw_state.text_cursor_pos
         path, instance, text = None, 0, None
-        from src.lsd.gl_gui.view.playground.open_files import _active_editors
+        from meltygui.extensions import source_views
+        _active_editors = source_views()
         for editor_instance, (editor_path, pane, held_text) in _active_editors.items():
             if pane is draw_state:
                 path, instance, text = editor_path, editor_instance, held_text
                 break
         line = None
         if path is not None and isinstance(text, str):
-            from src.lsd.gl_gui.view.core_views.text_editor import fold_buffer_line_at
+            from meltygui.editor.text import fold_buffer_line_at
             line = fold_buffer_line_at(draw_state, text, max(0, min(pos, len(text))))
         else:
             raw = getattr(draw_state, "_raw_input_value", None)
@@ -819,7 +781,7 @@ class NavUndo:
         diverged redo alive)."""
         if old_loc == new_loc:
             return
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         now = time.time()
         frame = Core.melty.frame_count
         top = cls.stack.history[-1] if cls.stack.history else None
@@ -846,8 +808,9 @@ class NavUndo:
         draw_state = location.draw_state()
         if draw_state is None:
             return
-        from src.lsd.gl_gui.view.playground.open_files import (
-            _active_editors, editor_window_draw_state)
+        from meltygui.extensions import source_views
+        _active_editors = source_views()
+        from meltygui.extensions import source_window as editor_window_draw_state
         if location.path:
             active = _active_editors.get(location.instance)
             if active is None or active[0] != location.path:
@@ -895,50 +858,12 @@ class NavUndo:
 
     @classmethod
     def _apply_location(cls, loc):
-        """Replay one side of a NavChange: select the tab (reopening it if it
-        was closed) and land on the recorded line — in the editor INSTANCE
-        the step was recorded in (pre-instance 2-tuples default to 0)."""
-        loc = tuple(loc or ())
-        path = loc[0] if loc else None
-        line = loc[1] if len(loc) > 1 else None
-        inst = loc[2] if len(loc) > 2 else 0
-        if path is None:
-            return
-        from src.lsd.gl_gui.view.playground.open_files import (
-            open_in_editor, editor_window_draw_state)
-        from src.lsd.gl_gui.model.open_files import OpenFiles
-        if path.startswith(OpenFiles.GIT_DIFF_PREFIX):
-            # Pseudo-path - never route through open_in_editor (open_file
-            # would spin up a real host for it). Only re-select if the
-            # diff tab is still open.
-            root = getattr(Core.melty.vis, "root", None)
-            open_files = getattr(root, "open_files", None)
-            if open_files is not None and path in open_files.open_paths:
-                open_files.jump_to_path = path
-                # Force the recorded instance - jump_to_instance decides
-                # which editor body adopts the pending selection, so a stale
-                # value from an earlier jump would hand it to the wrong one.
-                open_files.jump_to_instance = inst
-                # The summon + past-the-blank invalidate open_in_editor does -
-                # the tab selection is adopted inside the editor body.
-                win = editor_window_draw_state(inst)
-                if win is not None:
-                    win.closed = False
-                    Core.melty.move_window_to_front(win)
-                    if Core.melty.cache is not None and win._tile_id is not None:
-                        Core.melty.cache.invalidate_up(win._tile_id, force=True,
-                                                       max_depth=4)
-                request_render()
-            return
-        # Replaying into a secondary instance rides the editor_window path of
-        # open_in_editor - which assumes the originating window is already
-        # front. A replay can't guarantee that, so summon/raise it here first.
-        # Instance window missing (never drawn) → fall back to the primary.
-        win = editor_window_draw_state(inst) if inst else None
-        if win is not None:
-            win.closed = False
-            Core.melty.move_window_to_front(win)
-        open_in_editor(path, line_number=line, editor_window=win)
+        from meltygui.extensions import get, open_source
+        provider = get('source_location')
+        if provider is not None:
+            return provider(loc)
+        if loc and loc[0]:
+            return open_source(loc[0], line_number=loc[1] if len(loc) > 1 else None)
 
     @classmethod
     def undo(cls):
@@ -1029,7 +954,7 @@ def _typing_edit(old, new):
     it. Everything else is its own undo step, like the separate editor
     commands they come from in IntelliJ: Enter (+ auto-indent), Tab, a
     paste, a completion, a comment toggle, a selection typed over or cut."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     pos, removed, inserted = _diff_span(old, new)
     if removed and inserted:
         return None

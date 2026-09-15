@@ -46,7 +46,7 @@ Precedence among Shaped entries is by `score()`: the more constrained pattern
 wins (fixed axis 2, `None` axis 1, `...` 0, dtype +1), so a generic
 `(None,)` never steals a `(3,), float` colour. Ties → closer MRO match →
 registration order. This module is dependency-free so it can be imported from
-anywhere (registrations live in view modules; resolution lives in melty).
+anywhere (registrations live in view modules; resolution lives in meltygui).
 """
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional

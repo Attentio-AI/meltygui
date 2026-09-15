@@ -27,13 +27,14 @@ histograms of the reclaimed cycles, sample reprs, and the scheduler's reason)
 in the code editor. Toggles.memory_profile additionally histograms, for the
 boot pass, the whole live graph about to be frozen, appended to
 /tmp/lsd_gc_profile.log. State survives hotswap via the globals().get pattern; the
-end_frame hook line in melty.py is restart-bound (melty never hotswaps).
+end_frame hook line in meltygui.py is restart-bound (meltygui never hotswaps).
 """
 import gc
 import time
 
-from src.lsd.gl_gui.notifications import notify, capture_stack
-from src.lsd.gl_gui.toggles import Toggles
+from meltygui.notifications import notify
+from meltygui.notifications import capture_stack
+from meltygui.toggles import Toggles
 
 _state = globals().get("_state") or {
     "applied": False,       # thresholds currently overridden
@@ -54,7 +55,7 @@ PROFILE_LOG = "/tmp/lsd_gc_profile.log"
 
 
 def _profile_enabled():
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     return bool(Toggles.memory_profile)
 
 
@@ -115,12 +116,13 @@ def _report_dir():
     convention). Created on demand; None if neither is writable."""
     import os
     from pathlib import Path
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     candidates = []
     configured = Toggles.GC.report_dir
     if configured:
         candidates.append(Path(configured).expanduser())
-    candidates.append(Path(__file__).resolve().parents[3] / ".melty" / "gc_reports")
+    from meltygui.paths import cache_root
+    candidates.append(cache_root() / "gc_reports")
     for d in candidates:
         try:
             d.mkdir(parents=True, exist_ok=True)
@@ -135,7 +137,7 @@ def _write_report(label, lines):
     """One file per collect (`gc_<HHMMSS>_<label>.txt`), oldest pruned past
     `Toggles.GC.report_keep`. Returns the path, or None."""
     import re
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     d = _report_dir()
     if d is None:
         return None
@@ -238,7 +240,7 @@ def _thread_report():
     pinning that session's whole graph (see lifecycle.module_is_live)."""
     import sys
     import threading
-    from src.lsd.gl_gui.lifecycle import module_is_live
+    from meltygui.lifecycle import module_is_live
     frames = sys._current_frames()
     lines = ["--- THREADS (STALE = running in a purged prior-session module):"]
     stale = 0
@@ -535,7 +537,7 @@ def _collect(label, live_graph=False, reason=""):
     pass (live_graph=True — the graph about to be frozen, and the boot
     collect's price) and appends everything to PROFILE_LOG."""
     import threading
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     profile = _profile_enabled()
     if not profile and (not Toggles.GC.reports or live_graph):
         # The boot pass (live_graph) walks EVERYTHING tracked; SAVEALL
@@ -649,8 +651,8 @@ def _boot_collect_and_freeze(label, trigger=""):
 def tick():
     """Once per frame from Melty.end_frame (render thread). Cheap when there
     is nothing to do: two attribute reads and a couple of comparisons."""
-    from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.runtime import Melty
+    from meltygui.toggles import Toggles
     if not Toggles.GC.manage:
         if _state["applied"]:
             gc.set_threshold(700, 10, 10)   # stock CPython defaults
@@ -745,7 +747,7 @@ def _wake_in(delay_s):
 
     def _fire():
         try:
-            from src.lsd.gl_gui.utils.glfw_utils import request_render
+            from meltygui.utils.glfw_utils import request_render
             request_render()
         except Exception:
             pass
@@ -762,7 +764,7 @@ def _window_focused(Melty) -> bool:
     if window is None:
         return True
     try:
-        from src.lsd.gl_gui import window_api as glfw
+        import meltygui.window_api as glfw
         return bool(glfw.get_window_attrib(window, glfw.FOCUSED))
     except Exception:
         return True
@@ -787,7 +789,7 @@ def collect_after_run(label="run"):
     timer that calls back here once the burst rests — so the LAST run's
     garbage still retires promptly (that's the VRAM that matters), while a
     burst pays at most one collect per window."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     import threading
     min_s = float(Toggles.GC.post_run_min_s or 0.0)
     now = time.monotonic()
@@ -1087,7 +1089,7 @@ def _oom_cleanup(where):
             print(f"[gc] oom: holder report failed: {e!r}")
     dropped = 0
     try:
-        from src.lsd.gl_gui.view.core_conversion.live_view import release_all_live_stores
+        from meltygui.code.live_view import release_all_live_stores
         dropped = release_all_live_stores(discover=True)
     except Exception as e:
         print(f"[gc] oom: release_all_live_stores failed: {e!r}")
@@ -1133,7 +1135,7 @@ def _oom_cleanup(where):
     except Exception:
         pass
     try:
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()
     except Exception:
         pass

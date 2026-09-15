@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import Any, Callable
 import inspect
 
-from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
+from meltygui.code.path_finder import Pending
+from meltygui.rendering.decorators.core_decoration import defaults
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -42,16 +42,18 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
 # Project root: this file is .../src/lsd/gl_gui/view/core_conversion/address.py
 # → parents[5] is the repo root (the dir that contains `src/`).
-_PROJECT_ROOT = Path(__file__).resolve().parents[5]
+from meltygui.paths import PACKAGE_ROOT
+_PROJECT_ROOT = PACKAGE_ROOT.parent
 
 # Every tree whose code the editor may resolve, edit and hotswap: this
-# checkout itself plus each melty APP's own project (registered by
+# checkout itself and each meltygui APP's own project (registered by
 # app.glfw_window for the window function's file, and by app.boot for
 # the main module - an app outside this repo is otherwise "library source"
 # to every view codec, so its `@glfw_window(tint=...)` never loads as an
 # input source and a header tint property falls through to the draw_state,
 # 09-12). Resolved paths, first registration defines the order.
-_EDITABLE_ROOTS = [_PROJECT_ROOT]
+_EDITABLE_ROOTS = ([_PROJECT_ROOT] if (_PROJECT_ROOT / ".git").exists()
+                   and not {"site-packages", "dist-packages"} & set(_PROJECT_ROOT.parts) else [])
 
 
 def editable_roots():
@@ -108,7 +110,7 @@ _EDITABLE_SOURCE_CACHE = {}
 
 def is_editable_source(source_file) -> bool:
     """True only for source inside a registered project tree (editable_roots:
-    this checkout and every melty app's own project). Library code
+    this checkout and every meltygui app's own project). Library code
     (site-packages / dist-packages / the venv / the stdlib) is read-only to
     the editor, so we never resolve or write to it."""
     key = str(source_file)

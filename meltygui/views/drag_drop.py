@@ -88,13 +88,13 @@ its own code, the immediate-mode way.
 import math
 from dataclasses import dataclass
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from meltygui.toggles import Toggles
+from meltygui.utils.glfw_utils import request_render
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.rendering.decorators.window_decoration import window
 
 # Slots farther than this from the cursor are neither drawn nor droppable.
 DROP_RADIUS = 260.0
@@ -369,14 +369,14 @@ class DragDrop:
         value: what a cross-collection drop delivers (defaults to key).
         Returns None while the item is at rest (or another item drags)."""
         cls.end_drag()   # clean for the previous item, if its caller didn't
-        melty = Core.melty
+        meltygui = Core.melty
         if draw_state is None:
-            stack = melty.draw_state_stack
+            stack = meltygui.draw_state_stack
             draw_state = stack[-1] if stack else None
         if draw_state is None:
             return None
 
-        frame = melty.frame_count
+        frame = meltygui.frame_count
         entry = cls._im_lists.get(draw_state)
         if entry is None or entry[0] != frame:
             entry = (frame, [])
@@ -419,9 +419,9 @@ class DragDrop:
         on_drag calls; horizontal=True gives vertical insertion lines (a tab
         bar / row of items)."""
         cls.end_drag()
-        melty = Core.melty
+        meltygui = Core.melty
         if draw_state is None:
-            stack = melty.draw_state_stack
+            stack = meltygui.draw_state_stack
             draw_state = stack[-1] if stack else None
         if draw_state is None:
             return None
@@ -432,7 +432,7 @@ class DragDrop:
         draw_state._dnd_immediate = True
         slots = []
         entry = cls._im_lists.get(draw_state)
-        if entry is not None and entry[0] == melty.frame_count:
+        if entry is not None and entry[0] == meltygui.frame_count:
             dragged_key = (cls.key if cls.active and cls.immediate
                            and cls.source_ds is draw_state else _HOME)
             last = None
@@ -461,14 +461,14 @@ class DragDrop:
         list at the same never-stencil-masked top channel the slot lines
         use, and set the cursor to the ghost's top-left — cursor minus grab
         offset, the same glue as the floating-window path."""
-        melty = Core.melty
+        meltygui = Core.melty
         mx, my = imgui.get_io().mouse_pos
         gx, gy = mx - cls.grab_offset[0], my - cls.grab_offset[1]
         if cls._ghost_saved is None:
             cls._ghost_saved = tuple(imgui.get_cursor_screen_pos())
         overlay = imgui.get_overlay_draw_list()
-        if melty._overlay_channels_active:
-            overlay.channels_set_current(melty.max_layer - 5)
+        if meltygui._overlay_channels_active:
+            overlay.channels_set_current(meltygui.max_layer - 5)
         imgui.set_cursor_screen_pos((gx, gy))
         w, h = cls.size
         return DragInfo(gx, gy, w or 0.0, h or 0.0, overlay)
@@ -538,7 +538,7 @@ class DragDrop:
         w, h = cls.size
         if not w or not h:
             return
-        melty = Core.melty
+        meltygui = Core.melty
         # The bg rect comes from the abs position captured at pickup (the
         # item's inline slot) because the cursor here, mid-frame re-render,
         # proved unreliable. The slot doesn't move during the drag (that's
@@ -552,20 +552,20 @@ class DragDrop:
             # (children run one depth deeper); match it, then restore the
             # original channel.
 
-            if melty.channels_split:
+            if meltygui.channels_split:
                 draw_list = imgui.get_window_draw_list()
                 draw_list.channels_set_current(
-                    max(0, min(melty.get_channel() - 3, melty.max_depth - 1)))
+                    max(0, min(meltygui.get_channel() - 3, meltygui.max_depth - 1)))
 
             imgui.get_window_draw_list().add_rect_filled(
                 x, y, x + w, y + h, pack_color(1.0, 1.0, 1.0, 0.05),
                 rounding=5.0)
             draw_bg(bypass=True, left=x, top=y, width=w, height=h - 2,
-                    rounding=5.0, bg_offset=1, depth=melty.shadow_depth,
+                    rounding=5.0, bg_offset=1, depth=meltygui.shadow_depth,
                     opacity=1.0, nested_bg=True, style_manager=style_manager)
-            if melty.channels_split:
+            if meltygui.channels_split:
                 imgui.get_window_draw_list().channels_set_current(
-                    max(0, min(melty.get_channel(), melty.max_depth - 1)))
+                    max(0, min(meltygui.get_channel(), meltygui.max_depth - 1)))
         else:
             imgui.get_window_draw_list().add_rect(
                 x + 2, y, x + w - 2, y + h - 2,
@@ -601,12 +601,12 @@ class DragDrop:
         if not w or not h:
             return
         x, y = cls.home_rect
-        melty = Core.melty
-        sm = melty.style_manager
+        meltygui = Core.melty
+        sm = meltygui.style_manager
         if sm is not None:
-            from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
+            from meltygui.views.values import draw_bg
             draw_bg(bypass=True, left=x, top=y, width=w, height=h - 2,
-                    rounding=5.0, bg_offset=1, depth=melty.shadow_depth,
+                    rounding=5.0, bg_offset=1, depth=meltygui.shadow_depth,
                     opacity=1.0, nested_bg=True, style_manager=sm)
         else:
             imgui.get_window_draw_list().add_rect(
@@ -618,14 +618,14 @@ class DragDrop:
 
     @classmethod
     def frame_update(cls):
-        melty = Core.melty
+        meltygui = Core.melty
         # A body that opened a ghost and never closed it can't be repaired
         # here (popping its window outside the window would unbalance imgui's
         # stack) - just drop the record so the next drag starts clean.
         cls._ghost_saved = None
         if not cls.active:
             cls._housekeep()
-            cls._watch_for_pickup(melty)
+            cls._watch_for_pickup(meltygui)
             if not cls.active:
                 return
 
@@ -645,7 +645,7 @@ class DragDrop:
         cls._draw_slots()
         cls._draw_home()
 
-        if not melty.event_handler.is_down("left_mouse"):
+        if not meltygui.event_handler.is_down("left_mouse"):
             # _HOME (or None) means "drop back at the home" - no reorder.
             if cls.nearest is not None and cls.nearest is not _HOME:
                 cls._commit()
@@ -666,7 +666,7 @@ class DragDrop:
         # The only per-frame work is keeping it registered with its layer,
         # usually done by the deferring inline call in the source
         # collection's body, which a clean (blitted) collection rightly skips.
-        cls._keep_alive(melty)
+        cls._keep_alive(meltygui)
 
     @classmethod
     def _housekeep(cls):
@@ -683,11 +683,11 @@ class DragDrop:
             cls._im_lists.clear()
 
     @classmethod
-    def _keep_alive(cls, melty):
+    def _keep_alive(cls, meltygui):
         """Re-register the dragged window on its layer for this frame's
         dispatch when the source collection's body didn't run to defer it.
         Runs from end_frame BEFORE the layer loop."""
-        layers = melty.layers
+        layers = meltygui.layers
         if not layers:
             return
         item = cls.item_ds
@@ -706,19 +706,19 @@ class DragDrop:
     # ── internals ────────────────────────────────────────────────────────
 
     @classmethod
-    def _watch_for_pickup(cls, melty):
+    def _watch_for_pickup(cls, meltygui):
         """Find an armed header drag among this frame's events and pick the
         item up. Events are delivered to the captured view id for the whole
         gesture even when the view itself stopped re-rendering, so reading
         them here (not in the wrapper) survives cache-skipped frames."""
-        cache = getattr(melty, "cache", None)
+        cache = getattr(meltygui, "cache", None)
         if cache is None:
             return
         # An active imgui widget (e.g. a drag_float living in a header) owns
         # the gesture - don't also pick the item up.
-        if melty.imgui_active or melty.imgui_popup_open:
+        if meltygui.imgui_active or meltygui.imgui_popup_open:
             return
-        for view_id, events in melty.events.items():
+        for view_id, events in meltygui.events.items():
             if not isinstance(view_id, str):
                 continue
             if view_id.endswith(_VIEW_ID_SUFFIX):
@@ -832,7 +832,7 @@ class DragDrop:
 
     @classmethod
     def _compute_slots(cls, mx, my):
-        melty = Core.melty
+        meltygui = Core.melty
         slots = []
         r = DROP_RADIUS
         seen = set()
@@ -851,11 +851,11 @@ class DragDrop:
         # vertical slot lines snap to where the cursor is along the bar, not
         # to wherever the view's left edge happens to float.
         my = my - cls.grab_offset[1]
-        for rid in melty._bvh.intersection((mx - r, my - r, mx + r, my + r)):
+        for rid in meltygui._bvh.intersection((mx - r, my - r, mx + r, my + r)):
             if rid in seen:
                 continue
             seen.add(rid)
-            ds = melty._bvh_id_to_ds.get(rid)
+            ds = meltygui._bvh_id_to_ds.get(rid)
             if ds is None or ds.closed or ds.abs_closed:
                 continue
             if cls._under_hidden_ancestor(ds):
@@ -1141,14 +1141,14 @@ class DragDrop:
     def _draw_slots(cls):
         if not cls.slots:
             return
-        melty = Core.melty
+        meltygui = Core.melty
         overlay = imgui.get_overlay_draw_list()
-        if melty._overlay_channels_active:
+        if meltygui._overlay_channels_active:
             # The overlay list is split into max_layer channels; max_layer - 1
             # is the global top channel, the only one the split renderer never
             # stencil-masks on higher windows (window_index can pick any
             # mid channel, which is why the lines vanished on busy windows).
-            overlay.channels_set_current(melty.max_layer - 5)
+            overlay.channels_set_current(meltygui.max_layer - 5)
         # The lines ride the global top overlay channel (never stencil-masked),
         # which would also draw them over the floating dragged window: carve
         # its rect out of every line by hand. Derive the rect from the live
@@ -1165,7 +1165,7 @@ class DragDrop:
             # Color each line from its own collection's stashed tint - the
             # same brightened-tint helper the swoosh and selection highlights
             # use, so slots read as part of the window they'd drop into.
-            rgb = melty._highlight_rgb(_ds.current_tint)
+            rgb = meltygui._highlight_rgb(_ds.current_tint)
             # Opacity: nearest = the active drop zone at full strength (it
             # snaps between lines); the rest ease in from zero at the drag
             # edge; everything rides the pickup reveal (slot_alpha).
@@ -1242,13 +1242,13 @@ class DragDrop:
         w, h = cls.size
         if not w or not h:
             return
-        melty = Core.melty
+        meltygui = Core.melty
         overlay = imgui.get_overlay_draw_list()
-        if melty._overlay_channels_active:
-            overlay.channels_set_current(melty.max_layer - 5)
+        if meltygui._overlay_channels_active:
+            overlay.channels_set_current(meltygui.max_layer - 5)
         x, y = cls.home_rect
         src = cls.source_ds
-        rgb = melty._highlight_rgb(src.current_tint) if src is not None else (1.0, 1.0, 1.0)
+        rgb = meltygui._highlight_rgb(src.current_tint) if src is not None else (1.0, 1.0, 1.0)
         active = cls.nearest is _HOME
         col = pack_color(*rgb, cls.home_alpha(active))
         thickness = 1.75 if active else 1.5
@@ -1294,7 +1294,7 @@ class DragDrop:
         """Register the reorder with Melty.dnd_requests — core_render's
         wrapper tail intercepts the target draw_state's next return and
         reports (True, reordered_collection), undo-manager style."""
-        melty = Core.melty
+        meltygui = Core.melty
         _dist, _a0, _a1, _cross, target_ds, insert_idx, _vert = cls.nearest
         src_ds, key = cls.source_ds, cls.key
         target_im = getattr(target_ds, "_dnd_immediate", False)
@@ -1304,7 +1304,7 @@ class DragDrop:
                 cls._queue_drop(src_ds, DropEvent("reorder", key, cls.value,
                                                   cls.im_index, insert_idx))
             else:
-                melty.dnd_requests[src_ds] = Reorder(key, insert_idx)
+                meltygui.dnd_requests[src_ds] = Reorder(key, insert_idx)
                 cls._wake(src_ds)
         else:
             if cls.immediate:
@@ -1323,13 +1323,13 @@ class DragDrop:
                     value = src[key]
                 else:
                     return
-                melty.dnd_requests[src_ds] = Remove(key)
+                meltygui.dnd_requests[src_ds] = Remove(key)
                 cls._wake(src_ds)
             if target_im:
                 cls._queue_drop(target_ds, DropEvent("insert", key, value,
                                                      insert_index=insert_idx))
             else:
-                melty.dnd_requests[target_ds] = Insert(key, value, insert_idx)
+                meltygui.dnd_requests[target_ds] = Insert(key, value, insert_idx)
                 cls._wake(target_ds)
         request_render()
 

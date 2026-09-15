@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 
-from src.lsd.gl_gui.utils.custom_views import print_stack_trace
+from meltygui.utils.custom_views import print_stack_trace
 
 def find_repo_root(start_path: Path | str = None) -> Path:
     # Check if __file is defined
@@ -81,41 +81,21 @@ class ClassUtility:
         self.modules_imported = set()
         self.root = None
         self.initialized_modules = {}
+        self._module_count = -1
 
     def initialize_class_names(self, root=None):
-        if self.root is not None:
-            root = self.root
-
-        if root is not None:
-            self.root = root
-
-        if root == "" or root is None:
-            package_name = ""
-        else:
-            package_name = f"{root}"
-
-        if package_name in self.modules_imported:
+        if self.class_names is not None and self._module_count == len(sys.modules):
             return
-
-        self.modules_imported.add(package_name)
-
-        if self.class_names is None:
-            self.class_names = {}
-
-        repo_root = find_repo_root()
-        # Check if repo_root/root exists
-
-        root_dir = f"{find_repo_root()}/{root}"
-        if not os.path.exists(root_dir):
-            root_dir = f"{repo_root}/src/{root}"
-
-        if root is None:
-            root_dir = f"{repo_root}/src/"
-
-        class_names_list = ClassUtility().find_all_classes(str(root_dir), package_name)
-        for the_class_name, the_class_path in class_names_list:
-            self.class_names[the_class_name] = the_class_path
-
+        self._module_count = len(sys.modules)
+        self.class_names = {}
+        for module_name, module in list(sys.modules.items()):
+            if module is None:
+                continue
+            for name, value in list(vars(module).items()):
+                if isinstance(value, type) and value.__module__ == module_name:
+                    self.class_names.setdefault(name, f"{module_name}.{name}")
+                    for nested_path, nested in find_nested_classes(value, f"{module_name}.{name}"):
+                        self.class_names.setdefault('.'.join(nested_path.split('.')[-2:]), nested_path)
 
 
     @staticmethod
@@ -142,14 +122,6 @@ class ClassUtility:
             # Print stack
             print_stack_trace()
             return classes
-
-        # Make sure the root directory is in the Python path
-        if root_dir not in sys.path:
-            sys.path.insert(0, root_dir)
-            # Also add parent directory to handle package imports
-            parent_dir = os.path.dirname(root_dir)
-            if parent_dir not in sys.path:
-                sys.path.insert(0, parent_dir)
 
         # Walk through all Python files in the directory structure
         for dirpath, dirnames, filenames in os.walk(root_dir):

@@ -24,12 +24,12 @@ does. Font Awesome icons are NOT monospaced: each is drawn in its own cell.
 """
 import bisect
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 
-from src.lsd.gl_gui.fonts import Font
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.toggles import Toggles
+from meltygui.fonts import Font
+from meltygui.runtime import Melty
+from meltygui.toggles import Toggles
 
 
 def push_code_font(font=Font.FONTAWESOME_MONO_19):
@@ -102,8 +102,11 @@ def draw_code_line_fast(draw_list, x, y, text, char_w, line_h, max_width=None,
     fade, `Toggles.TextEditor.diff_preview_alpha`) — an EMPTY list dims the
     whole line, None dims nothing. Washes never dim. Returns the painted
     width in pixels."""
-    from src.lsd.gl_gui.view.core_views.text_editor import (
-        COLORS, _tokenize_from, _bg_adjust, _mix_packed, _fade_packed)
+    from meltygui.editor.text import COLORS
+    from meltygui.editor.text import _tokenize_from
+    from meltygui.editor.text import _bg_adjust
+    from meltygui.editor.text import _mix_packed
+    from meltygui.editor.text import _fade_packed
     if max_width is not None:
         cells = max(0, int(max_width // char_w))
         if len(text) > cells:
@@ -239,8 +242,8 @@ class CodeLineTints:
         return block_tint, by_line.get(bl, [])
 
     def _scan(self, path, text, lo):
-        from src.lsd.gl_gui.view.core_views.roster_tints import collect_def_tints
-        from src.lsd.gl_gui.view.core_views.text_editor import _line_starts
+        from meltygui.editor.roster_tints import collect_def_tints
+        from meltygui.editor.text import _line_starts
         starts = _line_starts(text)
         hi = min(lo + self.CHUNK - 1, len(starts) - 1)
         try:

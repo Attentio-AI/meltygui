@@ -37,22 +37,27 @@ import sys
 import time
 import weakref
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
-from imgui.core import _DrawList
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
+from meltygui_imgui.core import _DrawList
 
-from src.lsd.gl_gui.model.core_model.draw_state import Anchor, Pin
-from src.lsd.gl_gui.fonts import Font
-from src.lsd.gl_gui.modes import Modes
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_conversion.live_view import (
-    live_values_for, label_for, site_for_line, watch, install_builtin,
-    auto_dim_names_for, RerunHint)
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.headers import draw_header
-from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
-from src.lsd.gl_gui.view.core_views import live_usage
+from meltygui.state.draw_state import Anchor
+from meltygui.state.draw_state import Pin
+from meltygui.fonts import Font
+from meltygui.modes import Modes
+from meltygui.rendering.core import render_func
+from meltygui.code.live_view import live_values_for
+from meltygui.code.live_view import label_for
+from meltygui.code.live_view import site_for_line
+from meltygui.code.live_view import watch
+from meltygui.code.live_view import install_builtin
+from meltygui.code.live_view import auto_dim_names_for
+from meltygui.code.live_view import RerunHint
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.views.headers import draw_header
+from meltygui.views.blit_offscreen import add_shadow
+import meltygui.editor.live_usage as live_usage
 
 # The seamless path: any app can call live_view() with no import (like
 # breakpoint()). Installed when the editor side loads - i.e. every studio
@@ -66,8 +71,8 @@ def install_token_views(token_views):
     text_editor right after DEFAULT_TOKEN_VIEWS is defined). Order matters:
     CallParse IS-A GeneralParse and the walk takes the first matching type, so
     the call-token entry must precede the root snapshot entry."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-        CallParse, GeneralParse)
+    from meltygui.code.libcst_conversion import CallParse
+    from meltygui.code.libcst_conversion import GeneralParse
     token_views[CallParse] = {"renderer": draw_live_view_overlay,
                               "char_width": None}
     token_views[GeneralParse] = {"renderer": draw_snapshot_overlay,
@@ -490,7 +495,7 @@ def _pill_tint(editor_ds, line0, symbol=None, token_tint=None):
         if not isinstance(path, str):
             return None
     if _FILE_TINT_FN is None:
-        from src.lsd.gl_gui.view.core_views.text_editor import _uj_file_tint
+        from meltygui.editor.text import _uj_file_tint
         _FILE_TINT_FN = _uj_file_tint
     return _FILE_TINT_FN(path)
 
@@ -615,8 +620,7 @@ def _build_owner_index(scope_node):
     walk _override_owner does, done ONCE: a marker's first render used to
     BFS the whole scope per marker (5.5k markers × a 5.6k-line def = 15 s
     on a diff expand, 09-01). First node in BFS order wins, as before."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-        _is_block_key)
+    from meltygui.code.libcst_conversion import _is_block_key
     index = {}
     queue = [scope_node]
     for node in queue:
@@ -668,8 +672,7 @@ def _override_owner(scope_node, lookup_key, index_host=None, def_key=None,
     if index_host is not None and def_key is not None and src is not None:
         return _owner_index(index_host, scope_node, def_key, src).get(
             lookup_key, scope_node)
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-        _is_block_key)
+    from meltygui.code.libcst_conversion import _is_block_key
     queue = [scope_node]
     for node in queue:
         if not isinstance(node, dict):
@@ -693,7 +696,7 @@ def _is_funcdef_node(node):
     snapshot overlay never drew a single live view (08-25)."""
     if not isinstance(node, dict):
         return False
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import FunctionParse
+    from meltygui.code.libcst_conversion import FunctionParse
     if isinstance(node, FunctionParse):
         return True
     return type(node.get("__cst__")).__name__ == "FunctionDef"
@@ -1029,7 +1032,7 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     overlay pass calls it with raw screen coords, no render_func wrapper)."""
     if getattr(node, "func_name", None) != "live_view":
         return
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     if not Toggles.TextEditor.enable_live_view:
         return
     # Viewport cull FIRST: the parse walk visits every node in the buffer, not
@@ -1418,7 +1421,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # None so the next value auto-opens it.
         win_ds.closed = True
         ds._lv_open = None
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()
     if (getattr(ds, "_lv_open", None) is None and captured and auto_open
             and inline_text is None):
@@ -1491,7 +1494,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     # SEEN by a running body - a cached tile never re-tests hover); the
     # cursor mode doesn't: the caret only moves on frames the editor
     # renders, and the cursor_inside edge below invalidates the tile.
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     hover_mode = bool(Toggles.TextEditor.live_hover_preview)
     _raw_ci = bool(cursor_inside) and not hover_mode
     # Dismissed latch: an X-closed cursor preview stays dismissed until the
@@ -1522,7 +1525,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     preview_show = (captured and not open_now and inline_text is None
                     and ((hovered and hover_mode) or cursor_inside))
     if preview_show and hover_mode:
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         ds.invalidate()
         request_render()
 
@@ -1629,7 +1632,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # Full (per-publish) watch once a window exists so the value streams
         # in - the first_only call above only flips the box green.
         watch(store_obj, key_path, ds)
-        from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+        from meltygui.views.values import draw_any
         # Named by the code line's STABLE name - the marker's own name (raw,
         # line number stripped), never the full line-keyed path and never
         # draw_state.line: the name hashes into the unique ID, so a line
@@ -1721,7 +1724,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         win_ds._lv_key_path = key_path
         # Auto loop dims for the REPLAY path: the deferred root_draw_states
         # dispatch re-splats the site's raw `# [...]` comment over the stored
-        # kwargs (melty.py, "Live-view comment re-splat"), which would clobber
+        # kwargs (meltygui.py, "Live-view comment re-splat"), and would clobber
         # the merged dim_names above with the comment's un-merged list. Stamp
         # the raw names and the value's dim count so the replay can redo the
         # same loop + dim<i> padding.
@@ -1759,12 +1762,12 @@ def draw_live_view_marker(input_value=None, draw_state=None,
             # stays, the marker stays green), severing the marker/window
             # pins so nothing references the value any more.
             try:
-                from src.lsd.gl_gui.view.core_conversion.live_view import park_rerun_hint
+                from meltygui.code.live_view import park_rerun_hint
                 park_rerun_hint(store_obj, key_path)
             except Exception as e:
                 print(f"live_view: park hint for {key_path} failed: {e!r}")
             try:
-                from src.lsd.gl_gui.gc_manager import release_cuda_cache_soon
+                from meltygui.gc_manager import release_cuda_cache_soon
                 release_cuda_cache_soon(label="live window close")
             except Exception:
                 pass
@@ -1795,7 +1798,7 @@ def _sever_value_pins(window_ds):
     generation can die, yet draw_voxels' hold-last-frame path can still
     read source_shape/mapping off it to keep the slice sliders up. The FBO
     / last image / GL-path textures are display-GPU objects and stay."""
-    from src.lsd.gl_gui.gl_state import GLState
+    from meltygui.gl_state import GLState
     for state in GLState.states_under(window_ds):
         cv = state.peek("cuda_view")
         if cv is not None:
@@ -1839,7 +1842,7 @@ def release_live_value(ds, gl=True, keep_image=False):
         targets.extend(ds.descendants(max_depth=8))
     except Exception:
         pass
-    from src.lsd.gl_gui.view.core_views.core_render import release_input_refs
+    from meltygui.rendering.core import release_input_refs
     for d in targets:
         # The wrapper owns more refs than the obvious two: the offscreen
         # blit stamps `_input_value_cache` (mark_start_offscreen) and the
@@ -1863,7 +1866,7 @@ def release_live_value(ds, gl=True, keep_image=False):
                     kw[k] = None
     if gl:
         try:
-            from src.lsd.gl_gui.gl_state import GLState
+            from meltygui.gl_state import GLState
             if keep_image:
                 _sever_value_pins(ds)
             else:
@@ -1881,14 +1884,14 @@ def _drop_captured_value(store_obj, key_path):
     if store_obj is None or key_path is None:
         return
     try:
-        from src.lsd.gl_gui.view.core_conversion.live_view import park_rerun_hint
+        from meltygui.code.live_view import park_rerun_hint
         park_rerun_hint(store_obj, key_path)
     except Exception as e:
         print(f"live_view: park hint for {key_path} failed: {e!r}")
     # The tensor is unreferenced now; hand its blocks back to the system so
     # the VRAM actually drops (allocator cache → empty_cache), off-thread.
     try:
-        from src.lsd.gl_gui.gc_manager import release_cuda_cache_soon
+        from meltygui.gc_manager import release_cuda_cache_soon
         release_cuda_cache_soon(label="live view close")
     except Exception:
         pass
@@ -1899,8 +1902,7 @@ def _auto_run_on_user_open(editor_ds, store_obj):
     def widget recompiles + runs so the window fills (text_editor.
     fnrun_auto_run_on_open — coalesced there). Never raises."""
     try:
-        from src.lsd.gl_gui.view.core_views.text_editor import (
-            fnrun_auto_run_on_open)
+        from meltygui.editor.text import fnrun_auto_run_on_open
         fnrun_auto_run_on_open(editor_ds, store_obj)
     except Exception as e:
         print(f"live_view: auto-run on open failed: {e!r}")
@@ -1957,7 +1959,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     root-guarded version of this overlay silently never ran."""
     if not _is_funcdef_node(node) or span is None:
         return
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     live_store = kwargs.get("live_store")
     if live_store is None and not Toggles.TextEditor.enable_live_view:
         return
@@ -1969,8 +1971,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         # was built for: name match (rules out enclosing defs, whose spans
         # also contain the target's lines) + the store's def line inside
         # this node's span (rules out unrelated same-named defs).
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-            parse_def_name)
+        from meltygui.code.libcst_conversion import parse_def_name
         _def_line = getattr(live_store, "__def_line__", None)
         if (_def_line is None
                 or parse_def_name(node) != getattr(live_store, "__name__", None)
@@ -2378,7 +2379,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                 # its window closed/missing).
                 if (getattr(draw_state, "_lv_full_overlay_until", 0)
                         > Core.melty.frame_count):
-                    from src.lsd.gl_gui.perf_trace import trace as _ptr
+                    from meltygui.perf_trace import trace as _ptr
                     _mreg2 = getattr(draw_state, "_lv_marker_ds", None) or {}
                     _mk2 = (f"lvs::{fn.__qualname__}::"
                             f"{_skey_names.get(key_path) or _stable_key_name(key_path, _snap_vals)}")
@@ -2458,7 +2459,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                     _pills[key_path] = _pill
                 if _created == _budget:
                     _created += 1
-                    from src.lsd.gl_gui.utils.glfw_utils import request_render
+                    from meltygui.utils.glfw_utils import request_render
                     draw_state.invalidate()
                     request_render()
                 continue
@@ -2536,7 +2537,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     # def, culled=off-viewport, idle=fast-id skips, drawn=full wrapper calls).
     _soms = (time.perf_counter() - _sot0) * 1000.0
     if _soms >= 2.0:
-        from src.lsd.gl_gui.perf_trace import trace as _sotrace
+        from meltygui.perf_trace import trace as _sotrace
         _sotrace("snapshot_overlay", fn=getattr(fn, "__qualname__", "?"),
                  ms=round(_soms, 1), keys=_soc[0], culled=_soc[1],
                  idle=_soc[2], drawn=_soc[3])
@@ -2566,7 +2567,7 @@ def _draw_usage_labels(draw_state, fn, node, span, source_lines, snap_vals,
     the overlay pass. No caret/selection suppression here: the code text
     stays fully visible and closing the gap under an active caret would
     shift the line mid-edit."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     usages_on = bool(Toggles.TextEditor.live_inline_usages)
     if not snap_vals or (not usages_on and not binding_pills):
         return
@@ -2776,7 +2777,7 @@ def _stamp_and_paint(draw_state, fn, span, occurrences, bindings, snap_vals,
         # its cache on the stamp).
         draw_state._lv_trail_gen = getattr(draw_state, "_lv_trail_gen", 0) + 1
         draw_state.invalidate()
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()
     # Paint into the gaps the CURRENT layout reserved (stamped back by
     # draw_text's _window). A gap not laid out yet - first frame after a
@@ -2863,8 +2864,7 @@ def _node_owns_function(node, fn, span, line_offset=0):
     matches and fn's first line (its top decorator, so it may sit a few
     lines ABOVE the span's def line) lies inside the span's line range. A
     closure's node fails this for the enclosing function it resolved to."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-        parse_def_name)
+    from meltygui.code.libcst_conversion import parse_def_name
     try:
         inner = inspect.unwrap(fn)
     except Exception:
@@ -2884,8 +2884,7 @@ def _node_owns_function(node, fn, span, line_offset=0):
 def _scope_function(filename, def_line):
     """The live function object for a def at an absolute file line — the same
     resolver capture uses, so the store read here is the store written to."""
-    from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-        _enclosing_function)
+    from meltygui.code.chain_converters import _enclosing_function
     try:
         return _enclosing_function(filename, def_line + 1)
     except Exception:
@@ -3043,8 +3042,7 @@ def _run_proxy(fn):
     proxy = _proxies.get(fn)
     if proxy is None:
         def proxy(**kw):
-            from src.lsd.gl_gui.view.core_conversion.live_instrument import (
-                run_instrumented)
+            from meltygui.code.live_instrument import run_instrumented
             return run_instrumented(fn, **kw)
         proxy.__name__ = fn.__name__
         proxy.__qualname__ = fn.__qualname__
@@ -3053,41 +3051,10 @@ def _run_proxy(fn):
     return proxy
 
 
-def run_forward_pass(use_gen_pass=True):
-    """Trigger the model's full forward pass. As a live lab this gets the
-    whole streamlined loop: opening the window runs it, saving an edit (to
-    THIS function or, more usefully, to any model code you've dropped
-    live_view() calls into) re-runs it, and every captured value lands in an
-    anchored window. No-op until a forward pass + prompt are selected."""
-    from src.lsd.train.lsd_train import LSD
-    LSD.full_forward_pass(root=Core.melty.vis.root, vis=Core.melty.vis,
-                          use_gen_pass=use_gen_pass)
 
 
-@window(initial={"width": 350, "height": 540}, tint=(0.16, 0.173, 0.19))
-@render_func(tint=(0.40, 0.53, 0.78), auto_resize=False)
-def live_view_forward(input_value=None, draw_state=None, **kwargs):
-    from src.lsd.train.lsd_train import LSD
-    from src.lsd.gl_gui.view.mode import Mode
-    # NEW_CODE = the full two-pane code_file_io display: the draw_collection
-    # structured (code_dict) pane AND the live-overlay text pane side by side.
-    draw_function_live(LSD.full_forward_pass_live, name="run_forward_pass runner",
-                       source_mode=Mode.NEW_CODE)
 
 
-@window(initial={"width": 350, "height": 540}, tint=(0.132, 0.159, 0.18))
-@render_func(tint=(0.36, 0.62, 0.66), auto_resize=False)
-def attention_walkthrough(input_value=None, draw_state=None, **kwargs):
-    """The minimal real forward pass over the selected model (see
-    src/lsd/train/attention_walkthrough.py) as a live lab: Run executes the
-    instrumented twin, and the per-layer loop accumulates every tensor into
-    a leading `l_idx` stack — `scores` is the (l_idx, head, query, key)
-    attention volume this window exists for."""
-    from src.lsd.train.attention_walkthrough import attention_walkthrough_pass
-    from src.lsd.gl_gui.view.mode import Mode
-    draw_function_live(attention_walkthrough_pass,
-                       name="attention_walkthrough runner",
-                       source_mode=Mode.NEW_CODE)
 
 
 def request_run(lab_ds):
@@ -3103,7 +3070,7 @@ def request_run(lab_ds):
     subscriptions lapse under a cached ancestor, so the root re-routes via
     BVH). At most one half fires per press — the body's blocking sub stops
     the chain before the root's."""
-    from src.lsd.gl_gui.utils.glfw_utils import request_render
+    from meltygui.utils.glfw_utils import request_render
     for d in lab_ds.descendants(max_depth=8):
         if str(getattr(d, 'name', '')).endswith(" runner"):
             d.misc["_run_requested"] = True
@@ -3166,11 +3133,11 @@ def draw_function_live(input_value, draw_state=None, unique=None,
     if draw_state.on_action("ctrl_enter_down", priority_delta=1024):
         request_run(draw_state)
 
-    from src.lsd.gl_gui.view.core_views.new_core_view import (
-        draw_function, draw_any)
-    from src.lsd.gl_gui.view.core_views.columns import (
-        ColumnLayout, MIN_ROW_HEIGHT)
-    from src.lsd.gl_gui.view.mode import Mode
+    from meltygui.views.values import draw_function
+    from meltygui.views.values import draw_any
+    from meltygui.views.columns import ColumnLayout
+    from meltygui.views.columns import MIN_ROW_HEIGHT
+    from meltygui.debug.mode import Mode
     # Runner | source: a shared edge system (ColumnLayout): the divider is
     # a draggable line in the window's flat collision solve, and each column
     # manages its own height - no _columns_top capture to race with

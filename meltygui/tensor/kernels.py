@@ -672,7 +672,8 @@ extern "C" __global__ void bake_floor(
 
 def available():
     try:
-        import pycuda.driver  # noqa: F401
+        import meltygui_pycuda.driver
+        import meltygui_pycuda as pycuda  # noqa: F401
         return True
     except Exception:
         return False
@@ -683,7 +684,7 @@ def _context_for(dev_index):
     context torch uses there, so torch pointers are valid in it."""
     ctx = _CONTEXTS.get(dev_index)
     if ctx is None:
-        import pycuda.driver as cuda
+        import meltygui_pycuda.driver as cuda
         cuda.init()
         ctx = cuda.Device(int(dev_index)).retain_primary_context()
         _CONTEXTS[dev_index] = ctx
@@ -699,7 +700,7 @@ class _Pushed:
         self.pushed = False
 
     def __enter__(self):
-        import pycuda.driver as cuda
+        import meltygui_pycuda.driver as cuda
         cuda.init()                      # idempotent; get_current needs it
         cur = cuda.Context.get_current()
         ctx = _context_for(self.dev_index)
@@ -710,7 +711,7 @@ class _Pushed:
 
     def __exit__(self, *exc):
         if self.pushed:
-            import pycuda.driver as cuda
+            import meltygui_pycuda.driver as cuda
             cuda.Context.pop()
         return False
 
@@ -731,8 +732,8 @@ def _kernel_for(dev_index, name="march"):
     the named kernel. Must be called with that device's context pushed."""
     fns = _KERNELS.get(dev_index)
     if not isinstance(fns, dict) or fns.get("__source__") != hash(KERNEL):
-        import pycuda.driver as cuda
-        from pycuda.compiler import SourceModule
+        import meltygui_pycuda.driver as cuda
+        from meltygui_pycuda.compiler import SourceModule
         cc = cuda.Device(int(dev_index)).compute_capability()
         mod = SourceModule(KERNEL, no_extern_c=True, arch="sm_%d%d" % cc,
                            options=["-O3"] + _host_compiler_flags())

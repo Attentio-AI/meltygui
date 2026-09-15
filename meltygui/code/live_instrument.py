@@ -33,8 +33,10 @@ import textwrap
 import weakref
 from pathlib import Path
 
-from src.lsd.gl_gui.view.core_conversion.live_view import (
-    live_view, twin_snap, twin_ret, _loop_name)
+from meltygui.code.live_view import live_view
+from meltygui.code.live_view import twin_snap
+from meltygui.code.live_view import twin_ret
+from meltygui.code.live_view import _loop_name
 
 # id(original __code__) -> ((source mtime, pending gen), twin function |
 # original on fallback). Identity-keyed for the same reason as
@@ -70,7 +72,7 @@ def run_instrumented(fn, *args, **kwargs):
     try:
         if twin is target:
             return fn(*args, **kwargs)
-        from src.lsd.gl_gui.view.core_conversion.live_view import run_capture
+        from meltygui.code.live_view import run_capture
         # Fresh run, fresh exit line: a raise (or an edit that removed the
         # return the last run took) must not leave a stale green line, and a
         # now-passing run must not keep the previous failure's red one.
@@ -87,7 +89,7 @@ def run_instrumented(fn, *args, **kwargs):
                 # An out-of-memory run leaves the live set holding onto VRAM;
                 # arm the deferred sweep (runs after these frames unwind).
                 try:
-                    from src.lsd.gl_gui.gc_manager import respond_to_cuda_oom
+                    from meltygui.gc_manager import respond_to_cuda_oom
                     respond_to_cuda_oom(e, where=getattr(target, "__name__", "run"))
                 except Exception:
                     pass
@@ -100,7 +102,7 @@ def run_instrumented(fn, *args, **kwargs):
         # their CUDA tensors until an explicit collect. This runs on the
         # run's worker thread, win or lose - the garbage exists either way.ps
         # try:
-        #     from src.lsd.gl_gui.gc_manager import collect_after_run
+        #     from meltygui.gc_manager import collect_after_run
         #     collect_after_run(getattr(target, "__name__", "run"))
         # except Exception:
         #     pass
@@ -116,8 +118,8 @@ def _stamp_error_line(target, twin, exc):
     error markers). An error that never entered the twin (bad args, etc.)
     stamps nothing."""
     try:
-        from src.lsd.gl_gui.view.core_conversion.live_view import (
-            stamp_run_marker, _line_text_at)
+        from meltygui.code.live_view import stamp_run_marker
+        from meltygui.code.live_view import _line_text_at
         code = getattr(twin, "__code__", None)
         lineno = None
         tb = exc.__traceback__
@@ -177,7 +179,7 @@ def _pending_gen(path):
     path value (new_converters does the same dual lookup); only monotonicity
     matters."""
     try:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         p = Path(path)
         gen = PendingSave.pending_gen_for(p)
         try:
@@ -201,7 +203,7 @@ def _pending_state(path):
     if not gen:
         return 0, None
     try:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         return gen, PendingSave.current_file_text(Path(path))
     except Exception:
         return gen, None
@@ -213,7 +215,7 @@ def _delta_above(path, lineno):
     co_firstlineno invariant) to positions in the pending text; the same sum
     text_editor's _pending_line_delta computes, without its buffer-cache
     plumbing."""
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    from meltygui.editor.pending_save import PendingSave
     try:
         rp = Path(path).resolve()
     except OSError:

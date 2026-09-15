@@ -2,7 +2,7 @@
 
 Every desktop lets the user choose the title-bar buttons (drop the maximize
 button, put the controls on the left, ...), and GTK / Qt apps that draw
-their own header bars follow that setting. melty's frameless windows draw
+their own header bars follow that setting. meltygui's frameless windows draw
 their own controls too (titlebar.py), so they read the same setting:
 
     GNOME, Budgie, Hyprland / sway / ... with a dconf profile:
@@ -24,7 +24,7 @@ is all LEFT buttons (mutter's and GTK's rule); other tokens (appmenu, menu,
 spacer, icon) are dropped.
 
 Stdlib only, so app.py's boot can start the probe (`start_probe`) before
-melty's heavy imports land: the reads run on a daemon thread (a gsettings
+meltygui's heavy imports land: the reads run on a daemon thread (a gsettings
 call is a ~10 ms subprocess), `system_layout()` answers DEFAULT until the
 first probe lands, and a layout change asks for a frame. `refresh()` re-reads
 after a focus gain, `refresh_if_stale()` per frame at
@@ -233,7 +233,7 @@ def _probe():
     _state.update(layout=layout, source=source, probed_at=time.monotonic())
     if changed:
         try:
-            from src.lsd.gl_gui.utils.glfw_utils import request_render
+            from meltygui.utils.glfw_utils import request_render
             request_render()
         except Exception:
             pass

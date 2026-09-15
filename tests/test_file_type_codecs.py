@@ -9,18 +9,20 @@ Run from repo root with the project venv:
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pathlib import Path
 
 from PIL import Image
 
-from src.lsd.gl_gui.view.core_conversion.address import (
-    Address, is_editable_source, is_writable_file)
-from src.lsd.gl_gui.view.core_conversion.new_codecs import (
-    extension_to_codec, codec_for_path,
-    ImageCodec, BinaryFileCodec, TextFileCodec)
-from src.shader_library.shader_manager.texture_manager import PendingTexture
+from meltygui.code.address import Address
+from meltygui.code.address import is_editable_source
+from meltygui.code.address import is_writable_file
+from meltygui.code.new_codecs import extension_to_codec
+from meltygui.code.new_codecs import codec_for_path
+from meltygui.code.new_codecs import ImageCodec
+from meltygui.code.new_codecs import BinaryFileCodec
+from meltygui.code.new_codecs import TextFileCodec
+from meltygui.graphics.texture_manager import PendingTexture
 
 
 def test_extension_registry_is_normalized():
@@ -108,7 +110,7 @@ def test_code_buttons_only_for_python(tmp_path):
     assert not ImageCodec.show_code_buttons(Address(txt))
     assert not BinaryFileCodec.show_code_buttons(Address(txt))
     assert not TextFileCodec.show_code_buttons(None)  # unresolved → no buttons
-    from src.lsd.gl_gui.view.core_conversion.new_codecs import TypeCodec
+    from meltygui.code.new_codecs import TypeCodec
     assert TypeCodec.show_code_buttons(Address(py))   # live-Python codecs keep them
 
 
@@ -148,8 +150,9 @@ def test_codec_view_keeps_render_host_capture():
     # The host's capture view_func materializes the value into host["value"]
     # (what draw_code_editor reads). Overriding capture with the codec's view
     # skipped materialization - an image host stuck on "Loading..." forever.
-    from src.lsd.gl_gui.view.core_conversion.new_converters import _codec_view, code_file_io
-    from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
+    from meltygui.code.new_converters import _codec_view
+    from meltygui.code.new_converters import code_file_io
+    from meltygui.code.render_host import RenderHost
     host = RenderHost(io_function=code_file_io, input_value=Path("/tmp/x.png"),
                       name="##test_codec_view_host", evictable=True)
     try:
@@ -162,8 +165,8 @@ def test_codec_view_keeps_render_host_capture():
 
 
 def test_codec_view_routes_by_type():
-    from src.lsd.gl_gui.view.core_conversion.new_converters import _codec_view
-    from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+    from meltygui.code.new_converters import _codec_view
+    from meltygui.views.values import draw_any
 
     def text_view(**kw):
         return False, None
@@ -179,8 +182,9 @@ def test_codec_view_routes_by_type():
 
 
 def test_codec_view_explicit_override_wins():
-    from src.lsd.gl_gui.view.core_conversion.new_converters import _codec_view
-    from src.lsd.gl_gui.view.core_conversion.new_codecs import Codec, register_codec
+    from meltygui.code.new_converters import _codec_view
+    from meltygui.code.new_codecs import Codec
+    from meltygui.code.new_codecs import register_codec
 
     def pinned(**kw):
         return False, None
@@ -198,7 +202,7 @@ def test_codec_view_explicit_override_wins():
 def test_read_only_codecs_declare_it():
     # code_file_io reads Codec.editable: False = ignore view edits, never arm
     # a save, reload external writes outright (no merge conflict).
-    from src.lsd.gl_gui.view.core_conversion.new_codecs import Codec
+    from meltygui.code.new_codecs import Codec
     assert Codec.editable is True
     assert ImageCodec.editable is False
     assert BinaryFileCodec.editable is False
@@ -206,48 +210,16 @@ def test_read_only_codecs_declare_it():
     assert ImageCodec.save(None, None) is False
 
 
-def test_editor_tab_icon_comes_from_codec():
-    from src.lsd.gl_gui.view.playground.open_files import _codec_icon
-    assert _codec_icon("/any/where/shot.PNG") == ImageCodec.icon
-    assert ImageCodec.icon
-    assert _codec_icon("/any/where/mod.py") is None
-    assert _codec_icon("/any/where/noext") is None
 
 
 # ── the search Code tab: asset files ride the codec registry ─────────────
 
 def test_asset_extensions_are_the_non_text_codecs():
-    from src.lsd.gl_gui.view.core_conversion.new_codecs import asset_extensions
+    from meltygui.code.new_codecs import asset_extensions
     exts = asset_extensions()
     assert ".png" in exts and ".jpg" in exts
     assert ".py" not in exts and ".md" not in exts     # TextFileCodec's
 
 
-def test_asset_walk_prunes_venvs_and_keeps_dot_dirs(tmp_path):
-    from src.lsd.gl_gui.view.core_views.new_core_view import _asset_file_paths
-    (tmp_path / "paper").mkdir()
-    (tmp_path / "paper" / "fig.PNG").write_bytes(b"x")
-    (tmp_path / ".melty" / "screenshots").mkdir(parents=True)
-    (tmp_path / ".melty" / "screenshots" / "shot.png").write_bytes(b"x")
-    for skip in ("venv", "venv-backup", ".git", "__pycache__"):
-        (tmp_path / skip).mkdir()
-        (tmp_path / skip / "lib.png").write_bytes(b"x")
-    (tmp_path / "lib" / "site-packages").mkdir(parents=True)
-    (tmp_path / "lib" / "site-packages" / "pkg.png").write_bytes(b"x")
-    (tmp_path / "src.py").write_text("x = 1")
-    found = _asset_file_paths(str(tmp_path), {".png"})
-    assert [p.relative_to(tmp_path).as_posix() for p in found] == [
-        ".melty/screenshots/shot.png", "paper/fig.PNG"]
 
 
-def test_file_index_lists_project_images_with_codec_icon():
-    from src.lsd.gl_gui.view.core_views.new_core_view import file_index, _asset_files
-    assets = _asset_files()
-    assert assets and all(p.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif",
-                                                ".bmp", ".webp", ".tga") for p in assets)
-    hits = {h.sym.path: h for h in file_index()}
-    for p in assets:
-        assert hits[p].icon == ImageCodec.icon
-        assert hits[p].sym.kind == "file"
-        assert not hits[p].label.startswith("/")     # project-relative
-    assert _asset_files() is assets                  # memo holds identity

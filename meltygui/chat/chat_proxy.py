@@ -7,7 +7,10 @@ import queue
 import threading
 import time
 
-from src.lsd.gl_gui.chat.messages import Message, UserMessage, user_message, input_text
+from meltygui.chat.messages import Message
+from meltygui.chat.messages import UserMessage
+from meltygui.chat.messages import user_message
+from meltygui.chat.messages import input_text
 
 
 def writer_conflict(error):
@@ -120,7 +123,7 @@ class ChatProxy(dict):
         super().__init__()
         self.session_version = 3
         self.account_id = account_id
-        from src.lsd.gl_gui.chat.metadata import shared_metadata
+        from meltygui.chat.metadata import shared_metadata
         self.metadata = metadata if metadata is not None else shared_metadata()
         self.projects = self.metadata.account(account_id)["projects"]
         self.wake = wake or (lambda: None)
@@ -305,9 +308,13 @@ class ChatProxy(dict):
         chat.loaded, chat.loading = False, True
         chat.inflight.add("create")
         self.known[new_key] = chat
-        for field in ("model", "permissions", "effort", "model_explicit", "model_selected_at", "permissions_selected_at"):
+        for field in ("model", "permissions", "effort", "model_explicit", "model_selected_at", "permissions_selected_at",
+                      "effort_selected_at", "service_tier", "service_tier_selected_at"):
             if field in source.metadata:
                 chat.metadata[field] = source.metadata[field]
+        if "codex_settings" in source:
+            chat["codex_settings"] = dict(source["codex_settings"])
+            chat["codex_settings_at"] = source.get("codex_settings_at", 0)
         self.submit("fork", new_key, source.remote_id, source["project"], chat["title"])
         return new_key
 

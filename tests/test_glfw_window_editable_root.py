@@ -1,4 +1,4 @@
-"""A melty app OUTSIDE the latent-descent checkout is editable source
+"""A meltygui app OUTSIDE the latent-descent checkout is editable source
 (09-12): `@glfw_window` registers the decorated function's project root
 (address.add_editable_root), so the app's own file loads into the code
 hosts, `@glfw_window(tint=...)` shows up as the input source driving the
@@ -14,18 +14,16 @@ import sys
 import textwrap
 import time
 
-sys.path.insert(0, os.path.dirname(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-from src.lsd.gl_gui.view.core_conversion import address  # noqa: E402
-from src.lsd.gl_gui import app  # noqa: E402
+import meltygui.code.address as address  # noqa: E402
+import meltygui.app as app  # noqa: E402
 
 
 APP_SOURCE = textwrap.dedent('''
-    from melty import glfw_window
-    from src.lsd.gl_gui.view.core_views.core_render import render_func
+    from meltygui import glfw_window
+    from meltygui.rendering.core import render_func
 
     SEEN = {}
 
@@ -176,8 +174,9 @@ def test_outside_app_decorator_is_the_tint_source(tmp_path, no_boot, fresh_roots
     import profile_render_wrapper as H
     _ensure_gl_context()
     H._init_melty()
-    from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.view.core_views.anywhere import get_source_for, _sources_for
+    from meltygui.runtime import Melty
+    from meltygui.views.anywhere import get_source_for
+    from meltygui.views.anywhere import _sources_for
 
     path = _write_app(tmp_path)
     module = _load(path)

@@ -44,29 +44,40 @@ viewer's trick for weird-shaped tensors).
 import ctypes
 import math
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 import numpy as np
 import OpenGL.GL as gl
 
-from src.lsd.gl_gui.gl_state import GLState, GLTexture, gl_limits, texture3d_fit, tight_unpack
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.shader_func import shader_func
-from src.lsd.gl_gui.shaped import Shaped
-from src.lsd.gl_gui.text_texture import bake_text, bake_texts
-from src.lsd.gl_gui.toggles import SwooshMode
-from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
-from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
-from src.lsd.gl_gui.view.core_views.core_render import render_func, release_input_refs
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.modes import Modes
-from src.lsd.gl_gui.view.core_views.headers import draw_header, flat_button
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_any, draw_bg, draw_dropdown
-from src.lsd.gl_gui.view.playground.voxel_camera import basis as _cam_basis, apply_space_mouse
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.toggles import Swoosh
+from meltygui.gl_state import GLState
+from meltygui.gl_state import GLTexture
+from meltygui.gl_state import gl_limits
+from meltygui.gl_state import texture3d_fit
+from meltygui.gl_state import tight_unpack
+from meltygui.runtime import Melty
+from meltygui.state.object import DictConversion
+from meltygui.shader_func import shader_func
+from meltygui.rendering.shaped import Shaped
+from meltygui.text_texture import bake_text
+from meltygui.text_texture import bake_texts
+from meltygui.toggles import SwooshMode
+from meltygui.utils.glfw_utils import request_render
+from meltygui.utils.glfw_utils import print_stack_trace
+from meltygui.code.render_host import RenderHost
+from meltygui.rendering.core import render_func
+from meltygui.rendering.core import release_input_refs
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.modes import Modes
+from meltygui.views.headers import draw_header
+from meltygui.views.headers import flat_button
+from meltygui.views.values import draw_any
+from meltygui.views.values import draw_bg
+from meltygui.views.values import draw_dropdown
+from meltygui.tensor.camera import basis as _cam_basis
+from meltygui.tensor.camera import apply_space_mouse
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.toggles import Toggles
+from meltygui.toggles import Swoosh
 
 HALF_PI = math.pi / 2
 
@@ -431,7 +442,7 @@ _CUDA_LAST_ERROR = globals().get("_CUDA_LAST_ERROR")
 
 def _cuda_march_ready():
     try:
-        from src.lsd.gl_gui import cuda_march
+        import meltygui.tensor.kernels as cuda_march
         return cuda_march.available()
     except Exception:
         return False
@@ -448,7 +459,7 @@ def _cuda_render(gl_state, cv, width, height, lut="jet", shade=None, **cam):
     change)."""
     global _CUDA_LAST_ERROR
     import torch
-    from src.lsd.gl_gui import cuda_march
+    import meltygui.tensor.kernels as cuda_march
     dev = cv.view.device
     W, H = int(width), int(height)
     try:
@@ -704,8 +715,8 @@ def _label_atlas(gl_state, texts):
     """The strip atlas for this view's label strings, cached until the
     string SET changes (tick sets only change at zoom thresholds, so
     re-bakes are rare). `texts` must be a sorted tuple."""
-    from src.lsd.gl_gui.fonts import Font
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.fonts import Font
+    from meltygui.runtime import Melty
     font = Melty.font_mgr.get(Font.JETBRAINS_MONO_30) if Melty.font_mgr else None
 
     def create():
@@ -755,8 +766,10 @@ def hdr_ramp(hue_at, peak=16.0, chroma=1.0, white_from=0.55, n=1024):
     ease also lands the scale inside what the panel can show: a 12× white
     saturated yellow is past any panel's peak and the compositor would
     desaturate it anyway (Hyprland's luminance-preserving rule)."""
-    from src.lsd.gl_gui.hdr_color import (
-        _cbrt, linear_to_srgb, oklab_max_chroma, oklab_to_linear)
+    from meltygui.hdr_color import _cbrt
+    from meltygui.hdr_color import linear_to_srgb
+    from meltygui.hdr_color import oklab_max_chroma
+    from meltygui.hdr_color import oklab_to_linear
     peak_lightness = _cbrt(peak)
     out = []
     for i in range(n):
@@ -777,7 +790,8 @@ def _hot_hdr_hue(u):
     (the box then whitens it toward the peak). The SDR `hot` is untouched:
     an HDR scale is its own picker entry, never a scaled SDR one, so a
     colour scale people know keeps meaning what it meant (Lukas 09-08)."""
-    from src.lsd.gl_gui.hdr_color import linear_p3_to_srgb, oklab_hue
+    from meltygui.hdr_color import linear_p3_to_srgb
+    from meltygui.hdr_color import oklab_hue
     # [tint=(0.95, 0.35, 0.1)]
     red_until = 0.4        # lightness fraction that stays pure red
     # [tint=(0.95, 0.75, 0.2)]
@@ -934,7 +948,7 @@ def _clean_dim_name(x, i):
 class TensorDim(int):
     """A tensor dim index that is still an int everywhere it matters
     (indexing, comparisons, arithmetic, `int()`, pickling) but carries its own
-    TYPE, so melty routes it to its own renderer instead of the plain int one
+    TYPE, so meltygui routes it to its own renderer instead of the plain int one
     — a dim picker rather than a number field.
 
     Values only stay TensorDim if whatever writes them keeps the type: a
@@ -962,7 +976,7 @@ class TensorDims(tuple):
 
 class Lut(str):
     """A LUT NAME that is still a str everywhere it matters (dict keys,
-    comparisons, GLSL host lookups) but carries its own TYPE, so melty routes
+    comparisons, GLSL host lookups) but carries its own TYPE, so meltygui routes
     it to its own renderer — a dropdown of the available LUTs rather than a
     text field. Same contract as TensorDim: the renderer must return
     Lut(...) or the first edit stores a plain str and the row falls back to
@@ -1429,7 +1443,7 @@ def slice_volume_view(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
     vol, mapping, shape, chop, along = _slice_core(
         t, dim_names, x_dim, y_dim, z_dim, slices, mean_dims, sort_dim,
         nf_on, nf_chop, nf_along, materialize=False)
-    from src.lsd.gl_gui import cuda_march
+    import meltygui.tensor.kernels as cuda_march
     display_shape, nf = tuple(int(s) for s in vol.shape), (-1, -1, 0)
     if chop is not None:
         display_shape, nf = cuda_march.nf_display_shape(
@@ -1490,7 +1504,7 @@ def source_identity(src):
     collide across runs — the released previous generation's address is
     reused by the next run's tensor, _version 0 on both — and the cached
     texture of the OLD run was served for the new value."""
-    from src.lsd.gl_gui.view.core_conversion.live_view import publish_gen
+    from meltygui.code.live_view import publish_gen
     return (id(src), getattr(src, "_version", 0), publish_gen(src))
 
 
@@ -2421,7 +2435,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         version = vol_key + (mapping, clamped_shape)
         try:
             if vol.is_cuda:
-                from src.lsd.gl_gui import cuda_interop
+                import meltygui.tensor.interop as cuda_interop
                 tex = cuda_interop.tensor_to_texture(gl_state, "volume_cuda", vol,
                                                      version=version)
             if tex is None:
@@ -2648,7 +2662,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     # slash, or numpad . like the old viewer) = recenter the pan on the
     # origin. A focused text editor owns the keyboard, so keys are ignored
     # while one is active. ────────────────────────────────────────────────
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     if Melty.text_focused_ds is None:
         if kp_7_pressed is not None:
             spin, tilt = -HALF_PI, (-HALF_PI if kp_7_pressed.ctrl else HALF_PI)
@@ -2769,7 +2783,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             # the tensor's GPU, hopped to a display-GPU RGBA16F texture);
             # blit it into the FBO under the same blend state so labels,
             # outline and the rest of the view are untouched.
-            from src.lsd.gl_gui import cuda_march as _cm
+            import meltygui.tensor.kernels as _cm
             img_tex = _cuda_render(
                 gl_state, tex, width, height, lut=lut, tilt=tilt, spin=spin,
                 roll=roll, zoom=cam_zoom, pan=(pan_x, pan_y, pan_z), ortho=bool(ortho),
@@ -2985,7 +2999,7 @@ def _ensure_host(var_name, host_name, demo_input, io=None):
     freshly-compiled io."""
     host = globals().get(var_name)
     if host is None:
-        from src.lsd.gl_gui.melty import Melty as _Melty
+        from meltygui.runtime import Melty as _Melty
         host = next((h for h in _Melty.render_hosts.values()
                      if getattr(h, "name", None) == host_name), None)
     if host is None:

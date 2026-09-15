@@ -25,10 +25,10 @@ distinct values.
 
 import math
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 
-from src.lsd.gl_gui.toggles import Toggles
+from meltygui.toggles import Toggles
 
 
 def _perimeter_samples(x0, y0, x1, y1, cseg, r):

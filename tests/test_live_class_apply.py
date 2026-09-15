@@ -13,11 +13,10 @@ or standalone:
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import libcst as cst
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import cst_module_to_dict
-from src.lsd.gl_gui.view.core_conversion.chain_converters import _live_apply_class_vars
+from meltygui.code.libcst_conversion import cst_module_to_dict
+from meltygui.code.chain_converters import _live_apply_class_vars
 
 
 CLASS_SRC = '''\

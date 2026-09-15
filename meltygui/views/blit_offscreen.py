@@ -13,19 +13,24 @@ from math import ceil, floor, radians, tan
 from typing import Dict, List, Optional, Tuple, MutableMapping, Any
 
 from OpenGL import GL as gl
-import imgui
-from imgui.core import _DrawList
+import meltygui_imgui as imgui
+from meltygui_imgui.core import _DrawList
 
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.notifications import notify, capture_stack
-from src.lsd.gl_gui.model.core_model.core_enums import OffscreenDebugMode
-from src.lsd.gl_gui.model.core_model.draw_state import TileMode
-from src.lsd.gl_gui.toggles import Toggles, shadow_depth_at
-from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, get_live_frames
-from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.invalidation_tracker import InvalidateTracker, Note
+from meltygui.runtime import Melty
+from meltygui.notifications import notify
+from meltygui.notifications import capture_stack
+from meltygui.state.core_enums import OffscreenDebugMode
+from meltygui.state.draw_state import TileMode
+from meltygui.toggles import Toggles
+from meltygui.toggles import shadow_depth_at
+from meltygui.utils.glfw_utils import request_render
+from meltygui.utils.glfw_utils import print_stack_trace
+from meltygui.utils.glfw_utils import get_live_frames
+from meltygui.code.cache_tree import UNSET_VALUE
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.debug.invalidation_tracker import InvalidateTracker
+from meltygui.debug.invalidation_tracker import Note
 
 """
 Per-view tile caching with a post-frame mask.
@@ -92,7 +97,7 @@ def _bump_note(t, site):
     try:
         ds = getattr(t, "draw_state", None)
         if ds is not None and getattr(ds, "_bump_trace_armed", False):
-            from src.lsd.gl_gui.perf_trace import trace_rl
+            from meltygui.perf_trace import trace_rl
             trace_rl(("bump", id(t), site), f"BUMP {site} name={getattr(ds, 'name', None)!r}",
                      min_interval=0.2)
     except Exception:
@@ -277,7 +282,7 @@ def _display_max_size() -> Tuple[int, int]:
     reallocate. (0, 0) on any failure — the grow-only path then just rounds
     up from the current framebuffer size instead."""
     try:
-        from src.lsd.gl_gui import window_api as glfw
+        import meltygui.window_api as glfw
         w = h = 0
         for m in glfw.get_monitors():
             mode = glfw.get_video_mode(m)
@@ -398,7 +403,7 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         # if a view's size wiggles 1px every frame this is a silent
         # self-sustaining dirty loop (+ request_render forever). Name it.
         try:
-            from src.lsd.gl_gui.perf_trace import trace_rl as _ib_trace
+            from meltygui.perf_trace import trace_rl as _ib_trace
             _ib_trace(("inbucket", id(existing)),
                       f"in-bucket resize {existing.size} -> {(w, h)} "
                       f"name={getattr(draw_state, 'name', None)!r} "
@@ -436,7 +441,7 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         return existing
 
     try:
-        from src.lsd.gl_gui.perf_trace import trace as _tile_trace
+        from meltygui.perf_trace import trace as _tile_trace
         _tile_trace("tile create", name=getattr(draw_state, "name", None), size=(aw, ah),
                     logical=(w, h), previous=existing.size if existing else None)
     except Exception:
@@ -1738,7 +1743,7 @@ class TileCacheMasked:
             gl.glDisable(gl.GL_BLEND)
 
     def get_hash(self, draw_state):
-        from src.lsd.gl_gui.model.dict_conversion import DictConversion
+        from meltygui.state.object import DictConversion
 
         if hasattr(draw_state._input_value, "hash") or isinstance(
                 draw_state._input_value,
@@ -3182,7 +3187,7 @@ class TileCacheMasked:
         z-composited by PASS 5). Leaves scissor disabled and blend restored
         to FUNC_ADD/off."""
         if _batched is None:
-            from src.lsd.gl_gui.toggles import Toggles
+            from meltygui.toggles import Toggles
             _batched = bool(Toggles.Melty.batch_shadow_stamps)
         if _batched:
             self._stamp_shadow_marks_batched(shadows, dp_x, dp_y, s_x, s_y, fb_h,
@@ -3458,7 +3463,7 @@ class TileCacheMasked:
         cache — nothing is captured over the hidden pane's territory, so
         its gutter / scrollbar / symbol marks stayed retained and were
         re-stamped every frame at their old rects, under the other tab
-        (the melty code editor's compare split showed the hidden tab's
+        (the meltygui code editor's compare split showed the hidden tab's
         scrollbar grab and gutter bars). Nothing reached at all (the
         window not drawn this frame) is NOT a drop: the emitter may still
         be shown by a frozen tile."""
@@ -3504,7 +3509,7 @@ class TileCacheMasked:
         owner (slot 8): the RECORDING tile's key while a tile records, else
         the emitting WINDOW's draw_state — the window whose body is running
         (Melty.melty_window_stack), or the emitter's own draw_state when one
-        was passed. With no tile recording (the blit cache off, as a melty
+        was passed. With no tile recording (the blit cache off, as a meltygui
         app runs — surface.Surface leaves it disabled) every mark used to
         be ownerless, and _win_z_for_owner reads an ownerless mark as
         TOPMOST: the panes' marks cast their shadows over a nested context
@@ -3816,7 +3821,7 @@ class TileCacheMasked:
         and capture them into _frozen_bg_kwargs. live=False: called by the
         frozen blit at mark_start time, where those globals belong to a
         different stack position — replay the captured state around the call
-        (same save/restore pattern as the deferred-window pass in melty.py).
+        (same save/restore pattern as the deferred-window pass in meltygui.py).
 
         Note: PASS 3 snapshots the framebuffer with alpha forced to 1, so the
         bg drawn on live frames is still baked into the tile like any other
@@ -3830,7 +3835,7 @@ class TileCacheMasked:
         if (not fb or not fb.get("show_bg")
                 or width is None or height is None or width <= 5 or height <= 5):
             return None
-        from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
+        from meltygui.views.values import draw_bg
         style_manager = Melty.global_attrs['style_manager']
         if live:
             fb.update({
@@ -3896,9 +3901,10 @@ class TileCacheMasked:
         (scroll_bar_width / _brightness from the view's resolved kwargs)."""
         if not getattr(draw_state, "freeze_resize", False):
             return
-        from src.lsd.gl_gui.view.core_views.core_render import (
-            draw_overlay_scrollbar, SCROLL_BAR_WIDTH_DEFAULT,
-            SCROLL_BAR_BRIGHTNESS_DEFAULT, SCROLLBAR_SHADOW_GROUP)
+        from meltygui.rendering.core import draw_overlay_scrollbar
+        from meltygui.rendering.core import SCROLL_BAR_WIDTH_DEFAULT
+        from meltygui.rendering.core import SCROLL_BAR_BRIGHTNESS_DEFAULT
+        from meltygui.rendering.core import SCROLLBAR_SHADOW_GROUP
         # Owner of the grab's retained depth mark on these views: shed the
         # group after the early returns, so a scrollbar hidden this frame
         # (content fits after a resize / edit, view closed) drops its
@@ -4227,7 +4233,7 @@ class TileCacheMasked:
                     _hx, _hy, _hw, _hh = _home
                     if (a[0] <= _hx and a[1] <= _hy
                             and _hx + _hw <= b[0] and _hy + _hh <= b[1]):
-                        from src.lsd.gl_gui.view.core_views import drag_drop as _dnd_mod
+                        import meltygui.views.drag_drop as _dnd_mod
                         if draw_state is not _dnd_mod.DragDrop.item_ds:
                             _dnd_mod.DragDrop.draw_home_blank()
 
@@ -4475,7 +4481,7 @@ class TileCacheMasked:
                     # so an every-frame flip names the offending involved.
                     if old_size is not None:
                         try:
-                            from src.lsd.gl_gui.perf_trace import trace_rl as _nt_trace
+                            from meltygui.perf_trace import trace_rl as _nt_trace
                             _ds = ctx.draw_state
                             _nt_trace(("newtile", ctx.key),
                                       f"NEW-TILE {reason} name={getattr(_ds, 'name', None)!r} "
@@ -5817,7 +5823,7 @@ class TileCacheMasked:
             _cp_tot = (_cp() - _cp_t0) * 1000.0
             if _cp_tot >= 30.0:
                 try:
-                    from src.lsd.gl_gui.perf_trace import trace as _cptr
+                    from meltygui.perf_trace import trace as _cptr
                     _cptr("capture pass split",
                           total_ms=round(_cp_tot, 1),
                           p1_blit=round((_cp_t1 - _cp_t0) * 1000.0, 1),
@@ -5868,7 +5874,7 @@ class TileCacheMasked:
             _fc_marks.append(("pass6_glow+tail", time.perf_counter()))
             _fc_total = (_fc_marks[-1][1] - _fc_t0) * 1000.0
             if _fc_total >= _FC_TRACE_MS:
-                from src.lsd.gl_gui.perf_trace import trace as _fc_trace
+                from meltygui.perf_trace import trace as _fc_trace
                 _fc_prev, _fc_parts = _fc_t0, []
                 for _fc_lbl, _fc_t in _fc_marks:
                     _fc_parts.append(f"{_fc_lbl}={(_fc_t - _fc_prev) * 1000.0:.2f}")

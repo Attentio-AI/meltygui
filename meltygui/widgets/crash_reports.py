@@ -27,21 +27,24 @@ import threading
 import time
 from pathlib import Path
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.utils.glfw_utils import crash_reports_dir, request_render
-from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.headers import _brightness_clamp_fn, flat_button
-from src.lsd.gl_gui.view.playground.open_files import _tab_text_color
-from src.lsd.gl_gui.view.core_views.text_editor import COLORS
-from src.lsd.gl_gui.view.core_views.global_search import _file_meta_tint
-from src.lsd.gl_gui.view.core_views.stack_trace_view import SavedTrace, draw_stack_trace
+from meltygui.runtime import Melty
+from meltygui.state.object import DictConversion
+from meltygui.toggles import Toggles
+from meltygui.utils.glfw_utils import crash_reports_dir
+from meltygui.utils.glfw_utils import request_render
+from meltygui.views.blit_offscreen import add_shadow
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.views.headers import _brightness_clamp_fn
+from meltygui.views.headers import flat_button
+from meltygui.editor.source_ui import _tab_text_color
+from meltygui.editor.text import COLORS
+from meltygui.editor.source_ui import _file_meta_tint
+from meltygui.views.stack_trace_view import SavedTrace
+from meltygui.views.stack_trace_view import draw_stack_trace
 
 # Bumped by reports_changed(); the store refreshes when it sees a new value.
 _generation = 0
@@ -544,7 +547,7 @@ def draw_crash_reports(
                                           priority_delta=4) is not None:
                     fired = "file"
                 if fired:
-                    from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+                    from meltygui.extensions import open_source as open_in_editor
                     open_in_editor(raising_frame[0], raising_frame[1],
                                    token=(func_name.rsplit(".", 1)[-1] if fired == "func" else None))
             # the meta takes what it needs, the error gets the rest (floored)

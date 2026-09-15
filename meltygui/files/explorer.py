@@ -46,7 +46,7 @@ selects it), or the directory when the click landed on no row.
 
 Type to search (`type_to_search`, on by default): while nothing else owns
 the keyboard — no text editor, find box, menu or popover — the listing holds
-melty's text-focus slot (the menu bar's trick), so every keystroke reaches it
+meltygui's text-focus slot (the menu bar's trick), so every keystroke reaches it
 without the pointer having to hover it, and typing searches the directory
 shown. The keys come from the GLFW callback queue (Melty.frame_key_events, the
 editor's source: nothing is dropped on a slow frame). Each keystroke re-ranks
@@ -63,22 +63,26 @@ import os
 import re
 from pathlib import Path
 
-from src.lsd.gl_gui import window_api as glfw
-import imgui
+import meltygui.window_api as glfw
+import meltygui_imgui as imgui
 
-from src.lsd.gl_gui.hdr_color import pack_color
-from src.lsd.gl_gui.melty import Melty, FileWatch
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.model.file_meta import FileMeta, file_meta_store, project_roots
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_conversion.new_codecs import extension_to_codec
-from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow, clear_glows
-from src.lsd.gl_gui.view.core_views.columns import ColumnLayout
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save
-from src.lsd.gl_gui.view.core_views.drag_drop import DragDrop
-from src.lsd.gl_gui.view.core_views.headers import _brightness_clamp_fn
+from meltygui.hdr_color import pack_color
+from meltygui.runtime import Melty
+from meltygui.runtime import FileWatch
+from meltygui.state.object import DictConversion
+from meltygui.models.file_meta import FileMeta
+from meltygui.models.file_meta import file_meta_store
+from meltygui.extensions import source_folders as project_roots
+from meltygui.toggles import Toggles
+from meltygui.utils.glfw_utils import request_render
+from meltygui.code.new_codecs import extension_to_codec
+from meltygui.views.blit_offscreen import add_shadow
+from meltygui.views.blit_offscreen import clear_glows
+from meltygui.views.columns import ColumnLayout
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.core_decoration import no_save
+from meltygui.views.drag_drop import DragDrop
+from meltygui.views.headers import _brightness_clamp_fn
 
 
 @no_save("_listing", "_last_dir", "_watched", "_search", "_search_for")
@@ -362,7 +366,7 @@ def tint_control(draw_state, key, tint, x, y, size, text_y, hovered, default_tin
     brush_icon = f"\uf1fc"
     brush_col = pack_color(*brush_color, 1.0) if brush_color is not None else pack_color(1.0, 1.0, 1.0, 0.22)
     brush_hover_col = brush_col if brush_color is not None else pack_color(1.0, 1.0, 1.0, 0.9)
-    from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple_fast
+    from meltygui.views.values import draw_tuple_fast
 
     view_id = f"tint_{key}"
     if tint:
@@ -519,7 +523,7 @@ def search_keys():
 
 
 def claim_keyboard(draw_state):
-    """Take melty's text-focus slot for `draw_state` when it is free (or held
+    """Take meltygui's text-focus slot for `draw_state` when it is free (or held
     by an earlier draw_state of the same tile — a cache rebuild), the way the
     menu bar does while a menu is open: begin_frame then re-runs this view on
     every key event, hovered or not, and the bare-key global hotkeys (E, the
@@ -542,7 +546,7 @@ def search_typed(query, keys):
     Esc that landed on an EMPTY query (the caller's "clear the selection").
     Alt / Super chords and Ctrl chords other than Backspace (clear) and V
     (paste) are left alone — they are shortcuts, not typing."""
-    from src.lsd.gl_gui.view.core_views.text_editor import _KEY_CHAR_MAP
+    from meltygui.editor.text import _KEY_CHAR_MAP
     step, activate, parent, escape = 0, False, False, False
     for key, mods in keys:
         if mods & (glfw.MOD_ALT | glfw.MOD_SUPER):
@@ -593,7 +597,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
                       select_rounding=3.0, chip_mix=0.55, hover_boost=0.06, hover_alpha=0.05, text_mix=0.5, icon_mix=0.9,
                       folder_bg_boost=-0.12, folder_bg_rounding=0.0, drag_rows=True, menu_target=None,
                       type_to_search=True, search_tint=(1.0, 0.82, 0.3), search_dim=0.45,
-                      search_flash_frames=36, show_crumbs=True,
+                      search_flash_frames=36, show_crumbs=True, show_hidden=None,
                       **kwargs):
     """The path strip + rows of one directory (see the module docstring).
     `show_crumbs=False` leaves the strip out (a host drawing the crumbs in
@@ -676,6 +680,8 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     # ── listing, memoized by the directory's mtime (renames / new files bump it) ──
     mtime = _dir_mtime_ns(directory)
     listing = state._listing
+    if show_hidden is not None:
+        state.show_hidden = show_hidden
     if listing is None or listing[:3] != (dir_key, mtime, state.show_hidden):
         listing = state._listing = (dir_key, mtime, state.show_hidden,
                                     list_directory(directory, state.show_hidden))
@@ -1032,7 +1038,7 @@ def draw_shortcuts(input_value: str, draw_state, left_mouse_clicked=False,
                    show_projects=True, **kwargs):
     """The shortcuts column on its own: home, the XDG user directories and
     the root as draw-list rows, then a **Projects** section — every folder
-    marked with melty.mark_project (the shared file-meta store's flag) —
+    marked with meltygui.mark_project (the shared file-meta store's flag) —
     and a click returns ``(True, path)`` once. `input_value` is the
     directory the host shows (or None): the deepest shortcut / project
     holding it is the CURRENT row (brighter, lifted by a shadow, its brush
@@ -1040,8 +1046,8 @@ def draw_shortcuts(input_value: str, draw_state, left_mouse_clicked=False,
     file-meta tint the listings wear). Shortcuts drag to reorder, the order
     persisting in `shortcut_state`; projects keep the store's path order.
     The explorer draws this in its first cell; the code editor draws it as
-    a leading column (`show_shortcuts=True`), a pick going to the host as
-    `OpenFiles.browse_request`."""
+    a leading column (`show_shortcuts=True`), a pick selecting the project
+    in its injected `EditorProjectState`."""
     # [tint=(0.55, 0.72, 0.95)]
     folder_icon = f""
     # [tint=(0.55, 0.72, 0.95)]
@@ -1179,7 +1185,7 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
                             show_tint_chips=True, chip_size=17.0, default_tint=(0.32, 0.42, 0.54, 1.0),
                             context_menu=None, drag_rows=True, folder_bg_boost=-0.12,
                             folder_bg_rounding=0.0, type_to_search=True, show_crumbs=True,
-                            layout_out=None, **kwargs):
+                            layout_out=None, show_hidden=None, **kwargs):
     """A ColumnLayout with two cells: `draw_shortcuts` (a click navigates)
     and `draw_file_listing`, sharing one draggable edge
     (`column_edges`, persisted by auto-state). Returns what the listing
@@ -1265,7 +1271,7 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
                                            folder_bg_rounding=folder_bg_rounding,
                                            show_tint_chips=show_tint_chips, chip_size=chip_size,
                                            default_tint=default_tint, type_to_search=type_to_search,
-                                           show_crumbs=show_crumbs)
+                                           show_crumbs=show_crumbs, show_hidden=show_hidden)
         if changed:
             result = (True, value)
     columns.finish()

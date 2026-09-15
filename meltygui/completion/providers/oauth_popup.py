@@ -49,7 +49,7 @@ def find_browser(explicit=""):
 
 
 def popup_available() -> bool:
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     return (bool(Toggles.InternetAccounts.use_oauth_popup)
             and bool(os.environ.get("DISPLAY"))
             and find_browser(Toggles.InternetAccounts.oauth_popup_browser) is not None
@@ -74,7 +74,7 @@ def open_auth_popup(url, browser=None, xdotool=None, size=None, place_timeout_s=
     """Open `url` as a placed popup; falls back to copilot.open_url and
     returns None when it can't. Returns a PopupHandle (close() on flow end)
     when the popup browser was launched."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     browser = browser or (find_browser(Toggles.InternetAccounts.oauth_popup_browser)
                           if Toggles.InternetAccounts.use_oauth_popup else None)
     xdotool = xdotool or shutil.which("xdotool")
@@ -102,7 +102,7 @@ def open_auth_popup(url, browser=None, xdotool=None, size=None, place_timeout_s=
 def place_async(xdotool=None, size=None, place_timeout_s=20.0):
     """Watch for a popup some OTHER process launches (the xdg-open shim under
     `claude auth login`) and park it like open_auth_popup does."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     xdotool = xdotool or shutil.which("xdotool")
     if xdotool is None:
         return
@@ -134,7 +134,7 @@ def close_popups(xdotool=None):
 def write_shim(browser=None):
     """`~/.lsd/oauth-shim/xdg-open`: launches the placed popup for whatever
     URL Claude Code opens. Regenerated per use so browser/size changes land."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     browser = browser or find_browser(Toggles.InternetAccounts.oauth_popup_browser)
     if browser is None:
         return None
@@ -214,7 +214,7 @@ def _place(handle, url, xdotool, size, timeout_s):
 
 def _fallback(url):
     try:
-        from src.lsd.gl_gui.fim_providers.copilot import open_url
+        from meltygui.completion.providers.copilot import open_url
         open_url(url)
     except Exception:
         pass

@@ -16,60 +16,111 @@ from types import NoneType
 from typing import Any
 
 import OpenGL.GL as gl
-from src.lsd.gl_gui import window_api as glfw
+import meltygui.window_api as glfw
 import math
 import numpy
-from imgui.core import _DrawList
+from meltygui_imgui.core import _DrawList
 
-from src.lsd.gl_gui.fonts import Font
-from src.lsd.gl_gui.global_style import GlobalStyle
-from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow, SearchTerm
-from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
-from src.lsd.gl_gui.shaped import Shaped
-from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState, DropDownState, ColorPickerState, \
-    ExpandMode, ContextMenuWindowState
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.modes import Modes
-from src.lsd.gl_gui.notifications import display
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.toggles import Toggles, Tint, mix, rgb_to_hsv, hsv_to_rgb
-from src.lsd.gl_gui.gl_state import GLState
-from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
-    pop_style_var, end, begin
-from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace, request_render
-from src.lsd.gl_gui.view.core_conversion.bubbling import _BubblingDict, _DeepPath
-from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Comment, GeneralParse, UsageRef, CallParse, \
-    ClassParse, EnumParse, FunctionParse, SymbolUsage, cst_module_to_dict, dict_to_cst_module
-from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite
-from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io, convert_in_and_out_value, \
-    cst_module_to_string, string_to_cst_module, code_hosts_for, host_code_state, \
-    recompile_button, recompile_status, run_recompile
-from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
-from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
-from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int, add_shadow
-from src.lsd.gl_gui.view.core_views.core_render import render_func, render_func_kwarg_names, \
-    SCROLL_BAR_WIDTH_DEFAULT, SCROLLBAR_MARGIN
-from src.lsd.gl_gui.view.core_views.anywhere import SourcePriority, _source_priority, _sources_for, \
-    _driving_source, _setting_source, default_write_source, get_value_for_source, get_source_for, \
-    from_anywhere, anywhere_value, set_anywhere, \
-    flush_deferred_writes, \
-    SET_ANYWHERE_PARAMS
-from src.lsd.gl_gui.view.core_views.core_undo import NavUndo, UndoManager
+from meltygui.fonts import Font
+from meltygui.global_style import GlobalStyle
+from meltygui.runtime import Melty
+from meltygui.runtime import CollectionAction
+from meltygui.runtime import ManagedWindow
+from meltygui.runtime import SearchTerm
+from meltygui.code.render_host import RenderHost
+from meltygui.rendering.shaped import Shaped
+from meltygui.state.draw_state import ZoomState
+from meltygui.state.draw_state import TileMode
+from meltygui.state.draw_state import DrawState
+from meltygui.state.draw_state import TabState
+from meltygui.state.draw_state import DropDownState
+from meltygui.state.draw_state import ColorPickerState
+from meltygui.state.draw_state import ExpandMode
+from meltygui.state.draw_state import ContextMenuWindowState
+from meltygui.state.object import DictConversion
+from meltygui.modes import Modes
+from meltygui.notifications import display
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.toggles import Toggles
+from meltygui.toggles import Tint
+from meltygui.toggles import mix
+from meltygui.toggles import rgb_to_hsv
+from meltygui.toggles import hsv_to_rgb
+from meltygui.gl_state import GLState
+from meltygui.utils.custom_views import print_colored_traceback
+from meltygui.utils.custom_views import push_style_var
+from meltygui.utils.custom_views import pop_style_var
+from meltygui.utils.custom_views import end
+from meltygui.utils.custom_views import begin
+from meltygui.utils.glfw_utils import print_stack_trace
+from meltygui.utils.glfw_utils import request_render
+from meltygui.code.bubbling import _BubblingDict
+from meltygui.code.bubbling import _DeepPath
+from meltygui.code.cache_tree import UNSET_VALUE
+from meltygui.code.libcst_conversion import Comment
+from meltygui.code.libcst_conversion import GeneralParse
+from meltygui.code.libcst_conversion import UsageRef
+from meltygui.code.libcst_conversion import CallParse
+from meltygui.code.libcst_conversion import ClassParse
+from meltygui.code.libcst_conversion import EnumParse
+from meltygui.code.libcst_conversion import FunctionParse
+from meltygui.code.libcst_conversion import SymbolUsage
+from meltygui.code.libcst_conversion import cst_module_to_dict
+from meltygui.code.libcst_conversion import dict_to_cst_module
+from meltygui.code.new_codecs import CallSite
+from meltygui.code.new_converters import code_file_io
+from meltygui.code.new_converters import convert_in_and_out_value
+from meltygui.code.new_converters import cst_module_to_string
+from meltygui.code.new_converters import string_to_cst_module
+from meltygui.code.new_converters import code_hosts_for
+from meltygui.code.new_converters import host_code_state
+from meltygui.code.new_converters import recompile_button
+from meltygui.code.new_converters import recompile_status
+from meltygui.code.new_converters import run_recompile
+from meltygui.code.path_finder import Pending
+from meltygui.views.basic_view_utils import same_line
+from meltygui.views.blit_offscreen import snap_int
+from meltygui.views.blit_offscreen import add_shadow
+from meltygui.rendering.core import render_func
+from meltygui.rendering.core import render_func_kwarg_names
+from meltygui.rendering.core import SCROLL_BAR_WIDTH_DEFAULT
+from meltygui.rendering.core import SCROLLBAR_MARGIN
+from meltygui.views.anywhere import SourcePriority
+from meltygui.views.anywhere import _source_priority
+from meltygui.views.anywhere import _sources_for
+from meltygui.views.anywhere import _driving_source
+from meltygui.views.anywhere import _setting_source
+from meltygui.views.anywhere import default_write_source
+from meltygui.views.anywhere import get_value_for_source
+from meltygui.views.anywhere import get_source_for
+from meltygui.views.anywhere import from_anywhere
+from meltygui.views.anywhere import anywhere_value
+from meltygui.views.anywhere import set_anywhere
+from meltygui.views.anywhere import flush_deferred_writes
+from meltygui.views.anywhere import SET_ANYWHERE_PARAMS
+from meltygui.state.undo import NavUndo
+from meltygui.state.undo import UndoManager
 # Module import (not "from ... import DragDrop`) so hotswaps rebind cleanly.
-from src.lsd.gl_gui.view.core_views import drag_drop as _drag_drop
-from src.lsd.gl_gui.view.core_views.cst_proxy import *
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey, Core
-from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_header_end, draw_footer, render_search, \
-    annotation_item_type, flat_button
-from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
-from src.lsd.gl_gui.view.core_views.text_editor import draw_text, _scroll_into_view, _brightness_clamp
-from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
-from src.shader_library.shader_manager.texture_manager import PendingTexture
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
-from src.lsd.gl_gui.view.core_conversion.symbol_roster import pass_scope
+import meltygui.views.drag_drop as _drag_drop
+from meltygui.views.cst_proxy import *
+from meltygui.rendering.decorators.core_decoration import hotkey
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.rendering.decorators.invalidation_decoration import live
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.views.headers import draw_header
+from meltygui.views.headers import draw_header_end
+from meltygui.views.headers import draw_footer
+from meltygui.views.headers import render_search
+from meltygui.views.headers import annotation_item_type
+from meltygui.views.headers import flat_button
+from meltygui.views.inspect_utils import set_fn_defaults
+from meltygui.editor.text import draw_text
+from meltygui.editor.text import _scroll_into_view
+from meltygui.editor.text import _brightness_clamp
+from meltygui.views.search_glow import draw_search_highlight
+from meltygui.graphics.texture_manager import PendingTexture
+from meltygui.rendering.decorators.core_decoration import defaults
+from meltygui.code.symbol_roster import pass_scope
 
 
 @render_func(use_cache=True, show_bg=True, width=20, height=22, tile_mode=TileMode.MAX,
@@ -90,7 +141,7 @@ def draw_frame(input_value: types.FrameType, draw_state, **kwargs):
     # threaded open_in_intellij pattern the jump-to-calling button uses.    # Jump-to-error: open the frame's source file at the failing line. Same
     if button(f"{file_name_truncated}:{input_value.f_lineno}",
               height=59, value=0.4, saturation=1.5, name="jump_to_frame")[0]:
-        from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
+        from meltygui.utils.jump_to_code import open_in_intellij
 
         threading.Thread(
             target=open_in_intellij,
@@ -115,6 +166,8 @@ def draw_frame(input_value: types.FrameType, draw_state, **kwargs):
 def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
+
+    
 def some_text(input_value: str, draw_state, **kwargs):
     imgui.text(f"Text: {input_value}")
 
@@ -572,7 +625,7 @@ def draw_collection_as_tabs(input_value, tab_state: TabState = None, draw_state=
 
 def search_activate_target(node):
     """The draw_state Ctrl+Enter should 'click' for the current search match
-    `node` (melty.search_current_node). When the match is one of a collection's
+    `node` (meltygui.search_current_node). When the match is one of a collection's
     keys, that's the child at the current key; for a leaf content match it's the
     node itself."""
     if node is None:
@@ -737,7 +790,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     _search_full_render = search_session is not None and search_session.scroll_to
 
     # Stash a matcher so the search owner's tree walk (DrawState.descendants /
-    # melty.search_walk) can count this collection's key matches without
+    # meltygui.search_walk) can count this collection's key matches without
     # rendering. It counts only this collection's own keys (the whole key list,
     # not just the rows the loop below draws); child collections / text editors
     # are separate tree nodes with their own matchers, so the walk sums them
@@ -1348,472 +1401,6 @@ drop_down_selection = None
 # otherwise. [tint=(0.95, 0.55, 0.15)]
 _DM_TRACE_MS = 1.5
 # hey there
-@render_func(use_cache=False, show_bg=True, selectable=False, shadow=False, show_name=False,
-             show_tint=True, is_tree=False, bg_offset=0, disable_scroll=True, max_bg_value=0.130, with_header=draw_header)
-def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
-    global test_obj
-    global cst_dict
-    global test_code
-    import time as _time
-    # Section stamps (same shape as draw_text's _dt): a call over
-    # _DM_TRACE_MS logs its per-section split to the perf log
-    # (Toggles.symbol_perf_log), so a spiky frame names its section.
-    _dm_marks = [("start", _time.perf_counter())]
-    _dm_mark = lambda label: _dm_marks.append((label, _time.perf_counter()))
-    from src.lsd.gl_gui.view.mode import Mode
-
-    # Guarantee the persistent search store exists on the live root (a root
-    # built before the field existed would never gain it on its own).
-    _ensure_search_store()
-
-    # Setting edits made from global search before the Goggles code host had
-    # parsed - retried here until they land (no-op, nothing is parked).
-    drain_pending_settings(draw_state)
-
-    # Slow-source writes parked during a mouse drag (anywhere's fast/slow
-    # split) run their real set_anywhere the frame the button releases.
-    flush_deferred_writes()
-
-    # Ctrl+Shift+F: reveal the GlobalSearch window and focus its box. A
-    # non_blocking root handler — so it survives a window blocker stacked in
-    # front (instead of needing an extreme priority that would consume events
-    # from everything else) and doesn't swallow the key from other views.
-    if draw_state.on_action("non_blocking_ctrl_shift_f_down", priority_delta=512):
-        gs = Core.melty.find_window("GlobalSearch")
-        if gs is not None and not gs.closed:
-            # Already open: repeated Ctrl+Shift+F cycles the result category
-            # (same as Tab inside the box) instead of re-summoning the window.
-            cats = _search_cats()
-            ci = cats.index(GlobalSearch.active_kind) if GlobalSearch.active_kind in cats else -1
-            GlobalSearch.active_kind = cats[(ci + 1) % len(cats)]
-            GlobalSearch.selected = 0
-            # State changed OUTSIDE the search view's body: repaint its tile
-            # (a cached blit would keep showing the old category).
-            if GlobalSearch.window_ds is not None:
-                GlobalSearch.window_ds.invalidate()
-        else:
-            gs = Core.melty.open_window("GlobalSearch")
-            if gs is None:
-                # Not registered yet (nothing has drawn it this session): say so
-                # instead of raising inside the root's frame.
-                from src.lsd.gl_gui.notifications import notify as _notify
-                _notify("GlobalSearch window is not registered", tint=(1, 0.4, 0.4),
-                        tag="GlobalSearch")
-            else:
-                # Cursor for a never-placed window, its remembered spot
-                # otherwise; bottom-half rule + clamped fully onscreen - see
-                # _place_global_search_window.
-                _place_global_search_window(gs, imgui.get_mouse_pos(),
-                                            imgui.get_io().display_size.y)
-                GlobalSearch._focus_requested = True
-        request_render()
-
-    # Ctrl+Shift+3: the region screenshot tool (utils.screenshot) - same
-    # non_blocking root handler shape as Ctrl+Shift+F. Pressed again while
-    # armed, it cancels. The tool's per-frame body (crosshair, drag box,
-    # capture on release) runs right after, so the arming press paints the
-    # crosshair this same frame.
-    from src.lsd.gl_gui.view.playground import region_screenshot
-    if draw_state.on_action("non_blocking_ctrl_shift_3_down", priority_delta=512):
-        region_screenshot.toggle()
-    region_screenshot.draw(draw_state)
-
-    # Ctrl+Enter: recompile ALL pending edits - the per-editor Ctrl+Enter in
-    # code_file_io was retired in favor of this. Same root-handler pattern as
-    # Ctrl+Shift+F above (non_blocking, so it fires even while the view is
-    # closed / cache-blitted or a blocker is in front): open + raise the
-    # Pending Saves window and run the same recompile its button does.
-    if draw_state.on_action("non_blocking_ctrl_enter_down", priority_delta=512):
-        # draw_function_live override / blit-cached half: while a lab's body
-        # renders, its own BLOCKING ctrl_enter_down (priority_delta=1024)
-        # stops the chain before this handler - but per-frame subscriptions
-        # lapse in a cached ancestor, so the otherwise idle lab never
-        # re-registers and the key lands here. Same BVH re-route as the
-        # Ctrl+F fallback below, and the same dual-dispatch rule (the
-        # behavior exists in BOTH places; at most one half fires per press):
-        # hovering a lab presses its Run button, no Pending Saves reveal.
-        mx, my = imgui.get_mouse_pos()
-        _lab_ds = None
-        _hits = Core.melty.bvh_query(mx, my)
-        _front_win = _hits[0].root_window if _hits else None
-        for ds in _hits:
-            if _front_win is not None and ds.root_window is not _front_win:
-                continue
-            _fn = getattr(ds, '_view_func', None)
-            if (_fn is not None and getattr(inspect.unwrap(_fn), '__name__',
-                                            '') == 'draw_function_live'):
-                _lab_ds = ds
-                break
-        if _lab_ds is not None:
-            from src.lsd.gl_gui.view.core_views.live_view_views import (
-                request_run)
-            request_run(_lab_ds)
-            request_render()
-        else:
-            from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
-            # One worker drives the button's exact UI lifecycle (reveal, busy
-            # spinner, fading check mark + close) - recompile_all_ui is the
-            # shared entry the MCP tool uses too. recompile_all itself finds
-            # external changes now, so the separate ExternalChanges.recompile_ui
-            # call is gone (through the delegate it would recompile TWICE). The
-            # worker toasts the summary for the never-opened-window case.
-            def _hotkey_recompile():
-                from src.lsd.gl_gui.notifications import notify
-                notify(PendingSave.recompile_all_ui())
-
-            threading.Thread(target=_hotkey_recompile, daemon=True,
-                             name="ctrl_enter_recompile").start()
-            request_render()
-
-    # Ctrl+F root fallback: the per-view Ctrl+F (core_render's searchable
-    # block) only registers while the view actually RENDERS - a fully
-    # cache-blitted window (an idle code/index pane) never registers, so the
-    # key would go nowhere. The root always renders: resolve the hovered
-    # searchable view via the BVH (parent-most, matching the per-view inverted
-    # logic) and activate its search exactly as the per-view path would.
-    # non_blocking, so a front view that DID register still gets the event -
-    # both then act on the same parent-most view, which is idempotent.
-    if draw_state.on_action("non_blocking_ctrl_f_down", priority_delta=512):
-        mx, my = imgui.get_mouse_pos()
-        target = None
-        owns_ctrl_f = False
-        _hits = Core.melty.bvh_query(mx, my)
-        # Only the hovered window's searchable competes - its nearest enclosing
-        # WINDOW, not root_window: nested windows all share a root, so a
-        # root-based filter let a different nested window layered BEHIND the
-        # hovered one win the parent-most scan (its searchable has a lower
-        # z-pos) and open its find bar instead. If the hovered window has no
-        # searchable, fall back outward through its ANCESTOR chain (a small
-        # floating window over a searchable pane keeps Ctrl+F working) - never
-        # to siblings behind, which never outside the hovered window.
-        from src.lsd.gl_gui.view.core_views.core_render import (_owning_window,
-                                                                _window_descends_from)
-        _chain = []
-        if _hits:
-            _w = _owning_window(_hits[0])
-            # Start the chain at the DEEPEST hovered window, not hits[0]'s: a
-            # stale z_pos on a nested-window subtree can sort a parent-window
-            # hit to the front, which started the chain at the parent and let
-            # it steal Ctrl+F from the nested child under the cursor.
-            for _h in _hits:
-                _hw = _owning_window(_h)
-                if _hw is not _w and _window_descends_from(_hw, _w):
-                    _w = _hw
-            for _ in range(32):
-                _chain.append(_w)
-                _p = _w.parent_window
-                if _p is None or _p is _w:
-                    break
-                _w = _p
-        for _win in _chain:
-            for ds in _hits:
-                if _owning_window(ds) is not _win:
-                    continue
-                # A view whose render func declares the inverted_ctrl_f_down
-                # event param (e.g. the context menu's Input tab, which routes
-                # Ctrl+F to its own filter box) OWNS the key for its subtree -
-                # activating a searchable descendant's search bar here would
-                # fight that filter.
-                _fn = getattr(ds, '_view_func', None)
-                if _fn is not None:
-                    _code = getattr(inspect.unwrap(_fn), '__code__', None)
-                    if _code is not None and 'inverted_ctrl_f_down' in _code.co_varnames[:_code.co_argcount]:
-                        owns_ctrl_f = True
-                        break
-                kw = getattr(ds, '_kwargs', None) or {}
-                if not (kw.get('searchable')
-                        or getattr(kw.get('render_func'), '_searchable', False)):
-                    continue
-                if target is None or getattr(ds, 'z_pos', 0) < getattr(target, 'z_pos', 0):
-                    target = ds
-            if owns_ctrl_f or target is not None:
-                break
-        _find_box = None
-        if target is None and not owns_ctrl_f:
-            # No searchable view under the cursor - the press may sit on a
-            # floating Find window (it covers its owner's corner, so this is
-            # common when reaching for the box). Resolve the owner from the
-            # find UI itself: the hovered search box's ancestor header, or the
-            # hovered Find window, whose input_value IS the owner draw_state.
-            _box = Core.melty.text_focused_ds
-            if _box is not None and getattr(_box, 'is_search_box', False):
-                _find_box = _box
-                node = _box
-                while target is None:
-                    if getattr(node, 'search_active', False):
-                        target = node  # in the box: owner above it
-                        break
-                    p = node._parent
-                    if p is node or p is None:
-                        rv = getattr(node, '_raw_input_value', None)
-                        if isinstance(rv, DrawState) and getattr(rv, 'search_active', False):
-                            target = rv  # floating Find window it
-                        break
-                    node = p
-            if target is None and _chain:
-                rv = getattr(_chain[0], '_raw_input_value', None)
-                if isinstance(rv, DrawState) and getattr(rv, 'search_active', False):
-                    target = rv
-        if target is not None and not owns_ctrl_f:
-            # Prefill the find box from the current text selection - also when
-            # the search is already open, replacing the term (same as the
-            # per-view path in core_render's searchable block).
-            from src.lsd.gl_gui.view.core_views.core_render import _selection_for_search
-            _sel = _selection_for_search(target)
-            if _sel is not None and _sel != target.search_text:
-                target.search_text = _sel
-            # Multiple find bars may stay open at once: opening a view's search
-            # no longer closes whichever view's search was already open.
-            target.search_active = True
-            target._search_was_active = False  # find box re-claims focus
-            # Keep the open popover (color picker / dropdown) alive: it isn't in
-            # target's ancestor closure, so a bare clear_focus(not_this=target)
-            # closes it on every Ctrl+F. Popovers close on outside click /
-            # Esc / pick only.
-            Core.melty.clear_focus(not_this=(target, Melty.popover_focused_ds))
-            Core.melty.focused_ds = target
-            Core.melty.cache.invalidate_up(target._tile_id, force=True, max_depth=12)
-            # The floating Find window is its own tile-root, so the owner
-            # invalidation above doesn't reach it; when the press was resolved
-            # through the box, repaint it directly (select-all shows this
-            # frame instead of waiting on the owner's focus-repaint).
-            if _find_box is not None:
-                Core.melty.cache.invalidate_up(_find_box._tile_id, force=True)
-            request_render()
-
-    # Esc dismisses the GlobalSearch window - and its ActionRunner popup -
-    # while open. Handled here on the root (always hover-eligible) rather than
-    # on the windows themselves, so it works no matter where the cursor is.
-    # Non_blocking so the front window's blocker doesn't eat it; only
-    # subscribes while one of them is open, so it doesn't swallow Esc in a
-    # per-view context otherwise.
-    _gs = Core.melty.find_window("GlobalSearch")
-    _ar = Core.melty.find_window("ActionRunner")
-    _gs_open = _gs is not None and not _gs.closed
-    _ar_open = _ar is not None and not _ar.closed
-    if ((_gs_open or _ar_open)
-            and draw_state.on_action("non_blocking_escape_key_down_inverted", priority_delta=512)):
-        if _ar_open:
-            # The runner is the topmost of the two (activating an Actions hit
-            # dismissed the search), so Esc peels it first; if the search is
-            # somehow open too, the next Esc handles it.
-            from src.lsd.gl_gui.view.playground.actions_playground import _close_action_runner
-            _close_action_runner()
-        elif GlobalSearch.editing is not None:
-            # Editing a term: Esc leaves the widget (imgui reverts a temp text
-            # input on its own), and the NEXT Esc closes the search.
-            _end_editing()
-        else:
-            _gs.closed = True
-            Core.melty.text_focused_ds = None
-            Core.melty.focused_ds = None
-            if Core.melty.popover_focused_ds is _gs:
-                Core.melty.popover_focused_ds = None
-
-            request_render()
-
-    # draw_any(Core.melty.registered_windows, name="Dock", with_header=draw_header,
-    #          mode=(Mode.WINDOWS_SORTED, Mode.WINDOW))
-
-    # Fast Dock: same functionality as the Dock, but the rows are raw tile-list
-    # rendering inside one render_func (see fast_dock.py). The sync call runs
-    # every frame after this always-rendering root so external open/close/tint
-    # changes update the cached tile. Hidden in presentation mode (windows
-    # stay visible through the global search); the sync's signature check
-    # catches up on whatever changed while hidden.
-    # Orchestrator: cue capture while a recording is armed, plus a repaint of
-    # the window's cached tile whenever engine state changes (replay progress,
-    # record pulse). Unconditional - a replay may be verifying cues even in
-    # presentation mode.
-    from src.lsd.gl_gui.view.playground.orchestrator import orchestrator_sync
-    orchestrator_sync()
-
-    if not Toggles.presentation_mode:
-        from src.lsd.gl_gui.view.core_views.fast_dock import fast_dock_sync
-        fast_dock_sync()
-        from src.lsd.gl_gui.view.core_views.fast_dock import draw_fast_dock
-        draw_fast_dock(Core.melty.registered_windows, name="Fast Dock",
-                       mode=Mode.WINDOW, bg_offset=1)
-
-    # (Multi-split overlays moved to Melty.end_frame - drawn from this
-    # root they ran BEFORE the dragged window's position update and trailed
-    # window drags by one frame.)
-
-    # Registered windows that are CLOSED this frame, by their registered
-    # name: the loop below skips their wrapper call outright. Calling it
-    # costs every closed window (~56% of 59 registered) a draw_list
-    # lookup, kwargs restorer and the preamble before its own `closed`
-    # early-return - ~0.9 ms of every frame for windows drawing nothing.
-    # This skip replicates what that early-return did (see the wrapper's
-    # `draw_state.closed` branch): keep the persisted draw_state alive and
-    # clear the root's nested list. A window opened by any path sets
-    # closed=False on this same draw_state, so it draws the next frame.
-    _dm_mark("head")
-    # Only a draw_state that IS the state registry's object under its key
-    # may be skipped: the skip refreshes that object's delete countdown in
-    # place of the wrapper, so refreshing a stale key (a previous run's,
-    # left on the ManagedWindow across an in-process relaunch) let the
-    # new draw_state under the same key be pruned at the next save.
-    # A mismatch falls through to the wrapper, which re-links its entry.
-    _closed_windows = {}
-    _registry = vis.root.draw_state_registry
-    for _mw in Core.melty.registered_windows.values():
-        _mds = _mw.draw_state
-        if (_mds is not None and _mds.closed and _mw.name
-                and _registry.get(_mds.unique) is _mds):
-            _closed_windows[_mw.name] = _mds
-
-    for window_cls, stored_kwargs in Core.melty.annotated_window_classes.values():
-
-        # Copy: the stored dict is the @window decorator kwargs and persists
-        # across frames. Popping view_func out of it would consume the override
-        # after the first frame, so later frames fall back to draw_with_modes.
-        if hasattr(window_cls, "__name__"):
-            name = f"{window_cls.__name__}##@window"
-        else:
-            name = kwargs.get("name", f"Unnamed {window_cls.__class__.__name__}")
-
-        instances = stored_kwargs.get("instances", 1)
-        if instances == 1:
-            # Closed single-instance window: decide BEFORE building its
-            # kwargs (the common case - ~56 of 59 registered classes are
-            # closed on a typical frame; the per-class dict work below was
-            # 40% of draw_any's body). Same bookkeeping as the in-loop skip.
-            _closed_ds = _closed_windows.get(stored_kwargs.get('name', name))
-            if (_closed_ds is not None and _closed_ds.closed
-                    and stored_kwargs.get('input_value') is not Core.melty.registered_windows):
-                _closed_ds.dlt_count = Core.melty.save_draw_state_for
-                Core.melty.root_draw_states[_closed_ds.id] = []
-                continue
-        for instance in range(instances):
-            kwargs = dict(stored_kwargs)
-            kwargs.pop("instances", None)
-            kwargs.setdefault('show_bg', True)
-            kwargs.setdefault('name', name)
-
-            from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
-            if isinstance(kwargs.get("input_value"), RenderHost):
-                kwargs['input_value'] = kwargs['input_value'].get("value")
-
-            if instances > 1:
-                # Multi-instance windows get their index so the caller can
-                # tell the primary (0) - the target of external commands -
-                # from the extra copies.
-                kwargs['instance'] = instance
-            if instance > 0:
-                # Instance 0 keeps the original name so existing
-                # find_window lookups still work; later instances get
-                # the index folded into the label for a unique draw_state.
-                base = kwargs['name']
-                label, sep, tag = base.partition("##")
-                kwargs['name'] = f"{label}#{instance}{sep}{tag}"
-
-            _closed_ds = _closed_windows.get(kwargs['name'])
-            if (_closed_ds is not None and _closed_ds.closed
-                    and kwargs.get('input_value') is not Core.melty.registered_windows):
-                # Same bookkeeping as the wrapper's closed early-return.
-                _closed_ds.dlt_count = Core.melty.save_draw_state_for
-                Core.melty.root_draw_states[_closed_ds.id] = []
-                continue
-
-            is_render_func = hasattr(window_cls, "__render_func__")
-            if is_render_func:
-                kwargs.setdefault('mode', Mode.MODE_WINDOW)
-                kwargs.setdefault("disable_scroll", True)
-                window_cls(**kwargs)
-            else:
-                kwargs['disable_scroll'] = True
-                kwargs.setdefault('mode', (Mode.NEW_CODE, Mode.MODE_WINDOW))
-                window_func = kwargs.pop("view_func", code_file_io)
-                window_func(window_cls, **kwargs)
-
-    _dm_mark("window_loop")
-    from src.lsd.gl_gui.model.app_model import TensorView
-    draw_any(TensorView, name="Tensorview", mode=(Mode.WINDOW))
-    #
-    # draw_any(filesystem_proxy, name="Filesystem", disable_scroll=False, mode=Mode.WINDOW)
-    # draw_any([screenshots], name="Screenshots", mode=Mode.WINDOW,
-    #             child_kwargs={"child_kwargs":{"auto_resize": True}, "shadow":False,
-    #                           "show_name":False, "show_header":False, "show_bg":False, "horizontal":True})
-    #
-    # global drop_down_selection
-    # changed, selection = draw_dropdown(drop_down_selection, collection=dropdown_demo_data,
-    #                                    name="Dropdown Demo", mode=Mode.WINDOW, tint=(0.180984, 0.2, 0.2))
-    #
-    # if changed:
-    #     drop_down_selection = selection
-    #     print("Drop down change", repr(selection))
-    #
-    draw_collection(vis.root.lora_collection, name="Loras", icon="", mode=Mode.WINDOW)
-    draw_any(vis.root.lora_collection, name="Loras Alt View", mode=Mode.WINDOW)
-    # draw_any(vis.root.lora_collection.loras, name="Loras View Three", child_kwargs={
-    #     'is_tree': True, 'expanded': False, 'show_add_delete': False}, mode=Mode.WINDOW)
-
-    # normalized_sub_mask, _, _ = Melty.filter.normalize(Melty.cache._mask_tex)
-    # draw_texture(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
-    #             max_brightness=30, name="mask_tex", live=True, mode=Mode.WINDOW)
-    draw_any(Core.melty.cache.snapshot_tex, show_bg=True, name="Viewport", icon="", live=True, mode=Mode.WINDOW)
-
-    # The normalize is a FULL-SCREEN GPU min-max reduction (~6-8ms CPU + real
-    # GPU fill per frame). Only run it while the debug window is actually open
-    # - it was burning that every frame feeding a CLOSED window. The window ds
-    # is looked up once and cached; a just-reopened window shows the reduce pass
-    # from its last frame (one frame of blank).
-    #
-    # KEEP THE DATA'S TYPE STABLE while gated off. draw_any routes by type, and
-    # the cache/draw_state key hashes on the func's name. passing it None
-    # would route to draw_none, i.e. a SECOND window was named "full_mask_tex"
-    # with its own `closed` flag. Closing either one then just handed the name to
-    # the other, and on app start (where a closed window is invisible, see below)
-    # the texture window popped open every launch. Passing the un-normalized
-    # texture id keeps the route on draw_texture: one window, one closed flag.
-    global _full_mask_win_ds
-    try:
-        _full_mask_win_ds
-    except NameError:
-        _full_mask_win_ds = None
-    if _full_mask_win_ds is None or getattr(_full_mask_win_ds, 'name', None) != 'full_mask_tex':
-        # find_window, not cache.key_to_draw_state: a closed window returns from
-        # its renderer before it ever registers a tile, so the cache table won't
-        # see it and the gate would never latch (it would normalize every frame
-        # of a session that starts with the window closed). The ManagedWindow
-        # registration survives closing.
-        _full_mask_win_ds = (Core.melty.find_window("full_mask_tex")
-                             or next((d for d in Core.melty.cache.key_to_draw_state.values()
-                                      if getattr(d, 'name', None) == 'full_mask_tex'), None))
-    if _full_mask_win_ds is None or not getattr(_full_mask_win_ds, 'closed', False):
-        normalized_sub_mask, _, _ = Core.melty.filter.normalize(Core.melty.cache._full_mask_tex)
-    else:
-        normalized_sub_mask = numpy.uint32(Core.melty.cache._full_mask_tex or 0)
-
-    draw_any(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
-             max_brightness=30, name="full_mask_tex", live=True, mode=Mode.WINDOW)
-
-    _dm_mark("draw_any_windows")
-    mouse_pos = imgui.get_mouse_pos()
-    ds_under_mouse = Core.melty.bvh_query(mouse_pos[0], mouse_pos[1])
-    ds_names = [ds.name for ds in ds_under_mouse]
-    draw_any(ds_names, name="Draw State under mouse", show_bg=True, wrap=True, use_cache=True, mode=Mode.WINDOW,
-             live=True)
-    _dm_mark("ds_under_mouse")
-
-    # Self-registering RenderHost objects (view/core_conversion/render_host.py):
-    # each drives a stateful wrapper and draws into its own window. The pump
-    # (mouse-held / scroll, typing gates, draw_needed) is RenderHost.draw_all,
-    # shared with melty.py and SurfaceWindow.
-    from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
-    RenderHost.draw_all(mark=lambda label: _dm_marks.append((label, _time.perf_counter())))
-
-    display(len(Core.melty.render_hosts), tag="Render Hosts Count")
-    _dm_mark("tail")
-    _dm_total = (_dm_marks[-1][1] - _dm_marks[0][1]) * 1000.0
-    if _dm_total >= _DM_TRACE_MS:
-        from src.lsd.gl_gui.perf_trace import trace as _dm_trace
-        _dm_parts = []
-        for (_l0, _t0), (_l1, _t1) in zip(_dm_marks, _dm_marks[1:]):
-            _dm_parts.append(f"{_l1}={(_t1 - _t0) * 1000.0:.2f}")
-        _dm_trace("draw_main perf", total_ms=round(_dm_total, 2),
-                  breakdown=" ".join(_dm_parts))
 
 @render_func
 def test_widget(input_value, name, unique, **kwargs):
@@ -1840,100 +1427,6 @@ class TestObj:
 test_obj = TestObj()
 
 
-def draw_melty_windows(vis):
-    flags = (imgui.WINDOW_NO_BACKGROUND | imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_NO_RESIZE |
-             imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_SCROLLBAR | imgui.WINDOW_NO_NAV_FOCUS |
-             imgui.WINDOW_NO_BRING_TO_FRONT_ON_FOCUS | imgui.WINDOW_NO_NAV_INPUTS | imgui.WINDOW_NO_NAV |
-             imgui.WINDOW_NO_COLLAPSE | imgui.WINDOW_NO_SAVED_SETTINGS)
-
-    # style.frame_padding = (4, 2)
-
-    imgui.set_next_window_position(0, 0)
-    # Fill the entire screen
-    fb_w, fb_h = map(int, imgui.get_io().display_size)
-
-    imgui.set_next_window_size(fb_w, fb_h)
-    title = "main##window_melty"
-    # Edge to edge: imgui insets a window's clip rect by its its padding
-    # (and its border), which clipped everything 3 px short of the
-    # framebuffer edge - a near-black border along the right and bottom of
-    # the frameless OS window. The cursor is placed at (0, 0) below anyway.
-    imgui.push_style_var(imgui.STYLE_WINDOW_PADDING, (0.0, 0.0))
-    imgui.push_style_var(imgui.STYLE_WINDOW_BORDERSIZE, 0.0)
-    opened, _ = begin(title, closable=False, flags=flags)
-    imgui.pop_style_var(2)
-
-    Core.melty.imgui_main_window_hovered = imgui.is_window_hovered()
-
-    Core.melty.begin_frame()
-
-    # The OS window's edge model (os_frame): bring it up to date with the
-    # real window size / observed screen position before the root windows
-    # solve against it - on the display size begin_frame just stamped.
-    from src.lsd.gl_gui import os_frame
-    os_frame.begin_frame()
-    # ... and this frame's mouse-drag in the background as drags of the OS
-    # window's own edges, queued before the roots solve.
-    from src.lsd.gl_gui.titlebar import poll_os_window_drag
-    poll_os_window_drag()
-    # The GLFW window-sizes - its own drag, the compositor's - solved
-    # against every root window's frame at once (window-to-window contact
-    # exists only here).
-    os_frame.solve()
-
-    # imgui.invisible_button("window_blocker", width=fb_w, height=fb_h)
-    imgui.set_cursor_screen_pos((0, 0))
-    imgui.set_item_allow_overlap()
-
-    draw_list = imgui.get_window_draw_list()
-    draw_list.channels_split(Core.melty.max_depth)
-    Core.melty.channels_split = True
-    Core.melty.window_stack.append((title, True))
-
-    # Frameless OS window with rounded corners (titlebar.py): the root's
-    # shadow is the window's visible edge, so it runs edge to edge with
-    # no outline stroke and the SAME corner radius the alpha cut uses to
-    # fill - its mask mark (the shadow pass's lit rim, like the window's)
-    # and the transparent content then trace one rounded rect.
-    from src.lsd.gl_gui.titlebar import wants_transparent_framebuffer
-    if wants_transparent_framebuffer():
-        from src.lsd.gl_gui.titlebar import frame_corner_radius
-        from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
-        _radius = frame_corner_radius()
-        draw_main(name="Main Window", vis=vis, width=fb_w, height=fb_h,
-                  corner_radius=_radius, bg_outline=False)
-        # The OS window's shadow: the content rect lifted by
-        # window_shadow_lift over the (transparent) surroundings and cast by
-        # the very shadow pass the windows use - into the shadow margin.
-        if Toggles.Melty.window_shadow_lift > 0:
-            add_shadow((0, 0, fb_w, fb_h), offset=0.5,
-                       corner_radius=_radius, clip=False)
-    else:
-        draw_main(name="Main Window", vis=vis, width=fb_w, height=fb_h)
-
-    from src.lsd.gl_gui.applet.test_applet import render_app
-    render_app()
-
-    # OS window min/max/close (titlebar.py): on this list's top channel,
-    # before the capture + shadow passes, so they composite like any header
-    # button - the overlay list would draw over their own rim.
-    from src.lsd.gl_gui.titlebar import paint_window_controls
-    paint_window_controls(draw_list)
-
-    Core.melty.end_frame()
-
-    # The OS window's edges: the root windows' have left edge (they run
-    # in end_frame's window dispatch, so this must follow it) → one surface
-    # size / move request, applied at the next frame's start.
-    from src.lsd.gl_gui import os_frame
-    os_frame.flush()
-
-    # End frame ###############
-    Core.melty.window_stack.pop()
-    draw_list.channels_merge()
-    Core.melty.channels_split = False
-
-    end()
 
 
 @render_func(is_default_for=PendingTexture, use_cache=True, wrap=True, z_offset=0, selectable=False,
@@ -1968,7 +1461,7 @@ def draw_pending_texture(input_value: PendingTexture, draw_state, **kwargs):
 
 # draw_texture lives in texture_view.py (importable by this module); re-exported
 # here, in its old position, so registration order and this import path match.
-from src.lsd.gl_gui.view.core_views.texture_view import draw_texture  # noqa: E402,F401
+from meltygui.views.texture_view import draw_texture  # noqa: E402,F401
 
 
 @render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True,
@@ -2085,7 +1578,7 @@ def export_code(test_param_2: int = 5):
 
 @render_func(use_cache=False)
 def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
-                          collection, key, melty, y_offset, enable_flow, min_width,
+                          collection, key, meltygui, y_offset, enable_flow, min_width,
                           unique, tag, style_manager, offset=0, indent_size=10):
     if Core.melty.active_layer == Core.melty.drag_layer:
         return False, 0.0
@@ -2095,7 +1588,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
     if collection == input_value or not Core.melty.is_window_enabled():
         return False, 0.0
 
-    if melty.initial_drag_offset is None:
+    if meltygui.initial_drag_offset is None:
         return False, 0.0
 
     if key is None:
@@ -2107,14 +1600,14 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
     else:
         drop_gap = 0.0
 
-    drag_delta_curve = 1.0 - max(0.0, min(1.0, 1.0 - abs(melty.drag_delta[1] / 15.0)))
+    drag_delta_curve = 1.0 - max(0.0, min(1.0, 1.0 - abs(meltygui.drag_delta[1] / 15.0)))
 
     mouse_pos = imgui.get_mouse_pos()
     cursor_top = imgui.get_cursor_screen_pos()[1]
     cursor_left = imgui.get_cursor_screen_pos()[0]
     static_offset = drop_gap
     distance_to_mouse = abs(mouse_pos[1] - cursor_y_screen -
-                            melty.initial_drag_offset[1] - drop_gap + static_offset)
+                            meltygui.initial_drag_offset[1] - drop_gap + static_offset)
     bell_curve = max(0.0, min(1.0, 1.0 - (distance_to_mouse / falloff)))
 
     window_size = imgui.get_window_size()
@@ -2124,14 +1617,14 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                    window_pos[1] + window_size[1])
     mouse_over_window = imgui.is_mouse_hovering_rect(*window_rect)
 
-    if melty.drag_in_progress:
-        if melty.dragged_item is None:
-            melty.drag_in_progress = False
+    if meltygui.drag_in_progress:
+        if meltygui.dragged_item is None:
+            meltygui.drag_in_progress = False
 
-        elif id(melty.dragged_item._input_value) == id(collection):
+        elif id(meltygui.dragged_item._input_value) == id(collection):
             return False, 0.0
 
-    if melty.drag_in_progress and do_flow and not on_drag and mouse_over_window:
+    if meltygui.drag_in_progress and do_flow and not on_drag and mouse_over_window:
         flow_spacing = drop_gap * bell_curve * drag_delta_curve
     else:
         flow_spacing = 0.0
@@ -2159,10 +1652,10 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
         cursor_bottom += 0
         cursor_top += 0
 
-    if melty.drag_in_progress and not on_drag and do_flow and mouse_over_window:
+    if meltygui.drag_in_progress and not on_drag and do_flow and mouse_over_window:
         if draw_state.height is not None:
-            active_drop = (melty.drag_drop_target == draw_state.unique
-                           and tag == melty.drag_drop_target_tag)
+            active_drop = (meltygui.drag_drop_target == draw_state.unique
+                           and tag == meltygui.drag_drop_target_tag)
 
             if Core.melty.channels_split:
                 draw_list.channels_set_current(min(Core.melty.get_channel() + 1, Core.melty.max_depth - 1))
@@ -2171,24 +1664,24 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                     draw_list.channels_set_current(min(Core.melty.get_channel() + 2, Core.melty.max_depth - 1))
                     cursor_bottom += ((1.0 - drag_delta_curve) * drop_gap)
 
-            if distance_to_mouse < melty.nearest_drop_distance:
-                melty.nearest_drop_distance = distance_to_mouse
-                melty.nearest_drop_target = draw_state.unique
-                melty.nearest_drop_target_tag = tag
+            if distance_to_mouse < meltygui.nearest_drop_distance:
+                meltygui.nearest_drop_distance = distance_to_mouse
+                meltygui.nearest_drop_target = draw_state.unique
+                meltygui.nearest_drop_target_tag = tag
 
-                melty.drag_drop_action.target_unique = draw_state.unique
-                melty.drag_drop_action.target_tag = tag
-                melty.drag_drop_action.target_key = key
-                melty.drag_drop_action.target_collection = collection
-                melty.drag_drop_action.target_draw_state = draw_state
+                meltygui.drag_drop_action.target_unique = draw_state.unique
+                meltygui.drag_drop_action.target_tag = tag
+                meltygui.drag_drop_action.target_key = key
+                meltygui.drag_drop_action.target_collection = collection
+                meltygui.drag_drop_action.target_draw_state = draw_state
 
-                if melty.drag_drop_action.target_key is None:
+                if meltygui.drag_drop_action.target_key is None:
                     pass
 
             height_as_factor = 800.0
-            drag_distance = sqrt(melty.drag_delta[0] ** 2 + melty.drag_delta[1] ** 2)
-            initial_fade_offset = max(min(1.0, melty.total_drag_distance / 10.0), 0.0)
-            if melty.total_drag_frames < 1:
+            drag_distance = sqrt(meltygui.drag_delta[0] ** 2 + meltygui.drag_delta[1] ** 2)
+            initial_fade_offset = max(min(1.0, meltygui.total_drag_distance / 10.0), 0.0)
+            if meltygui.total_drag_frames < 1:
                 initial_fade_offset = 0.0
             opacity = max(0.0, min(1.0, 1.0 - (distance_to_mouse / (height_as_factor * 0.3))))
             opacity *= initial_fade_offset
@@ -2247,8 +1740,9 @@ def toggle_offscreen():
         Core.melty.cache.set_enabled(True)
 
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color, scale_saturation
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
+from meltygui.hdr_color import scale_saturation
 # new comment
 def draw_vertical_scrollbar(content_height: float,
                             view_height: float,
@@ -2845,7 +2339,7 @@ def draw_none(input_value: NoneType):
              with_header=draw_header, temp=True, 
              # Give the @render_func a unique tint. Note how in the editor this function has a bg tint 
              # pulled from the render_func! Please note, the supplied tint may be muted and darkened by
-             # melty at the frameworks discretion when used as a background. 
+             # meltygui at the frameworks discretion when used as a tint. 
              tint=(0.0, 0.527, 0.817))
 def draw_bool(
               # Important inputs to functions can be given tints!
@@ -2856,10 +2350,10 @@ def draw_bool(
               selectable=False, left_mouse_drag=None, left_mouse_held=False, align_header=True,
               left_mouse_down=False):
     
-    # Use melty #[ comments liberally. Constants in the func should always have tints
-    # As a generally rule, local constants are preferred to constants referenced elsewhere.
-    # Melty is designed to make this code easy to edit. Scatter constants are actually discouraged
-    # by melty. Put constants as close to their usage as possible.
+    # Use meltygui #[ comments liberally. Constants in the func should always have tints
+    # As a generally rule, local constants are preferable to constants referenced elsewhere.
+    # Melty is designed to make local variables easy to find. Scatter constants are actually encouraged
+    # inside meltygui. Place constants as close to their usage whenever possible.
     
     # [tint=(0.939, 0.453, 0.245)]
     left_margin = 3
@@ -3083,7 +2577,7 @@ def unsort_dict_alphabetically(input_value, ref=None, changed=False):
 @render_func(tint=(0.18, 0.32, 0.55), use_cache=False, show_name=False, show_bg=False)
 def draw_view_func_selector(input_value, search_text="", draw_state=None, **kwargs):
     """Select a registered renderer; the caller owns applying the choice."""
-    from src.lsd.gl_gui.view.core_views.view_func_selection import view_func_name
+    from meltygui.views.view_func_selection import view_func_name
     choices = {name: getattr(RenderFuncs, name)
                for name in sorted(Melty.render_funcs_by_name)
                if not search_text or _fuzzy_key_match(search_text.lower(), name.lower())}
@@ -3369,7 +2863,7 @@ def draw_param_matrix(input_value, wrap=True, search_text="", draw_state=None, s
                          **tint_kwargs)[0]
         loc = locations.get(sname)
         if clicked and loc:
-            from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
+            from meltygui.utils.jump_to_code import open_in_intellij
             threading.Thread(target=open_in_intellij, args=(str(loc[0]),),
                              kwargs={"line_number": loc[1]},
                              daemon=True).start()
@@ -3384,7 +2878,7 @@ def draw_param_matrix(input_value, wrap=True, search_text="", draw_state=None, s
                           text_value=1.0, name=f"{sname}_delete##{selected}_{unique}",
                           show_button_bg=True, **tint_kwargs)[0]:
                     if selected == "view_func" and view_draw_state is not None:
-                        from src.lsd.gl_gui.view.core_views.anywhere import clear_anywhere
+                        from meltygui.views.anywhere import clear_anywhere
                         clear_anywhere(selected, view_draw_state, source=sname)
                     else:
                         src.pop(selected, None)
@@ -3406,7 +2900,7 @@ def draw_param_matrix(input_value, wrap=True, search_text="", draw_state=None, s
                               bg_offset=2, z_offset=0, disable_scroll=True, width=167)
             if ch:
                 if selected == "view_func" and view_draw_state is not None:
-                    from src.lsd.gl_gui.view.core_views.anywhere import set_anywhere
+                    from meltygui.views.anywhere import set_anywhere
                     set_anywhere(selected, nv, view_draw_state, source=sname)
                 else:
                     row[sname] = nv
@@ -3418,7 +2912,8 @@ def draw_param_matrix(input_value, wrap=True, search_text="", draw_state=None, s
                       text_value=1.1, name=f"add_{sname}##{selected}_{unique}",
                       show_button_bg=True, **tint_kwargs)[0]:
                 if selected == "view_func" and view_draw_state is not None:
-                    from src.lsd.gl_gui.view.core_views.anywhere import set_anywhere, anywhere_value
+                    from meltygui.views.anywhere import set_anywhere
+                    from meltygui.views.anywhere import anywhere_value
                     set_anywhere(selected, anywhere_value(selected, view_draw_state),
                                  view_draw_state, source=sname)
                 else:
@@ -3570,7 +3065,8 @@ def color_picker_width() -> int:
 
 def _style_policy_source(owner, field):
     """Match style inheritance, including policy-only (nonpainting) parents."""
-    from src.lsd.gl_gui.style import default_tint_accumulation, default_scalar_accumulation
+    from meltygui.style import default_tint_accumulation
+    from meltygui.style import default_scalar_accumulation
     seen = set()
     current = owner
     while current is not None and id(current) not in seen:
@@ -3587,8 +3083,8 @@ def _style_policy_source(owner, field):
 
 def _add_style_policy(owner, field):
     """Stamp the effective policy through locate, like Inputs' + value seed."""
-    from src.lsd.gl_gui.style import Style
-    from src.lsd.gl_gui.view.core_views.core_undo import UndoManager
+    from meltygui.style import Style
+    from meltygui.state.undo import UndoManager
     original = owner.locate_style
     attr = "locate_style" if original is not None else "locate_tint"
     if original is None:
@@ -3624,7 +3120,7 @@ def draw_style_policy_fast(owner, draw_state):
         request_render()
     fn, source = _style_policy_source(owner, fields[selected])
     if source is not owner:
-        from src.lsd.gl_gui.view.core_views.headers import flat_button
+        from meltygui.views.headers import flat_button
         if flat_button("+ Add policy here", draw_state,
                        view_id="add_style_policy_" + fields[selected], shadow=False):
             _add_style_policy(owner, fields[selected])
@@ -3656,8 +3152,8 @@ def draw_style_policy_fast(owner, draw_state):
 
 def draw_style_residuals_fast(owner, draw_state=None):
     """Popover-only controls; locate reads/writes the source driving the view."""
-    from src.lsd.gl_gui.style import Style
-    from src.lsd.gl_gui.view.core_views.core_undo import UndoManager
+    from meltygui.style import Style
+    from meltygui.state.undo import UndoManager
 
     value = owner.locate_style
     attr = "locate_style" if value is not None else "locate_tint"
@@ -3737,7 +3233,7 @@ def draw_view_offsets_fast(owner, draw_state=None):
     comment) and falls back to the owner's own draw_state. Every change is
     a SetterChange on the undo stack (like the colour chip's) and invalidates
     the owner; the wrapper reads both offsets on its next run."""
-    from src.lsd.gl_gui.view.core_views.core_undo import UndoManager
+    from meltygui.state.undo import UndoManager
     # [tint=(0.85, 0.75, 0.05)]
     row_width = 120
     imgui.separator()
@@ -3780,7 +3276,7 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None,
     tab_color = (0.5, 0.5, 0.5)
     # [tint=(0.85, 0.75, 0.05)]
     tab_height = 21
-    from src.lsd.gl_gui.view.core_views.headers import flat_button
+    from meltygui.views.headers import flat_button
     imgui.dummy(0, 2)
     tabs = [("Wide", "wide"), ("sRGB", "srgb"), ("sRGB+", "extended")]
     if owner is not None and Toggles.dynamic_styles:
@@ -3823,7 +3319,7 @@ def _draw_wide_picker(input_value, draw_state, gl_state, info):
     axis. The sRGB outline is the gamut edge for the current hue
     (hdr_color.srgb_region_outline). `draw_state._cpw_precise` echoes our own
     edits back like the sRGB tab's `_cp_precise`."""
-    from src.lsd.gl_gui import hdr_color
+    import meltygui.hdr_color as hdr_color
     # [tint=(0.85, 0.75, 0.05)]
     outline_color = (1.0, 1.0, 1.0, 0.8)
     # [tint=(0.85, 0.75, 0.05)]
@@ -3981,9 +3477,10 @@ def _wide_square_texture(gl_state, hue, size, top_fraction, max_stops):
     and re-baked when the hue (or the layout toggles) change."""
     if gl_state is None:
         return None
-    from src.lsd.gl_gui import hdr_color
+    import meltygui.hdr_color as hdr_color
     import OpenGL.GL as gl
-    from src.lsd.gl_gui.gl_state import GLTexture, _scalar
+    from meltygui.gl_state import GLTexture
+    from meltygui.gl_state import _scalar
 
     def create():
         data = hdr_color.wide_square_linear(hue, size, top_fraction, max_stops)
@@ -4018,7 +3515,7 @@ def _draw_extended_picker(input_value, draw_state, gl_state, info):
     `draw_state._cpx_precise` echoes our own edits back like the other
     tabs' caches; `_cpx_coords` memoizes the inverse for an external value
     (a bisection, not a per-frame cost)."""
-    from src.lsd.gl_gui import hdr_color
+    import meltygui.hdr_color as hdr_color
     # [tint=(0.85, 0.75, 0.05)]
     seam_color = (1.0, 1.0, 1.0, 0.35)
     SQ, EXT, BAND, BAR_W, GAP = PICKER_SQUARE, PICKER_EXTENSION, PICKER_EXPOSURE_BAND, 18, 8
@@ -4200,9 +3697,10 @@ def _srgb_plus_texture(gl_state, hue, square, ext, band, max_stops):
     the layout) changes."""
     if gl_state is None:
         return None
-    from src.lsd.gl_gui import hdr_color
+    import meltygui.hdr_color as hdr_color
     import OpenGL.GL as gl
-    from src.lsd.gl_gui.gl_state import GLTexture, _scalar
+    from meltygui.gl_state import GLTexture
+    from meltygui.gl_state import _scalar
     cols, rows = int(square + ext), int(band + square)
 
     def create():
@@ -4439,7 +3937,7 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
             # in Melty.popover_focused_ds is the open state; click toggles it; the
             # picker window is anchored under the swatch and dismissed on outside
             # click / Esc. The picker itself is stateless and returns the new colour.
-            from src.lsd.gl_gui.view.mode import Mode
+            from meltygui.debug.mode import Mode
             is_open = Melty.popover_focused_ds is draw_state
             col = list(input_value)
             alpha = col[3] if len(col) == 4 else 1.0
@@ -4534,7 +4032,7 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
 
 def _popover_anchor(draw_state):
     """The window a header-row popover (draw_tuple_fast's picker) is nested
-    under: the host itself when it IS a melty window, else the host's
+    under: the host itself when it IS a meltygui window, else the host's
     enclosing window. A popover parented to a plain draw_state inherits its
     `expanded` through abs_closed, so collapsing the host discarded it."""
     if draw_state.closable or draw_state.parent_window is None:
@@ -4677,7 +4175,7 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
         return False, input_value
 
     # ---- the picker popover: drawn while owned, closed once not open ----
-    from src.lsd.gl_gui.view.invalidation_tracker import Note
+    from meltygui.debug.invalidation_tracker import Note
     _info = (info() if callable(info) else info) if is_open else None
     picker_h = color_picker_height(4, bool(_info), has_owner=view_owner is not None)
     # Anchor under the chip; flip up past the display bottom (draw_tuple).
@@ -4734,13 +4232,13 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
         return False, input_value
     if color_changed:
         previous = input_value
-        from src.lsd.gl_gui.style import Style
+        from meltygui.style import Style
         input_value = (Style(new_color, **previous.__getnewargs_ex__()[1])
                        if isinstance(previous, Style) and new_color is not None
                        else tuple(new_color) if new_color is not None else None)
         changed = True
         if setter is not None:
-            from src.lsd.gl_gui.view.core_views.core_undo import UndoManager
+            from meltygui.state.undo import UndoManager
             UndoManager.record(draw_state, previous, input_value, setter=setter,
                                key=view_id, label=str(view_id))
         # A live edit: the host (the bg its tint paints) and its direct
@@ -4826,7 +4324,7 @@ def draw_button(input_value="", draw_state=None, label="", tint=(1.0, 1.0, 1.0, 
     stamping a param into a source).
 
     Styled from draw_state.tint (raw imgui.button's stock style reads pure
-    white in the melty theme). The label wraps: it's drawn OVER a label-less
+    white in the meltygui theme). The label wraps: it's drawn OVER a label-less
     button with a text-wrap pos, and the button height grows to fit."""
     w = min_width if wrap else (draw_state.content_width or min_width)
     _t = tint
@@ -4920,11 +4418,6 @@ def eval_function(input_value, draw_state):
     return changed, input_value
 
 
-@render_func(is_default_for="LSDStudio", show_bg=True,
-             auto_resize=True, min_width=218, tint=(0.6, 0.2, 0.8),
-             with_header=draw_header)
-def draw_lsd_studio(input_val):
-    imgui.text("An LSD Studio Instance")
 
 
 @render_func(is_default_for="ImGuiStyleManager", tint=(0.8, 0.7, 0), use_cache=True, with_header=None)
@@ -4934,15 +4427,8 @@ def draw_style_manager(input_val):
     return False, input_val
 
 
-@render_func(is_default_for="Melty", use_cache=True, with_header=None)
-def draw_vis(input_val):
-    imgui.text("Melty")
-    return False, input_val
 
 
-@render_func(is_default_for="AppModel", show_bg=True, with_header=draw_header)
-def draw_app_model(input_val):
-    imgui.text("An App Model Instance")
 
 
 def _format_run_error(exc):
@@ -5014,7 +4500,8 @@ def _release_run_results():
 
 def _respond_to_cuda_oom(exc, where):
     try:
-        from src.lsd.gl_gui.gc_manager import respond_to_cuda_oom, OOM_RELEASE_HOOKS
+        from meltygui.gc_manager import respond_to_cuda_oom
+        from meltygui.gc_manager import OOM_RELEASE_HOOKS
         if not any(getattr(h, "__name__", None) == "_release_run_results"
                    for h in OOM_RELEASE_HOOKS):
             OOM_RELEASE_HOOKS.append(_release_run_results)
@@ -5069,7 +4556,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
 
             draw_state.params = param_dict
         if len(draw_state.params) > 0:
-            from src.lsd.gl_gui.view.mode import Mode
+            from meltygui.debug.mode import Mode
             changed, new_val = draw_collection(draw_state.params, name="Parameters", initial={"expanded": True},
                                                use_cache=True,
                                                mode=Mode.FUNCTION_PARAMS,
@@ -5121,7 +4608,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
                     # marks the runner's subtree by tile id (force: the result
                     # pane is a cached descendant) and wakes the loop; the
                     # validation itself happens on the render thread.
-                    from src.lsd.gl_gui.view.invalidation_tracker import Note
+                    from meltygui.debug.invalidation_tracker import Note
                     Melty.cache.invalidate_up(
                         draw_state._tile_id, force=True,
                         note=Note(name="draw_function run complete",
@@ -5527,7 +5014,7 @@ def draw_lens(lens, draw_state):
     """Render a single Lens against draw_state: resolve its root, then either
     focus the live leaf in place (in-place kinds) or run its generated
     parse→focus→save chain (code kinds). Returns (changed, _)."""
-    from src.lsd.gl_gui.view.core_conversion.chain_converters import focus
+    from meltygui.code.chain_converters import focus
     root = lens.root(draw_state)
     if root is None:
         imgui.text_colored(f"{lens.kind or lens.label}: n/a here", 0.5, 0.5, 0.5)
@@ -5572,9 +5059,11 @@ def eval_input_scope(draw_state):
     `show_bg` in the Eval tab answers with the value actually driving the
     view. Layered UNDER the call-time locals by run_scoped_eval: a name the
     view function receives keeps its exact argument."""
-    from src.lsd.gl_gui.view.core_views.anywhere import (
-        anywhere_value, header_param_names, signature_default_for, view_param_names)
-    from src.lsd.gl_gui.view.core_views.core_render import render_func_kwarg_names
+    from meltygui.views.anywhere import anywhere_value
+    from meltygui.views.anywhere import header_param_names
+    from meltygui.views.anywhere import signature_default_for
+    from meltygui.views.anywhere import view_param_names
+    from meltygui.rendering.core import render_func_kwarg_names
     names = []
     seen = set()
     for group in (view_param_names(draw_state), header_param_names(draw_state),
@@ -5611,7 +5100,7 @@ def run_scoped_eval(code, view_func, draw_state, local_vars):
     the module globals, so assignments in the snippet don't leak back into the
     module.
     """
-    from src.lsd.gl_gui.mcp_eval import _run_code
+    from meltygui.mcp_eval import _run_code
     ns = {}
     if view_func is not None:
         # Same free names the function body resolves.
@@ -5636,7 +5125,7 @@ def run_scoped_eval(code, view_func, draw_state, local_vars):
     # recorded -- they're resolved live from the function's __globals__ at
     # completion time. Best-effort; a hiccup here must never fail the eval.
     try:
-        from src.lsd.gl_gui.func_metadata import FuncsMetadata
+        from meltygui.func_metadata import FuncsMetadata
         cache_key = getattr(draw_state, "_view_func", None) or view_func
         scope = eval_input_scope(draw_state)
         scope.update(local_vars or {})
@@ -5707,7 +5196,7 @@ def draw_info_param(input_value, **kwargs):
     yet, read-only text otherwise. Shared per-render state (source registry,
     active map, dropdown option cache) arrives via _InfoRow.ctx; selection
     lives on the TAB's draw_state (misc) — pure view state."""
-    from src.lsd.gl_gui.view.core_views.anywhere import _ABOVE_DRAW_STATE
+    from meltygui.views.anywhere import _ABOVE_DRAW_STATE
     row = input_value
     ctx = row.ctx
     if ctx is None or row.group is None:
@@ -5773,7 +5262,7 @@ def draw_info_param(input_value, **kwargs):
         # codec rows are excluded - clear_anywhere can't reverse the
         # codec's per-file/render_kwargs fanout yet.
         def _clear_at(src, _p=param):
-            from src.lsd.gl_gui.view.core_views.anywhere import clear_anywhere
+            from meltygui.views.anywhere import clear_anywhere
             if clear_anywhere(_p, target, str(src)) is not None:
                 target.invalidate()
                 ctx.tab_ds.invalidate()
@@ -5849,8 +5338,7 @@ def draw_info_param(input_value, **kwargs):
                     # as None ("the + does nothing" feel).
                     stamp = row.group.get(param)
                     if stamp is None:
-                        from src.lsd.gl_gui.view.core_views.anywhere import (
-                            signature_default_for)
+                        from meltygui.views.anywhere import signature_default_for
                         stamp = signature_default_for(param, target)
                     set_anywhere(param, stamp, target, allow_any=True,
                                  ds_fallback=True, source=sel)
@@ -5899,7 +5387,7 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
     both modes."""
     if input_value is None:
         return False, None
-    from src.lsd.gl_gui.view.core_views.anywhere import _unset_value
+    from meltygui.views.anywhere import _unset_value
     target = input_value
     # locate_all_params: the view's own params PLUS the header's
     # (with_header function inputs - icon, show_name, name_color, etc),
@@ -6205,8 +5693,8 @@ def draw_func_tab(input_value, name=None, disable_scroll=True, width=None,
     until this bypass."""
     view_func = input_value._view_func
     if view_func is not None:
-        from src.lsd.gl_gui.view.core_conversion.new_converters import (
-            code_file_io, draw_text_from_code_cache)
+        from meltygui.code.new_converters import code_file_io
+        from meltygui.code.new_converters import draw_text_from_code_cache
         view_func_name = view_func.__name__ if hasattr(view_func, '__name__') else str(view_func)
         _kw = {}
         if width is not None:
@@ -6248,7 +5736,8 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
     # suggestions BEFORE the first eval, pre-record an initial scope from what
     # the target draw_state already exposes -- input_value/value, draw_state/ds,
     # and every explicit kwarg. core_scoped_eval refines this to exact on first eval.
-    from src.lsd.gl_gui.func_metadata import FuncsMetadata, eval_completion_source
+    from meltygui.func_metadata import FuncsMetadata
+    from meltygui.func_metadata import eval_completion_source
     _scope = eval_input_scope(target)
     if isinstance(target._kwargs, dict):
         _scope.update(target._kwargs)
@@ -6332,7 +5821,7 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
     return False, input_value
 
 
-from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
+from meltygui.code.render_host import RenderHost
 
 
 class ContextMenuState:
@@ -6374,7 +5863,7 @@ class _InstanceAttrSource(dict):
     render, which is also what clears the anywhere in-flight cache)."""
 
     def __init__(self, obj, target_ds=None):
-        from src.lsd.gl_gui.view.core_views.core_render import OBJ_ATTR_PARAMS
+        from meltygui.rendering.core import OBJ_ATTR_PARAMS
         super().__init__({p: getattr(obj, p) for p in OBJ_ATTR_PARAMS
                           if getattr(obj, p, None) is not None
                           and (p != "view_func" or p in getattr(obj, "__dict__", {}))})
@@ -6465,7 +5954,7 @@ class _DrawStateAttrSource(dict):
     instance adapter does."""
 
     def __init__(self, target_ds):
-        from src.lsd.gl_gui.view.core_views.core_render import OBJ_ATTR_PARAMS
+        from meltygui.rendering.core import OBJ_ATTR_PARAMS
         super().__init__({p: getattr(target_ds, p) for p in OBJ_ATTR_PARAMS
                           if getattr(target_ds, p, None) is not None})
         self._target_ds = target_ds
@@ -6506,7 +5995,7 @@ class _LazyOverrideEntry(dict):
         self._entry_key = entry_key
 
     def __setitem__(self, k, v):
-        from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling
+        from meltygui.code.bubbling import install_bubbling
         root_node = self._root
         ovs = root_node.get("__overrides__")
         if not isinstance(ovs, dict):
@@ -6585,7 +6074,7 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
     # frame or two AFTER retargeting (lazy one-shot capture on the wrapper's
     # next render), so recompute every pass and rebuild the hosts only when the
     # resolved sites change.
-    from src.lsd.gl_gui.view.core_conversion.chain_converters import caller_chain
+    from meltygui.code.chain_converters import caller_chain
     walk_steps = max(1, int(Toggles.caller_walk_steps or 1))
     caller_frames = caller_chain(getattr(input_value, "_call_stack", None))[:walk_steps]
     caller_site_keys = tuple((f, ln) for f, ln, _ in caller_frames)
@@ -6629,8 +6118,11 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
     # fragments that can't adopt it naturally (type-based codec fragments), so
     # the tint map rides into draw_param_matrix, which applies it manually
     # and prominently per row.
-    from src.lsd.gl_gui.view.core_conversion.new_codecs import (
-        FunctionCodec, CallerCodec, DecorationsCodec, TypeCodec, ModeCodec)
+    from meltygui.code.new_codecs import FunctionCodec
+    from meltygui.code.new_codecs import CallerCodec
+    from meltygui.code.new_codecs import DecorationsCodec
+    from meltygui.code.new_codecs import TypeCodec
+    from meltygui.code.new_codecs import ModeCodec
 
     def _codec_tint(codec):
         return (getattr(codec, "render_kwargs", None) or {}).get("tint")
@@ -6745,7 +6237,7 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
     _add_source(f"def {fn_name}", cm_state.render_func_dict.deep.parameters(), FunctionCodec,
                 location=fn_loc, kind="signature")
     for cname, cdict, cloc, ckind in caller_rows:
-        from src.lsd.gl_gui.view.core_views.view_func_selection import CallerViewSource
+        from meltygui.views.view_func_selection import CallerViewSource
         if isinstance(cdict, dict):
             cdict = CallerViewSource(cdict, cloc[0] if cloc else None, allow_direct=ckind == "caller")
         _add_source(cname, cdict, CallerCodec, location=cloc, kind=ckind)
@@ -6990,8 +6482,7 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
             # marker's last render, and a reparse since (the window's def
             # scrolled off the screen, say) orphaned it - a write into the
             # orphan shows in the replay but never reaches the save.
-            from src.lsd.gl_gui.view.core_views.live_view_views import (
-                current_live_root)
+            from meltygui.editor.live_views import current_live_root
             _lroot = current_live_root(_pds)
             _lkey = getattr(_pds, "live_key", None)
             if isinstance(_lkey, str):
@@ -7034,7 +6525,7 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
                 DecorationsCodec, location=decoration_loc, kind="decoration")
     # @window only exists as a source on actually-@window-decorated funcs -
     # a placeholder row here would be permanent noise on every other tab.
-    from src.lsd.gl_gui.view.core_views.view_func_selection import WindowViewSource
+    from meltygui.views.view_func_selection import WindowViewSource
     _window_deco = cm_state.decoration_dict.deep.decorators.window()
     if isinstance(_window_deco, dict) and _window_deco:
         _add_source(f"@window({decoration_name})",
@@ -7114,7 +6605,7 @@ def draw_input_tab(input_value, cm_state: ContextMenuState, draw_state, wrap=Tru
     # Melty.search_stack reaches the matrix cells' strings for in-place
     # highlighting like any other searchable widget.
 
-    from src.lsd.gl_gui.view.core_views.anywhere import anywhere_value
+    from meltygui.views.anywhere import anywhere_value
     anywhere_value("view_func", input_value)
     if sources:
         _, matrix = param_source_matrix(sources, func=input_value._view_func,
@@ -7179,7 +6670,7 @@ def draw_class_tab(input_value, class_to_show=None, class_is_parent=False, class
     class (e.g. Lora for a Lora.rank float) -- labelled so the source is clear.
     Routes through Mode.FILE_TREE — the same cache-backed code_file_io path a
     folder-files leaf uses — so all editors share one code path."""
-    from src.lsd.gl_gui.view.mode import Mode
+    from meltygui.debug.mode import Mode
     if class_is_parent:
         text(f"Parent type of {class_name}", name="Source",
              editable=False, tint=(1.0, 0.64, 0.113))
@@ -7277,13 +6768,12 @@ def _splice_deferred_stack(inline_frames, queued_frames, view_func):
     Returns `inline_frames` unchanged when the layer loop isn't in it (the
     view rendered inline this time) or when the first view body after the
     dispatch isn't `view_func` (a stale deferred mark on another ancestor)."""
-    from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-        _is_dispatch_frame)
+    from meltygui.code.chain_converters import _is_dispatch_frame
     def _base(path):
         return path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
     loop = None
     for index, frame in enumerate(inline_frames):
-        if _base(frame[0]) == "melty.py" and frame[2] == "end_frame":
+        if _base(frame[0]) == "meltygui.py" and frame[2] == "end_frame":
             loop = index
     if loop is None:
         return inline_frames
@@ -7360,7 +6850,7 @@ def draw_context_menu_items(draw_state, items, right_click, name, unique):
     A picked row runs its callable here and closes the menu; the Inspect row
     at the bottom reports INSPECT so the wrapper opens the inspector in the
     menu's place. Returns INSPECT, the picked label, or None."""
-    from src.lsd.gl_gui.model.core_model.draw_state import ContextMenuItemsState
+    from meltygui.state.draw_state import ContextMenuItemsState
     # [tint=(0.85, 0.75, 0.05)]
     inspect_label = f" Inspect"
     inspect_tint = (0.42, 0.24, 0.06)
@@ -7548,7 +7038,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # it afterward), then let screenshot.process_take_screenshot_flags grab the
     # view's shot a few frames later, open the shot in nemo, and reopen the menu.
     if _menu_button(f" ", f"screenshot_window##{unique}", height=30, tint=(0, 0, 0, 1.0)):
-        from src.lsd.gl_gui.screenshot import request_view_capture
+        from meltygui.screenshot import request_view_capture
 
         def _open_in_nemo(shot_path):
             # Full path + close_fds=False => posix_spawn, not fork (forking this
@@ -7572,7 +7062,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # the view's render function (the same function the Input tab edits), and
     # open the Claude Terminals window so the new session's terminal comes up.
     if _menu_button(f" claude", f"claude_session##{unique}", height=30, tint=(0, 0, 0, 1.0)):
-        from src.lsd.gl_gui.screenshot import request_view_capture
+        from meltygui.screenshot import request_view_capture
         view_ds = input_value
         # Resolve the menu's offset-walked target so the shot + function match
         # what the tabs will show (the walk proper happens above the buttons).
@@ -7590,8 +7080,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         loc = f"{fn_file}:{fn_line}" if fn_file else "unknown location"
 
         def _start_claude(shot_path, _name=fn_name, _loc=loc):
-            from src.lsd.gl_gui.view.playground.claude_terminals import (
-                launch_claude_session, open_claude_terminals_window)
+            from meltygui.widgets.claude_terminals import launch_claude_session
+            from meltygui.widgets.claude_terminals import open_claude_terminals_window
             launch_claude_session(
                 f"Take a look at this screenshot of a view in the studio: {shot_path} "
                 f"It is rendered by the function `{_name}` in {_loc}. ")
@@ -7700,7 +7190,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # A bubbling tree node's type is a runtime-generated `Bubbling_<Base>` with no source
     # — resolve its real base (e.g. GeneralParse) so the Class/Decorations tabs resolve
     # rather than erroring.
-    from src.lsd.gl_gui.view.core_conversion.bubbling import base_of_bubbling
+    from meltygui.code.bubbling import base_of_bubbling
     # Use exact-type matching, not isinstance: a subclass of a primitive
     # (e.g. CodeLine(str)) DOES have its own source, so it should show its
     # own class tab rather than being treated as a bare primitive.
@@ -7872,8 +7362,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             # stack trace view. Values come from the frames' captured locals
             # through pane-LOCAL stores - nothing published, nothing global.
             # The debug (bug) button above recaptures a fresh stack.
-            from src.lsd.gl_gui.view.core_views.stack_trace_view import (
-                draw_stack_trace)
+            from meltygui.views.stack_trace_view import draw_stack_trace
             captured_stack = _merged_call_stack_frames(input_value, menu_state)
             if captured_stack:
                 # indent_views=False: the tab is narrow - panes slide left
@@ -8023,7 +7512,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     opening one popover implicitly closes every other (they all fail the test).
     ``drop_down_state`` is the per-view scratch object the framework re-injects
     every frame; we stash the last picked leaf on it for the trigger label."""
-    from src.lsd.gl_gui.view.mode import Mode
+    from meltygui.debug.mode import Mode
 
     # DEBUG
     # Is THIS dropdown the one whose popover is showing?
@@ -8470,7 +7959,7 @@ def _dd_invalidate_rows(root_state, menu_ds=None):
             menu_ds = getattr(box_ds, "parent_window", None) if box_ds is not None else None
     if menu_ds is None or getattr(menu_ds, "_tile_id", None) is None:
         return
-    from src.lsd.gl_gui.view.invalidation_tracker import Note
+    from meltygui.debug.invalidation_tracker import Note
     Melty.cache.invalidate_up(menu_ds._tile_id, force=True, bypass_clip=True,
                               note=Note(name="dd open_path change", tint=(1, 0.6, 0.2)))
     request_render()
@@ -8508,7 +7997,7 @@ def _dd_scroll_cursor_into_view(menu_ds, row_index, row0_offset=0.0, pitch=None)
         # value-identical). Change-edge-gated by `new_sy != sy` above, never
         # per-frame. bypass_clip: the popup can protrude outside its parent.
         if menu_ds._tile_id is not None:
-            from src.lsd.gl_gui.view.invalidation_tracker import Note
+            from meltygui.debug.invalidation_tracker import Note
             Melty.cache.invalidate_up(menu_ds._tile_id, force=True, bypass_clip=True,
                                       note=Note(name="dd scroll-into-view", tint=(1, 0.6, 0.2)))
         request_render()
@@ -9360,7 +8849,7 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
         if _sub_ds is not None:
             # The closed -> open EDGE: the submenu's row tiles are cached and
             # blit-skip while clean, so a reopened submenu came up as a blank
-            # window until the pointer hit it (a melty browser's menu bar,
+            # panel until the pointer entered it (a meltygui app's menu bar,
             # 09-14). Cascade-invalidate its rows the frame it opens.
             was_open = getattr(_sub_ds, "_dd_was_open", False)
             if sub_open and not was_open:
@@ -9392,7 +8881,7 @@ def draw_pending(input_value, draw_state=None):
     return False, input_value
 
 
-from src.lsd.gl_gui.model.core_model.core_enums import PendingAction
+from meltygui.state.core_enums import PendingAction
 
 
 @render_func(use_cache=True, show_header=False, shadow=True)
@@ -9444,7 +8933,7 @@ def draw_search(input_value=None, draw_state=None, unique=0):
     search_ds = owner
     regrab_focus = True
 
-    from src.lsd.gl_gui.view.core_views.text_editor import draw_text
+    from meltygui.editor.text import draw_text
     # Re-grab gated on this search still being active (focused_ds is the owner):
     # a deliberate click away clears focused_ds (via clear_focus) so the box
     # releases focus and stays open-but-unfocused, while a spurious clear during
@@ -9573,8 +9062,8 @@ def draw_search(input_value=None, draw_state=None, unique=0):
                     # window, focus an input, ...). Queued + the view invalidated so
                     # it re-renders and reads the click next frame (the find UI
                     # renders too late to inject for this frame).
-                    from src.lsd.gl_gui.view.core_views.new_core_view import search_activate_target
-                    from src.lsd.gl_gui.events.input_handler import InputEvent
+                    from meltygui.views.values import search_activate_target
+                    from meltygui.events.input_handler import InputEvent
                     _target = search_activate_target(Melty.search_current_node)
                     if _target is not None and _target.width and _target.height:
                         _cx = _target.abs_left + _target.width / 2.0
@@ -9691,11 +9180,11 @@ def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=No
     kwargs['mode'] = mode
     kwargs['view_func'] = kwargs_view_func
 
-    from src.lsd.gl_gui.view.core_views.view_func_selection import configured_view_func
+    from meltygui.views.view_func_selection import configured_view_func
     try:
         selected = configured_view_func(input_value, kwargs)
     except ValueError as error:
-        from src.lsd.gl_gui.notifications import notify
+        from meltygui.notifications import notify
         notify(str(error), tag="view_func")
         selected = None
     if selected is not None and view_func is not draw_single and view_func is not run_chain:
@@ -9707,11 +9196,4 @@ def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=No
     return return_val
 
 
-# Global search lives in global_search.py (split 09-14). Its names -
-# GlobalSearch, draw_global_search, _search_cats, _ensure_search_store,
-# _place_global_search_window, drain_pending_settings, _end_editing (draw_main),
-# _RowSpan / _row_span_hosts (the dropdown code base), and the public handles
-# other modules can import from here (_jump_to_symbol_def, _global_text_tint,
-# SearchHit, ...) - are bound onto this module by global_search itself when it
-# finishes importing, so the import order works.
-from src.lsd.gl_gui.view.core_views import global_search as _global_search  # noqa: E402,F401
+from meltygui.editor.source_ui import _RowSpan, _row_code_hosts

@@ -1,9 +1,10 @@
 from dataclasses import dataclass
 from typing import Dict, Any
 
-from src.lsd.gl_gui.notifications import notify
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
+from meltygui.notifications import notify
+from meltygui.toggles import Toggles
+from meltygui.rendering.decorators.core_decoration import defaults
+from meltygui.rendering.decorators.core_decoration import Core
 
 @dataclass
 class Note:

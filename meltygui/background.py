@@ -4,10 +4,15 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 import sys
 
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace, get_live_frames, _print_lock, trace_group, request_render
-from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
-from src.lsd.gl_gui.view.invalidation_tracker import Note
+from meltygui.toggles import Toggles
+from meltygui.utils.glfw_utils import print_stack_trace
+from meltygui.utils.glfw_utils import get_live_frames
+from meltygui.utils.glfw_utils import _print_lock
+from meltygui.utils.glfw_utils import trace_group
+from meltygui.utils.glfw_utils import request_render
+from meltygui.code.path_finder import Pending
+from meltygui.code.path_finder import PendingState
+from meltygui.debug.invalidation_tracker import Note
 
 
 class Background:
@@ -147,7 +152,7 @@ class Background:
             return result
 
 
-        from src.lsd.gl_gui.melty import Melty
+        from meltygui.runtime import Melty
         if Melty.frame_count < 2:
             debounce = None
 
@@ -272,8 +277,8 @@ class Background:
                         cls._user_cache[uid].popitem(last=False)
             cls._active.discard(h)
             if invalidate_id is not None:
-                from src.lsd.gl_gui.melty import Melty
-                from src.lsd.gl_gui.utils.glfw_utils import request_render
+                from meltygui.runtime import Melty
+                from meltygui.utils.glfw_utils import request_render
                 if on_frame is None or abs(Melty.frame_count - on_frame) >= 1:
                     note = Note(name=f"Background Invalidate {invalidate_id}", reason=f"func={func_name}", tint=(0,0,1))
                     Melty.cache.invalidate_up(invalidate_id, max_depth=5, note=note)

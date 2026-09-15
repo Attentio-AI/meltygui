@@ -1,9 +1,9 @@
 """Load an image (a file, or encoded bytes) as linear scRGB float32 (h, w, 3), 1.0 = SDR white (``sdr_white`` nits).
 
-melty's copy of hdr-viewer's image_load.py (~/Desktop/hdr-viewer), the reference decoder; `load_bytes` is the
+meltygui's copy of hdr-viewer's image_load.py (~/Desktop/hdr-viewer), the reference decoder; `load_bytes` is the
 addition for the chat transcript's inline images (base64 payloads in a session).
 
-That is melty's working space: sRGB primaries, linear light, no ceiling, negatives
+That is meltygui's working space: sRGB primaries, linear light, no ceiling, negatives
 allowed (BT.2020 colours outside sRGB come out negative and survive the fp16 path).
 
 Three kinds of file:
@@ -98,7 +98,7 @@ def _native_unfilter():
     _native = False
     try:
         src = _UNFILTER_SRC.read_bytes()
-        cache = pathlib.Path(os.environ.get('XDG_CACHE_HOME') or pathlib.Path.home() / '.cache') / 'melty'
+        cache = pathlib.Path(os.environ.get('XDG_CACHE_HOME') or pathlib.Path.home() / '.cache') / 'meltygui'
         so = cache / f'png_unfilter-{hashlib.sha1(src).hexdigest()[:12]}.so'
         if not so.is_file():
             cache.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,6 @@
 from typing import Dict, Set, Tuple
 
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from meltygui.rendering.decorators.window_decoration import window
 
 
 @window
@@ -26,9 +26,9 @@ class AttributeChurnMonitor:
         if not cls.attribute_change_count:
             return
 
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         if Toggles.attrib_churn_log:
-            from src.lsd.gl_gui.melty import Melty
+            from meltygui.runtime import Melty
             top = sorted(cls.attribute_change_count.items(), key=lambda kv: -kv[1])[:10]
             line = ", ".join(f"{c}.{a}={n}" for (c, a), n in top)
             print(f"[churn f{Melty.frame_count}] {line}")

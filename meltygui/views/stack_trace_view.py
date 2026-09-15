@@ -26,17 +26,18 @@ import colorsys
 import types
 from pathlib import Path
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 
-from src.lsd.gl_gui.fonts import Font
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.toggles import Tint
-from src.lsd.gl_gui.view.core_conversion.address import Address, _PROJECT_ROOT
-from src.lsd.gl_gui.view.core_conversion.project_code import project_code
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save
+from meltygui.fonts import Font
+from meltygui.state.object import DictConversion
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.toggles import Tint
+from meltygui.code.address import Address
+from meltygui.code.address import _PROJECT_ROOT
+from meltygui.code.project_code import project_code
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.core_decoration import no_save
 
 
 class SavedTrace:
@@ -268,9 +269,8 @@ def _span_parse(text):
     same converter the code hosts run. None when it doesn't parse — the pane
     then renders without live-value anchors until the next clean text."""
     try:
-        from src.lsd.gl_gui.toggles import Toggles
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-            cst_module_to_dict)
+        from meltygui.toggles import Toggles
+        from meltygui.code.libcst_conversion import cst_module_to_dict
         if Toggles.TextEditor.melty_syntax:
             return cst_module_to_dict(text)
         import libcst as cst
@@ -326,10 +326,8 @@ def _ensure_store(pane):
             or not pane.has_def):
         return
     pane.store_tried = True
-    from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-        _enclosing_function)
-    from src.lsd.gl_gui.view.core_conversion.live_view import (
-        frame_value_store)
+    from meltygui.code.chain_converters import _enclosing_function
+    from meltygui.code.live_view import frame_value_store
     fn = _enclosing_function(pane.path, pane.lineno)
     if fn is not None:
         # Reuse the proxy's ast - the very tree the bounds resolved on -
@@ -375,8 +373,8 @@ def _pane_parse(pane, span_text, index):
     memo = pane.parse_memo
     if memo is not None and memo[0] is span_text:
         return memo[1]
-    from src.lsd.gl_gui.view.core_conversion.new_converters import (
-        run_in_background, _chain_in_debounce_ms)
+    from meltygui.code.new_converters import run_in_background
+    from meltygui.code.new_converters import _chain_in_debounce_ms
     arm = pane.parse_armed is not span_text
     if arm:
         pane.parse_armed = span_text
@@ -499,11 +497,11 @@ def _draw_file_header(pane, x, y, width, height, text_x=None, draw_state=None, i
     Text: the editor tabs' colour — the file's painted FileMeta tint (the
     tabs' default tint when unpainted) scaled by the active-tab knobs, so
     it is tinted toward the card, never grey."""
-    from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.model.open_files import FileMeta
-    from src.lsd.gl_gui.toggles import Toggles
-    from src.lsd.gl_gui.view.core_views.global_search import _file_meta_tint
-    from src.lsd.gl_gui.view.playground.open_files import _tab_text_color
+    from meltygui.runtime import Melty
+    from meltygui.models.file_meta import FileMeta
+    from meltygui.toggles import Toggles
+    from meltygui.editor.source_ui import _file_meta_tint
+    from meltygui.editor.source_ui import _tab_text_color
     text_pad_x = Melty.px(8)
     text_pad_y = Melty.px(3)
     # The card's colour is the pane's own bg (below) pushed darker and more
@@ -560,7 +558,7 @@ def _draw_file_header(pane, x, y, width, height, text_x=None, draw_state=None, i
     # body action. The whole line, not the name's glyph box: the 18 px
     # target a few px above a pane's def row was too easy to miss.
     if draw_state is not None:
-        from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+        from meltygui.extensions import open_source as open_in_editor
         # At least the text's extent - a view whose width is not measured
         # yet (first frames, the render harness) would give a zero rect.
         line_rect = (x, y, max(x + width, pen), y + text_pad_y + line_height + text_pad_y)
@@ -620,7 +618,7 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
     Panes fully outside the view's clip skip their draw_text call entirely:
     the cursor advances by the pane's last measured height, so the scroll
     geometry holds while only visible panes pay a render."""
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     # [tint=(0.9, 0.35, 0.28)]
     project_prefix = str(_PROJECT_ROOT)
     # File header line: `File "path", line N, in func` - the path in the
@@ -647,8 +645,7 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
             # Renderfunc dispatch machinery (the render_func wrapper /
             # draw_inner_main, draw_any re-dispatch) - the same filter the
             # func-stack labels apply per frame (_is_dispatch_frame).
-            from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-                _is_dispatch_frame)
+            from meltygui.code.chain_converters import _is_dispatch_frame
             frames = [f for f in frames
                       if not _is_dispatch_frame(f[0], f[2])]
         if project_only:
@@ -751,8 +748,9 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
             if pane.file_code.span_index_ready():
                 _resolve_pane(pane, context_lines)
             else:
-                from src.lsd.gl_gui.view.core_conversion.new_converters import (
-                    LOADING, UNSET, run_in_background)
+                from meltygui.code.new_converters import LOADING
+                from meltygui.code.new_converters import UNSET
+                from meltygui.code.new_converters import run_in_background
                 if trace_state.index_armed is None:
                     trace_state.index_armed = set()
                 arm = pane.path not in trace_state.index_armed
@@ -951,7 +949,7 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
         # marker's open state (`_err_open_line`, the 0-based buffer row)
         # is stamped once on first sight; the user can close it from there.
         if marks_error and not pane.error_opened and pane_ds is not None:
-            from src.lsd.gl_gui.view.playground.open_files import _diff_disp_span
+            from meltygui.editor.diff import _diff_disp_span
             pane.error_opened = True
             # Markers live in DISPLAY rows (fold-mapped by draw_text); the
             # pane's fold map is stamped by the body that just ran.

@@ -55,7 +55,10 @@ import re
 import numpy as np
 import OpenGL.GL as gl
 
-from src.lsd.gl_gui.gl_state import GLState, GLTexture, _scalar, is_gl_thread
+from meltygui.gl_state import GLState
+from meltygui.gl_state import GLTexture
+from meltygui.gl_state import _scalar
+from meltygui.gl_state import is_gl_thread
 
 # Fullscreen triangle for fragment-only shader_funcs (no VBO needed; core
 # profile still requires a VAO bound - gl_state.vao(key) provides an empty one).

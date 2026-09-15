@@ -8,7 +8,7 @@ GIL was held; overlapping spans show which threads stacked up.
     12:34:56.789 f001234 [render         ] ensure_index: spawn recompute file=toggles.py
 
 Usage:
-    from src.lsd.gl_gui.perf_trace import trace, trace_rl, span, once
+    from meltygui.perf_trace import trace, trace_rl, span, once
 
     trace("warmer build start", files=150)
     with span("cold compute", file=name):      # logs "... took 812.4ms" on exit
@@ -40,7 +40,7 @@ _once_keys: set = set()   # keys already emitted via once()
 
 def _enabled() -> bool:
     try:
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         return bool(Toggles.symbol_perf_log)
     except Exception:
         return True
@@ -75,7 +75,7 @@ def _open_log():
 
 
 def _frame() -> int:
-    mel = (sys.modules.get("src.lsd.gl_gui.melty")
+    mel = (sys.modules.get("meltygui.runtime")
            or sys.modules.get("lsd.gl_gui.melty"))
     try:
         return mel.Melty.frame_count if mel is not None else -1
@@ -86,7 +86,7 @@ def _frame() -> int:
 def _thread_label() -> str:
     t = threading.current_thread()
     try:
-        gs = (sys.modules.get("src.lsd.gl_gui.gl_state")
+        gs = (sys.modules.get("meltygui.gl_state")
               or sys.modules.get("lsd.gl_gui.gl_state"))
         if gs is not None and getattr(gs, "_gl_thread", None) is t:
             return "render"
@@ -206,7 +206,7 @@ class span:
 # Cost when healthy: one attribute read per poll (20Hz). Same toggle as trace.
 
 def _render_thread():
-    gs = (sys.modules.get("src.lsd.gl_gui.gl_state")
+    gs = (sys.modules.get("meltygui.gl_state")
           or sys.modules.get("lsd.gl_gui.gl_state"))
     return getattr(gs, "_gl_thread", None) if gs is not None else None
 

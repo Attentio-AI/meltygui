@@ -32,7 +32,7 @@ class _LazyMode:
 
     def _resolve(self):
         if self._member is None:
-            from src.lsd.gl_gui.view.mode import Mode
+            from meltygui.debug.mode import Mode
             self._member = Mode[self._name]
         return self._member
 
@@ -131,6 +131,6 @@ class _Modes:
 
 
 # Reference Mode members by symbol without importing view.mode:
-#     from src.lsd.gl_gui.modes import Modes
+#     from meltygui.modes import Modes
 #     @window(mode=Modes.WINDOW_AUTO_FIT)
 Modes = _Modes()

@@ -18,8 +18,8 @@ import threading
 import time
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[3]
-SHOT_DIR = _ROOT / ".melty" / "screenshots"
+from meltygui.paths import cache_root
+SHOT_DIR = cache_root() / "screenshots"
 
 _pending = []
 _lock = threading.Lock()
@@ -29,7 +29,7 @@ def _shot_dir():
     """Output directory for screenshots — `Toggles.screenshots` (expanded),
     falling back to the in-repo `.melty/screenshots` if it can't be read."""
     try:
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         configured = Toggles.screenshots
         if configured:
             return Path(configured).expanduser()
@@ -40,7 +40,7 @@ def _shot_dir():
 
 def list_window_names():
     """Names of currently-registered top-level windows (for error messages)."""
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     return [mw.name for mw in Melty.registered_windows.values()
             if getattr(mw, "name", None) and getattr(mw, "draw_state", None) is not None]
 
@@ -95,7 +95,7 @@ def request_tile_capture(name, timeout=8.0):
 
 def _nudge():
     try:
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()  # force the loop to render the next frame
     except Exception:
         pass
@@ -114,7 +114,7 @@ def process_captures(window):
         reqs = _pending[:]
         _pending.clear()
 
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     unfinished = []
     for req in reqs:
         try:
@@ -211,7 +211,7 @@ def request_region_capture(left, top, w, h, requested_frame, name="screenshot",
 def _process_region_captures(window):
     if not _region_pending:
         return
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     still = []
     for req in _region_pending:
         if Melty.frame_count - int(req["requested_frame"]) < _SETTLE_FRAMES:
@@ -246,7 +246,7 @@ def process_take_screenshot_flags(window):
     _process_region_captures(window)
     if not _view_pending:
         return
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     still = []
     for req in _view_pending:
         if Melty.frame_count - int(req["requested_frame"]) < _SETTLE_FRAMES:
@@ -290,7 +290,7 @@ def _reopen_context_menu_ds(menu_ds):
 
 
 def _find_window(name):
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     wins = [mw for mw in Melty.registered_windows.values()
             if getattr(mw, "name", None) and getattr(mw, "draw_state", None) is not None]
     # Prefer an exact name; fall back to case-insensitive substring. In both
@@ -335,12 +335,12 @@ def _capture_points(window, left, top, w, h, name):
     GL_BACK and save it as a PNG named after `name`. The one framebuffer
     reader: window / view captures pass a draw_state's box, the region tool
     passes the user's drag box."""
-    from src.lsd.gl_gui import window_api as glfw
+    import meltygui.window_api as glfw
     import numpy as np
     import OpenGL.GL as gl
     from PIL import Image
 
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
 
     fb_w, fb_h = glfw.get_framebuffer_size(window)
     win_w, win_h = glfw.get_window_size(window)
@@ -395,7 +395,7 @@ def _capture_tile(name):
     import numpy as np
     import OpenGL.GL as gl
     from PIL import Image
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
 
     mw = _find_window(name)
     if mw is None:

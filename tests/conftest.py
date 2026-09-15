@@ -10,12 +10,9 @@ import os
 import sys
 
 _root = os.path.join(os.path.dirname(__file__), '..')
-sys.path.insert(0, os.path.join(_root, 'src'))
-sys.path.insert(0, _root)
-sys.path.insert(0, os.path.join(_root, 'server'))
 
 import pytest
-import imgui
+import meltygui_imgui as imgui
 
 # Track whether we have a GL context (GLFW window) or just a headless context
 _has_gl = False
@@ -38,7 +35,7 @@ def _ensure_gl_context():
         return _window, _impl
 
     import glfw
-    from imgui.integrations.glfw import GlfwRenderer
+    from meltygui_imgui.integrations.glfw import GlfwRenderer
 
     # End any existing headless frame
     try:
@@ -78,7 +75,7 @@ def begin_frame():
         ctx = imgui.create_context()
         imgui.set_current_context(ctx)
         if _has_gl:
-            from imgui.integrations.glfw import GlfwRenderer
+            from meltygui_imgui.integrations.glfw import GlfwRenderer
             _impl = GlfwRenderer(_window)
             _impl.process_inputs()
         else:
@@ -98,7 +95,7 @@ def end_frame():
         imgui.set_current_context(ctx)
         if _has_gl:
             global _impl
-            from imgui.integrations.glfw import GlfwRenderer
+            from meltygui_imgui.integrations.glfw import GlfwRenderer
             _impl = GlfwRenderer(_window)
         else:
             io = imgui.get_io()

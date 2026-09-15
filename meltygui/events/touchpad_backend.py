@@ -76,7 +76,7 @@ if HAS_EVDEV:
     }
 
 
-CLONE_TAG = "(melty)"
+CLONE_TAG = "(meltygui)"
 
 
 def find_touchpad():
@@ -146,7 +146,7 @@ class ThreeFingerDrag:
                 name="latent-descent virtual pointer")
             # Clone of the touchpad - libinput's view of the pad from now on.
             self.clone = UInput.from_device(self.dev,
-                                            name=f"{self.dev.name} (melty)")
+                                            name=f"{self.dev.name} (meltygui)")
             # Give udev/libinput a moment to pick the clone up BEFORE we grab
             # the real device, so there is no window with no working touchpad.
             time.sleep(0.5)

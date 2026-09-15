@@ -7,10 +7,10 @@ import OpenGL.GL as gl
 import pytest
 
 torch = pytest.importorskip("torch")
-pytest.importorskip("pycuda.gl")
+pytest.importorskip('meltygui_pycuda.gl')
 
-from src.lsd.gl_gui import cuda_interop
-from src.lsd.gl_gui.gl_state import GLState
+import meltygui.tensor.interop as cuda_interop
+from meltygui.gl_state import GLState
 
 needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="no CUDA device")
 
@@ -116,16 +116,16 @@ def test_fallback_gates(cuda_state):
 
 
 @needs_cuda
-def test_voxel_io_takes_cuda_path(gl_context):
+def test_voxel_io_preserves_source_for_renderer(gl_context):
     """End to end through the host io: a CUDA tensor reaches view_func as a
     GLTexture via the interop resource (volume_cuda), not the cpu one."""
     if not cuda_interop.ensure_context():
         pytest.skip("no CUDA context available alongside the GL context")
     from test_render_func_integration import _init_melty, _tick_frame
     from conftest import begin_frame, end_frame
-    from src.lsd.gl_gui.view.playground.voxel_playground import voxel_io
+    from meltygui.tensor.voxels import voxel_io
 
-    melty = _init_melty()
+    meltygui = _init_melty()
     got = {}
 
     def view_stub(input_value=None, **kw):
@@ -134,19 +134,13 @@ def test_voxel_io_takes_cuda_path(gl_context):
 
     t = torch.rand(4, 5, 6).cuda()
     for _ in range(2):
-        _tick_frame(melty)
+        _tick_frame(meltygui)
         begin_frame()
         voxel_io(input_value=t, view_func=view_stub, name="VoxIOCuda")
         end_frame()
 
-    assert type(got["tex"]).__name__ == "GLTexture" and got["tex"].shape == (4, 5, 6)
-    io_state = None
-    for ds in melty.vis.root.draw_state_registry.values():
-        st = getattr(ds, "misc", {}).get("gl_state")
-        if st is not None and "volume_cuda" in st._resources:
-            io_state = st
-            break
-    assert io_state is not None
-    assert io_state.peek("volume") is None       # fallback-path texture dropped
-    io_state.release()
-    GLState.flush_deletes()
+    assert got["tex"] is t
+    # Conversion was deliberately deferred: no upload resources on the IO host.
+    for draw_state in meltygui.vis.root.draw_state_registry.values():
+        state = draw_state.misc.get("gl_state")
+        assert state is None or "volume_cuda" not in state._resources

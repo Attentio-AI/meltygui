@@ -1,6 +1,6 @@
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.utils.custom_views import LSDView
-from src.lsd.gl_gui.model.core_model.core_enums import generate_id
+from meltygui.state.object import DictConversion
+from meltygui.utils.custom_views import LSDView
+from meltygui.state.core_enums import generate_id
 
 
 class DynamicObj(DictConversion):

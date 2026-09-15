@@ -6,13 +6,13 @@ An `ImageReference` in a message names its picture one of three ways —
 shape, also accepted nested under ``source``), or ``url`` (a data URL) — and
 `image_key` reduces any of them to one cache key. `ImageCache.entry(ref)`
 returns the picture's state: it queues a decode the first time (a worker
-thread running melty's `image_load`, hdr-viewer's decoder: PQ PNGs and PQ
+thread running meltygui's `image_load`, hdr-viewer's decoder: PQ PNGs and PQ
 ICC profiles come out as linear scRGB above 1.0, everything else as sRGB8),
 uploads the decoded pixels the first time the render thread asks (GL is
 current inside a window body only), and is drawn with `draw_image` through
-imgui's draw list — an RGB16F texture in melty's fp16 scene, so on an HDR
+imgui's draw list — an RGB16F texture in meltygui's fp16 scene, so on an HDR
 desktop the highlights present as HDR with nothing more to do, and on an
-SDR desktop they clip at white like everything else melty draws.
+SDR desktop they clip at white like everything else meltygui draws.
 
 Textures are few and small compared to the payloads: the cache keeps
 ``keep`` of them and drops the least recently drawn beyond that.
@@ -25,10 +25,10 @@ import threading
 import time
 import weakref
 
-from src.lsd.gl_gui.chat.messages import ImageReference
+from meltygui.chat.messages import ImageReference
 
 # The SDR reference white a PQ file is authored against (BT.2408: 203 nits);
-# dividing by it means 1.0 = the file's SDR white, what melty maps to the
+# dividing by it makes 1.0 = the file's SDR white = what meltygui maps to the
 # desktop's SDR white (the same mapping Chrome applies).
 PQ_SDR_WHITE = 203.0
 MEDIA_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
@@ -143,7 +143,7 @@ class ImageCache:
             except queue.Empty:
                 return
             try:
-                from src.lsd.gl_gui import image_load
+                import meltygui.image_load as image_load
                 path, data = _source(ref)
                 loaded = (image_load.load_bytes(data, PQ_SDR_WHITE) if data is not None
                           else image_load.load(path, PQ_SDR_WHITE))

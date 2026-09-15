@@ -16,11 +16,10 @@ import sys
 import os
 import types
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import libcst as cst
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import cst_module_to_dict
-from src.lsd.gl_gui.view.core_conversion.chain_converters import live_apply_edits
+from meltygui.code.libcst_conversion import cst_module_to_dict
+from meltygui.code.chain_converters import live_apply_edits
 
 
 FUNC_SRC = '''\

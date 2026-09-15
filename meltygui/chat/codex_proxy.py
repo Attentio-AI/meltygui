@@ -2,21 +2,40 @@
 import time
 from pathlib import Path
 
-from src.lsd.gl_gui.chat.chat_proxy import Chat, ChatProxy, epoch_seconds
-from src.lsd.gl_gui.chat.messages import (from_codex, upsert, set_text, AssistantMessage,
-    PlanMessage, CommandExecution, ToolOutput, ReasoningMessage, FileChange, McpToolCall,
-    FileTags, diff_counts, match_file)
-from src.lsd.gl_gui.chat.codex_transport import CodexTransport
-from src.lsd.gl_gui.chat.writer_locks import codex_writer_locks, lock_message
-from src.lsd.gl_gui.fim_providers.codex_accounts import account_home
+from meltygui.chat.codex_settings import ThreadSettingsReader
+from meltygui.chat.codex_settings import effective_settings
+from meltygui.chat.codex_settings import fast_service_tier
+from meltygui.chat.codex_settings import model_service_tiers
+
+from meltygui.chat.chat_proxy import Chat
+from meltygui.chat.chat_proxy import ChatProxy
+from meltygui.chat.chat_proxy import epoch_seconds
+from meltygui.chat.messages import from_codex
+from meltygui.chat.messages import upsert
+from meltygui.chat.messages import set_text
+from meltygui.chat.messages import AssistantMessage
+from meltygui.chat.messages import PlanMessage
+from meltygui.chat.messages import CommandExecution
+from meltygui.chat.messages import ToolOutput
+from meltygui.chat.messages import ReasoningMessage
+from meltygui.chat.messages import FileChange
+from meltygui.chat.messages import McpToolCall
+from meltygui.chat.messages import FileTags
+from meltygui.chat.messages import diff_counts
+from meltygui.chat.messages import match_file
+from meltygui.chat.codex_transport import CodexTransport
+from meltygui.chat.writer_locks import codex_writer_locks
+from meltygui.chat.writer_locks import lock_message
+from meltygui.completion.providers.codex_accounts import account_home
 
 
 class CodexChats(ChatProxy):
     inherits_defaults = True
 
     def __init__(self, account_id, metadata=None, wake=None, transport_factory=None):
-        from .activity import UserMessageTimes
+        from meltygui.chat.activity import UserMessageTimes
         self.user_times = UserMessageTimes("codex")
+        self.settings_reader = ThreadSettingsReader()
         self.source_home = account_home(account_id)
         self.transport = None
         self.writers = {}
@@ -75,11 +94,11 @@ class CodexChats(ChatProxy):
     def _thread_options(self, server, key, project):
         config = self._read_defaults(server, project)
         settings = self.known[key].metadata
+        effective = effective_settings(self.known[key], config, self.default_model)
         options = {"cwd": project}
         # Older Melty versions stamped catalog defaults into settings without
         # an explicit-selection marker. Those should not override config.toml.
-        model = settings.get("model") if settings.get("model_explicit") else None
-        model = config.get("model") if model in (None, "", "default") else model
+        model = effective.get("model")
         if model:
             options["model"] = model
         permissions = settings.get("permissions")
@@ -91,7 +110,7 @@ class CodexChats(ChatProxy):
                 options["approvalPolicy"] = config["approval_policy"]
             if config.get("sandbox_mode") is not None:
                 options["sandbox"] = config["sandbox_mode"]
-        effort = settings.get("effort")
+        effort = effective.get("effort")
         supported = getattr(self, "model_efforts", {}).get(model)
         if supported is not None and effort not in supported:
             effort = None
@@ -99,12 +118,23 @@ class CodexChats(ChatProxy):
             effort = config.get("model_reasoning_effort")
         if effort:
             options["config"] = {"model_reasoning_effort": effort}
+        if "service_tier" in effective:
+            tier = effective["service_tier"]
+            tiers = getattr(self, "model_service_tiers", {}).get(model)
+            if tier in ("fast", "priority"):
+                tier = fast_service_tier(self, model) or tier
+            if tier in ("default", "") or tiers is not None and tier not in {entry["id"] for entry in tiers}:
+                tier = None
+            options["serviceTier"] = tier
         return options
 
     def _listing_sizes(self, threads):
         # Filesystem data is read from the backend worker, never while drawing.
         for thread in threads:
             thread["last_user_at"] = self.user_times.read(thread.get("path"))
+            if not hasattr(self, "settings_reader"):
+                self.settings_reader = ThreadSettingsReader()
+            thread.update(self.settings_reader.read(thread.get("path")))
             try:
                 thread["size_bytes"] = Path(thread["path"]).stat().st_size if thread.get("path") else None
             except OSError:
@@ -112,12 +142,14 @@ class CodexChats(ChatProxy):
         return threads
 
     def _open_transport(self, remote_id=None):
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         holder = {}
         def event(value):
             if not holder.get("closing"):
                 if value.get("method") == "transport/error" and remote_id:
                     value = {**value, "params": {**value.get("params", {}), "threadId": remote_id}}
+                if value.get("method") == "thread/settings/updated":
+                    value = {**value, "settings_observed_at": time.time()}
                 self.publish("event", value)
         server = self.transport_factory(self.source_home, executable=Toggles.InternetAccounts.codex_bin,
             timeout=Toggles.InternetAccounts.codex_request_timeout_s, on_event=event)
@@ -181,9 +213,12 @@ class CodexChats(ChatProxy):
             key, project, title = args
             writer = self._open_transport()
             try:
-                result = writer.request("thread/start", self._thread_options(writer, key, project))
+                options = self._thread_options(writer, key, project)
+                observed_at = time.time()
+                result = writer.request("thread/start", options)
                 writer.request("thread/name/set", {"threadId": result["thread"]["id"], "name": title})
                 self.writers[result["thread"]["id"]] = writer
+                self.publish("settings", (key, result, observed_at))
                 self.publish("created", (key, result["thread"]))
             except Exception:
                 self._close_transport(writer)
@@ -213,10 +248,13 @@ class CodexChats(ChatProxy):
             try:
                 options = self._thread_options(writer, key, self.known[key]["project"])
                 model = options.get("model")
-                writer.request("thread/resume", {"threadId": remote_id, **options})
+                observed_at = time.time()
+                resumed_thread = writer.request("thread/resume", {"threadId": remote_id, **options})
+                self.publish("settings", (key, resumed_thread, observed_at))
                 result = writer.request("turn/start", {"threadId": remote_id,
                     **({"model": model} if model else {}),
                     **({"effort": options["config"]["model_reasoning_effort"]} if "config" in options else {}),
+                    **({"serviceTier": options["serviceTier"]} if "serviceTier" in options else {}),
                     "input": [{"type": "text", "text": text}]})
                 self.publish("sent", (key, message_id, result["turn"]["id"]))
             except Exception:
@@ -244,7 +282,16 @@ class CodexChats(ChatProxy):
                 self.default_model = config["model"]
         elif kind == "forked":
             self.finish_fork(*value)
+        elif kind == "settings":
+            key, settings = value[:2]
+            chat = self.known.get(key)
+            if chat is not None:
+                self._apply_settings(chat, settings, value[2] if len(value) > 2 else None)
         elif kind == "models":
+            self.model_service_tiers = {row["model"]: model_service_tiers(row)
+                                        for row in value if row.get("model")}
+            self.model_default_service_tiers = {row["model"]: row.get("defaultServiceTier")
+                                                for row in value if row.get("model")}
             self.model_default_efforts = {row["model"]: row.get("defaultReasoningEffort")
                                          for row in value if row.get("model")}
             self.model_efforts = {row["model"]: tuple(option["reasoningEffort"]
@@ -289,6 +336,8 @@ class CodexChats(ChatProxy):
                         chat["updated"] = updated
                         self.refresh_history(key)
                 chat = dict.get(self, key)
+                if thread.get("codex_settings_at", 0) >= chat.get("codex_settings_at", 0):
+                    chat.update({field: thread[field] for field in ("codex_settings", "codex_settings_at") if field in thread})
                 # Session-naming jobs contain real model/assistant messages, so
                 # emptiness and a rounded 0.0 MB size cannot identify them.
                 preview = str(thread.get("preview") or "").lstrip()
@@ -318,6 +367,8 @@ class CodexChats(ChatProxy):
                            if identifier not in chat.sent and message.get("role") == "user"}
                 chat["messages"].clear()
                 chat["messages"].update(history["messages"])
+                chat.update({field: history[field] for field in ("codex_settings", "codex_settings_at") if field in history
+                             and history.get("codex_settings_at", 0) >= chat.get("codex_settings_at", 0)})
                 chat.command_scripts = getattr(history, "command_scripts", {})
                 chat.sent = set(chat["messages"])
                 chat["messages"].update(pending)
@@ -380,8 +431,22 @@ class CodexChats(ChatProxy):
         elif kind == "event":
             self._event(value)
 
+    def _apply_settings(self, chat, settings, observed_at=None):
+        observed_at = time.time() if observed_at is None else observed_at
+        if observed_at < chat.get("codex_settings_at", 0):
+            return
+        values = {target: settings[source] for source, target in
+                  (("model", "model"), ("reasoningEffort", "effort"), ("effort", "effort"), ("serviceTier", "service_tier"))
+                  if source in settings}
+        if values:
+            chat["codex_settings"] = {**chat.get("codex_settings", {}), **values}
+            chat["codex_settings_at"] = observed_at
+
     def _history(self, thread, project):
         history = Chat({"project": project})
+        if not hasattr(self, "settings_reader"):
+            self.settings_reader = ThreadSettingsReader()
+        history.update(self.settings_reader.read(thread.get("path")))
         for turn in thread.get("turns", []):
             for item in turn.get("items", []):
                 self._item(history, item, history=True)
@@ -471,7 +536,9 @@ class CodexChats(ChatProxy):
             return
         if chat is None:
             return
-        if method in ("item/started", "item/completed"):
+        if method == "thread/settings/updated":
+            self._apply_settings(chat, params.get("threadSettings") or {}, event.get("settings_observed_at"))
+        elif method in ("item/started", "item/completed"):
             self._item(chat, params.get("item") or {})
         elif method in ("item/agentMessage/delta", "item/commandExecution/outputDelta", "item/plan/delta"):
             identifier = params.get("itemId")

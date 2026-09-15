@@ -7,12 +7,12 @@ import time
 from collections import deque, defaultdict
 from contextlib import contextmanager as _contextmanager
 
-from src.lsd.gl_gui import window_api as glfw
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui.window_api as glfw
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 
-from src.lsd.gl_gui.fonts import Font
-from src.lsd.gl_gui.toggles import Toggles
+from meltygui.fonts import Font
+from meltygui.toggles import Toggles
 
 # Use the system's locale time format (e.g. 12-hour AM/PM if configured)
 # for %X instead of the default "C" locale 24-hour clock.
@@ -148,7 +148,7 @@ def notify(text, tint=(1,1,1,1), tag=None, urgent=False, stack=None, jump=None):
         column.appendleft(entry)
 
     if urgent:
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()
 
 
@@ -254,7 +254,7 @@ def display(value, tint=(1, 1, 1, 1), tag=None, urgent=True):
     NotificationCenter.live_values[key] = (_format_value(value), tint, formatted_time, created_at)
 
     # if urgent:
-    #     from src.lsd.gl_gui.utils.glfw_utils import request_render
+    #     from meltygui.utils.glfw_utils import request_render
     #     request_render()
 
 
@@ -528,7 +528,7 @@ def _file_tint(path):
     """The tint the user painted on `path` in the code editor (FileMeta), as
     RGBA, or None. Same store the editor tabs / folder tree read."""
     try:
-        from src.lsd.gl_gui.view.core_views.global_search import _file_meta_tint
+        from meltygui.editor.source_ui import _file_meta_tint
         rgb = _file_meta_tint(path)
     except Exception:
         return None
@@ -572,7 +572,7 @@ def _handle_entry_click(hit_rects):
     for (x0, y0, x1, y1), text, jump in hit_rects:
         if x0 <= mx <= x1 and y0 <= my <= y1:
             if jump is not None and not io.key_ctrl:
-                from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+                from meltygui.extensions import open_source as open_in_editor
                 open_in_editor(jump[0], jump[1])
             else:
                 imgui.set_clipboard_text(text)
@@ -591,7 +591,7 @@ def _draw_copy_flash(draw_list):
     alpha = remaining / _COPY_FLASH_SECONDS
     draw_list.add_rect(x0, y0, x1, y1,
                        pack_color(1, 1, 0, alpha), rounding=2, thickness=1.5)
-    from src.lsd.gl_gui.utils.glfw_utils import request_render
+    from meltygui.utils.glfw_utils import request_render
     request_render()
 
 
@@ -600,7 +600,7 @@ def draw_notifications():
     display_size = io.display_size
     draw_list = imgui.get_overlay_draw_list()
 
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     font_handle = Melty.font_mgr.get(Font.JETBRAINS_MONO_14) if Melty.font_mgr else None
     if font_handle is not None:
         imgui.push_font(font_handle)

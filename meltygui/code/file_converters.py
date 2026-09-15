@@ -11,7 +11,7 @@ are used as save_data parameters on reverse converters.
 """
 import ast
 import builtins
-from src.lsd.gl_gui.notifications import lag_traced
+from meltygui.notifications import lag_traced
 
 import dis
 import inspect
@@ -24,14 +24,18 @@ from enum import EnumMeta
 from importlib import reload
 
 from pathlib import Path
-from src.lsd.gl_gui.melty import Melty
+from meltygui.runtime import Melty
 
 import libcst as cst
 
-from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
-from src.lsd.gl_gui.view.core_conversion import hotswap_guard as _hotswap_guard
-from src.lsd.gl_gui.view.core_conversion.address import Address, invalidate_address_cache, update_address_cache, is_editable_source, shift_sibling_linenos
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import invalidate_usage_cache
+from meltygui.utils.glfw_utils import print_stack_trace
+import meltygui.code.hotswap_guard as _hotswap_guard
+from meltygui.code.address import Address
+from meltygui.code.address import invalidate_address_cache
+from meltygui.code.address import update_address_cache
+from meltygui.code.address import is_editable_source
+from meltygui.code.address import shift_sibling_linenos
+from meltygui.code.libcst_conversion import invalidate_usage_cache
 
 
 def _class_code_objects(cls: type) -> set:
@@ -160,7 +164,7 @@ def load_span_text(ref: Address) -> str:
 # ║  @render_func converters                                                     ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-from src.lsd.gl_gui.view.core_views.core_render import render_func
+from meltygui.rendering.core import render_func
 
 
 # --- Basic type converters ---
@@ -280,7 +284,8 @@ def fn_to_cst(input_value, data=None) -> cst.Module:
 @render_func()
 def recompile_fn(input_value, ref=None, function_ref=None):
     """Save handler: hotswap function + write source to disk."""
-    from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
+    from meltygui.code.path_finder import Pending
+    from meltygui.code.path_finder import PendingState
     if not is_editable_source(ref.path):
         print(f"[recompile_fn] refusing to write library source: {ref.path}")
         return None, ref
@@ -342,7 +347,8 @@ def mod_to_cst(input_value, data=None) -> cst.Module:
 @render_func()
 def recompile_mod_fn(input_value, ref=None, module_ref=None):
     """Save handler: hotswap module + write source to disk."""
-    from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
+    from meltygui.code.path_finder import Pending
+    from meltygui.code.path_finder import PendingState
     if not is_editable_source(ref.path):
         print(f"[recompile_mod_fn] refusing to write library source: {ref.path}")
         return None, ref
@@ -379,7 +385,8 @@ def cls_to_cst(input_value, data=None) -> cst.Module:
 def recompile_cls_fn(input_value, ref=None, class_ref=None,
                      hotswap_instances=True):
     """Save handler: hotswap class + write source to disk."""
-    from src.lsd.gl_gui.view.core_conversion.path_finder import Pending, PendingState
+    from meltygui.code.path_finder import Pending
+    from meltygui.code.path_finder import PendingState
     if not is_editable_source(ref.path):
         print(f"[recompile_cls_fn] refusing to write library source: {ref.path}")
         return None, ref
@@ -533,7 +540,7 @@ def _backfill_declared_imports(ns, filename) -> bool:
     auto-import quick-fix applies."""
     import ast
     try:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         text = PendingSave.current_file_text(Path(filename))
         if text is None:
             with open(filename, encoding="utf-8", errors="replace") as f:
@@ -1010,10 +1017,10 @@ _ENUM_INTERNALS = frozenset({
 # Hotswap state preservation.
 #
 # Hotswap applies SOURCE edits and preserves RUNTIME state. A class body (or a
-# module body) re-executed by a hotswap yields every data attribute's new
-# value value and copying those over the live class is exactly what caused
-# `Melty.cache` to wipe on a melty.py swap (classy-singleton, all runtime
-# state is in attributes) and emptied `PendingSave.pending_saves`. The rule
+# module body) re-executed by a hotswap yields every data attribute's INITIAL
+# value again; copying those over the live class is exactly what wiped
+# `Melty.cache` to None on a meltygui.py swap (class-as-singleton: all its
+# state is class attributes) and emptied `PendingSave.pending_saves`. The rule
 # that separates an edit from runtime drift is the attribute's SOURCE
 # EXPRESSION: unchanged text → keep the live value; changed text → apply the
 # new one. The previous compile's expressions are the baseline, stamped as
@@ -1145,8 +1152,8 @@ def stamp_hotswap_baselines(delay: float = 0.0) -> int:
     08-24), amplified by get_source_segment's quadratic re-split (fixed in
     _segment)."""
     import sys as _sys
-    from src.lsd.gl_gui.view.core_conversion.address import is_editable_source
-    from src.lsd.gl_gui.perf_trace import span as _pt_span
+    from meltygui.code.address import is_editable_source
+    from meltygui.perf_trace import span as _pt_span
     if delay:
         time.sleep(delay)
     by_file = {}
@@ -1175,7 +1182,7 @@ def stamp_hotswap_baselines(delay: float = 0.0) -> int:
 
 def _repoint_attribute_bindings(module: types.ModuleType, source: str, live_by_name: dict) -> None:
     """Module-level `holder.attr = Name` statements re-ran during the exec and
-    bound the THROWAWAY object (melty.py: `Core.melty = Melty`). Re-point each
+    bound the THROWAWAY object (meltygui.py: `Core.melty = Melty`). Re-point each
     at the live object the module dict holds for that name."""
     if not live_by_name:
         return

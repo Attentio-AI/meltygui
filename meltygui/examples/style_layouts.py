@@ -1,14 +1,16 @@
 """Three composed layouts for exploring residual styles in the GUI playground."""
-import imgui
+import meltygui_imgui as imgui
 
-import melty
-from melty import Style, glfw_window, pressed
-from src.lsd.gl_gui.hdr_color import pack_color
-from src.lsd.gl_gui.fonts import Font
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.headers import draw_header
+import meltygui
+from meltygui import Style
+from meltygui import glfw_window
+from meltygui import pressed
+from meltygui.hdr_color import pack_color
+from meltygui.fonts import Font
+from meltygui.runtime import Melty
+from meltygui.toggles import Toggles
+from meltygui.rendering.core import render_func
+from meltygui.views.headers import draw_header
 
 
 strength = 0.22
@@ -105,16 +107,18 @@ def crossing():
 
 
 @glfw_window(name='Style compositions — GUI playground', width=1060, height=1000,
-             show_name=True, with_header=draw_header, app_id='melty-gui-playground',
+             show_name=True, with_header=draw_header, app_id='meltygui-gui-playground',
              style=Style(), disable_scroll=False)
 @render_func(use_cache=False)
 def style_compositions(input_value, draw_state):
-    from melty.examples.gui_playground import toggle_styles, toggle_root, reset
+    from meltygui.examples.gui_playground import toggle_styles
+    from meltygui.examples.gui_playground import toggle_root
+    from meltygui.examples.gui_playground import reset
     if pressed('ctrl+d'):
         toggle_styles()
     if pressed('ctrl+l'):
         toggle_root()
-    melty.draw_menu_bar({
+    meltygui.draw_menu_bar({
         'Styles': {'Enable / disable (Ctrl+D)': toggle_styles,
                    'Light / dark root (Ctrl+L)': toggle_root, 'Reset': reset},
         'Residual': {'Stronger': stronger, 'Softer': softer},

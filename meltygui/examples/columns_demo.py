@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """The studio's columns playground (view/playground/columns_playground.py)
 as an app: `@window` swapped for `@glfw_window`, nothing else changed."""
-import imgui
-from melty import glfw_window
-from src.lsd.gl_gui.view.core_views.columns import draw_rows, Columns, Rows
-from src.lsd.gl_gui.view.core_views.core_render import render_func
+import meltygui_imgui as imgui
+from meltygui import glfw_window
+from meltygui.views.columns import draw_rows
+from meltygui.views.columns import Columns
+from meltygui.views.columns import Rows
+from meltygui.rendering.core import render_func
 
 columns_demo = Columns({
     "settings": {"alpha": 0.5, "steps": 12, "label": "left pane", "enabled": True},

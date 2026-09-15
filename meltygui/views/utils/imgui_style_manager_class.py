@@ -1,8 +1,11 @@
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color, unpack_color, style_color, scale_saturation
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
+from meltygui.hdr_color import unpack_color
+from meltygui.hdr_color import style_color
+from meltygui.hdr_color import scale_saturation
 import colorsys
 
-from src.lsd.gl_gui.global_style import GlobalStyle
+from meltygui.global_style import GlobalStyle
 
 
 def cap_brightness(r, g, b, max_b):
@@ -406,7 +409,7 @@ class ImGuiStyleManager:
         # and the widget brightness cap, so it's memoized per tint: the
         # editor's inline widgets push + restore a tint each (60+ widgets a
         # frame on a Toggles-like file = ~2.8 ms of hsv conversion per frame).
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         widget_max_b = Toggles.Style.widget_max_brightness
         real_colors = style.colors
         cache_key = (round(r, 5), round(g, 5), round(b, 5), widget_max_b)
@@ -435,7 +438,7 @@ class ImGuiStyleManager:
         # brightness is capped (Toggles.Style.widget_max_brightness): a bright
         # tint otherwise lifts them to the text's brightness and the widgets
         # go blank. Function-level import: toggles.py imports this module.
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         widget_max_b = Toggles.Style.widget_max_brightness
 
         def make_widget_color(input):

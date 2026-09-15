@@ -6,7 +6,8 @@ from typing import Dict, Optional, Any, Tuple
 from dataclasses import dataclass
 import ctypes
 
-from src.shader_library.shader_manager.base import ShaderType, Shader
+from meltygui.graphics.base import ShaderType
+from meltygui.graphics.base import Shader
 
 # GLSL version header
 GLSL_VERSION = "#version 330 core\n"

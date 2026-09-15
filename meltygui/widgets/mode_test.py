@@ -19,12 +19,12 @@ rows appear, and they are independently editable:
 Editing `line_height` on the mode row rewrites mode.py and every leaf
 reflows; the plain row edits this file instead.
 """
-import imgui
+import meltygui_imgui as imgui
 
-from src.lsd.gl_gui.modes import Modes
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+from meltygui.modes import Modes
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.views.values import draw_any
 
 # Module level so hotswap-re-exec reuses it - edits made in the window survive
 # while iterating on the mode.

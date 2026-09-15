@@ -36,6 +36,6 @@ def default_mode_for(for_type, default=None):
 
 
 def register_defaults():
-    from src.lsd.gl_gui.modes import Modes
+    from meltygui.modes import Modes
 
     set_default_mode_lazy('torch', 'Tensor', Modes.FILE_TREE)

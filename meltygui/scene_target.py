@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import OpenGL.GL as gl
 
-from src.lsd.gl_gui.gl_state import GLState, GLTexture, is_gl_thread
-from src.lsd.gl_gui.hdr_color import GLSL_ENCODE
-from src.lsd.gl_gui.shader_func import shader_func
+from meltygui.gl_state import GLState
+from meltygui.gl_state import GLTexture
+from meltygui.gl_state import is_gl_thread
+from meltygui.hdr_color import GLSL_ENCODE
+from meltygui.shader_func import shader_func
 
 _STATE = globals().get("_STATE", {
     "fbo": 0, "tex": None, "rbo": None, "size": (0, 0), "active": False, "gl": None,
@@ -147,7 +149,7 @@ def present(width: int, height: int) -> bool:
     into the default framebuffer. The scene stays intact for readbacks."""
     if not _STATE["active"] or not is_gl_thread():
         return False
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     _STATE["active"] = False
     if _STATE["gl"] is None:
         _STATE["gl"] = GLState()
@@ -160,7 +162,7 @@ def present(width: int, height: int) -> bool:
     gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
     # PQ only once the surface actually carries the tag (wayland_color.sync):
     # an untagged app is sRGB to the compositor, whatever the toggle says.
-    from src.lsd.gl_gui import wayland_color
+    import meltygui.wayland_color as wayland_color
     pq = wayland_color.resolved_output() == "pq" and (wayland_color.applied() == "pq" or not wayland_color.available())
     # 1.0 = the desktop's SDR white: the reference the applied PQ tag carries
     # (wayland_color.desired_reference - the compositor's preferred

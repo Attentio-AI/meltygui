@@ -25,20 +25,20 @@ import threading
 import time
 import uuid
 
-from src.lsd.gl_gui import window_api as glfw
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui.window_api as glfw
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 
-from src.lsd.gl_gui.fonts import Font
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from meltygui.fonts import Font
+from meltygui.runtime import Melty
+from meltygui.toggles import Toggles
+from meltygui.utils.glfw_utils import request_render
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.window_decoration import window
 # Reuse the editor's GLFW-key -> character map (covers letters, digits, punctuation
 # with shift pairs) to turn key events into the bytes the shell expects.
-from src.lsd.gl_gui.view.core_views.text_editor import _KEY_CHAR_MAP
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
+from meltygui.editor.text import _KEY_CHAR_MAP
+from meltygui.rendering.decorators.core_decoration import defaults
 
 
 _COL_ERR = (1.0, 0.45, 0.40)
@@ -250,7 +250,7 @@ def _owned_launch_argv(session):
 def _handoff_to_gnome(session):
     """Open a gnome-terminal that attaches to an OWNED session the in-app PTY already
     created, and OWNS its lifetime: its trap kills the session on window close, so
-    melty-close ↔ gnome-close stay in sync. Non-blocking (Popen). `new-session -A` (not
+    meltygui-close ↔ gnome-close stay in sync. Non-blocking (Popen). `new-session -A` (not
     plain attach) is race-safe — whoever loses the create just attaches — though the PTY
     forks first so it normally wins. No `exec`, or the trap is skipped (see claude-d).
     `env -u TMUX` so it attaches even if the studio itself was launched inside tmux."""
@@ -654,7 +654,8 @@ def _mouse_seq(modes, btn, col0, row0):
 
 
 # --- clickable file:line links (jump to IDE, like draw_text's jump-to button) ---
-_PROJECT_ROOT = "/home/lukas/Desktop/latent-descent"
+from meltygui.paths import application_root
+_PROJECT_ROOT = str(application_root())
 # Python traceback `File "path", line N`, or an absolute/~/./relative `path.ext:line`.
 _LINK_RE = re.compile(
     r'File "(?P<p1>[^"\n]+)", line (?P<l1>\d+)'
@@ -885,7 +886,7 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
             cr = int((io.mouse_pos.y - y0) / line_px)
             for path, line, segments in links:
                 if any(r == cr and lo <= cc < hi for (r, lo, hi) in segments):
-                    from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
+                    from meltygui.utils.jump_to_code import open_in_intellij
                     threading.Thread(target=open_in_intellij, args=(_resolve_path(path),),
                                      kwargs={"line_number": line}, daemon=True).start()
                     break

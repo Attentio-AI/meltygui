@@ -16,9 +16,9 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.window_decoration import window
 
 
 def _symbol_index_view():
@@ -27,7 +27,7 @@ def _symbol_index_view():
     sys-anchored and shared, but _index_refs_cache is module-level, so the
     warmer may be filling either twin's dict)."""
     refs, spans, snap, gen = {}, {}, {}, 0
-    for name in ("src.lsd.gl_gui.view.core_conversion.libcst_conversion",
+    for name in ("meltygui.code.libcst_conversion",
                  "lsd.gl_gui.view.core_conversion.libcst_conversion"):
         m = sys.modules.get(name)
         if m is None:
@@ -42,14 +42,15 @@ def _symbol_index_view():
 @window(disable_scroll=False, tint=(0.16296297311782837, 0.2611111, 0.24118687212467194))
 @render_func()
 def file_watch_debug(draw_state=None):
-    from src.lsd.gl_gui.melty import Melty, FileWatch
-    from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
+    from meltygui.runtime import Melty
+    from meltygui.runtime import FileWatch
+    from meltygui.editor.external_changes import ExternalChanges
 
     RenderFuncs.draw_function(FileWatch.watch_project_files, icon="",
                               tint=(0, 0, 0, 1), show_bg=False, run_in_thread=True,
                               result_fade_frames=30)
 
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    from meltygui.editor.pending_save import PendingSave
 
     view_paths = {p: len(dss) for p, dss in FileWatch.path_to_draw_states.items()}
     tracked = FileWatch.project_tracked

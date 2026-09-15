@@ -172,7 +172,7 @@ class _Index:
 
 def default_universe():
     global _UNIVERSE_MEMO
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     cache = getattr(Melty, "cache", None)
     if cache is None:
         return []

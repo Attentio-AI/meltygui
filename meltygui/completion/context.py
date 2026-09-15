@@ -19,7 +19,9 @@ import os
 import re
 from pathlib import Path
 
-from src.lsd.gl_gui.fim import ContextItem, EditorView, fim_context_source
+from meltygui.completion.service import ContextItem
+from meltygui.completion.service import EditorView
+from meltygui.completion.service import fim_context_source
 
 
 _DEF_LINE_RE = re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)")
@@ -56,7 +58,7 @@ def file_head_tail(text: str, address):
         if (address is None or getattr(address, "path", None) is None
                 or getattr(address, "start", None) is None):
             return "", ""
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         file_text = PendingSave.current_file_text(address.path)
         if file_text is None:
             return "", ""
@@ -80,7 +82,7 @@ def span_function(path, span_start: int):
     if path is None:
         return None
     try:
-        from src.lsd.gl_gui.view.core_conversion.chain_converters import _enclosing_function
+        from meltygui.code.chain_converters import _enclosing_function
         return _enclosing_function(str(path), span_start + 1)
     except Exception:
         return None
@@ -100,7 +102,7 @@ def editor_view(text: str, cursor: int, address, fn=None) -> EditorView:
     version = None
     if path is not None:
         try:
-            from src.lsd.gl_gui.view.core_views.text_editor import _pending_gen_of
+            from meltygui.editor.text import _pending_gen_of
             version = _pending_gen_of(path)
         except Exception:
             version = None
@@ -205,7 +207,7 @@ def _table(view: EditorView):
     roster's `live_text=` overlay: that re-parses the span alone and a
     method loses its class parent. Falls back to a one-off parse of the
     spliced file when the roster has no table for the path."""
-    from src.lsd.gl_gui.view.core_conversion import symbol_roster as roster
+    import meltygui.code.symbol_roster as roster
     tbl = getattr(view, "_table", None)
     if tbl is None:
         try:
@@ -295,7 +297,7 @@ def definition_source(view: EditorView):
         return
     if tbl is None:
         return
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     text = view.text
     caret_line = view.caret_line
     own_lo = view.span_start + 1
@@ -368,13 +370,14 @@ def runtime_types_source(view: EditorView):
     if view.fn is None:
         return
     try:
-        from src.lsd.gl_gui.func_metadata import FuncsMetadata, _meta_key
+        from meltygui.func_metadata import FuncsMetadata
+        from meltygui.func_metadata import _meta_key
         slot = FuncsMetadata.metadata.get(_meta_key(view.fn))
     except Exception:
         return
     if not slot:
         return
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     ws, we, _ = _window(view, Toggles.Fim.scan_lines)
     words = _word_set(view.text[ws:we])
     rows = []
@@ -431,9 +434,9 @@ def live_values_source(view: EditorView):
     inline. Values are summarized on the spot and never retained."""
     if view.fn is None:
         return
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     try:
-        from src.lsd.gl_gui.view.core_conversion.live_view import live_values_for
+        from meltygui.code.live_view import live_values_for
         store = live_values_for(view.fn)
     except Exception:
         return
@@ -447,7 +450,7 @@ def live_values_source(view: EditorView):
     lines = view.text.split("\n")
     delta = 0
     try:
-        from src.lsd.gl_gui.view.core_views.text_editor import _pending_line_delta
+        from meltygui.editor.text import _pending_line_delta
         delta = _pending_line_delta(view.path, view.span_start) if view.path else 0
     except Exception:
         delta = 0

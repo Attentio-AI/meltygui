@@ -1,13 +1,22 @@
 """Closable Melty LoRA windows sharing data and rendering, with different policies."""
-import imgui
-import melty
-from melty import Style, glfw_window, pressed, default_scalar_accumulation, default_tint_accumulation
-from melty.examples.lora_data import lora_preview, nested_style_kwargs
-from melty.examples.tint_functions import darken, wave
-from melty.examples.scalar_policies import subtract, size_curve, weight_curve, shadow_curve
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.headers import draw_header
+import meltygui_imgui as imgui
+import meltygui
+from meltygui import Style
+from meltygui import glfw_window
+from meltygui import pressed
+from meltygui import default_scalar_accumulation
+from meltygui import default_tint_accumulation
+from meltygui.examples.lora_data import lora_preview
+from meltygui.examples.lora_data import nested_style_kwargs
+from meltygui.examples.tint_functions import darken
+from meltygui.examples.tint_functions import wave
+from meltygui.examples.scalar_policies import subtract
+from meltygui.examples.scalar_policies import size_curve
+from meltygui.examples.scalar_policies import weight_curve
+from meltygui.examples.scalar_policies import shadow_curve
+from meltygui.runtime import Melty
+from meltygui.rendering.core import render_func
+from meltygui.views.headers import draw_header
 
 
 loras = lora_preview()
@@ -32,20 +41,20 @@ def reopen():
 
 @render_func(use_cache=False)
 def lora_contents(input_value, draw_state):
-    changed, _ = melty.draw_any(input_value, name='Loras', icon='',
+    changed, _ = meltygui.draw_any(input_value, name='Loras', icon='',
                                style=Style((.035, .025, .045)),
                                initial={'expanded': True}, child_kwargs=children)
     return changed, input_value
 
 
 @glfw_window(name='LoRA accumulation comparison', width=1800, height=1040,
-             show_name=True, with_header=draw_header, app_id='melty-gui-playground', style=Style())
+             show_name=True, with_header=draw_header, app_id='meltygui-gui-playground', style=Style())
 @render_func(use_cache=False)
 def lora_comparison(input_value, draw_state):
-    from melty.examples.gui_playground import toggle_styles
+    from meltygui.examples.gui_playground import toggle_styles
     if pressed('ctrl+d'):
         toggle_styles()
-    melty.draw_menu_bar({'Windows': {'Reopen LoRA windows': reopen},
+    meltygui.draw_menu_bar({'Windows': {'Reopen LoRA windows': reopen},
                          'Styles': {'Enable / disable (Ctrl+D)': toggle_styles}}, name='lora-comparison-menu')
     imgui.text('Same LoRA data and render function. Each Melty window can be moved, resized, scrolled, and closed.')
     for i, (name, tint_fn, size_fn, weight_fn, shadow_fn) in enumerate(policies):

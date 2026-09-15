@@ -23,17 +23,19 @@ import math
 import threading
 import time
 
-import imgui
+import meltygui_imgui as imgui
 import numpy as np
 
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_conversion.live_view import (
-    live_view, live_values_for, label_for)
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_any, draw_collection
-from src.lsd.gl_gui.view.mode import Mode
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
+from meltygui.utils.glfw_utils import request_render
+from meltygui.code.live_view import live_view
+from meltygui.code.live_view import live_values_for
+from meltygui.code.live_view import label_for
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.views.values import draw_any
+from meltygui.views.values import draw_collection
+from meltygui.debug.mode import Mode
+from meltygui.rendering.decorators.core_decoration import defaults
 import json
 from pathlib import Path
 
@@ -195,7 +197,7 @@ def fit_line(n=45, noise=9):
 @window
 @render_func(auto_resize=True)
 def live_view_snapshot(input_value=None, draw_state=None, **kwargs):
-    from src.lsd.gl_gui.view.core_views.live_view_views import draw_function_live
+    from meltygui.editor.live_views import draw_function_live
     draw_function_live(fit_line, name="fit_line snapshot")
 
 
@@ -250,5 +252,5 @@ def attention_lab(heads=28, seq=48, dim=32, temp=0.35, shift=3, layers=17):
 @window
 @render_func(tint=(0.611, 0.42, 0.095), auto_resize=True)
 def live_view_tensors(input_value=None, draw_state=None, **kwargs):
-    from src.lsd.gl_gui.view.core_views.live_view_views import draw_function_live
+    from meltygui.editor.live_views import draw_function_live
     draw_function_live(attention_lab, name="attention_lab runner", icon=None, display_name=None)

@@ -7,7 +7,7 @@ importing this module does not initialize GLFW or connect to a display.
 import importlib
 import os
 import sys
-from src.lsd.gl_gui import window_constants
+import meltygui.window_constants as window_constants
 
 _state = globals().get('_state') or {'backend': None, 'selected': False}
 
@@ -23,7 +23,7 @@ def select_backend(enabled):
     if _state['selected']:
         return backend_name()
     if use_native_windows(enabled):
-        from src.lsd.gl_gui.window_backends.native_wayland import Backend
+        from meltygui.windows.backends.native_wayland import Backend
         _state['backend'] = Backend()
     _state['selected'] = True
     return backend_name()

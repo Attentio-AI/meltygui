@@ -15,15 +15,32 @@ from pathlib import Path
 
 import conftest  # noqa: F401
 
-from src.lsd.gl_gui.view.core_conversion.core_syntax import (
-    parse_to_dict, general_parse_to_str, diff, reparse_reusing, CoreSyntaxError,
-    ORIGIN_KEY, values_equal, render)
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-    Comment, CodeLine, ClassParse, EnumParse, FunctionParse, CallParse, DecorationParse,
-    Conditional, Loop, Try, Except, NO_DEFAULT, cst_module_to_dict, GeneralParse)
+from meltygui.code.core_syntax import parse_to_dict
+from meltygui.code.core_syntax import general_parse_to_str
+from meltygui.code.core_syntax import diff
+from meltygui.code.core_syntax import reparse_reusing
+from meltygui.code.core_syntax import CoreSyntaxError
+from meltygui.code.core_syntax import ORIGIN_KEY
+from meltygui.code.core_syntax import values_equal
+from meltygui.code.core_syntax import render
+from meltygui.code.libcst_conversion import Comment
+from meltygui.code.libcst_conversion import CodeLine
+from meltygui.code.libcst_conversion import ClassParse
+from meltygui.code.libcst_conversion import EnumParse
+from meltygui.code.libcst_conversion import FunctionParse
+from meltygui.code.libcst_conversion import CallParse
+from meltygui.code.libcst_conversion import DecorationParse
+from meltygui.code.libcst_conversion import Conditional
+from meltygui.code.libcst_conversion import Loop
+from meltygui.code.libcst_conversion import Try
+from meltygui.code.libcst_conversion import Except
+from meltygui.code.libcst_conversion import NO_DEFAULT
+from meltygui.code.libcst_conversion import cst_module_to_dict
+from meltygui.code.libcst_conversion import GeneralParse
 import libcst as cst
 
-SRC = Path(__file__).resolve().parents[1] / "src"
+import meltygui
+SRC = Path(meltygui.__file__).resolve().parent
 
 
 def roundtrip(text):
@@ -87,7 +104,7 @@ class TestIdentity(unittest.TestCase):
         self.assertGreater(len(files), 50)
         checked = 0
         for path in files:
-            if "site-packages" in str(path) or "venv" in str(path):
+            if {"site-packages", "venv", ".venv"} & set(path.relative_to(SRC).parts):
                 continue
             text = path.read_text(encoding="utf-8")
             try:
@@ -532,7 +549,7 @@ class TestParity(unittest.TestCase):
     def test_linemap_depth_matches(self):
         # live_view resolves sites via LineMap.node_at_line - our span set
         # (which nodes carry .span / _child_spans) must match libcst's exactly.
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import LineMap
+        from meltygui.code.libcst_conversion import LineMap
         for i, text in enumerate(self.SNIPPETS + [SAMPLE]):
             with self.subTest(i=i):
                 ours, theirs = LineMap(parse_to_dict(text)), LineMap(cst_module_to_dict(cst.parse_module(text)))
@@ -586,7 +603,7 @@ class TestReparseReusing(unittest.TestCase):
         self.assertEqual(node._child_spans["a"].start_line, 4)
 
     def test_bubbling_tree_is_never_mutated(self):
-        from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling
+        from meltygui.code.bubbling import install_bubbling
         class Root:
             marks = 0
             def _mark_changed(self):
@@ -615,19 +632,20 @@ class TestToggleIntegration(unittest.TestCase):
     """Toggles.TextEditor.melty_syntax routes the chain nodes through core_syntax."""
 
     def setUp(self):
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         self._prev = Toggles.TextEditor.melty_syntax
         Toggles.TextEditor.melty_syntax = True
 
     def tearDown(self):
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         Toggles.TextEditor.melty_syntax = self._prev
 
     def test_chain_nodes_round_trip(self):
-        from src.lsd.gl_gui.view.core_conversion.new_converters import (
-            string_to_cst_module, cst_module_to_string)
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-            cst_module_to_dict, dict_to_cst_module, cst_module_to_str)
+        from meltygui.code.new_converters import string_to_cst_module
+        from meltygui.code.new_converters import cst_module_to_string
+        from meltygui.code.libcst_conversion import cst_module_to_dict
+        from meltygui.code.libcst_conversion import dict_to_cst_module
+        from meltygui.code.libcst_conversion import cst_module_to_str
         _c, module = string_to_cst_module.__wrapped__(SAMPLE)
         self.assertIsInstance(module, str)
         gp = cst_module_to_dict(module)
@@ -642,10 +660,10 @@ class TestToggleIntegration(unittest.TestCase):
         self.assertEqual(out, SAMPLE.replace("speed = 3.0", "speed = 4.00"))
 
     def test_indented_snippet_reindents(self):
-        from src.lsd.gl_gui.view.core_conversion.new_converters import (
-            string_to_cst_module, cst_module_to_string)
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-            cst_module_to_dict, dict_to_cst_module)
+        from meltygui.code.new_converters import string_to_cst_module
+        from meltygui.code.new_converters import cst_module_to_string
+        from meltygui.code.libcst_conversion import cst_module_to_dict
+        from meltygui.code.libcst_conversion import dict_to_cst_module
         snippet = "    class Inner:\n        a = 1\n"
         _c, module = string_to_cst_module.__wrapped__(snippet)
         gp = cst_module_to_dict(module)
@@ -656,10 +674,11 @@ class TestToggleIntegration(unittest.TestCase):
     def test_module_level_statement_no_wrapper(self):
         # ast accepts `return` at module level (it is a compile time error, not a
         # parse error), so the bare text is the module, no wrapper is needed.
-        from src.lsd.gl_gui.view.core_conversion.new_converters import (
-            string_to_cst_module, cst_module_to_string, _CALL_WRAP_PREFIXES)
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-            cst_module_to_dict, dict_to_cst_module)
+        from meltygui.code.new_converters import string_to_cst_module
+        from meltygui.code.new_converters import cst_module_to_string
+        from meltygui.code.new_converters import _CALL_WRAP_PREFIXES
+        from meltygui.code.libcst_conversion import cst_module_to_dict
+        from meltygui.code.libcst_conversion import dict_to_cst_module
         snippet = "x = configure(debug=True)\n"
         _c, module = string_to_cst_module.__wrapped__(snippet)
         self.assertFalse(module.startswith(_CALL_WRAP_PREFIXES[0]))
@@ -669,16 +688,16 @@ class TestToggleIntegration(unittest.TestCase):
         self.assertEqual(out, "x = configure(debug=False)\n")
 
     def test_call_wrapper_unwraps(self):
-        from src.lsd.gl_gui.view.core_conversion.new_converters import (
-            _unwrap_call_module, _CALL_WRAP_PREFIXES)
+        from meltygui.code.new_converters import _unwrap_call_module
+        from meltygui.code.new_converters import _CALL_WRAP_PREFIXES
         wrapped = _CALL_WRAP_PREFIXES[0] + "    else:\n        pass\n"
         self.assertEqual(_unwrap_call_module(wrapped), "else:\n    pass\n")
 
     def test_decorator_block_wrapper(self):
-        from src.lsd.gl_gui.view.core_conversion.new_converters import (
-            string_to_cst_module, cst_module_to_string)
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-            cst_module_to_dict, dict_to_cst_module)
+        from meltygui.code.new_converters import string_to_cst_module
+        from meltygui.code.new_converters import cst_module_to_string
+        from meltygui.code.libcst_conversion import cst_module_to_dict
+        from meltygui.code.libcst_conversion import dict_to_cst_module
         snippet = "@window(name='w', z=1)\n"
         _c, module = string_to_cst_module.__wrapped__(snippet)
         gp = cst_module_to_dict(module)
@@ -687,20 +706,21 @@ class TestToggleIntegration(unittest.TestCase):
         self.assertEqual(out, "@window(name='w', z=2)\n")
 
     def test_syntax_error_is_a_syntaxerror(self):
-        from src.lsd.gl_gui.view.core_conversion.new_converters import string_to_cst_module
+        from meltygui.code.new_converters import string_to_cst_module
         with self.assertRaises(SyntaxError) as ctx:
             string_to_cst_module.__wrapped__("x = (\n")
         self.assertIsNotNone(ctx.exception.lineno)
 
     def test_parse_source_to_general_and_load(self):
-        from src.lsd.gl_gui.view.core_conversion.chain_converters import parse_source_to_general
+        from meltygui.code.chain_converters import parse_source_to_general
         _c, gp = parse_source_to_general.__wrapped__("x = 1\n")
         self.assertIn(ORIGIN_KEY, gp)
 
     def test_reverse_error_is_pending(self):
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-            cst_module_to_dict, dict_to_cst_module, ParseError)
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Pending
+        from meltygui.code.libcst_conversion import cst_module_to_dict
+        from meltygui.code.libcst_conversion import dict_to_cst_module
+        from meltygui.code.libcst_conversion import ParseError
+        from meltygui.code.libcst_conversion import Pending
         gp = cst_module_to_dict("x = 1\n")
         gp["x"] = CodeLine("(")
         res = dict_to_cst_module(gp)
@@ -712,8 +732,9 @@ class TestConsumers(unittest.TestCase):
     def test_snapshot_overlay_recognises_bubbling_defs(self):
         # The code host rewrites the held tree to Bubbling_<Base>; the live-view
         # overlay's def detection must see through that on BOTH parsers.
-        from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling
-        from src.lsd.gl_gui.view.core_views.live_view_views import _is_funcdef_node, _is_def_parse
+        from meltygui.code.bubbling import install_bubbling
+        from meltygui.editor.live_views import _is_funcdef_node
+        from meltygui.editor.live_views import _is_def_parse
         class Root:
             def _mark_changed(self):
                 pass
@@ -743,7 +764,7 @@ class TestConsumers(unittest.TestCase):
         self.assertEqual(len(diff(gp2)), 1)
 
     def test_linemap_over_core_syntax_parse(self):
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import LineMap
+        from meltygui.code.libcst_conversion import LineMap
         gp = parse_to_dict(SAMPLE)
         lm = LineMap(gp)
         ref = lm.node_at_line(8)          # `speed = 3.0`
@@ -752,7 +773,7 @@ class TestConsumers(unittest.TestCase):
         self.assertEqual(ref.path[:2], ("Toggles", "TextEditor"))
 
     def test_parse_def_name_both_parsers(self):
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import parse_def_name
+        from meltygui.code.libcst_conversion import parse_def_name
         ours = parse_to_dict(SAMPLE)
         theirs = cst_module_to_dict(cst.parse_module(SAMPLE))
         for gp in (ours, theirs):
@@ -791,7 +812,7 @@ class TestConsumers(unittest.TestCase):
 # ── the scanner front end vs the ast oracle ─────────────────────────────────────
 
 def _snapshot_value(v):
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import NoDefault
+    from meltygui.code.libcst_conversion import NoDefault
     if isinstance(v, Comment):
         return ("C", str(v), v.inline)
     if isinstance(v, CodeLine):
@@ -854,7 +875,7 @@ class TestScannerParity(unittest.TestCase):
     def test_whole_src_tree(self):
         checked = 0
         for path in sorted(SRC.rglob("*.py")):
-            if "site-packages" in str(path) or "venv" in str(path):
+            if {"site-packages", "venv", ".venv"} & set(path.relative_to(SRC).parts):
                 continue
             text = path.read_text(encoding="utf-8")
             try:
@@ -867,8 +888,8 @@ class TestScannerParity(unittest.TestCase):
         self.assertGreater(checked, 50)
 
     def test_worker_on_big_files(self):
-        for name in ("view/core_views/text_editor.py", "toggles.py", "view/core_views/new_core_view.py"):
-            path = SRC / "lsd" / "gl_gui" / name
+        for name in ("editor/text.py", "toggles.py", "views/values.py"):
+            path = SRC / name
             self._check(path.read_text(encoding="utf-8"), path, frontends=("worker",))
 
     def test_worker_reports_syntax_errors_as_syntaxerror(self):
@@ -882,8 +903,8 @@ class TestScannerParity(unittest.TestCase):
                 parse_to_dict(bad, frontend="scan")
 
     def test_default_frontend_by_size(self):
-        from src.lsd.gl_gui.toggles import Toggles
-        from src.lsd.gl_gui.view.core_conversion import core_syntax as cs
+        from meltygui.toggles import Toggles
+        import meltygui.code.core_syntax as cs
         prev = (Toggles.TextEditor.melty_scanner, Toggles.TextEditor.melty_async_min_chars)
         try:
             Toggles.TextEditor.melty_scanner = True
@@ -917,7 +938,7 @@ class TestIncremental(unittest.TestCase):
         yield "edit near the top", lines[0] + "  # touched\n" + "\n".join(lines[1:])
 
     def _check(self, text, label):
-        from src.lsd.gl_gui.view.core_conversion.core_syntax import reparse_incremental
+        from meltygui.code.core_syntax import reparse_incremental
         for name, new_text in self._edits(text):
             if new_text == text:
                 continue
@@ -945,13 +966,13 @@ class TestIncremental(unittest.TestCase):
         self._check(SAMPLE, "sample")
 
     def test_src_files(self):
-        for name in ("toggles.py", "view/core_conversion/live_view.py", "view/core_views/text_editor.py",
-                     "view/core_views/merge_files.py", "shaped.py"):
-            path = SRC / "lsd" / "gl_gui" / name
+        for name in ("toggles.py", "code/live_view.py", "editor/text.py",
+                     "editor/pending_save.py", "rendering/shaped.py"):
+            path = SRC / name
             self._check(path.read_text(encoding="utf-8"), name)
 
     def test_reuses_untouched_top_level_nodes(self):
-        from src.lsd.gl_gui.view.core_conversion.core_syntax import reparse_incremental
+        from meltygui.code.core_syntax import reparse_incremental
         gp = parse_to_dict(SAMPLE)
         toggles = gp["Toggles"]
         inc = reparse_incremental(gp, SAMPLE.replace("local_one = 5", "local_one = 55"))
@@ -961,8 +982,8 @@ class TestIncremental(unittest.TestCase):
         self.assertEqual(inc["my_func"]["locals"]["local_one"], 55)
 
     def test_never_mutates_the_previous_tree(self):
-        from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling
-        from src.lsd.gl_gui.view.core_conversion.core_syntax import reparse_incremental
+        from meltygui.code.bubbling import install_bubbling
+        from meltygui.code.core_syntax import reparse_incremental
         class Root:
             marks = 0
             def _mark_changed(self):

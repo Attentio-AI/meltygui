@@ -50,20 +50,58 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-    GeneralParse, ClassParse, EnumParse, FunctionParse, CallParse, DecorationParse,
-    Comment, CodeLine, Conditional, Loop, Try, Except, NO_DEFAULT, NoDefault, Span,
-    _SKIP_PARAMS, _UNREADABLE, _float_to_str, _floats_match, _is_dunder,
-    _override_changed, _format_override_comment,
-    _reformat_override_comment, _resolve_as_enum, _resolve_callable_by_name,
-    _resolve_callable_by_parts, _cached_signature,
-)
-from src.lsd.gl_gui.view.core_conversion.melty_scan import (   # noqa: F401 (re-exports)
-    Item, Seq, Origin, Base, ZERO_BASE, Types, UNRESOLVED, _Src, extract as _extract,
-    scan_comments as _scan_comments,
-    NGeneralParse, NClassParse, NEnumParse, NFunctionParse, NCallParse, NDecorationParse,
-    NConditional, NLoop, NTry, NExcept, NComment, NCodeLine, NameRef, NNoDefault, NSpan,
-)
+from meltygui.code.libcst_conversion import GeneralParse
+from meltygui.code.libcst_conversion import ClassParse
+from meltygui.code.libcst_conversion import EnumParse
+from meltygui.code.libcst_conversion import FunctionParse
+from meltygui.code.libcst_conversion import CallParse
+from meltygui.code.libcst_conversion import DecorationParse
+from meltygui.code.libcst_conversion import Comment
+from meltygui.code.libcst_conversion import CodeLine
+from meltygui.code.libcst_conversion import Conditional
+from meltygui.code.libcst_conversion import Loop
+from meltygui.code.libcst_conversion import Try
+from meltygui.code.libcst_conversion import Except
+from meltygui.code.libcst_conversion import NO_DEFAULT
+from meltygui.code.libcst_conversion import NoDefault
+from meltygui.code.libcst_conversion import Span
+from meltygui.code.libcst_conversion import _SKIP_PARAMS
+from meltygui.code.libcst_conversion import _UNREADABLE
+from meltygui.code.libcst_conversion import _float_to_str
+from meltygui.code.libcst_conversion import _floats_match
+from meltygui.code.libcst_conversion import _is_dunder
+from meltygui.code.libcst_conversion import _override_changed
+from meltygui.code.libcst_conversion import _format_override_comment
+from meltygui.code.libcst_conversion import _reformat_override_comment
+from meltygui.code.libcst_conversion import _resolve_as_enum
+from meltygui.code.libcst_conversion import _resolve_callable_by_name
+from meltygui.code.libcst_conversion import _resolve_callable_by_parts
+from meltygui.code.libcst_conversion import _cached_signature
+from meltygui.code.melty_scan import Item
+from meltygui.code.melty_scan import Seq
+from meltygui.code.melty_scan import Origin
+from meltygui.code.melty_scan import Base
+from meltygui.code.melty_scan import ZERO_BASE
+from meltygui.code.melty_scan import Types
+from meltygui.code.melty_scan import UNRESOLVED
+from meltygui.code.melty_scan import _Src
+from meltygui.code.melty_scan import extract as _extract
+from meltygui.code.melty_scan import scan_comments as _scan_comments
+from meltygui.code.melty_scan import NGeneralParse
+from meltygui.code.melty_scan import NClassParse
+from meltygui.code.melty_scan import NEnumParse
+from meltygui.code.melty_scan import NFunctionParse
+from meltygui.code.melty_scan import NCallParse
+from meltygui.code.melty_scan import NDecorationParse
+from meltygui.code.melty_scan import NConditional
+from meltygui.code.melty_scan import NLoop
+from meltygui.code.melty_scan import NTry
+from meltygui.code.melty_scan import NExcept
+from meltygui.code.melty_scan import NComment
+from meltygui.code.melty_scan import NCodeLine
+from meltygui.code.melty_scan import NameRef
+from meltygui.code.melty_scan import NNoDefault
+from meltygui.code.melty_scan import NSpan
 
 ORIGIN_KEY = "__origin__"
 
@@ -169,7 +207,7 @@ REAL_TYPES = Types(
 
 
 def _default_frontend(n_chars):
-    from src.lsd.gl_gui.toggles import Toggles      # lazy to avoid an import cycle
+    from meltygui.toggles import Toggles      # lazy: avoid an import cycle
     if not Toggles.TextEditor.melty_scanner:
         return "ast"
     if n_chars >= Toggles.TextEditor.melty_async_min_chars and _worker.available():
@@ -309,9 +347,16 @@ def materialize_parse(gp, origin):
     bind positional args to runtime signatures (renaming dict keys and origin
     paths). `Item.orig` identity with the dict values survives the pickle
     round trip on its own (one dumps → shared references)."""
+    from meltygui.code.libcst_conversion import _yield_to_ui
+    _yield_to_ui()
     _bind_pending_positionals(gp, origin)
 
+    visited = 0
     def fix(path, node):
+        nonlocal visited
+        visited += 1
+        if visited % 128 == 0:
+            _yield_to_ui()
         d = getattr(node, "__dict__", None)
         if d is not None:
             if isinstance(node, GeneralParse):
@@ -388,7 +433,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 import pickle
 import _xxinterpchannels as _ch
-from src.lsd.gl_gui.view.core_conversion import melty_scan as _ms
+from meltygui.code import melty_scan as _ms
 import gc as _gc
 _gc.disable()                    # ~20% of the scan was gen-2 collections over the fresh tree
 try:
@@ -436,7 +481,7 @@ class _ScanWorker:
             return None
         import _xxsubinterpreters as si
         import _xxinterpchannels as ch
-        root = str(Path(__file__).resolve().parents[5])
+        root = str(Path(__file__).resolve().parents[2])
         with self._lock:
             try:
                 if self._interp is None:
@@ -451,6 +496,8 @@ class _ScanWorker:
                 self._broken = True
                 return None
         import io
+        from meltygui.code.libcst_conversion import _yield_to_ui
+        _yield_to_ui()  # deserialization is back under the application's GIL
         return _ParseUnpickler(io.BytesIO(blob)).load()
 
 
@@ -468,7 +515,7 @@ def _parse_kind(obj):
     # Generated `Bubbling_<Base>` reclasses AND the static `_BubblingDict` /
     # `_BubblingList` copies that replace plain container containers.
     if t.__module__.endswith(".bubbling") or t.__name__.startswith("Bubbling_"):
-        from src.lsd.gl_gui.view.core_conversion.bubbling import base_of_bubbling
+        from meltygui.code.bubbling import base_of_bubbling
         return base_of_bubbling(t)
     return t
 
@@ -1012,6 +1059,8 @@ def reparse_reusing(gp, new_text) -> GeneralParse:
     fresh = parse_to_dict(new_text, file_path=getattr(gp, "file_path", None),
                           line_offset=getattr(gp, "line_offset", 0))
     origin = fresh[ORIGIN_KEY]
+    from meltygui.code.libcst_conversion import _yield_to_ui
+    _yield_to_ui()
     merged = _merge_node(gp, fresh, (), origin)
     if merged is gp:
         gp[ORIGIN_KEY] = origin            # internal key: a raw write OK on a bubbling node
@@ -1028,7 +1077,7 @@ def reparse_incremental(gp, new_text) -> GeneralParse:
     touched and splice them into a new root; everything else is the previous
     parse's objects with their offsets / line numbers shifted. Falls back to
     `reparse_reusing` (a full parse) when the edit lands outside every
-    statement (module head / tail), touches more than half the file, or the
+    statement at the module head, touches more than half the file, or the
     previous parse carries no statement table. Raises SyntaxError like
     parse_to_dict (region line numbers mapped back to the file).
 
@@ -1057,9 +1106,23 @@ def reparse_incremental(gp, new_text) -> GeneralParse:
             if i0 is None:
                 i0 = i
             i1 = i
+    # Appending AFTER the last statement still belongs to a small region:
+    # include the statement plus the trailing gap. Including the statement
+    # preserves indented body extensions and comments/decorators at its head.
+    tail_edit = old_lo >= top[-1][0] and old_hi >= top[-1][1]
+    if i0 is None and tail_edit:
+        i0 = i1 = len(top) - 1
     if i0 is None or old_lo < top[0][0]:
-        return reparse_reusing(gp, new_text)          # head / tail edit: full parse
+        return reparse_reusing(gp, new_text)
+    if tail_edit:
+        # Semicolon-separated statements share a physical line. Include
+        # all preceding them so the regional parser preserves their columns.
+        line_start = old_text.rfind('\n', 0, top[i0][0]) + 1
+        while i0 > 0 and top[i0 - 1][0] >= line_start:
+            i0 -= 1
     rs, re_ = top[i0][0], top[i1][1]
+    if tail_edit and i1 == len(top) - 1:
+        re_ = len(old_text)
     if old_hi > re_ or (re_ - rs) * 2 > len(old_text):
         return reparse_reusing(gp, new_text)
     region_old = old_text[rs:re_]
@@ -1069,7 +1132,7 @@ def reparse_incremental(gp, new_text) -> GeneralParse:
     dl = region_new.count("\n") - region_old.count("\n")
 
     # ── 2. parse the region on its own (column 0, statement boundaries) ──
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     frontend = "scan" if Toggles.TextEditor.melty_scanner else "ast"
     first_line = origin.src.linecol(rs)[0]
     try:
@@ -1092,6 +1155,10 @@ def reparse_incremental(gp, new_text) -> GeneralParse:
             after_keys.append(k)
     kept = set(before_keys) | set(after_keys)
     rkeys = [k for k in rgp if not _is_dunder(k)]
+    if kept.intersection(rkeys):
+        # The full parser disambiguates all top-level names globally.
+        # A parsed tail cannot safely choose those keys on its own.
+        return reparse_reusing(gp, new_text)
 
     # ── 4. the new root ──
     merged = type(gp)(source=new_text)

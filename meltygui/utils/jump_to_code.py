@@ -140,7 +140,8 @@ def open_in_intellij(file_path, line_number=None):
         print(f"File not found: {file_path}")
         return
 
-    project_root = "/home/lukas/Desktop/latent-descent"
+    from meltygui.paths import application_root
+    project_root = str(application_root())
 
     if line_number:
         # Open project, then file with line number

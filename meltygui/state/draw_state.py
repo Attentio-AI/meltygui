@@ -2,16 +2,22 @@ from collections import defaultdict
 
 from enum import Enum
 
-from src.lsd.gl_gui import window_api as glfw
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui.window_api as glfw
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.toggles import shadow_depth_at, Toggles
-from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
-from src.lsd.gl_gui.view.core_conversion.cache_tree import CacheTree, UNSET_VALUE
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save, exclude, deep_refresh, no_save_exclude, \
-    Core, defaults
+from meltygui.state.object import DictConversion
+from meltygui.toggles import shadow_depth_at
+from meltygui.toggles import Toggles
+from meltygui.utils.glfw_utils import print_stack_trace
+from meltygui.code.cache_tree import CacheTree
+from meltygui.code.cache_tree import UNSET_VALUE
+from meltygui.rendering.decorators.core_decoration import no_save
+from meltygui.rendering.decorators.core_decoration import exclude
+from meltygui.rendering.decorators.core_decoration import deep_refresh
+from meltygui.rendering.decorators.core_decoration import no_save_exclude
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.rendering.decorators.core_decoration import defaults
 
 
 class SynthColors(DictConversion):
@@ -113,22 +119,6 @@ class ColorPickerState(DictConversion):
         self.tab = "wide"
 
 
-@no_save("close_hold")
-class TabBarState(DictConversion):
-    """Per-editor state for draw_code_editor's tab bar (injected via
-    `tab_bar_state: TabBarState = None` — the TabState pattern)."""
-
-    def __init__(self):
-        super().__init__()
-        # Safari-style close hold: after a tab closes, the survivors keep
-        # the PRE-close layout (row membership, widths) and the next tab
-        # slides into the closed slot with the closed tab's width, so the
-        # close × on a middle-click lands on the same spot again. Released
-        # once the mouse travels Toggles.CodeEditor.tab_close_hold_move_px
-        # or the tab set changes for another reason. Session-only:
-        # {"tabs": {path: (x, row, width)}, "mouse": (x, y), "height": bar_h}
-        # or None.
-        self.close_hold = None
 
 
 @no_save("fit_phase")
@@ -162,6 +152,9 @@ class TextEditorState(DictConversion):
     def __init__(self):
         super().__init__()
         self._completion_explicit = False
+        self._token_matches = None
+        self._completion_buffer = None
+        self._completion_anchor = None
         self._signature_dismissed = None
         # {def_name: bool} - whether that function's parameter window is
         # visible. The def widget reads/writes this bool DIRECTLY each
@@ -437,7 +430,7 @@ class TileMode(Enum):
          # The context menu's Eval tab: typed per keystroke and must not
          # re-render the inspected view (the eval fires on Run / Enter).
          "eval_code")
-@no_save_exclude('render_time',  "total_z_offset", 'closable', 'has_full_tile', 'invalid_content_height',
+@no_save_exclude('_window_visibility_initialized', 'render_time',  "total_z_offset", 'closable', 'has_full_tile', 'invalid_content_height',
                   "parent_window", "pressed", "bbox", "", "child_selected", "bg_color",
                  'hover_rects', 'nested_window', 'use_cache', "header_top", "header_left", "left_offset",
                  "top_offset", 'kwargs', "just_shadow",
@@ -505,6 +498,7 @@ class DrawState(DictConversion):
         self._func = None
         self.misc_used = set()
         self.closed = False
+        self._window_visibility_initialized = False
         self.frame_count = 0
         # corner_radius is no longer a declared field - it migrated to the
         # auto state system (see core_render's auto-state block): views that
@@ -901,7 +895,7 @@ class DrawState(DictConversion):
         self._search_nav_pending = False
         # Temporary state: set when search is opened (Ctrl+F) so the find box grabs
         # text focus on the activating frame even if the underlying searchable
-        # view (the owner) currently holds melty text focus. Consumed (cleared)
+        # view (the owner) currently holds melty's text focus. Consumed (cleared)
         # by render_search after the box requests focus, so it won't keep
         # yanking focus away from a later deliberate click into the editor.
         self._search_focus_pending = False
@@ -912,8 +906,8 @@ class DrawState(DictConversion):
         self._search_active_local = None
         # draw_collection's copy of the key holding the global-current match.
         self._search_current_key = None
-        # Closure set each render: (term, session) => claims this view's own
-        # matches into the session from imgui. Driven by melty.search_walk.
+        # Closure set each render: (term, session) -> claims this view's own
+        # matches into the session without imgui. Driven by meltygui.search_walk.
         self._search_matcher = None
 
         self._print_last_invalid = False
@@ -1033,7 +1027,7 @@ class DrawState(DictConversion):
         # Reached only when normal lookup failed. `locate_params` and any
         # future explicit property resolve BEFORE this and never arrive here.
         if name.startswith("locate_"):
-            from src.lsd.gl_gui.view.core_views.anywhere import anywhere_value
+            from meltygui.views.anywhere import anywhere_value
             return anywhere_value(name[7:], self)
         raise AttributeError(name)
 
@@ -1046,7 +1040,7 @@ class DrawState(DictConversion):
         view function's signature default."""
         if isinstance(getattr(type(self), name, None), property):
             raise AttributeError(f"{name} is read-only")
-        from src.lsd.gl_gui.view.core_views.anywhere import set_anywhere
+        from meltygui.views.anywhere import set_anywhere
         set_anywhere(name[7:], value, self, allow_any=True, ds_fallback=True)
 
     @property
@@ -1067,7 +1061,7 @@ class DrawState(DictConversion):
         handed, so a fresh object per frame would look like a new value every
         frame. Stored via object.__setattr__ — like _anc_scroll_key above, it
         never appears on the default instance, so it isn't serialized."""
-        from src.lsd.gl_gui.view.core_views.anywhere import ParamProxy
+        from meltygui.views.anywhere import ParamProxy
         proxy = self.__dict__.get('_locate_proxy')
         if proxy is None:
             proxy = ParamProxy(self)
@@ -1082,7 +1076,7 @@ class DrawState(DictConversion):
         each a live ParamProxy (reads resolve, item-writes go through
         set_anywhere). A separate cached instance, same identity rules as
         locate_params above."""
-        from src.lsd.gl_gui.view.core_views.anywhere import GroupedParamProxy
+        from meltygui.views.anywhere import GroupedParamProxy
         proxy = self.__dict__.get('_locate_all_proxy')
         if proxy is None or not isinstance(proxy, GroupedParamProxy):
             proxy = GroupedParamProxy(self)
@@ -1387,8 +1381,8 @@ class DrawState(DictConversion):
         bumps scroll_version (see new_setattr in invalidation_decoration), so
         mid-frame scroll deltas still invalidate exactly like the uncached
         walk did."""
-        melty = Core.melty
-        key = (melty.frame_count, getattr(melty, 'scroll_version', 0))
+        meltygui = Core.melty
+        key = (meltygui.frame_count, getattr(meltygui, 'scroll_version', 0))
         if self._anc_scroll_key == key:
             return self._anc_scroll_cache
         sx = sy = 0
@@ -1467,7 +1461,7 @@ class DrawState(DictConversion):
             # Exempt the floating DnD window: glue_window_to_cursor assumes abs
             # is linear in window_pos, and a clamp makes its per-frame
             # correction accumulate without bound (see _cap_to_display).
-            from src.lsd.gl_gui.view.core_views.drag_drop import DragDrop
+            from meltygui.views.drag_drop import DragDrop
             if DragDrop.is_dragged_item(self):
                 return base_y
         except Exception:
@@ -1511,7 +1505,7 @@ class DrawState(DictConversion):
         if not capped:
             return pos
         try:
-            from src.lsd.gl_gui.view.core_views.drag_drop import DragDrop
+            from meltygui.views.drag_drop import DragDrop
             if DragDrop.is_dragged_item(self):
                 return pos
         except Exception:
@@ -1773,7 +1767,7 @@ class DrawState(DictConversion):
         returns rows that have scrolled off-screen too — as long as they
         rendered at least once and are still parented here. Used to walk the
         whole tree without drawing, e.g. to recount search matches by invoking
-        each view's _search_matcher (melty.search_walk), instead of force-
+        each view's _search_matcher (meltygui.search_walk), instead of force-
         rendering off-screen rows just so they re-register their counts."""
         seen = set()
         result = []

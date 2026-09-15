@@ -6,11 +6,12 @@ edges inside each column — is a shared edge object in the window's
 collision solve, so dragging any of them pushes and pulls the rest and
 out through the window frame, exactly like the columns playground.
 """
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.tile_manager import (Split, Tile,
-                                                         TileManagerState,
-                                                         draw_tiles)
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.views.tile_manager import Split
+from meltygui.views.tile_manager import Tile
+from meltygui.views.tile_manager import TileManagerState
+from meltygui.views.tile_manager import draw_tiles
 
 # Module-level so hotswap re-exec reuses it and the seeded edges survive
 # edits while iterating in draw_tiles. Blender's default screen, roughly:

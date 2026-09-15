@@ -1,4 +1,4 @@
-"""The persisted session of a melty app: its draw states between runs.
+"""The persisted session of a meltygui app: its draw states between runs.
 
 The studio keeps every view's draw_state in `AppModel.draw_state_registry`
 and pickles the whole model through load_save_v2 at exit, so column edges,
@@ -7,7 +7,7 @@ scroll positions, selections, injected state objects (`FileExplorerState`,
 A `@glfw_window` app has no AppModel; this module gives it the same thing
 with nothing to add to the app: `AppSession` is the model — the three
 fields Melty reads off the studio's root, plus `app_state`, the objects
-the app itself keeps through `melty.persisted(name, factory)` (the code
+the app itself keeps through `meltygui.persisted(name, factory)` (the code
 editor's `OpenFiles`) — loaded by `app._init_melty`
 BEFORE the first Surface (each surface's `Melty.vis.root` IS the session,
 so `get_draw_state`, `note_window_seen` and `adopt_registered_windows` find
@@ -30,7 +30,7 @@ import pathlib
 import sys
 import time
 
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
+from meltygui.state.object import DictConversion
 
 
 class AppSession(DictConversion):
@@ -52,7 +52,7 @@ class AppSession(DictConversion):
         self.app_state = {}
         # Global search's pick counts / last query (model.global_search_store
         # .GlobalSearchStore), created by the search view on first use when
-        # the app enabled it (melty.global_search). Declared here because
+        # the app enabled it (meltygui.global_search). Declared here because
         # the pickler keeps only the fields the model declares at init.
         self.global_search_store = None
 
@@ -75,7 +75,7 @@ def load(app_id):
     path = session_path(app_id)
     if not path.exists():
         return AppSession()
-    from src.lsd.gl_gui.utils import load_save_v2
+    import meltygui.state.serialization as load_save_v2
     try:
         session = load_save_v2.load(str(path), vis=None, run_on_load=True)
     except Exception as error:
@@ -99,7 +99,7 @@ def prune(session):
     """Drop registry slots that are not draw states: a draw_state whose
     countdown ran out pickles as None (see load_save_v2.persistent_id), and
     anything else is a foreign object. Returns the number removed."""
-    from src.lsd.gl_gui.model.core_model.draw_state import DrawState
+    from meltygui.state.draw_state import DrawState
     registry = session.draw_state_registry
     if not isinstance(registry, dict):
         session.draw_state_registry = {}
@@ -127,7 +127,7 @@ def save(session, app_id):
     """Write the session (atomic: load_save_v2.save). Returns the path, or
     None when the write failed (reported, never raised: it runs on the
     app's exit path)."""
-    from src.lsd.gl_gui.utils import load_save_v2
+    import meltygui.state.serialization as load_save_v2
     path = session_path(app_id)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -4,7 +4,7 @@ One @render_func body replaces draw_collection + the per-row
 draw_managed_window / button / draw_tuple widgets. Rows are plain draw-list
 rects/text with manual hit-testing, so a frame costs a handful of draw calls
 instead of a render_func wrapper per widget. It still lives inside a normal
-melty window (Mode.WINDOW chrome: drag, header, scroll, blit cache). Open
+meltygui window (Mode.WINDOW chrome: drag, header, scroll, blit cache). Open
 rows' buttons get their shadows from add_shadow() — standalone depth marks
 that need no per-button draw_state for the compositor to see.
 
@@ -19,19 +19,22 @@ import colorsys
 import ctypes
 import struct
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.toggles import Toggles, WindowManager
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.fonts import Font
-from src.lsd.gl_gui.view.core_views.blit_offscreen import add_glow, add_shadow, clear_glows
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.core_undo import NavUndo
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
-from src.lsd.gl_gui.view.core_views.headers import draw_header
-from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
+from meltygui.runtime import Melty
+from meltygui.toggles import Toggles
+from meltygui.toggles import WindowManager
+from meltygui.utils.glfw_utils import request_render
+from meltygui.fonts import Font
+from meltygui.views.blit_offscreen import add_glow
+from meltygui.views.blit_offscreen import add_shadow
+from meltygui.views.blit_offscreen import clear_glows
+from meltygui.rendering.core import render_func
+from meltygui.state.undo import NavUndo
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.views.headers import draw_header
+from meltygui.views.search_glow import draw_search_highlight
 
 _last_signature = None
 
@@ -438,13 +441,13 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
 
     # ---- local find-bar search ----
     # The window's find UI (searchable=True) counts matches by walking
-    # draw_states and calling each node's _search_matcher (melty.search_walk)
+    # draw_states and calling each node's _search_matcher (meltygui.draw_walk)
     # - rows here aren't draw_states, so this view is its own single matcher
     # node claiming one slot per matching row name, in the same ordinal order
     # the row loop draws them, keeping count and current-index aligned.
-    from src.lsd.gl_gui.melty import SearchTerm
-    from src.lsd.gl_gui.view.core_views.new_core_view import _fuzzy_key_match
-    from src.lsd.gl_gui.view.core_views.text_editor import _scroll_into_view
+    from meltygui.runtime import SearchTerm
+    from meltygui.views.values import _fuzzy_key_match
+    from meltygui.editor.text import _scroll_into_view
 
     names_lower = tuple(row[0].split("##")[0].lower() for _, row in placed)
 

@@ -2,8 +2,8 @@ import itertools
 import random
 import uuid
 
-from src.lsd.gl_gui.model.model_enums import RelaxedEnum
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
+from meltygui.state.enums import RelaxedEnum
+from meltygui.rendering.decorators.core_decoration import defaults
 
 # Monotonic id source: a per-process RANDOM start + a counter. next() on an
 # itertools.count is atomic under the GIL (thread-safe). The random start keeps

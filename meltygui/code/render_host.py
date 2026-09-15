@@ -33,15 +33,20 @@ import sys
 import threading
 import time
 
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.notifications import notify
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
-from src.lsd.gl_gui.perf_trace import trace as _ptrace, trace_rl as _ptrace_rl
-from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling, _reinstall_children, _DeepAttrMixin
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
-from src.lsd.gl_gui.view.invalidation_tracker import Note
+from meltygui.runtime import Melty
+from meltygui.notifications import notify
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.utils.glfw_utils import request_render
+from meltygui.utils.glfw_utils import print_stack_trace
+from meltygui.perf_trace import trace as _ptrace
+from meltygui.perf_trace import trace_rl as _ptrace_rl
+from meltygui.code.bubbling import install_bubbling
+from meltygui.code.bubbling import _reinstall_children
+from meltygui.code.bubbling import _DeepAttrMixin
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.core_decoration import defaults
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.debug.invalidation_tracker import Note
 
 
 _UNSET = object()
@@ -210,7 +215,7 @@ class RenderHost(_DeepAttrMixin, dict):
         window's expiry so the skipped draws catch up even when no further
         input produces a frame; a newer keypress simply re-enters the hold on
         that wake's frame and chains the next one."""
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         window = Toggles.HostLifecycle.host_typing_debounce_ms / 1000.0
         if window <= 0 or Melty.text_focused_ds is None:
             return False
@@ -222,7 +227,7 @@ class RenderHost(_DeepAttrMixin, dict):
         # draws forever.
         held = bool(Melty._keys_down)
         if held and Melty.glfw_window is not None:
-            from src.lsd.gl_gui import window_api as glfw
+            import meltygui.window_api as glfw
             for k in list(Melty._keys_down):
                 try:
                     if glfw.get_key(Melty.glfw_window, k) != glfw.PRESS:
@@ -260,7 +265,7 @@ class RenderHost(_DeepAttrMixin, dict):
         Hosts are self-registering (a code_file_io host loads its file on its
         first draw, reparses after an edit, auto-saves), so whatever runs the
         frame loop must call this once a frame — the studio from draw_main,
-        a melty app from Surface.frame — or nothing ever loads.
+        a meltygui app from Surface.frame — or nothing ever loads.
 
         Skipped entirely while any mouse button is held (click or drag) or a
         view is being scrolled (Melty.on_scroll lingers a few frames past the
@@ -279,7 +284,7 @@ class RenderHost(_DeepAttrMixin, dict):
         code-cache pairs and each polled draw is ~0.1ms of wrapper overhead
         doing nothing — that is what dropped drags to 70fps. ``mark(label)``,
         if given, receives a perf-trace label per gate decision and host drawn."""
-        import imgui
+        import meltygui_imgui as imgui
         any_mouse_held = (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
                           or imgui.is_mouse_down(2) or Melty.space_mouse_drag)
         typing_held = cls.typing_hold()
@@ -352,7 +357,7 @@ class RenderHost(_DeepAttrMixin, dict):
         so draw_main stops drawing them each frame. The host and its parse stay in the
         code-host cache (NOT evicted) — reopening the view re-registers it via
         notify_on_change → register. Toggle-gated; runs once per frame from end_frame."""
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         if not Toggles.HostLifecycle.deregister_idle:
             return
         k = int(Toggles.HostLifecycle.idle_frames)
@@ -736,7 +741,7 @@ class RenderHost(_DeepAttrMixin, dict):
         initial load) pass through immediately. The typing editor itself doesn't
         need the pulse — its keystrokes render through the focused editor
         directly."""
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         window = Toggles.HostLifecycle.consumer_notify_debounce_ms / 1000.0
         remaining = self._local_edit_time + window - time.monotonic()
         if remaining > 0:
@@ -762,7 +767,7 @@ class RenderHost(_DeepAttrMixin, dict):
         name = self._pending_notify_name
         if name is None:
             return
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         window = Toggles.HostLifecycle.consumer_notify_debounce_ms / 1000.0
         remaining = self._local_edit_time + window - time.monotonic()
         if remaining > 0:
@@ -881,7 +886,7 @@ class RenderHost(_DeepAttrMixin, dict):
             return True
         cache = Melty.cache
         if cache is None or not cache.enabled:
-            # No blit cache (a melty app's surface, tests): no tiles, so
+            # No blit cache (a meltygui app's surface, tests): no tiles, so
             # nothing that can carry a dirty mark: a run_in_background
             # completion (Melty.cache.invalidate on the io view's key) would
             # only reach this host on the 1-in-30 heartbeat - which an
@@ -912,7 +917,7 @@ class RenderHost(_DeepAttrMixin, dict):
         asks for, floored by Mode.HOST_WINDOW's min_width (the wrapper clamps
         `width` up to it). draw() parks the envelope this far off the display."""
         from typing import Any
-        from src.lsd.gl_gui.view.mode import Mode
+        from meltygui.debug.mode import Mode
         floor = Mode.HOST_WINDOW.value[Any].kwargs.get("min_width", 0)
         return max(stub_size, floor)
 
@@ -922,7 +927,7 @@ class RenderHost(_DeepAttrMixin, dict):
         envelope, and write the wrapper's output back upstream on edit."""
         if self.hidden:
             return None
-        from src.lsd.gl_gui.view.mode import Mode
+        from meltygui.debug.mode import Mode
 
         iv = self.input_value
         if isinstance(iv, RenderHost):
@@ -1024,7 +1029,7 @@ def render_host_view(input_value, external_change=False, draw=False, draw_state=
 
     # data-bag (no wrapper): just render the dict itself.
     if host.io_function is None:
-        from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection
+        from meltygui.views.values import draw_collection
         return draw_collection(host, name=host.name)
 
     # external_change for the wrapper: the framework's, OR the input-changed flag that

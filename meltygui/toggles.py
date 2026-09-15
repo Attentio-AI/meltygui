@@ -1,13 +1,15 @@
 from dataclasses import dataclass
 from enum import Enum
 
-from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core, defaults
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
+from meltygui.state.core_enums import ProfileMode
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.rendering.decorators.core_decoration import defaults
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.views.utils.imgui_style_manager_class import ImGuiStyleManager
 import json
-from src.lsd.gl_gui.hdr_color import pack_color, scale_saturation
+from meltygui.hdr_color import pack_color
+from meltygui.hdr_color import scale_saturation
 
 
 @dataclass(frozen=True)
@@ -534,7 +536,7 @@ class Toggles:
         # finally/with/match/case) alongside the def/class scopes. Read on
         # the next fold rescan (text edit), not per frame.
         block_fold_ranges = True
-        # Collapsed comment runs that carry a melty `# [...]` metadata line
+        # Collapsed comment runs that carry a melongui `# [...]` metadata line
         # hide their HEADER line too: the whole run drops the display and
         # only the fold chevron remains, on the gutter of the line BELOW the
         # run (the line the metadata annotates; edits splice around the
@@ -1520,15 +1522,15 @@ class Toggles:
         # maximize, the WM caption rule. Applied live (each frame).
         disable_double_click_maximize = True
 
-        # Left-drag ANYWHERE in the window moves the OS window - the melty
-        # way - as the worst-priority drag subscriber: a view that wants the
+        # Left-drag ANYWHERE in the window moves the OS window, the meltygui
+        # way — as the worst-priority drag subscriber: a view that wants the
         # drag (window headers, sliders, text selection, dnd) always wins,
         # while an unclaimed drag on bare background moves the window. Off =
         # only the strip moves. Double-click-maximize stays strip-only.
         move_drag_anywhere = True
 
         # Show the desktop's "move" pointer (mouse_state.MOVE) wherever a
-        # left drag would move a window: a melty window's bare areas (its
+        # left drag would move a window: a meltygui window's bare areas (its
         # resize handle) and the OS window's drag strip / drag-anywhere
         # background. Off = the normal arrow there.
         window_move_cursor = True
@@ -1559,7 +1561,7 @@ class Toggles:
         # plain left drag and resizes them on a right drag, faded while the
         # app is in left_drag_move_exclude + right_drag_resize_exclude and
         # does both itself (drag-anywhere xdg move, right-drag through the
-        # edge physics, nested melty windows' own right-drag). A click flips
+        # edge physics, nested meltygui windows' own right-drag). A click flips
         # it through desktop/left-drag-toggle --gestures (persisted by the
         # desktop's Settings). Innermost of the right group.
         # Off = never shown. (gl_gui/hypr_left_drag.py)
@@ -1571,13 +1573,13 @@ class Toggles:
         resize_corner = 18
 
         # The GLFW window's four edges are collision edges in the column
-        # edge model, one level outside the root melty windows
-        # (gl_gui/os_frame.py): a melty window edge or a column cascade
-        # collapsing into the OS edge moves it (the surface grows, or the
-        # window moves). The screen's work area is the wall outside it (its
-        # position from the GNOME extension's feed - installation_helper
-        # - None on X11), and an edge blocked by a wall grows its window on
-        # the other side, just like a melty window's edge against the
+        # edge system, one level above the nested meltygui windows
+        # (gl_gui/os_edges.py): a meltygui window edge or a column cascade
+        # pushed into the OS edge moves it (the surface grows, or the
+        # window moves), the screen's work area is the wall outside it (its
+        # position from the GNOME extension's feed — installation_helper
+        # — glfw on X11), and an edge blocked by a wall grows its window on
+        # the other side, just like a meltygui window's edge against the
         # display. Off, or with no position feed: the display edges are
         # immovable walls and the old in-display pin-and-slide remains.
         push_os_window_edges = True
@@ -1588,7 +1590,7 @@ class Toggles:
         # display on purpose (Lukas 08-27) - except above the display's
         # TOP (window_top_hard_limit).
         window_move_pushes_os_edges = True
-        # A melty window's TOP never passes the top of the DISPLAY (the
+        # A meltygui window's TOP never passes the top of the DISPLAY (the
         # work area, os_frame.display_rect): a hand move - its own or a
         # parent's it rides with - first pushes the OS edge back to the
         # screen as usual, then the remainder is clamped, so the window's
@@ -1614,7 +1616,7 @@ class Toggles:
         # [tint=(0.55, 0.75, 0.35)]
         melty_window_tint = (0.653, 0.758, 0.806)
 
-        # Tint of a melty APP's root surface (surface.Surface.frame): the
+        # Tint of a meltygui APP's root surface (surface.Surface.frame): the
         # ground every @glfw_window body draws on, painted through draw_bg
         # exactly as the studio's Main Window paints its desktop, so a
         # window filling the surface sits at bg depth 1 like a studio window
@@ -2630,7 +2632,7 @@ class Toggles:
         # toast names the top types; clicking the toast opens the report in
         # the code editor. Off = bare gc.collect(), no toast.
         reports = True
-        report_dir = "~/melty/gc_reports"
+        report_dir = "~/meltygui/gc_reports"
         # Oldest reports pruned past this many.
         report_keep = 50
     cam_zoom = 1.5585
@@ -2779,9 +2781,9 @@ class Toggles:
 
     memory_profile = False
 
-    # Shadow Settings for the compositor shadow pass (melty.py post_frame:
-    # ShadowCast at reduced res over the R16 shadow mask, then
-    # ShadowComposite's joint blend upsample onto the frame). Read once
+    # Shadow Settings - the compositor shadow pass (meltygui.py post_frame:
+    # ShadowCast at reduced res over the R16 rank mask, then
+    # ShadowComposite's joint bilateral upsample onto the frame). Read live
     # per frame.
     shadow_downscale = 3
     # Per-view cap for add_shadow/add_glow marks: a view (draw_state)
@@ -2987,7 +2989,7 @@ class Toggles:
     show_full_call_stack = False
 
     # Screenshot output dir (screenshot.py / context menu capture)
-    screenshots = "/home/lukas/melty/screenshots"
+    screenshots = ""  # Default: the user's XDG cache directory.
 
     debug_set_anywhere = False
     ignore_call_from = ()
@@ -3015,7 +3017,7 @@ class Actions:
         pixels inside it are saved as a PNG (Toggles.screenshots), opened in
         the code editor, and the file path is copied to the clipboard. Esc
         cancels."""
-        from src.lsd.gl_gui.view.playground.region_screenshot import arm
+        from meltygui.widgets.region_screenshot import arm
         arm()
 
     @staticmethod
@@ -3026,8 +3028,13 @@ class Actions:
         import subprocess
         # Full paths + close_fds=False -> posix_spawn, not fork (forking this
         # process stalls the render thread).
-        subprocess.Popen(["/usr/bin/gnome-terminal", "--",
-                          "/home/lukas/bin/claude-d"], close_fds=False)
+        import shutil
+        terminal, command = shutil.which("gnome-terminal"), shutil.which("claude-d")
+        if terminal is None or command is None:
+            from meltygui.notifications import notify
+            notify("Install gnome-terminal and claude-d to use this action")
+            return
+        subprocess.Popen([terminal, "--", command], close_fds=False)
 
 
 @window

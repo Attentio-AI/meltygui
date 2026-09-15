@@ -15,29 +15,35 @@ FileTreeState, injected by annotation the same way GLState/CodeState are.
 import colorsys
 from pathlib import Path
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color, with_alpha
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.modes import Modes
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.headers import draw_header, flat_button, _brightness_clamp_fn
-from src.lsd.gl_gui.view.playground import file_graph
-from src.lsd.gl_gui.view.playground.file_graph import start_build
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.view.playground.folder_files import folder_proxy, watch_folder, _file_meta
-from src.lsd.gl_gui.view.core_views.drag_drop import DragDrop
-from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
+from meltygui.hdr_color import with_alpha
+from meltygui.runtime import Melty
+from meltygui.state.object import DictConversion
+from meltygui.modes import Modes
+from meltygui.utils.glfw_utils import request_render
+from meltygui.rendering.core import render_func
+from meltygui.views.headers import draw_header
+from meltygui.views.headers import flat_button
+from meltygui.views.headers import _brightness_clamp_fn
+import meltygui.widgets.file_graph as file_graph
+from meltygui.widgets.file_graph import start_build
+from meltygui.toggles import Toggles
+from meltygui.files.folder import folder_proxy
+from meltygui.files.folder import watch_folder
+from meltygui.files.folder import _file_meta
+from meltygui.views.drag_drop import DragDrop
+from meltygui.views.blit_offscreen import add_shadow
+from meltygui.rendering.decorators.window_decoration import window
 
-ROOT = Path(__file__).resolve().parents[4]     # .../src
+from meltygui.paths import application_root
+ROOT = application_root()     # .../src
 
 
 
 def open_file(path):
     """Route `path` into the code editor (summons the editor window)."""
-    from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+    from meltygui.extensions import open_source as open_in_editor
     open_in_editor(str(path))
 
 
@@ -102,7 +108,7 @@ def _meta():
 def _tint_of(meta, path):
     """The row's background tint (rgb), or None for an unpainted file — no
     stored tint, or FileMeta's black-transparent default."""
-    from src.lsd.gl_gui.model.open_files import FileMeta
+    from meltygui.models.file_meta import FileMeta
     entry = meta.get(str(path)) if meta is not None else None
     tint = FileMeta.painted_tint(entry)
     return tuple(tint[:3]) if tint else None
@@ -136,7 +142,7 @@ def reorder_siblings(meta, siblings, dragged, insert_index):
     dict: every sibling gets an entry, and the siblings' existing SLOTS in the
     dict (their key positions) are refilled in the new order, so nothing else
     in the dict moves. Returns True when the order changed."""
-    from src.lsd.gl_gui.model.open_files import FileMeta
+    from meltygui.models.file_meta import FileMeta
     keys = [str(p) for p in siblings]
     dragged_key = str(dragged)
     if dragged_key not in keys:
@@ -516,7 +522,7 @@ def _apply_row_drop(meta, dragged, visible, insert_index, position):
 # # @window(input_value=files_host, tint=(0.42, 0.36, 0.54), disable_scroll=False, mode=Modes.WINDOW)
 # @render_func(show_bg=True, use_cache=False, shadow=True, selectable=False)
 # def render_file_tree_melty(input_value=None, draw_state=None, **kwargs):
-#     from src.lsd.gl_gui.render_funcs import RenderFuncs
+#     from meltygui.rendering.registry import RenderFuncs
 #     watch_folder(ROOT, draw_state)
 #     # Same shape as draw_folder_files: the host holds the tree one level down
 #     # under "value"; a simple top-level draw_collection, and the names-only

@@ -5,11 +5,10 @@ Run: venv/bin/python -m pytest tests/test_hdr_color.py -q
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
-from src.lsd.gl_gui import hdr_color as HC
+import meltygui.hdr_color as HC
 
 
 def _close(a, b, tol):
@@ -52,7 +51,7 @@ def test_white_and_p3_helpers_give_the_agreed_numbers():
 # --- the u32 pipe -----------------------------------------------------------
 
 def test_sdr_pack_is_imgui_compatible_bar_the_alpha_bit():
-    imgui = pytest.importorskip("imgui")
+    imgui = pytest.importorskip('meltygui_imgui')
     for rgba in ((1, 1, 1, 1), (0.5, 0.25, 0.0, 1.0), (0.0, 0.0, 0.0, 1.0), (0.2, 0.7, 0.9, 1.0)):
         ours = HC.pack_color(*rgba)
         theirs = imgui.get_color_u32_rgba(*rgba)
@@ -87,7 +86,7 @@ def test_hdr_pack_uses_the_flag_and_round_trips_within_a_code():
 
 
 def test_hdr_ceiling_and_zero_codes():
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     rng = Toggles.HDR.vertex_range
     top = HC.pack_color(*HC.white(rng * 4))          # past the ceiling clamps
     assert top & 0xFF == 255 and (top >> 8) & 0xFF == 255
@@ -114,7 +113,7 @@ def test_alpha_helpers_keep_flag_and_rgb():
 
 
 def test_style_color_survives_imgui_float_conversion():
-    imgui = pytest.importorskip("imgui")
+    imgui = pytest.importorskip('meltygui_imgui')
     for rgba in ((0.2, 0.3, 0.4, 1.0), (0.9, 0.1, 0.1, 0.3), (0.0, 0.0, 0.0, 0.0)):
         floats = HC.style_color(*rgba)
         assert imgui.get_color_u32_rgba(*floats) == HC.pack_color(*rgba)
@@ -329,8 +328,11 @@ def test_oklab_round_trip_and_box_chroma():
     16 x white is cbrt(16), extended (P3) values round-trip, and the max
     chroma inside the P3 box pinches to 0 at black and at the peak."""
     import math
-    from src.lsd.gl_gui.hdr_color import (
-        linear_to_oklab, oklab_to_linear, oklab_max_chroma, linear_p3_to_srgb, oklab_hue)
+    from meltygui.hdr_color import linear_to_oklab
+    from meltygui.hdr_color import oklab_to_linear
+    from meltygui.hdr_color import oklab_max_chroma
+    from meltygui.hdr_color import linear_p3_to_srgb
+    from meltygui.hdr_color import oklab_hue
     assert abs(linear_to_oklab((1.0, 1.0, 1.0))[0] - 1.0) < 1e-3
     assert abs(linear_to_oklab((16.0, 16.0, 16.0))[0] - 16 ** (1 / 3)) < 1e-3
     for rgb in ((0.2, 0.7, 0.1), linear_p3_to_srgb((1.0, 0.0, 0.0)), (4.0, 0.5, -0.3)):

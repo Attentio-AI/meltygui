@@ -1,10 +1,11 @@
 import functools
 from typing import Any
 
-from src.lsd.gl_gui.utils.custom_views import print_stack_trace
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import auto_eval, Core
-from src.lsd.gl_gui.view.invalidation_tracker import Note
+from meltygui.utils.custom_views import print_stack_trace
+from meltygui.utils.glfw_utils import request_render
+from meltygui.rendering.decorators.core_decoration import auto_eval
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.debug.invalidation_tracker import Note
 
 
 def live(cls):
@@ -39,15 +40,15 @@ def live(cls):
             if locate_prefix and name.startswith(locate_prefix):
                 self._locate_set(name, value)
                 return
-        melty = Core.melty
-        if melty.silence_invalidate or melty.frame_count < 2:
+        meltygui = Core.melty
+        if meltygui.silence_invalidate or meltygui.frame_count < 2:
             # Silenced - the render wrapper's own bookkeeping writes land here
             # ~100x per render_func call, so do nothing with the raw data.
             # scroll_offset is the one attr with a side effect even while
             # silenced: a real change bumps the version which keys the
             # _ancestor_scroll memo (see DrawState._ancestor_scroll).
             if name == 'scroll_offset' and getattr(self, name, None) != value:
-                melty.scroll_version = getattr(melty, 'scroll_version', 0) + 1
+                meltygui.scroll_version = getattr(meltygui, 'scroll_version', 0) + 1
             try:
                 original_setattr(self, name, value)
             except Exception as e:
@@ -65,7 +66,7 @@ def live(cls):
             print_stack_trace(e=e)
 
         if name == 'scroll_offset' and value != original_value:
-            melty.scroll_version = getattr(melty, 'scroll_version', 0) + 1
+            meltygui.scroll_version = getattr(meltygui, 'scroll_version', 0) + 1
 
         # Check if we're initializing
         initializing = getattr(self, init_flag, False)
@@ -82,6 +83,13 @@ def live(cls):
                 print(f"Invalidate all called due to change in {name}")
                 Core.melty.cache.invalidate_all()
                 return
+
+        # Private caches and excluded bookkeeping never invalidate a view.
+        # Comparing their values first would walk large text streams, line
+        # maps and syntax trees on every frame for a result we discard.
+        if (initializing or not visible or name.startswith('_')
+                or name == "driver" or meltygui.frame_count <= 2):
+            return
 
         # Call invalidate() if:
         # - not currently initializing
@@ -100,7 +108,7 @@ def live(cls):
                 if not initializing and visible and not name.startswith('_') \
                         and name != "driver" and Core.melty.frame_count > 2:
                     Core.melty.last_attr = name
-                    from src.lsd.gl_gui.view.attribute_churn import AttributeChurnMonitor
+                    from meltygui.debug.attribute_churn import AttributeChurnMonitor
                     AttributeChurnMonitor.record(type(self).__name__, name)
                     if do_deep_refresh:
                         note = Note(name=name, reason="(deep) invalidate_up_by_obj", tint=(0, 0, 1))
@@ -109,7 +117,7 @@ def live(cls):
                         note = Note(name=name, reason="invalidate_by_obj", tint=(0, 0, 1))
                         Core.melty.cache.invalidate_by_obj(self, name, note=note)
 
-                    from src.lsd.gl_gui.toggles import Toggles
+                    from meltygui.toggles import Toggles
                     if Toggles.InvalidateTracker.attrib_change_stack_trace:
                         print_stack_trace()
 

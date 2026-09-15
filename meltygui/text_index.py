@@ -80,7 +80,7 @@ _SYMBOL_HIT_CAP = 40           # max symbol-content hits per query
 
 def _search_root() -> str:
     """The same src root the Files tab's labels are relative to."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _SRC_PREFIX
+    from meltygui.code.libcst_conversion import _SRC_PREFIX
     return str(Path(_SRC_PREFIX))
 
 
@@ -98,7 +98,7 @@ def _under(path: str, root: str) -> bool:
 
 
 def _resolve_root(root) -> str:
-    """The index root as a str: the caller's `root` (a melty app's project),
+    """The index root as a str: the caller's `root` (a meltygui app's project),
     else the src root. Every index entry point takes an optional root so a
     standalone app searches ITS files, not the framework checkout."""
     return str(root) if root else _search_root()
@@ -155,7 +155,7 @@ def _pending_gens() -> dict:
     with queued edits). Resolved here because PendingSave keys by the Address's
     own Path object, which may be spelled differently."""
     try:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
     except ImportError:
         return {}
     out = {}
@@ -171,7 +171,7 @@ def _current_text(abs_path: str):
     """The file as the app sees it: disk with unsaved span edits spliced in.
     Falls back to a plain disk read outside the app (tests)."""
     try:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         return PendingSave.current_file_text(Path(abs_path))
     except ImportError:
         try:
@@ -198,7 +198,7 @@ def _scan_tint(lines, line_no, name):
     """Explicit tint of the definition at 1-based line_no, or None. Uses the
     editor's resolver in-app; standalone (tests) falls back to None."""
     try:
-        from src.lsd.gl_gui.view.core_views.text_editor import _scan_def_tint_lines
+        from meltygui.editor.text import _scan_def_tint_lines
     except ImportError:
         return None
     try:
@@ -240,8 +240,7 @@ def _parse_comment_tint(comment):
     app's canonical override parser when importable; a literal-eval fallback
     keeps the module standalone (tests)."""
     try:
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import \
-            _parse_override_comment
+        from meltygui.code.libcst_conversion import _parse_override_comment
         parsed = _parse_override_comment(comment)
         t = parsed.get("tint") if parsed else None
     except ImportError:
@@ -678,7 +677,7 @@ def _park_ui():
     chunk (~140 ms warm for a common word — a lower()+scan per candidate
     file), and a CPU-bound background thread GIL-convoys every frame it
     overlaps; parking at file boundaries keeps keystroke frames smooth."""
-    m = sys.modules.get("src.lsd.gl_gui.view.core_conversion.libcst_conversion")
+    m = sys.modules.get("meltygui.code.libcst_conversion")
     if m is not None:
         park = getattr(m, "_park_while_frame", None)
         if park is not None:
@@ -687,7 +686,7 @@ def _park_ui():
 
 def search(query: str, limit=200, per_file=_PER_FILE_CAP, cancelled=None, root=None):
     """Case-insensitive search over `root` (default: the src root — see
-    _search_root; a melty app passes its own project roots, one call per
+    _search_root; a meltygui app passes its own project roots, one call per
     root), pending edits included.
     Returns hit dicts {kind, path, rel, line, text, tint} in three kinds,
     listed in this order:

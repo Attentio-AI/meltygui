@@ -9,19 +9,19 @@ here is automatic."""
 from datetime import datetime
 from pathlib import Path
 
-import imgui
+import meltygui_imgui as imgui
 
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.text_editor import draw_text
+from meltygui.runtime import Melty
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.utils.glfw_utils import request_render
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.editor.text import draw_text
 
 # Anchored at src/sample.py regardless of cwd (this file lives at
 # src/lsd/gl_gui/view/playground/) - inside the watched project tree, where
 # MelWatch tracks external writes.
-SAMPLE_PATH = (Path(__file__).resolve().parents[4] / "sample.py")
+SAMPLE_PATH = (Path(__file__).resolve().parents[1] / "examples" / "sample.py")
 
 _DEFAULT_SAMPLE = '''"""Freeform scratch file for external-edit testing."""
 
@@ -138,8 +138,8 @@ def external_editor(draw_state=None):
     imgui.new_line()
 
     # Debug readout: does the studio currently see this file as drifted?
-    from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    from meltygui.editor.external_changes import ExternalChanges
+    from meltygui.editor.pending_save import PendingSave
     key = str(SAMPLE_PATH)
     tracked = key in ExternalChanges.originals
     unmerged = tracked and key in PendingSave.unmerged_drift_paths()

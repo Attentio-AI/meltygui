@@ -1,14 +1,14 @@
 """File selection using the same explorer as the standalone file browser."""
 from pathlib import Path
 
-import imgui
+import meltygui_imgui as imgui
 
-from src.lsd.gl_gui.app import pressed
+from meltygui.app import pressed
 
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_button
-from src.lsd.gl_gui.view.playground.fast_file_explorer import draw_fast_file_explorer
+from meltygui.state.object import DictConversion
+from meltygui.rendering.core import render_func
+from meltygui.views.values import draw_button
+from meltygui.files.explorer import draw_fast_file_explorer
 
 
 class FileSelectorState(DictConversion):
@@ -22,7 +22,7 @@ class FileSelectorState(DictConversion):
 def draw_file_selector(input_value: str | None = None, draw_state=None,
                        selector_state: FileSelectorState = None,
                        escape_key_pressed=False, choose_folder=False,
-                       context_menu=None, browse=None):
+                       context_menu=None, browse=None, show_hidden=None):
     """Return (True, absolute_path) once when a file is activated.
 
     Navigation stays here. input_value seeds the initial directory (home
@@ -58,7 +58,8 @@ def draw_file_selector(input_value: str | None = None, draw_state=None,
     changed, picked = draw_fast_file_explorer(
         selector_state.directory, name='files', width=right - left,
         height=max(120, bottom - top - 35),
-        folder_bg_boost=-0.23, folder_bg_rounding=10.0, context_menu=context_menu)
+        folder_bg_boost=-0.23, folder_bg_rounding=10.0, context_menu=context_menu,
+        show_hidden=show_hidden)
     if choose_folder:
         chosen, _ = draw_button(label='Choose Folder', name='choose', show_header=False,
                                 width=130, height=25)

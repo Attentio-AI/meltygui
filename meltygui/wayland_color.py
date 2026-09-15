@@ -42,10 +42,13 @@ from __future__ import annotations
 
 import ctypes
 
-from src.lsd.gl_gui import window_api as glfw
+import meltygui.window_api as glfw
 
-from src.lsd.gl_gui.wayland_move import (_c, _iface_addr, _wl_interface, _wl_message,
-                                         _wl_message_array)
+from meltygui.wayland_move import _c
+from meltygui.wayland_move import _iface_addr
+from meltygui.wayland_move import _wl_interface
+from meltygui.wayland_move import _wl_message
+from meltygui.wayland_move import _wl_message_array
 
 # Two scopes (see wayland_move for the same split): _STATE is the SURFACE's
 # - its wp_color_management_surface, feedback, description, and mode -
@@ -226,7 +229,7 @@ def _on_preferred_changed(data, proxy, *identity):
     # runs in post_frame — so ask for a frame (an idle app otherwise keeps
     # the stale tag until the next input).
     _STATE["preferred_dirty"] = True
-    from src.lsd.gl_gui.utils.glfw_utils import request_render
+    from meltygui.utils.glfw_utils import request_render
     request_render()
 
 
@@ -550,7 +553,7 @@ def preferred_query_failed():
 def desired_reference() -> float:
     """Reference white (nits) for the PQ tag + encode: the desktop's, when it
     told us and `Toggles.HDR.follow_desktop_white`; else the toggle."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     if _STATE["preferred_dirty"] and available():
         try:
             query_preferred()
@@ -613,7 +616,7 @@ def sync(window=None) -> str | None:
 def resolved_output() -> str:
     """Toggles.HDR.output with "auto" resolved: PQ when the compositor offers
     colour management, sRGB otherwise."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     mode = Toggles.HDR.output
     if mode == "auto":
         return "pq" if available() else "srgb"

@@ -4,7 +4,8 @@ import sys
 import threading
 import unittest
 
-from src.lsd.gl_gui.model.function_console import FunctionConsole, capture
+from meltygui.models.function_console import FunctionConsole
+from meltygui.models.function_console import capture
 
 
 class ConsoleTests(unittest.TestCase):

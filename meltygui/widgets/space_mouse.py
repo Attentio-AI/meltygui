@@ -28,24 +28,33 @@ once more on release, so the cached tile follows the cap.
 from __future__ import annotations
 import math
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 import numpy as np
 
-from src.lsd.gl_gui.events import space_mouse
-from src.lsd.gl_gui.gl_state import GLState
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.pbr import (begin_scene, end_scene, draw_cylinder, draw_mesh, draw_plane,
-                                draw_prism, environment, load_model, orbit_camera, Light,
-                                model_matrix, rotation_matrix)
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.view.core_conversion.new_converters import code_hosts_for
-from src.lsd.gl_gui.view.core_views.columns import ColumnLayout
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.headers import draw_header
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection
-from src.lsd.gl_gui.view.playground.voxel_playground import _view_size
+import meltygui.events.space_mouse as space_mouse
+from meltygui.gl_state import GLState
+from meltygui.runtime import Melty
+from meltygui.pbr import begin_scene
+from meltygui.pbr import end_scene
+from meltygui.pbr import draw_cylinder
+from meltygui.pbr import draw_mesh
+from meltygui.pbr import draw_plane
+from meltygui.pbr import draw_prism
+from meltygui.pbr import environment
+from meltygui.pbr import load_model
+from meltygui.pbr import orbit_camera
+from meltygui.pbr import Light
+from meltygui.pbr import model_matrix
+from meltygui.pbr import rotation_matrix
+from meltygui.toggles import Toggles
+from meltygui.code.new_converters import code_hosts_for
+from meltygui.views.columns import ColumnLayout
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.views.headers import draw_header
+from meltygui.views.values import draw_collection
+from meltygui.tensor.voxels import _view_size
 
 
 def _lathe_profile(fn, y0, y1, steps, r_end=None):
@@ -72,7 +81,7 @@ def _cap_meshes():
     steel skirt widening to the desk. Unit: the cap's foot radius 1; cap
     height CAP_HEIGHT. Built once (module cache), uploaded per GLState by
     draw_mesh."""
-    from src.lsd.gl_gui.pbr import lathe_mesh
+    from meltygui.pbr import lathe_mesh
     h = CAP_HEIGHT
     # [tint=(0.9, 0.6, 0.2)]
     r_rim, r_waist, y_waist = 0.86, 0.78, 0.66 * h     # the rim and the narrowest ring
@@ -393,7 +402,7 @@ def _environment_tint(view_tint):
 def _draw_puck(gl_state, axes, width, height, tilt, spin, cam_zoom, travel, twist,
                view_tint=None):
     """render_puck into the view's FBO, shown as an image of width × height."""
-    from src.lsd.gl_gui.pbr import pbr_pass
+    from meltygui.pbr import pbr_pass
     fb = render_puck(gl_state, "target", width, height, axes, tilt, spin, cam_zoom,
                      travel, twist, Toggles.SpaceMouse.environment, view_tint=view_tint)
     imgui.image(fb.texture_id, width, height, uv0=(0, 1), uv1=(1, 0))

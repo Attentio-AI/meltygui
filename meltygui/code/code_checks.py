@@ -63,7 +63,7 @@ import sys
 import time
 import types
 
-from src.lsd.gl_gui.notifications import lag_traced
+from meltygui.notifications import lag_traced
 
 # Names every module/frame sees without a visible binding.
 _BUILTIN_NAMES = frozenset(dir(builtins)) | {
@@ -162,10 +162,36 @@ def _handler_catches(handler_type, names):
     return isinstance(handler_type, ast.Name) and handler_type.id in names
 
 
+def _analysis_checkpoint():
+    """Let input/rendering run between bounded pieces of background analysis."""
+    import threading
+    if threading.current_thread() is threading.main_thread():
+        return
+    from meltygui.code.libcst_conversion import _yield_to_ui
+    _yield_to_ui()  # also guards a non-main GL thread
+
+
+def _analysis_matches(pattern, text):
+    import re
+    _analysis_checkpoint()
+    for index, match in enumerate(re.finditer(pattern, text)):
+        if index and index % 128 == 0:
+            _analysis_checkpoint()
+        yield match.group(1)
+
+
+def _parse_for_analysis(text):
+    _analysis_checkpoint()
+    result = ast.parse(text)
+    _analysis_checkpoint()
+    return result
+
+
 class _Collector:
     """One pass over the tree building the scope graph + the check worklists."""
 
     def __init__(self):
+        self._visited = 0
         self.module = _Scope("module", None)
         self.scopes = [self.module]
         self.calls = []             # (Call node, scope, type_guarded)
@@ -203,6 +229,9 @@ class _Collector:
             self._visit(stmt, scope)
 
     def _visit(self, node, scope):
+        self._visited += 1
+        if self._visited % 128 == 0:
+            _analysis_checkpoint()
         meth = getattr(self, "_v_" + type(node).__name__, None)
         if meth is not None:
             meth(node, scope)
@@ -770,7 +799,7 @@ def _literal_type_mismatch(fname, spec, call):
     if not spec.types:
         return None
     try:
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         if not Toggles.TextEditor.lint_literal_types:
             return None
     except Exception:
@@ -1034,6 +1063,35 @@ def _suggest_import(name):
     return stmts
 
 
+_project_import_suggestion_cache = {}
+
+
+def invalidate_import_bindings(path=None):
+    """An explicit import edit affects uses in every block, not just its own line."""
+    keys = {None, str(path) if path else None}
+    if path is not None:
+        from pathlib import Path
+        keys.add(str(Path(path).resolve()))
+    for key in keys:
+        _file_binds_cache.pop(key, None)
+        _inc_scan_state.pop(key, None)
+        for span in (False, True):
+            _inc_lint_state.pop((key, span), None)
+
+
+def _suggest_import_for_path(name, path, cached_only=False):
+    if path is None:
+        return _import_suggestion_cache.get(name) if cached_only else _suggest_import(name)
+    key = (str(path), name)
+    if cached_only:
+        return _project_import_suggestion_cache.get(key)
+    from meltygui.extensions import get
+    provider = get('source_imports')
+    statements = provider(name, path) if provider else _suggest_import(name)
+    _project_import_suggestion_cache[key] = statements[:_MAX_IMPORT_CANDIDATES]
+    return _project_import_suggestion_cache[key]
+
+
 _project_importables_cache = None   # (src_module_count, rows, stmts)
 
 
@@ -1048,8 +1106,10 @@ def project_importables():
     with a module. Cached; rebuilt when the number of loaded src. modules
     changes (imports only ever add modules mid-session)."""
     global _project_importables_cache
+    from meltygui.code.address import is_editable_source
     src_mods = {n: m for n, m in list(sys.modules.items())
-                if n.startswith("src.") and m is not None}
+                if m is not None and getattr(m, "__file__", None)
+                and is_editable_source(m.__file__)}
     stamp = len(src_mods)
     if (_project_importables_cache is not None
             and _project_importables_cache[0] == stamp):
@@ -1125,7 +1185,7 @@ def _module_text_binds(path):
     text = None
     key = str(path)
     try:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         from pathlib import Path as _P
         rp = _P(path).resolve()
         key = str(rp)
@@ -1153,7 +1213,7 @@ def _module_text_binds(path):
     if text is not None:
         try:
             file_col = _Collector()
-            file_col.run(ast.parse(text))
+            file_col.run(_parse_for_analysis(text))
             binds = set(file_col.module.binds)
             # Star imports don't make the answer unknowable: resolve each
             # source to its LIVE module's export list (__all__, else
@@ -1360,7 +1420,7 @@ def _signature_table(path):
     text = None
     key = str(path)
     try:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         from pathlib import Path as _P
         rp = _P(path).resolve()
         key = str(rp)
@@ -1381,7 +1441,7 @@ def _signature_table(path):
     table = None
     if text is not None:
         try:
-            tree = ast.parse(text)
+            tree = _parse_for_analysis(text)
             col = _Collector()
             col.run(tree)
             specs = {}
@@ -1443,7 +1503,7 @@ def _pending_spec_for(obj):
     if (not file or not qual or "." in qual):
         return False, None          # only module-level names are in the table
     try:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         from pathlib import Path as _P
         rp = _P(file).resolve()
         if PendingSave.pending_gen_for(rp) <= 0:
@@ -1580,33 +1640,33 @@ def _buffer_bound_names(text):
     syntax errors)."""
     import re
     bound = set()
-    bound.update(re.findall(r"(?m)^\s*(?:def|class)\s+(\w+)", text))
-    bound.update(re.findall(r"(?m)^\s*(\w+)\s*(?:=[^=]|,|\)|=$)", text))
-    bound.update(re.findall(r"\b(?:as|for)\s+(\w+)", text))
+    bound.update(_analysis_matches(r"(?m)^\s*(?:def|class)\s+(\w+)", text))
+    bound.update(_analysis_matches(r"(?m)^\s*(\w+)\s*(?:=[^=]|,|\)|=$)", text))
+    bound.update(_analysis_matches(r"\b(?:as|for)\s+(\w+)", text))
     # Tuple targets: every name between `for` and `in` is a binding
     # (`for chev, step, vid in ...` - the pass above only got `chev`), and
     # likewise every name on the left of an unpack assignment (`a, b = ...`).
     # `(` is excluded from the assignment class so a call's kwargs
     # (`foo(bar, baz=1)`) are never read as targets.
-    for targets in re.findall(r"\bfor\s+([\w\s,()\[\]*]+?)\s+in\b", text):
+    for targets in _analysis_matches(r"\bfor\s+([\w\s,()\[\]*]+?)\s+in\b", text):
         bound.update(re.findall(r"\w+", targets))
-    for targets in re.findall(r"(?m)^\s*([\w\s,\[\]*]+?)\s*=[^=]", text):
+    for targets in _analysis_matches(r"(?m)^\s*([\w\s,\[\]*]+?)\s*=[^=]", text):
         bound.update(re.findall(r"\w+", targets))
-    for params in re.findall(r"(?m)^\s*(?:def\s+\w+|lambda)\s*\(([^)]*)", text):
+    for params in _analysis_matches(r"(?m)^\s*(?:def\s+\w+|lambda)\s*\(([^)]*)", text):
         bound.update(re.findall(r"\w+", params))
     # Import bindings at ANY indent - a function-local `from m import name`
     # covers `name` for the whole buffer's scope, so it must never be
     # re-suggested. The parenthesized form is captured ACROSS lines ([^)]
     # matches newlines), so EVERY name of a multi-line
     # `from m import (a,\n b, c)` binds, not just the first per line.
-    for names in re.findall(
+    for names in _analysis_matches(
             r"(?m)^\s*from\s+[.\w]+\s+import\s+(\([^)]*\)?|[^#\n]*)", text):
         names = names.strip("()")
         for part in names.split(","):
             toks = part.split()
             if toks and toks[0] != "*":
                 bound.add(toks[0])
-    for names in re.findall(r"(?m)^\s*import\s+([^#\n]+)", text):
+    for names in _analysis_matches(r"(?m)^\s*import\s+([^#\n]+)", text):
         for part in names.split(","):
             toks = part.split()
             if toks:
@@ -1627,7 +1687,9 @@ def _tokenize_lenient(slice_text):
     out = []
     broke = False
     try:
-        for tok in _tokenize.generate_tokens(io.StringIO(slice_text).readline):
+        for index, tok in enumerate(_tokenize.generate_tokens(io.StringIO(slice_text).readline)):
+            if index % 128 == 0:
+                _analysis_checkpoint()
             if tok.type in (_tokenize.NAME, _tokenize.OP):
                 out.append((tok.type, tok.string, tok.start[0]))
     except (_tokenize.TokenError, IndentationError, SyntaxError, ValueError):
@@ -1657,7 +1719,7 @@ def _tokenize_lenient(slice_text):
     return out
 
 
-def _scan_slice(slice_text, line_offset, bound, path):
+def _scan_slice(slice_text, line_offset, bound, path, cached_only=False):
     """{absolute 1-based line: [import stmts]} for one text slice — the
     tokenize-based candidate pass shared by the full and incremental scans.
     Base identifiers only (not attributes after a dot, not assignment
@@ -1697,11 +1759,22 @@ def _scan_slice(slice_text, line_offset, bound, path):
                 if not file_binds_ready:
                     # Lazy: most slices resolve every name via builtins/bound
                     # and never need the (cached/throttled) file parse.
-                    file_binds = _module_text_binds(path) if path else None
+                    if cached_only:
+                        # The render-thread incremental path must not parse the
+                        # module or discover imports. A miss belongs to relint.
+                        hit = _file_binds_cache.get(str(path)) if path else None
+                        if path and hit is None:
+                            return None
+                        file_binds = hit[2] if hit else None
+                    else:
+                        file_binds = _module_text_binds(path) if path else None
                     file_binds_ready = True
                 if not (file_binds is not None and s in file_binds):
                     try:
-                        stmts = _suggest_import(s) or None
+                        stmts = _suggest_import_for_path(s, path, cached_only=cached_only)
+                        if cached_only and stmts is None:
+                            return None
+                        stmts = stmts or None
                     except Exception:
                         stmts = None
             verdict[s] = stmts
@@ -1759,7 +1832,7 @@ def collect_import_suggestions(text, path=None, full=False,
         old = st["text"]
         if old is text or old == text:
             return st["result"]
-        inc = _incremental_scan(st, old, text, path)
+        inc = _incremental_scan(st, old, text, path, cached_only=incremental_only)
         if inc is not None:
             if key:
                 _inc_scan_state[key] = inc
@@ -1773,7 +1846,7 @@ def collect_import_suggestions(text, path=None, full=False,
     return result
 
 
-def _incremental_scan(st, old, text, path):
+def _incremental_scan(st, old, text, path, cached_only=False):
     """The O(changed region) path: new state dict, or None → run a full scan.
 
     The changed region is the line span between the common prefix and common
@@ -1826,7 +1899,9 @@ def _incremental_scan(st, old, text, path):
         region_bound = _buffer_bound_names(slice_text)
         if region_bound - bound:
             bound = bound | region_bound
-        findings = _scan_slice(slice_text, pre_lines, bound, path)
+        findings = _scan_slice(slice_text, pre_lines, bound, path, cached_only=cached_only)
+        if findings is None:
+            return None
         for ln, stmts in findings.items():
             result[ln] = stmts
     return {"text": text, "result": result, "bound": bound}
@@ -1910,6 +1985,16 @@ def check_source_incremental(text, path=None, only_missing_imports=False):
         st["text"] = text
         return st["findings"]
     start, end, end_old, delta = bounds
+    # Bindings have file-wide effects. Recheck all uses when a declaration is
+    # added/removed instead of retaining a grow-only set of old imports.
+    previous_region = '\n'.join(old.split('\n')[start:end_old])
+    current_region = '\n'.join(text.split('\n')[start:end])
+    if _buffer_bound_names(previous_region) != _buffer_bound_names(current_region):
+        _file_binds_cache.pop(str(path), None)
+        findings = check_source(text, path=path, only_missing_imports=only_missing_imports)
+        _inc_lint_state[key] = {'text': text, 'findings': findings,
+                                'binds': _buffer_bound_names(text)}
+        return findings
     # Old-text region rows are start+1 .. end_old (1 based): findings above
     # keep their line, findings below shift by the edit line delta, findings
     # inside are re-derived from the fresh region lint.
@@ -1971,7 +2056,7 @@ def check_source(text, path=None, max_reports=40, only_missing_imports=False):
     stays off (its module-walk needs import-bound names the span never
     sees)."""
     try:
-        tree = ast.parse(text)
+        tree = _parse_for_analysis(text)
     except IndentationError:
         # A method/nested span arrives at its class-body indent - dedent and
         # retry (line numbers survive; textwrap.dedent strips only the common
@@ -1979,7 +2064,7 @@ def check_source(text, path=None, max_reports=40, only_missing_imports=False):
         # lint's mirror of the same normalization.
         import textwrap
         try:
-            tree = ast.parse(textwrap.dedent(text))
+            tree = _parse_for_analysis(textwrap.dedent(text))
         except (SyntaxError, ValueError):
             return []
     except (SyntaxError, ValueError):
@@ -2002,6 +2087,11 @@ def check_source(text, path=None, max_reports=40, only_missing_imports=False):
             seen.add((line, msg))
             reports.append((line, msg))
 
+    if path:
+        from meltygui.extensions import call
+        for line, message in call('source_diagnostics', text, path) or ():
+            report(line, message)
+
     # Span mode checks "does the module bind this" against the file's
     # CURRENT text (pending/inclusive), not its live namespace: a module keeps
     # a live binding forever once an import happens, so live-ns suppression would
@@ -2012,7 +2102,10 @@ def check_source(text, path=None, max_reports=40, only_missing_imports=False):
 
     if not col.star_import:
         for scope in col.scopes:
-            for name, lineno in scope.loads:
+            _analysis_checkpoint()
+            for index, (name, lineno) in enumerate(scope.loads):
+                if index % 128 == 0:
+                    _analysis_checkpoint()
                 if name in _BUILTIN_NAMES:
                     continue
                 if _resolves(scope, name):
@@ -2022,7 +2115,7 @@ def check_source(text, path=None, max_reports=40, only_missing_imports=False):
                 if file_binds is None and only_missing_imports and name in live_names:
                     continue        # no readable file text - old suppression
                 try:
-                    fixable = bool(_suggest_import(name))
+                    fixable = bool(_suggest_import_for_path(name, path))
                 except Exception:
                     fixable = False  # classification must never break the lint
                 # A fixable name reports even when the live namespace still
@@ -2040,7 +2133,7 @@ def check_source(text, path=None, max_reports=40, only_missing_imports=False):
         # module file's PENDING text instead of the live namespace (which needs
         # import-bound names the span never sees) - see _check_call_span.
         try:
-            from src.lsd.gl_gui.toggles import Toggles
+            from meltygui.toggles import Toggles
             _span_calls = Toggles.TextEditor.lint_span_calls
         except Exception:
             _span_calls = True
@@ -2062,11 +2155,13 @@ def check_source(text, path=None, max_reports=40, only_missing_imports=False):
     # Same toggle as the span pass - the pending-table fallback below is the
     # same feature surfaced in whole-file/region mode.
     try:
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         _table_calls = Toggles.TextEditor.lint_span_calls
     except Exception:
         _table_calls = True
-    for call, scope, guarded in col.calls:
+    for index, (call, scope, guarded) in enumerate(col.calls):
+        if index % 128 == 0:
+            _analysis_checkpoint()
         msg = _check_call_static(call, scope)
         if msg is None and not guarded:
             try:

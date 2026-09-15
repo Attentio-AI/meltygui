@@ -6,7 +6,7 @@ painted on its row (``entry["tint"]``, absent until then) — the file
 browser's rule, brush then picker.
 """
 
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
+from meltygui.state.object import DictConversion
 
 
 class ChatMetadata(DictConversion):
@@ -85,11 +85,11 @@ def shared_metadata():
     """Resolve the persistent mirror at the model boundary, never in a view.
 
     In the studio it lives on the root model and is saved with the session.
-    An app on melty has no root: every proxy then shares one process-wide
+    An app on meltygui has no root: every proxy then shares one process-wide
     instance, persisted to a JSON file when the app asked for it with
     `persistent_metadata(path)`."""
     global _app_metadata
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     root = getattr(getattr(Melty, "vis", None), "root", None)
     if root is None:
         if _app_metadata is None:

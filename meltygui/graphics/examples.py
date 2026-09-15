@@ -7,10 +7,12 @@ This demonstrates:
 3. Filter chaining
 4. Custom shader types
 """
-from lsd.gl_gui.melty import Melty
-from src.shader_library.shader_manager.base import GLType
-from src.shader_library.shader_manager.filter import Filter
-from src.shader_library.shader_manager.registry import register_shader, register_shader_type, get_registry
+from meltygui.runtime import Melty
+from meltygui.graphics.base import GLType
+from meltygui.graphics.filter import Filter
+from meltygui.graphics.registry import register_shader
+from meltygui.graphics.registry import register_shader_type
+from meltygui.graphics.registry import get_registry
 
 
 # =============================================================================
@@ -460,7 +462,7 @@ def normalize_example():
 #     pygame.display.set_mode((800, 600), DOUBLEBUF | OPENGL)
 #
 #     # Initialize Melty class with Filter
-#     melty = Melty()
+#     meltygui = Melty()
 #
 #     # Load an image as texture (simplified)
 #     def load_texture(path):
@@ -479,9 +481,9 @@ def normalize_example():
 #
 #     # Example usage:
 #     # texture, size = load_texture("image.png")
-#     # texture = melty.filter.brightness_contrast(texture, brightness=0.2)
+#     # texture = meltygui.filter.brightness_contrast(texture, brightness=0.2)
 #
-#     melty.cleanup()
+#     meltygui.cleanup()
 #     pygame.quit()
 
 

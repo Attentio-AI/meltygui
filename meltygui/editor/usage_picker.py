@@ -19,17 +19,21 @@ import os
 import re
 from pathlib import Path
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.toggles import Tint, Toggles
-from src.lsd.gl_gui.fonts import Font
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import UsageRef
-from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
-from src.lsd.gl_gui.view.core_views.code_line_fast import (
-    CodeLineTints, draw_code_line_fast, pop_code_font, push_code_font, shift_spans)
-from src.lsd.gl_gui.view.core_views.core_render import render_func
+from meltygui.runtime import Melty
+from meltygui.toggles import Tint
+from meltygui.toggles import Toggles
+from meltygui.fonts import Font
+from meltygui.code.libcst_conversion import UsageRef
+from meltygui.views.blit_offscreen import add_shadow
+from meltygui.editor.lines import CodeLineTints
+from meltygui.editor.lines import draw_code_line_fast
+from meltygui.editor.lines import pop_code_font
+from meltygui.editor.lines import push_code_font
+from meltygui.editor.lines import shift_spans
+from meltygui.rendering.core import render_func
 
 # Row pitch shared with the scroll-into-view helper — the Code tab's 24 + 2.
 ROW_H = 24.0
@@ -165,9 +169,9 @@ def build_usage_rows(targets, names, tints=None, *, texts=None):
     spelling for the caret. Returns (rows, best_index) — best_index is the
     row of targets[0]. Optional `texts` supplies exact buffer snapshots,
     keyed by path, so other code lists can share this tree and painter."""
-    from src.lsd.gl_gui.view.core_conversion import symbol_roster as roster
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
-    from src.lsd.gl_gui.view.core_views.text_editor import _uj_file_tint
+    import meltygui.code.symbol_roster as roster
+    from meltygui.editor.pending_save import PendingSave
+    from meltygui.editor.text import _uj_file_tint
     tints = tints if tints is not None else CodeLineTints()
     files = {}   # normalized path -> (path_str, text, lines, table, root _Node)
     for ref in targets:
@@ -306,7 +310,7 @@ def picker_content_height(menu_ds, model):
 def picker_fit(menu_ds, model):
     """The popover size that fits its rows, display-clamped: the fresh
     content rect's width (else the minimum) and the content height."""
-    from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
+    from meltygui.views.blit_offscreen import snap_int
     display_w, display_h = imgui.get_io().display_size
     rect = _fresh_rect(menu_ds, model)
     fit_w = snap_int(max(min(rect[0] if rect else PICKER_MIN_W, display_w), PICKER_MIN_W))
@@ -318,7 +322,7 @@ def picker_fit(menu_ds, model):
 def scroll_row_into_view(menu_ds, row_index):
     """Minimal scroll of the picker window so `row_index` is fully visible
     (the dd-menu helper at this module's row pitch)."""
-    from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
+    from meltygui.views.values import _dd_scroll_cursor_into_view
     _dd_scroll_cursor_into_view(menu_ds, row_index, pitch=ROW_PITCH)
 
 
@@ -352,7 +356,7 @@ def paint_usage_rows(input_value, draw_state, *, width=None,
     embedded list uses its column's draw_state for events and clipping;
     the standalone picker supplies its own draw_state above.
     """
-    from src.lsd.gl_gui.view.core_views.new_core_view import _dd_row_width
+    from meltygui.views.values import _dd_row_width
     # [tint=(0.9, 0.6, 0.2)] layout knobs — the Code tab's numbers
     ICON_COL = 22.0
     ICON_X = 4.0

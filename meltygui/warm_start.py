@@ -1,10 +1,10 @@
-"""Start-up shortcuts for melty apps (app.py), each worth tens of
+"""Start-up shortcuts for meltygui apps (app.py), each worth tens of
 milliseconds on the first frame. All measured 2026-09-10 on Hyprland with an
 NVIDIA GPU, originally in hdr-viewer's warm_start.py. MELTY_COLD=1 skips them.
 
     prepare(cache)             call BEFORE ``import glfw``
     remember_glfw_library()    call after it
-    cache_hinted_atlas(fm)     wrap a melty FontManager before the renderer builds
+    cache_hinted_atlas(fm)     wrap a meltygui FontManager before the renderer builds
 """
 import hashlib
 import os
@@ -30,7 +30,7 @@ def _hint_glfw_library(cache):
 
 
 def remember_glfw_library(cache):
-    from src.lsd.gl_gui import window_api as glfw
+    import meltygui.window_api as glfw
     path = getattr(getattr(glfw, '_glfw', None), '_name', None)
     if not path or not os.path.isabs(path):
         return
@@ -69,7 +69,7 @@ def _shadow_cursor_theme(cache):
     src = _cursor_theme_dir(name)
     if src is None:
         return
-    shadow_name = f'melty-{name}'
+    shadow_name = f'meltygui-{name}'
     root = cache / 'cursor-themes'
     theme = root / shadow_name
     cursors = theme / 'cursors'
@@ -113,7 +113,7 @@ def prepare(cache):
 def cache_hinted_atlas(font_mgr, cache):
     """FontManager.hint_atlas (FreeType re-rasterising every UI glyph, ~30 ms)
     is a pure function of the stb atlas it is handed, so cache its output on
-    disk keyed by those pixels (and melty's fonts.py, which holds the algorithm)."""
+    disk keyed by those pixels (and meltygui's fonts.py, which holds the algorithm)."""
     if os.environ.get('MELTY_COLD'):
         return
     real = font_mgr.hint_atlas

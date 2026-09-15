@@ -12,18 +12,24 @@ from dataclasses import dataclass
 from enum import EnumType
 from pathlib import Path
 
-from src.lsd.gl_gui.view.core_conversion.address import (
-    Address, _evict_linecache, shift_sibling_linenos, is_editable_source,
-    is_writable_file)
-from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-    _ensure_import_lines, _resolve_call_address, _split_span_at_call, DiskSpanText)
-from src.lsd.gl_gui.view.core_conversion.bubbling import base_of_bubbling
-from src.lsd.gl_gui.view.core_conversion.file_converters import _detect_newline
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
+from meltygui.code.address import Address
+from meltygui.code.address import _evict_linecache
+from meltygui.code.address import shift_sibling_linenos
+from meltygui.code.address import is_editable_source
+from meltygui.code.address import is_writable_file
+from meltygui.code.chain_converters import _ensure_import_lines
+from meltygui.code.chain_converters import _resolve_call_address
+from meltygui.code.chain_converters import _split_span_at_call
+from meltygui.code.chain_converters import DiskSpanText
+from meltygui.code.bubbling import base_of_bubbling
+from meltygui.code.file_converters import _detect_newline
+from meltygui.rendering.decorators.core_decoration import Core
 
-from src.lsd.gl_gui.melty import Melty, FileWatch
-from src.lsd.gl_gui.perf_trace import trace_rl as _ptrace_rl
-from src.shader_library.shader_manager.texture_manager import PIL_TO_GL_FORMAT, PendingTexture
+from meltygui.runtime import Melty
+from meltygui.runtime import FileWatch
+from meltygui.perf_trace import trace_rl as _ptrace_rl
+from meltygui.graphics.texture_manager import PIL_TO_GL_FORMAT
+from meltygui.graphics.texture_manager import PendingTexture
 
 # No GL imports here: ImageCodec.load only DECODES (background thread); the GL
 # upload runs on the UI thread via PendingTexture.pending_upload.
@@ -353,7 +359,8 @@ class Codec:
         (file_meta_store(), what AppModel.file_meta_collection.file_meta is
         too), or None (no file resolves / no entry and not create).
         create=True materializes the entry."""
-        from src.lsd.gl_gui.model.file_meta import FileMeta, file_meta_store
+        from meltygui.models.file_meta import FileMeta
+        from meltygui.models.file_meta import file_meta_store
         meta = file_meta_store()
         path = cls.file_meta_key(draw_state)
         if path is None:
@@ -447,7 +454,7 @@ class TypeCodec(Codec):
         # (a verified reload copy of exact disk content) still takes the slice
         # path below. See PendingSave.pending_text_for.
         if source_text is None:
-            from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+            from meltygui.editor.pending_save import PendingSave
             pending = PendingSave.pending_text_for(address)
             if pending is not None:
                 # Re-baseline the save conflict guard against the app's OWN writes.
@@ -486,8 +493,7 @@ class TypeCodec(Codec):
         # - the disk already IS the studio's own text.
         if source_text is None and address.start is None \
                 and not FileWatch.is_self_write(address.path):
-            from src.lsd.gl_gui.view.core_views.external_changes import \
-                ExternalChanges
+            from meltygui.editor.external_changes import ExternalChanges
             try:
                 _res = str(address.path.resolve())
             except OSError:

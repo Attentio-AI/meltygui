@@ -19,7 +19,7 @@ Usage:
                                dict_to_cst, cst_to_cls])
 """
 
-from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
+from meltygui.code.path_finder import Pending
 
 
 def _step(func, value, **kwargs):

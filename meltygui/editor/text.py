@@ -5,29 +5,38 @@ import math
 import re
 import time
 
-from src.lsd.gl_gui import window_api as glfw
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color, unpack_color, scale_alpha
+import meltygui.window_api as glfw
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
+from meltygui.hdr_color import unpack_color
+from meltygui.hdr_color import scale_alpha
 
-from src.lsd.gl_gui.model.core_model.draw_state import (DropDownState,
-                                                        TextEditorState)
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.toggles import Tint
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import CodeLine
-from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow, add_glow, clear_glows
-from src.lsd.gl_gui.view.core_views.core_render import render_func, SCROLLBAR_MARGIN
-from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
-from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight_multi
-from src.lsd.gl_gui import mouse_cursor
-from src.lsd.gl_gui.melty import Melty, SearchTerm
-from src.lsd.gl_gui.perf_trace import trace as _ptrace
-from src.lsd.gl_gui.fonts import Font
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.jump_to import draw_jump_to
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.toggles import Swoosh
-from src.lsd.gl_gui.fim import FimState
+from meltygui.state.draw_state import DropDownState
+from meltygui.state.draw_state import TextEditorState
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.toggles import Tint
+from meltygui.code.libcst_conversion import CodeLine
+from meltygui.views.blit_offscreen import add_shadow
+from meltygui.views.blit_offscreen import add_glow
+from meltygui.views.blit_offscreen import clear_glows
+from meltygui.rendering.core import render_func
+from meltygui.rendering.core import SCROLLBAR_MARGIN
+from meltygui.views.headers import draw_header
+from meltygui.views.headers import draw_footer
+from meltygui.views.search_glow import draw_search_highlight_multi
+import meltygui.mouse_cursor as mouse_cursor
+from meltygui.runtime import Melty
+from meltygui.runtime import SearchTerm
+from meltygui.perf_trace import trace as _ptrace
+from meltygui.fonts import Font
+from meltygui.utils.glfw_utils import request_render
+from meltygui.debug.jump_to import draw_jump_to
+from meltygui.rendering.decorators.core_decoration import defaults
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.toggles import Swoosh
+from meltygui.completion.service import FimState
+from meltygui.editor.source_tools import SourceToolsState
 
 
 def _hex(h):
@@ -256,12 +265,13 @@ def _completion_pool(code_tree, text, line, func=None):
     function `func` has runtime-observed scope types (FuncsMetadata, recorded by
     the eval REPL), those names' kind tags upgrade to the exact type name — the
     popup reads `draw_state  DrawState` even with an unhinted signature."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import completions_at
+    from meltygui.code.libcst_conversion import completions_at
     pool, seen = [], set()
 
     meta = {}
     if func is not None:
-        from src.lsd.gl_gui.func_metadata import FuncsMetadata, _type_name
+        from meltygui.func_metadata import FuncsMetadata
+        from meltygui.func_metadata import _type_name
         meta = FuncsMetadata.get(func)
 
     def add(name, kind):
@@ -412,7 +422,7 @@ def _ac_param_suffixes(ds, text, cands, anchor, dot_trigger, address):
     ns, _func = _ac_live_context(ds, text, address)
     base = None
     if dot_trigger:
-        from src.lsd.gl_gui.func_metadata import _receiver_before
+        from meltygui.func_metadata import _receiver_before
         base = _live_receiver_obj(ns, _receiver_before(text, anchor))
         import types as _types
         if not isinstance(base, (type, _types.ModuleType)):
@@ -444,7 +454,7 @@ def _snippet_triggers():
     one trigger string or a tuple of alias triggers; values a Snippet or a
     list of them."""
     global _SNIP_FLAT
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     m = Toggles.TextEditor.AC_SNIPPETS or {}
     key = (id(m), len(m))
     if _SNIP_FLAT[0] != key:
@@ -906,7 +916,7 @@ def _ac_live_context(ds, text, address):
     key = (str(address.path), getattr(address, "start", None))
     if getattr(ds, '_ac_live_ctx_key', None) == key:
         return ds._ac_live_ctx
-    from src.lsd.gl_gui.view.core_conversion.code_checks import _module_for
+    from meltygui.code.code_checks import _module_for
     ns = func = None
     try:
         mod = _module_for(address.path)
@@ -921,8 +931,7 @@ def _ac_live_context(ds, text, address):
                 if isinstance(src, _types.FunctionType):
                     func = src
                 elif getattr(address, "start", None) is not None:
-                    from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-                        _enclosing_function)
+                    from meltygui.code.chain_converters import _enclosing_function
                     # address.start is a 0-indexed line; the walk expects
                     # 1-based co_firstlineno's.
                     func = _enclosing_function(str(address.path), address.start + 1)
@@ -957,13 +966,13 @@ def _wake_on_future(fut, ds):
 
     def _cb(_f, tile=tile):
         try:
-            from src.lsd.gl_gui.melty import Melty
+            from meltygui.runtime import Melty
             if tile is not None:
                 Melty.cache.invalidate(tile)
         except Exception:
             pass
         try:
-            from src.lsd.gl_gui.utils import glfw_utils
+            import meltygui.utils.glfw_utils as glfw_utils
             glfw_utils._needs_render.set()   # survive the training-branch render gate
         except Exception:
             pass
@@ -1013,7 +1022,8 @@ def _ensure_member_completions(ds, text, anchor, address=None):
         ds._ac_jedi_done_key = None
 
     if text[max(anchor - 1, 0):anchor] == ".":
-        from src.lsd.gl_gui.func_metadata import member_completions, _receiver_before
+        from meltygui.func_metadata import member_completions
+        from meltygui.func_metadata import _receiver_before
         rcv = _receiver_before(text, anchor)
         # A receiver head followed by )/]/quote is a call/index/literal access
         # (`foo().cache.`) - its NAME means nothing in the module namespace, so
@@ -1042,7 +1052,7 @@ def _ensure_member_completions(ds, text, anchor, address=None):
     if getattr(ds, '_ac_jedi_req_key', None) != key:
         # Receiver changed - request new completions (drops any stale future).
         # The done-callback wakes us once when it lands; no per-frame polling.
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import submit_member_completion
+        from meltygui.code.libcst_conversion import submit_member_completion
         ds._ac_jedi_future = _wake_on_future(
             submit_member_completion(text, line0, col, address), ds)
         ds._ac_jedi_req_key = key
@@ -1063,7 +1073,7 @@ def _ensure_member_completions(ds, text, anchor, address=None):
     # (typically a function-local import). Recover the tint file through the
     # buffer's top() statements; None when that dead-ends too.
     if text[max(anchor - 1, 0):anchor] == ".":
-        from src.lsd.gl_gui.func_metadata import _receiver_before
+        from meltygui.func_metadata import _receiver_before
         ds._ac_member_tints = _file_name_tints(
             _receiver_file_via_imports(text, _receiver_before(text, anchor)))
     else:
@@ -1143,7 +1153,7 @@ def _ensure_signature_help(ds, text, open_paren, cursor, address=None):
     if getattr(ds, '_ac_sig_done_key', None) == key:
         return ds._ac_sig_data
     if getattr(ds, '_ac_sig_req_key', None) != key:
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import submit_signature_help
+        from meltygui.code.libcst_conversion import submit_signature_help
         line0, col = _index_to_line_col(text, cursor)
         ds._ac_sig_future = _wake_on_future(
             submit_signature_help(text, line0, col, address), ds)
@@ -1182,9 +1192,9 @@ def _fim_poll(ds, fim_state, text, address, profile, typed=False):
     EditorView (cheap — whole-file work is lazy) and poll. `typed` = the
     buffer changed this frame (only typing triggers a request). Provider /
     context errors surface ONCE per distinct message as a notification."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     try:
-        from src.lsd.gl_gui.fim_context import editor_view
+        from meltygui.completion.context import editor_view
         view = editor_view(text, ds.text_cursor_pos, address)
         ghost = fim_state.poll(text, ds.text_cursor_pos, view=view,
                                profile=profile or "", ds=ds, typed=bool(typed))
@@ -1197,7 +1207,7 @@ def _fim_poll(ds, fim_state, text, address, profile, typed=False):
     if err and err != getattr(ds, '_fim_err_shown', None):
         ds._fim_err_shown = err
         try:
-            from src.lsd.gl_gui.notifications import notify
+            from meltygui.notifications import notify
             notify(f"FIM: {err}", tint=(1.0, 0.65, 0.4, 1.0), tag="fim")
         except Exception:
             pass
@@ -1398,7 +1408,8 @@ DEFAULT_TOKEN_VIEWS = None
 # (see fa_icons.py - generated, do not hand-edit). The dropdown lists the NAMES
 # (searchable, e.g. type "arrow") and picks the glyph value. FA_GLYPH_SET gives an
 # O(1) "is this a known glyph?" check for the current-value fallback below.
-from src.lsd.gl_gui.view.core_views.fa_icons import FA_ICONS, FA_GLYPH_SET
+from meltygui.views.fa_icons import FA_ICONS
+from meltygui.views.fa_icons import FA_GLYPH_SET
 ICON_COLLECTION = FA_ICONS
 GENERIC_ICON = "\uf005"  # star - the placeholder Ctrl+I inserts; pick the real one from the dropdown
 
@@ -1428,9 +1439,10 @@ def draw_icon_selector_plain(input_value, width=20, height=20, name=None,
     rendering while open (scrolled/edited away), so the window can never
     outlive its call site. Caret suppression for presses on the chip comes
     from ds._plain_tv_rects (owns_mouse), like the other plain widgets."""
-    from src.lsd.gl_gui.view.core_views.new_core_view import (
-        draw_dd_menu, _dd_handle_keys, _dd_close)
-    from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
+    from meltygui.views.values import draw_dd_menu
+    from meltygui.views.values import _dd_handle_keys
+    from meltygui.views.values import _dd_close
+    from meltygui.code.cache_tree import UNSET_VALUE
     cur = input_value if isinstance(input_value, str) else ""
     x, y = imgui.get_cursor_screen_pos()
     w = max(1.0, width)
@@ -1557,8 +1569,9 @@ def draw_icon_selector_plain(input_value, width=20, height=20, name=None,
         # its measured height is the row-0 offset.
         _snap = getattr(root, "_snap_frames", 0)
         if (_snap > 0 or _nav_hit) and menu_ds is not None:
-            from src.lsd.gl_gui.view.core_views.new_core_view import (
-                _dd_rows_at, _dd_scroll_cursor_into_view, _dd_as_tuple)
+            from meltygui.views.values import _dd_rows_at
+            from meltygui.views.values import _dd_scroll_cursor_into_view
+            from meltygui.views.values import _dd_as_tuple
             if _snap > 0:
                 root._snap_frames = _snap - 1
             _cp = _dd_as_tuple(root.cursor_path)
@@ -1676,8 +1689,10 @@ def draw_number_token(input_value, draw_state=None, text_tint=None,
     left_mouse_* are declared (never read) to win the event latch over the editor —
     a drag that starts on the widget latches here, so the editor doesn't grow a
     text selection while a value is being dragged."""
-    from src.lsd.gl_gui.utils.custom_views import (push_style_var, pop_style_var,
-                                                   push_style_color, pop_style_color)
+    from meltygui.utils.custom_views import push_style_var
+    from meltygui.utils.custom_views import pop_style_var
+    from meltygui.utils.custom_views import push_style_color
+    from meltygui.utils.custom_views import pop_style_color
     s = input_value if isinstance(input_value, str) else str(input_value)
     kind, val, fmt_back, disp = _parse_number_token(s)
     if kind is None:
@@ -1756,7 +1771,7 @@ def _plain_tv_bg(x, y, w, h, tint=None, bg_offset=0, max_bg_value=None,
     standalone add_shadow depth mark (same pattern as fast_dock rows: these
     aren't draw_states the compositor can see). clip=True snapshots the
     editor's live clip rect, so partially scrolled widgets clip correctly."""
-    from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
+    from meltygui.views.values import draw_bg
     if shadow_offset is not None:
         add_shadow((x, y, w, h), offset=shadow_offset, corner_radius=5.0)
     sm = Melty.global_attrs['style_manager']
@@ -1824,12 +1839,14 @@ def draw_number_token_plain(input_value, width=20, height=20, name=None,
       InputHandler from here doesn't work — registrations are per-RENDERED-
       frame, and with event-driven rendering the editor body is usually
       cached on the frame whose registrations the press resolves against.
-      The imgui drag itself needs no melty events; it runs off raw input.
+      The imgui drag itself needs no meltygui events; it runs off raw input.
     - While the drag is active the EDITOR tile is force-invalidated each
       frame: the imgui item only exists on frames the editor body runs, so a
       cached editor would freeze the drag after its first value change."""
-    from src.lsd.gl_gui.utils.custom_views import (push_style_var, pop_style_var,
-                                                   push_style_color, pop_style_color)
+    from meltygui.utils.custom_views import push_style_var
+    from meltygui.utils.custom_views import pop_style_var
+    from meltygui.utils.custom_views import push_style_color
+    from meltygui.utils.custom_views import pop_style_color
     s = input_value if isinstance(input_value, str) else str(input_value)
     kind, val, fmt_back, disp = _parse_number_token(s)
     x, y = imgui.get_cursor_screen_pos()
@@ -1972,14 +1989,14 @@ def draw_color3_token(input_value, draw_state=None,
     pattern as draw_tuple's swatch: popover_focused_ds identity is the open
     state, the picker window is latched — drawn every frame with closed=
     toggled — anchored under the swatch, dismissed by outside click / Esc).
-    NEVER imgui's built-in popup: melty windowing has diverged (shadows,
+    NEVER imgui's built-in popup: meltygui windowing has diverged (shadows,
     z-order, cached render tiles) and they don't compose. Edits splice the
     reformatted tuple back — changed channels become float literals, untouched
     channels keep their original text — so the token re-merges.
     Draws nothing if the tuple doesn't parse (the text is still there).
     left_mouse_* declared (never read) for the event latch — see draw_number_token."""
-    from src.lsd.gl_gui.view.mode import Mode
-    from src.lsd.gl_gui.view.core_views.new_core_view import draw_color_picker
+    from meltygui.debug.mode import Mode
+    from meltygui.views.values import draw_color_picker
     s = input_value if isinstance(input_value, str) else str(input_value)
     parts = [p.strip() for p in s.strip('()').split(',')]
     try:
@@ -2012,7 +2029,9 @@ def draw_color3_token(input_value, draw_state=None,
 
     # Fixed-size popover (closable windows don't auto-resize; the picker body is
     # live imgui the framework can't measure): SV square + N channel rows + hex.
-    from src.lsd.gl_gui.view.core_views.new_core_view import color_picker_height, color_picker_width, color_picker_top_offset
+    from meltygui.views.values import color_picker_height
+    from meltygui.views.values import color_picker_width
+    from meltygui.views.values import color_picker_top_offset
     picker_h = color_picker_height(len(vals))
     color_changed, new_color = draw_color_picker(
         tuple(vals), name=f"{draw_state.name}_picker", closed=not is_open,
@@ -2120,8 +2139,8 @@ def _color_swatch_plain(s, vals, splice, width, height, name, editor_ds):
     """The swatch + latched picker shared by the tuple and hex-string color
     widgets: `vals` are the 3/4 parsed channels, `splice(new_color)` renders
     the edited channels back into source text. Returns (changed, text)."""
-    from src.lsd.gl_gui.view.mode import Mode
-    from src.lsd.gl_gui.view.core_views.new_core_view import draw_color_picker
+    from meltygui.debug.mode import Mode
+    from meltygui.views.values import draw_color_picker
     has_alpha = len(vals) == 4
     r, g, b = vals[0], vals[1], vals[2]
     a = vals[3] if has_alpha else 1.0
@@ -2164,7 +2183,9 @@ def _color_swatch_plain(s, vals, splice, width, height, name, editor_ds):
     # persists when the (cached) editor body is skipped. Fixed size: closable
     # windows don't auto-resize and the picker body is raw imgui the framework
     # can't measure - SV square + N channel rows + hex.
-    from src.lsd.gl_gui.view.core_views.new_core_view import color_picker_height, color_picker_width, color_picker_top_offset
+    from meltygui.views.values import color_picker_height
+    from meltygui.views.values import color_picker_width
+    from meltygui.views.values import color_picker_top_offset
     picker_h = color_picker_height(len(vals))
     # window_pos is relative to the imgui cursor at call time - park the
     # cursor back on the swatch's top-left so (0, 10) anchors just under it,
@@ -2214,7 +2235,7 @@ def _fnrun_extract_def(file_path, def_line, def_name):
     function runs without a disk write. A small ±line scan tolerates
     pending/disk drift; the block ends at the first non-empty line back at
     (or left of) the def's own indent."""
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    from meltygui.editor.pending_save import PendingSave
     text = PendingSave.current_file_text(str(file_path))
     if text is None:
         return None
@@ -2396,8 +2417,8 @@ def _fnrun_resolve(file_path, def_line, def_name=None, prefer_pending=False):
         return None
     import inspect
     import types
-    from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-        _modules_for_file, _resolved)
+    from meltygui.code.chain_converters import _modules_for_file
+    from meltygui.code.chain_converters import _resolved
     try:
         target = _resolved(str(file_path))
     except (OSError, ValueError):
@@ -2467,8 +2488,8 @@ def _fnrun_resolve(file_path, def_line, def_name=None, prefer_pending=False):
         # line, which we only know after travers above it once.
         disk0 = start0
         try:
-            from src.lsd.gl_gui.view.core_conversion.live_instrument import (
-                _delta_above, _pending_gen)
+            from meltygui.code.live_instrument import _delta_above
+            from meltygui.code.live_instrument import _pending_gen
             if _pending_gen(str(file_path)):
                 _d = _delta_above(str(file_path), start0 + 1)
                 _d = _delta_above(str(file_path), max(1, start0 - _d + 1))
@@ -2502,10 +2523,8 @@ def _fnrun_resolve(file_path, def_line, def_name=None, prefer_pending=False):
             # Nested defs are ephemeral: a module-level entry whose
             # firstlineno sits INSIDE the outer function would steal the
             # outer def's own marker resolution.
-            from src.lsd.gl_gui.view.core_conversion import (
-                chain_converters as _cc)
-            from src.lsd.gl_gui.view.core_conversion.live_view import (
-                adopt_live_store)
+            import meltygui.code.chain_converters as _cc
+            from meltygui.code.live_view import adopt_live_store
             # The previously parked twin (and the real module function, if
             # it ever ran with a store) hand their live store to this one:
             # every body edit compiles a NEW function object here, and a
@@ -2581,8 +2600,7 @@ def _fnrun_resolve(file_path, def_line, def_name=None, prefer_pending=False):
         # fill another gap "first run worked, later ones didn't". Evict the
         # twin and purge the resolver cache so both sides converge on the
         # live function.
-        from src.lsd.gl_gui.view.core_conversion import (
-            chain_converters as _cc)
+        import meltygui.code.chain_converters as _cc
         _evicted = False
         for module in modules:
             _twin = module.__dict__.pop(f"_fnrun_live_{def_name}", None)
@@ -2590,8 +2608,7 @@ def _fnrun_resolve(file_path, def_line, def_name=None, prefer_pending=False):
                 _evicted = True
                 # The evicted twin's store moves to the live function it
                 # converges on - never orphaned with its state.
-                from src.lsd.gl_gui.view.core_conversion.live_view import (
-                    adopt_live_store)
+                from meltygui.code.live_view import adopt_live_store
                 adopt_live_store(_twin, fn)
         if _evicted or any(k[0] == str(target)
                            for k in _cc._ENCLOSING_FN_CACHE):
@@ -2627,7 +2644,7 @@ def _fnrun_pending_defs(file_path):
     file's PENDING source — the lookup table _FnRunNamespace resolves missing
     names from. Later definitions of a name win, matching file execution."""
     import ast
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    from meltygui.editor.pending_save import PendingSave
     text = PendingSave.current_file_text(str(file_path))
     if not text:
         return {}
@@ -2686,7 +2703,7 @@ def _fnrun_ensure_imports(ns, file_path):
     __package__/__name__ already in `ns` (it is, or copies, a real module
     namespace)."""
     import ast
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    from meltygui.editor.pending_save import PendingSave
     text = PendingSave.current_file_text(str(file_path))
     if not text:
         return
@@ -2703,16 +2720,15 @@ def _fnrun_ensure_imports(ns, file_path):
         try:
             exec(compile(ast.Module(body=[node], type_ignores=[]),
                          str(file_path), 'exec'), ns)
-        except Exception:
-            pass
+        except Exception as error:
+            raise ImportError(f"Cannot run {file_path}: {ast.unparse(node)}: {error}") from error
 
 
 def _fnrun_find_def_node(tree, def_name, line):
     """FunctionParse node named `def_name` nearest 1-indexed parse `line` in
     the routed code tree, or None. Name-first, line as the tie-break between
     same-named methods — the same policy as _fnrun_resolve."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-        FunctionParse)
+    from meltygui.code.libcst_conversion import FunctionParse
     best = None
     stack = [tree]
     seen = set()
@@ -2817,8 +2833,9 @@ def _fnrun_param_src(value):
     """Source text for a parameter default value — CodeLine passes through
     (it IS source); everything else goes through the central reverse
     converter so formatting rules stay in one place."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-        CodeLine, _python_to_cst_expr, _cst_node_to_code)
+    from meltygui.code.libcst_conversion import CodeLine
+    from meltygui.code.libcst_conversion import _python_to_cst_expr
+    from meltygui.code.libcst_conversion import _cst_node_to_code
     if isinstance(value, CodeLine):
         return str(value)
     try:
@@ -2835,8 +2852,8 @@ def _fnrun_params_from_node(def_node):
     (unreducible expressions) are OMITTED so the compiled default evaluates.
     Returns None when the node has no parameters dict (caller falls back to
     the signature-derived path)."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-        CodeLine, NoDefault)
+    from meltygui.code.libcst_conversion import CodeLine
+    from meltygui.code.libcst_conversion import NoDefault
     if not isinstance(def_node, dict):
         return None
     params_node = def_node.get('parameters')
@@ -2888,16 +2905,15 @@ def _fnrun_run(fn, instrumented=False, params=None):
             params = {}
     try:
         if instrumented:
-            from src.lsd.gl_gui.view.core_conversion.live_instrument import (
-                run_instrumented)
+            from meltygui.code.live_instrument import run_instrumented
             run_instrumented(fn, **params)
         else:
             fn(**params)
         return True, None
     except Exception as e:
-        from src.lsd.gl_gui.view.core_views.new_core_view import (
-            _format_run_error, _respond_to_cuda_oom)
-        from src.lsd.gl_gui.utils.custom_views import print_colored_traceback
+        from meltygui.views.values import _format_run_error
+        from meltygui.views.values import _respond_to_cuda_oom
+        from meltygui.utils.custom_views import print_colored_traceback
         print(f"Error calling function '{fn.__name__}': {e}")
         print_colored_traceback(*sys.exc_info())
         _respond_to_cuda_oom(e, fn.__name__)
@@ -2905,7 +2921,7 @@ def _fnrun_run(fn, instrumented=False, params=None):
 
 
 def _fnrun_console(editor_ds, skey):
-    from src.lsd.gl_gui.model.function_console import FunctionConsole
+    from meltygui.models.function_console import FunctionConsole
     consoles = editor_ds.__dict__.setdefault('_fnrun_consoles', {})
     if skey not in consoles:
         consoles[skey] = FunctionConsole(wake=request_render)
@@ -2924,8 +2940,17 @@ def _fnrun_start(editor_ds, file_path, def_line, def_name,
             queued[skey] = (file_path, def_line, def_name, instrumented, params)
         return False
     mode = 'live' if instrumented else 'run'
-    fn = _fnrun_resolve(file_path, def_line, def_name, prefer_pending=True)
-    if fn is None:
+    from meltygui.extensions import call
+    try:
+        external_run = call('source_run', file_path, def_name, params, console, instrumented)
+        python = external_run is not None
+        fn = None if python else _fnrun_resolve(file_path, def_line, def_name, prefer_pending=True)
+    except Exception as error:
+        statuses[skey] = ('err', str(error), mode)
+        editor_ds.invalidate()
+        request_render()
+        return False
+    if fn is None and not python:
         statuses[skey] = ('err', f"couldn't resolve '{def_name}' — not found in live modules or source", mode)
         editor_ds.invalidate()
         request_render()
@@ -2937,7 +2962,7 @@ def _fnrun_start(editor_ds, file_path, def_line, def_name,
             ok, error = result
             statuses[skey] = (('ok', Melty.frame_count, mode) if ok
                               else ('err', error, mode))
-            if instrumented:
+            if instrumented and not python:
                 _fnrun_after_live_run(editor_ds)
             editor_ds.invalidate()
             request_render()
@@ -2946,14 +2971,15 @@ def _fnrun_start(editor_ds, file_path, def_line, def_name,
                 _fnrun_start(editor_ds, *pending)
         Melty.post_to_render(finish)
 
-    console.start(lambda: _fnrun_run(fn, instrumented=instrumented, params=params), done)
+    console.start(lambda: external_run() if python
+                  else _fnrun_run(fn, instrumented=instrumented, params=params), done)
     editor_ds.invalidate()
     request_render()
     return True
 
 
 def _draw_fnrun_console(console, draw_state, unique):
-    from src.lsd.gl_gui.view.core_views.headers import flat_button
+    from meltygui.views.headers import flat_button
     text, running, waiting = console.snapshot()
     imgui.text('Console — ' + ('Waiting for input' if waiting else 'Running' if running else 'Finished' if console.thread else 'Ready'))
     RenderFuncs.draw_text(text or '', name=f'console-output##{unique}',
@@ -3162,7 +3188,7 @@ def _fnrun_auto_exec_check(editor_ds, editor_state, skey, ent):
     nk = _fnrun_change_key(got[0])
     if nk == ent[2] or nk == (ent[5] or (None,))[0]:
         return
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     dbc = Toggles.TextEditor.fnrun_auto_exec_edit_debounce_ms / 1000.0
     ent[4] = None
     ent[5] = (nk, code_root, got[1] + 1, def_line, got[1], text)
@@ -3268,7 +3294,7 @@ def _fnrun_sync_panel_params(shown, seen, pending, params_node, text, line):
     window draws and hold callbacks must all keep editing the SAME dict.
     """
     import libcst
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _cst_to_python_or_raw
+    from meltygui.code.libcst_conversion import _cst_to_python_or_raw
 
     changed = False
     for key in dict.fromkeys((*shown, *params_node)):
@@ -3416,7 +3442,7 @@ def _fnrun_auto_exec_fire(editor_ds, editor_state, skey, file_path, def_name,
     key = _armed_key
     if key is None or key == ent[2]:
         return          # the edit didn't touch this def's signature
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    from meltygui.editor.pending_save import PendingSave
     ptext = PendingSave.current_file_text(str(file_path))
     pend_def = (_fnrun_extract_def_text(ptext, def_line, def_name)
                 if ptext is not None else None)
@@ -3494,8 +3520,8 @@ def draw_fnrun_params_panel(input_value=None, draw_state=None, unique=0,
     post-run live-view delivery. The parameters dict renders through its
     normal type routing; (changed, value) propagate to the widget's splice
     logic untouched."""
-    from src.lsd.gl_gui.view.core_views.headers import flat_button
-    from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+    from meltygui.views.headers import flat_button
+    from meltygui.views.values import draw_any
     run = flat_button(f" Run##fnpprun{unique}", draw_state,
                       f"fnpprun::{unique}", height=28,
                       color=(0.499, 0.844, 0.488), corner_radius=5.0,
@@ -3571,7 +3597,7 @@ def draw_fnrun_params_panel(input_value=None, draw_state=None, unique=0,
         if _pt is not None:
             _pt.cancel()
         if auto_execute:
-            from src.lsd.gl_gui.toggles import Toggles
+            from meltygui.toggles import Toggles
             _hd = Toggles.TextEditor.fnrun_text_sync_debounce_ms / 1000.0
             import threading as _thr
 
@@ -3618,7 +3644,7 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
     the caret. Status is keyed by (file, def name), not the render-order
     `name` (that shifts as widgets scroll into view) and not the line
     (that shifts on edits)."""
-    from src.lsd.gl_gui.view.core_views.headers import flat_button
+    from meltygui.views.headers import flat_button
     x, y = imgui.get_cursor_screen_pos()
     if editor_ds is None:
         return False, input_value
@@ -3707,7 +3733,7 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
         # nothing (the resolve walk is click-scale cheap, not frame-scale).
         _def_node = _fnrun_def_node_for(editor_ds, skey, code_root,
                                         def_name, def_buf_line, tv_text)
-        _params_node = (_def_node.get('parameters')
+        _params_node = (_def_node.get('parameters', {})
                         if isinstance(_def_node, dict) else None)
     # DISPLAYED-node latch (also read further down): the background reparse
     # rebuilds the tree mid-typing, so the node handed to the panel is held
@@ -3727,7 +3753,7 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
             _pp_want = False
     if _params_node is not None and (
             _pp_want or (_pw is not None and not _pw.closed)):
-        from src.lsd.gl_gui.view.mode import Mode
+        from meltygui.debug.mode import Mode
         # imgui.set_cursor_screen_pos((x, y))
         # window_pos only on FIRST spawn - passing it every call re-pins the
         # panel under the button and eats the user's drags (the live-value
@@ -3785,7 +3811,7 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
         if isinstance(_params_node, dict) and tv_text is not None:
             # The window renders later than this widget. Keep its input node
             # stable, and merge it only after the trailing debounce.
-            from src.lsd.gl_gui.toggles import Toggles
+            from meltygui.toggles import Toggles
             _dbc = Toggles.TextEditor.fnrun_text_sync_debounce_ms / 1000.0
             _ent = _fnrun_panel_sync_entry(editor_ds, skey)
             _due = False
@@ -3885,9 +3911,8 @@ DEFAULT_TOKEN_VIEWS = {
 # live_view() call sites get an anchor marker + nested value window (the first
 # type-keyed overlay entry). Import from its own module so the widgets and
 # their live_view imports stay out of this file.
-from src.lsd.gl_gui.view.core_views.live_view_views import (
-    install_token_views as _install_live_view_tv,
-    flush_selected_markers as _flush_selected_markers)
+from meltygui.editor.live_views import install_token_views as _install_live_view_tv
+from meltygui.editor.live_views import flush_selected_markers as _flush_selected_markers
 _install_live_view_tv(DEFAULT_TOKEN_VIEWS)
 
 
@@ -3899,9 +3924,17 @@ def _parse_col_shift(buffer_text, parse_source):
     0 when the sources agree (whole-file editors)."""
     if not parse_source or parse_source is buffer_text:
         return 0
-    for a, b in zip(buffer_text.split('\n', 50), parse_source.split('\n', 50)):
+    buffer_start = parse_start = 0
+    for index in range(51):
+        buffer_end = buffer_text.find('\n', buffer_start) if index < 50 else -1
+        parse_end = parse_source.find('\n', parse_start) if index < 50 else -1
+        a = buffer_text[buffer_start:len(buffer_text) if buffer_end < 0 else buffer_end]
+        b = parse_source[parse_start:len(parse_source) if parse_end < 0 else parse_end]
         if a.strip() and b.strip():
             return (len(a) - len(a.lstrip())) - (len(b) - len(b.lstrip()))
+        if buffer_end < 0 or parse_end < 0:
+            break
+        buffer_start, parse_start = buffer_end + 1, parse_end + 1
     return 0
 
 
@@ -4287,7 +4320,22 @@ def _typing_hot():
     return bool(last) and time.monotonic() - last < _TINT_INPUT_QUIET_S
 
 
+_TEXT_SPLICE_CACHE = {}
+
+
 def _text_splice(old_text, new_text):
+    key = (id(old_text), id(new_text))
+    cached = _TEXT_SPLICE_CACHE.get(key)
+    if cached is not None and cached[0] is old_text and cached[1] is new_text:
+        return cached[2]
+    result = _compute_text_splice(old_text, new_text)
+    if len(_TEXT_SPLICE_CACHE) >= 16:
+        del _TEXT_SPLICE_CACHE[next(iter(_TEXT_SPLICE_CACHE))]
+    _TEXT_SPLICE_CACHE[key] = (old_text, new_text, result)
+    return result
+
+
+def _compute_text_splice(old_text, new_text):
     """The single covering splice turning old_text into new_text:
     (p, old_end, d_chars, d_lines, edit_line, old_end_line) — common prefix
     ends at p, common suffix begins at old_end in OLD coords; or None when
@@ -4354,7 +4402,7 @@ def _anchor_key_paths(code_tree, lines_needed, base_text):
     if getattr(code_tree, "source", None) is not base_text:
         return {}
     try:
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import LineMap
+        from meltygui.code.libcst_conversion import LineMap
         lm = LineMap(code_tree)
         out = {}
         for ln in lines_needed:
@@ -4760,19 +4808,8 @@ def _usage_jump_targets(su, view_path=None, view_span=None, at_def=None):
 
 
 def _enclosing_editor_window(ds):
-    """The code-editor WINDOW draw_state a text editor renders inside, or
-    None (editors outside draw_code_editor — chain views, search boxes).
-    Jumps fired inside an editor instance pass this so the target opens in
-    the SAME instance instead of hopping to the primary window."""
-    w, n = ds, 0
-    while w is not None and n < 8:
-        if 'draw_code_editor' in (getattr(w, 'name', '') or ''):
-            return w
-        nw = getattr(w, 'parent_window', None)
-        if nw is w:
-            return None
-        w, n = nw, n + 1
-    return None
+    from meltygui.extensions import call
+    return call('source_owner', ds)
 
 
 def _open_usage_ref(ref, token=None, editor_window=None):
@@ -4783,7 +4820,7 @@ def _open_usage_ref(ref, token=None, editor_window=None):
     rides along on OpenFiles.jump_to_token so the caret lands ON the symbol
     rather than at the line's first code character; `editor_window` keeps the
     jump in the originating editor instance."""
-    from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+    from meltygui.extensions import open_source as open_in_editor
     open_in_editor(str(ref.path), line_number=getattr(ref, 'line', None),
                    token=token, editor_window=editor_window)
 
@@ -4976,7 +5013,7 @@ def _log_usage_mismatch(vpath, file_line, diffs, old, new, ctx):
 def _uj_file_tint(p):
     """The file's FileMeta tint for a picker row (same source the editor tabs
     use), or None."""
-    from src.lsd.gl_gui.model.file_meta import file_meta_store
+    from meltygui.models.file_meta import file_meta_store
     entry = file_meta_store().get(str(p)) if p is not None else None
     t = entry.get('tint') if isinstance(entry, dict) else None
     return tuple(t) if t else None
@@ -5074,7 +5111,7 @@ def _scan_def_tint_lines(lines, line, name=None, _depth=0):
     of color values (color-equality filtering popped during tint drags, when
     the live tree and the pending source text disagree for a frame)."""
     import ast as _ast
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _parse_override_comment
+    from meltygui.code.libcst_conversion import _parse_override_comment
     i = line - 1
     if not (0 <= i < len(lines)):
         return None
@@ -5248,7 +5285,7 @@ def _pending_gen_of(path):
     map, refreshed only when the total generation moves."""
     global _PENDING_GEN_MAP
     try:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
     except Exception:
         return 0
     gens = PendingSave._pending_gen
@@ -5271,7 +5308,7 @@ def _pending_total_gen():
     in editors viewing OTHER files. Read per frame; the dict is tiny."""
     try:
             
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         return sum(PendingSave._pending_gen.values())
     except Exception:
         return 0
@@ -5292,7 +5329,7 @@ def _tint_gens():
     washes. Falls back to the raw gens when a pre-hotswap PendingSave has
     no _tint_gen yet (conservative: old behavior)."""
     try:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
     except Exception:
         return None
     gens = getattr(PendingSave, "_tint_gen", None)
@@ -5349,7 +5386,7 @@ def _scan_def_tint(path, line, name=None):
         return _scan_def_tint_lines(lines, _verify_def_line(lines, line, name), name)
     lines = None
     try:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         text = PendingSave.current_file_text(path)
         if text is not None:
             lines = text.split("\n")
@@ -5445,7 +5482,8 @@ def _bg_adjust(rgb, factors):
     got = _BG_ADJ_CACHE.get(key)
     if got is not None:
         return got
-    from src.lsd.gl_gui.toggles import rgb_to_hsv, hsv_to_rgb
+    from meltygui.toggles import rgb_to_hsv
+    from meltygui.toggles import hsv_to_rgb
     sat_f, val_f, min_b, max_b = factors
     r, g, b = rgb[0], rgb[1], rgb[2]
     if sat_f != 1.0 or val_f != 1.0:
@@ -5465,7 +5503,9 @@ def _comment_tint_color(rgb):
     (the same hsv-factor adjustment pattern as toggles.Tint; factors live in
     Toggles.TextEditor, read live), then the shared perceived-brightness
     clamp so a very dark/bright tint's comment stays readable."""
-    from src.lsd.gl_gui.toggles import rgb_to_hsv, hsv_to_rgb, Toggles
+    from meltygui.toggles import rgb_to_hsv
+    from meltygui.toggles import hsv_to_rgb
+    from meltygui.toggles import Toggles
     saturation_factor = Toggles.TextEditor.comment_tint_saturation
     value_factor = Toggles.TextEditor.comment_tint_value
 
@@ -5598,7 +5638,7 @@ def _pending_line_delta(path, before_line):
         return got
     delta = 0
     try:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         for addr, (codec, kwargs) in list(PendingSave.pending_saves.items()):
             data = kwargs.get("data")
             start, end = getattr(addr, "start", None), getattr(addr, "end", None)
@@ -5648,7 +5688,7 @@ def _file_name_tints(path):
         return got[1]
     lines = None
     try:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         pend = PendingSave.current_file_text(p)
         if pend is not None:
             lines = pend.split("\n")
@@ -6219,7 +6259,7 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
     # == ProfileMode.ON` washes as a blend of those tints) - so a value keeps
     # its color trail as it flows through code. Iterated so a local defined
     # from an already-propagated local fades one step further per hop.
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     fade = Toggles.TextEditor.def_propagation_fade
     if Toggles.TextEditor.def_tint_propagation:
         for _pass in range(4):
@@ -6480,7 +6520,7 @@ def _collect_comment_tints(text):
     the trailing-comment tail of an assignment line). Pure TEXT scan — no
     code_tree — so a freshly typed tint comment colors immediately instead of
     waiting for the cst-dict round trip like the definition washes do."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _parse_override_comment
+    from meltygui.code.libcst_conversion import _parse_override_comment
     if "tint=" not in text:
         return ()
     lines = text.split("\n")
@@ -6615,7 +6655,7 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None,
     fast typing pays the collect a few times a second, not per keystroke.
     Stale spans can sit a hair off the glyphs for that window; they're
     translucent washes, and the background parse churn already did this."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     # Roster mode (Toggles.TextEditor.roster_def_tints): washes come from the
     # text-derived symbol roster (roster_tints.collect_def_tints) - no
     # cst-dict, no __symbol_usages__. The key is the buffer text identity + the
@@ -6635,9 +6675,10 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None,
     su_top = code_tree.get("__symbol_usages__") if isinstance(code_tree, dict) else None
     _win = None
     if _roster:
-        from src.lsd.gl_gui.view.core_conversion import symbol_roster as _sr
-        _sr.sweep()          # throttled: notices pending/disk edits in OTHER files
-        _sr.register_consumer(ds)   # a later roster change invalidates this editor
+        import meltygui.code.symbol_roster as _sr
+        project = _sr.analysis_project(path=view_path)
+        _sr.sweep(project=project)          # throttled: notices pending/disk edits in OTHER files
+        _sr.register_consumer(ds, project=project, path=view_path)   # a later roster gen invalidates this editor
         # Viewport-only occurrence scan: the window is the visible band
         # quantized to _DT_WIN_CHUNK-line chunks with a chunk of margin each
         # side, so small scrolls stay inside the computed window and a
@@ -6650,7 +6691,7 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None,
         # The world pane keys on the world's generation too (disk writes /
         # sync table moves in OTHER files don't move the studio generation)
         # and on its own table's identity.
-        _ckey = (_DEF_TINTS_VER, "roster", _sr.generation(), id(text), line_offset,
+        _ckey = (_DEF_TINTS_VER, "roster", project.key, _sr.generation(project), id(text), line_offset,
                  str(view_path),
                  (world.name, world.generation()) if world is not None else None,
                  id(table) if table is not None else None)
@@ -6693,8 +6734,7 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None,
                     _base = _src
             try:
                 if _roster:
-                    from src.lsd.gl_gui.view.core_views.roster_tints import (
-                        collect_def_tints as _roster_collect)
+                    from meltygui.editor.roster_tints import collect_def_tints as _roster_collect
                     _base = text        # no tree: the buffer IS the base
                     # Per-line string state for the windowed pass's clean
                     # start: reuse the viewport tokenizer's incremental state
@@ -6711,7 +6751,7 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None,
                     _fresh = _roster_collect(_base, line_offset, view_path,
                                              window=_win, line_open=_lo_open,
                                              hold_live=hold_live, world=world,
-                                             table=table)
+                                             table=table, project=project)
                     ds._def_tints_ckey = _ckey
                 else:
                     _fresh = _collect_def_tints(code_tree, _base, line_offset, view_path)
@@ -6750,7 +6790,7 @@ def _usage_wash_color(n_targets):
     live-editable Toggles.TextEditor.usage_tint; this just clamps + packs its
     (r, g, b, a) into the int the draw list wants. Read fresh every call so a
     tweak to usage_tint shows immediately."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     r, g, b, a = Toggles.TextEditor.usage_tint(n_targets)
     return pack_color(r, g, b, max(0.0, min(1.0, a)))
 
@@ -7328,26 +7368,12 @@ def _line_open_full_ref(text):
 
 def _diff_span(a, b):
     """(common_prefix_len, a_suffix_start, b_suffix_start) for two strings.
-    Binary search on slice equality so the comparisons run at C speed — a
-    mid-buffer single-char edit costs O(log n) compares, not the O(n) of a
-    Python char loop (the difference between ~6ms and ~0.1ms on a big file)."""
-    n = min(len(a), len(b))
-    plo, phi = 0, n
-    while plo < phi:                      # longest common prefix
-        mid = (plo + phi + 1) // 2
-        if a[:mid] == b[:mid]:
-            plo = mid
-        else:
-            phi = mid - 1
-    lo = plo
-    slo, shi = 0, n - lo                  # longest common suffix (no prefix overlap)
-    while slo < shi:
-        mid = (slo + shi + 1) // 2
-        if a[len(a) - mid:] == b[len(b) - mid:]:
-            slo = mid
-        else:
-            shi = mid - 1
-    return lo, len(a) - slo, len(b) - slo
+    Share the identity-keyed edit calculation with the other incremental
+    consumers instead of locating the same change repeatedly."""
+    splice = _text_splice(a, b)
+    if splice is None:
+        return len(a), len(a), len(b)
+    return splice[0], splice[1], splice[1] + splice[2]
 
 
 def _update_line_open(prev_text, prev_offs, prev_open, text):
@@ -7363,7 +7389,14 @@ def _update_line_open(prev_text, prev_offs, prev_open, text):
     lo, _old_hi, new_hi = _diff_span(prev_text, text)
     delta = nlen - olen
 
-    new_offs = _line_offsets(text)
+    first = bisect.bisect_right(prev_offs, lo)
+    last = bisect.bisect_right(prev_offs, _old_hi)
+    inserted = [lo + match.end() for match in re.finditer('\n', text[lo:new_hi])]
+    new_offs = (prev_offs[:first] + inserted +
+                [offset + delta for offset in prev_offs[last:]])
+    if id(text) not in _LINE_STARTS_CACHE and len(_LINE_STARTS_CACHE) >= 16:
+        del _LINE_STARTS_CACHE[next(iter(_LINE_STARTS_CACHE))]
+    _LINE_STARTS_CACHE[id(text)] = (text, new_offs)
     cf = bisect.bisect_right(new_offs, lo) - 1      # first changed line (new coords)
     # line_open is valid through line cf (depends only on unchanged preceding
     # lines). Back up to the last clean line at/before cf to start the re-lex.
@@ -7371,14 +7404,14 @@ def _update_line_open(prev_text, prev_offs, prev_open, text):
     while sl > 0 and prev_open[sl] is not None:
         sl -= 1
     start_off = new_offs[sl]
-    old_clean = {prev_offs[k]: k for k in range(len(prev_offs)) if prev_open[k] is None}
 
     tail = [None]                # line_open for line sl (clean by construction)
     stop_old = None
     for off, state in _iter_newline_states(text, start_off):
         if state is None and off >= new_hi:
-            oc = old_clean.get(off - delta)   # same clean line in the old tail?
-            if oc is not None:
+            oc = bisect.bisect_left(prev_offs, off - delta)
+            if (oc < len(prev_offs) and prev_offs[oc] == off - delta
+                    and prev_open[oc] is None):
                 stop_old = oc                 # reconverged → reuse old suffix
                 break
         tail.append(state)
@@ -7541,8 +7574,8 @@ def _line_starts(text):
     while i != -1:
         ap(i + 1)
         i = text.find('\n', i + 1)
-    if len(_LINE_STARTS_CACHE) > 8:
-        _LINE_STARTS_CACHE.clear()       # bounded: just a few open buffers, no leak
+    if id(text) not in _LINE_STARTS_CACHE and len(_LINE_STARTS_CACHE) >= 16:
+        del _LINE_STARTS_CACHE[next(iter(_LINE_STARTS_CACHE))]
     _LINE_STARTS_CACHE[id(text)] = (text, starts)
     return starts
 
@@ -8242,8 +8275,8 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0, center=False):
         pass
         # # Audit trail for flaky scroll-to-line: every programmatic scro
         # write lands in the notification center under the "scroll" tag,
-        # with the estimated editor line the band corresponds to a
-        # from src.gsd.gl_gui.notifications import notify
+        # with the estimated editor line the band corresponds to.ll
+        # from ptygui.notifications import notify
         # lp = getattr(ds, '_diff_line_px', None)
         # inset = getattr(ds, '_diff_top_inset', 0) or 0
         # est_line = None
@@ -8415,7 +8448,7 @@ def _compile_check_more(text, first_error, max_more=8, per_chunk=4):
     left out. A masked / cut construct can report a spurious follow-up; rare
     in practice."""
     import textwrap
-    from src.lsd.gl_gui.view.core_conversion.new_converters import _compile_check
+    from meltygui.code.new_converters import _compile_check
     lines = textwrap.dedent(text).split('\n')
     starts = _top_level_chunks(lines)
     first_ln = getattr(first_error, 'lineno', None) or 0
@@ -8472,11 +8505,21 @@ def _missing_name(msg):
     """The undefined name a lint marker reports ("name 'np' is not defined
     ...") — '' when the message has another shape."""
     m = str(msg)
+    if m.startswith("No module named '"):
+        return m.split("'", 2)[1]
     if m.startswith("name '"):
         end = m.find("'", 6)
         if end > 6:
             return m[6:end]
     return ""
+
+
+def _diagnostic_line_text(text, index):
+    starts = _line_starts(text)
+    if not 0 <= index < len(starts):
+        return ''
+    end = starts[index + 1] - 1 if index + 1 < len(starts) else len(text)
+    return text[starts[index]:end]
 
 
 def _apply_import_fix(stmt, jump_to, text):
@@ -8502,8 +8545,7 @@ def _apply_import_fix(stmt, jump_to, text):
         string so recompile_all skips it (the exec above already did the live
         half), with the module riding on `_shift_source` so codec.save still
         shifts live linenos when the write lands."""
-    from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-        _ensure_import_lines)
+    from meltygui.code.chain_converters import _ensure_import_lines
     path = getattr(jump_to, 'path', None)
     start = getattr(jump_to, 'start', None)
     if path is None or start is None:
@@ -8511,6 +8553,8 @@ def _apply_import_fix(stmt, jump_to, text):
         new_lines, inserted, _ = _ensure_import_lines(lines, stmt)
         if not inserted:
             return False, text
+        from meltygui.code.code_checks import invalidate_import_bindings
+        invalidate_import_bindings(path)
         return True, '\n'.join(new_lines)
 
     # ── Span buffer: live-module exec + pending file-top insert ──────────────
@@ -8537,12 +8581,14 @@ def _apply_import_fix(stmt, jump_to, text):
 
     try:
         from pathlib import Path as _P
-        from src.lsd.gl_gui.melty import Melty
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
-        from src.lsd.gl_gui.view.core_conversion.new_codecs import (
-            TypeCodec, _span_fingerprint)
-        from src.lsd.gl_gui.view.core_conversion.address import Address
+        from meltygui.runtime import Melty
+        from meltygui.editor.pending_save import PendingSave
+        from meltygui.code.new_codecs import TypeCodec
+        from meltygui.code.new_codecs import _span_fingerprint
+        from meltygui.code.address import Address
         rp = _P(target_real)
+        from meltygui.code.code_checks import invalidate_import_bindings
+        invalidate_import_bindings(rp)
         # Dedup against the file as it WOULD save - disk plus every queued
         # edit (including an earlier auto-import entry).
         merged = PendingSave.current_file_text(rp)
@@ -8610,8 +8656,7 @@ def _ac_import_rows(ds, cands, prefix, jump_to=None, explicit=False):
                             for name, kind in (getattr(ds, '_ac_pool', None) or ())):
         return cands
     try:
-        from src.lsd.gl_gui.view.core_conversion.code_checks import (
-            project_importables, _module_text_binds)
+        from meltygui.code.code_checks import project_importables
         rows, stmts = project_importables()
     except Exception:
         return cands
@@ -8624,7 +8669,10 @@ def _ac_import_rows(ds, cands, prefix, jump_to=None, explicit=False):
     path = getattr(jump_to, 'path', None)
     if path is not None:
         try:
-            real |= _module_text_binds(path) or set()
+            from meltygui.code.symbol_roster import table_for
+            table = table_for(path)
+            real.update(table.imports)
+            real.update(entry.name for entry in table.entries if entry.parent is None)
         except Exception:
             pass
     picked = {}
@@ -8718,6 +8766,8 @@ _FOLD_CLOSE_RE = {d: re.compile(r"\\.|" + re.escape(d))
 
 def _guide_code_part(stripped):
     """`stripped` minus a trailing `# comment` (quotes honoured), rstripped."""
+    if '#' not in stripped:
+        return stripped.rstrip()
     quote = None
     i, n = 0, len(stripped)
     while i < n:
@@ -8758,6 +8808,35 @@ def _scope_guide_tints(segments, blocks):
         if owner is not None:
             tints[segment] = owner[2]
     return tints
+
+
+def _same_guide_shape(old, text):
+    """Whether an inline edit leaves the guide scanner's inputs unchanged."""
+    edit = _text_splice(old, text)
+    if edit is None:
+        return True
+    start, end, delta, line_delta, line, end_line = edit
+    if line_delta or line != end_line:
+        return False
+    def shape(source, end):
+        begin = source.rfind('\n', 0, start) + 1
+        stop = source.find('\n', end)
+        row = source[begin:len(source) if stop < 0 else stop]
+        stripped = row.lstrip()
+        return (bool(stripped), len(row) - len(stripped),
+                not stripped.startswith('#') and _guide_code_part(stripped).endswith(':'))
+    return shape(old, end) == shape(text, end + delta)
+
+
+def _update_line_widths(old, text, widths):
+    edit = _text_splice(old, text)
+    if edit is None:
+        return widths
+    start, end, delta, line_delta, line, end_line = edit
+    begin = text.rfind('\n', 0, start) + 1
+    stop = text.find('\n', end + delta)
+    rows = text[begin:len(text) if stop < 0 else stop].split('\n')
+    return widths[:line] + [len(row.rstrip()) for row in rows] + widths[end_line + 1:]
 
 
 def _scope_guide_segments(text):
@@ -8844,7 +8923,7 @@ def _scope_fold_ranges(text):
         before other module-level code (blank lines, comments and paren /
         backslash continuations stay inside). Also returned in
         default_collapsed: imports start folded on a fresh editor."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     blocks_on = Toggles.TextEditor.block_fold_ranges
     lines = text.split('\n')
     out = []
@@ -9362,18 +9441,79 @@ def _fold_headless_set(key_of, ranges):
     collapsed ones: an EXPANDED single-line meta comment needs it to know
     whether to offer a chevron. Part of the fold cache key, so flipping
     the toggle relays out on the next frame."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     if not Toggles.TextEditor.hide_meta_comment_folds or not key_of:
         return frozenset()
     return frozenset(r for r in ranges
                      if key_of.get(r, ('',))[0] == 'comment')
 
 
+class _FoldLineNumbers:
+    """Project only the gutter rows requested by the visible band."""
+    def __init__(self, mapping, numbers=None, offset=0):
+        self.mapping = mapping
+        self.numbers = numbers
+        self.offset = offset
+
+    def __len__(self):
+        return len(self.mapping)
+
+    def __getitem__(self, index):
+        line = self.mapping[index]
+        if self.numbers is None:
+            return self.offset + line + 1
+        return self.numbers[line] if line < len(self.numbers) else None
+
+
+def _fold_update_inline(old_text, text, built):
+    """Reuse a fold layout for an edit confined to one visible, non-header line.
+
+    Hidden text and line mappings stay identical. Structural edits, seam
+    deletions and header edits use the full builder instead.
+    """
+    splice = _text_splice(old_text, text)
+    if splice is None:
+        return built
+    start, end, delta, line_delta, line, end_line = splice
+    if line_delta or line != end_line or '\n' in text[start:end + delta]:
+        return None
+    display, segments, folds, mapping = built
+    if any(rng[0] == line for rng, *_ in folds):
+        return None
+    hidden_before = 0
+    for anchor, hidden, rng, headless in segments:
+        full_anchor = anchor + hidden_before
+        if start < full_anchor + len(hidden) and end > full_anchor:
+            return None
+        if start == end and full_anchor < start <= full_anchor + len(hidden):
+            return None
+        if full_anchor < start:
+            hidden_before += len(hidden)
+        else:
+            break
+    display_start, display_end = start - hidden_before, end - hidden_before
+    display_line = display.count('\n', 0, display_start)
+    new_display = display[:display_start] + text[start:end + delta] + display[display_end:]
+    def shifted(offset):
+        return offset + delta if offset >= display_end else offset
+    new_segments = [(shifted(anchor), hidden, rng, headless)
+                    for anchor, hidden, rng, headless in segments]
+    new_folds = []
+    for rng, row, collapsed, count, width, anchor, hidden_length in folds:
+        new_anchor = shifted(anchor)
+        if not collapsed:
+            hidden_length = shifted(anchor + hidden_length) - new_anchor
+        new_folds.append((rng, row, collapsed, count,
+                          width + delta if row == display_line else width,
+                          new_anchor, hidden_length))
+    return new_display, new_segments, new_folds, mapping
+
+
 def _fold_build(text, ranges, collapsed, headless=frozenset()):
     """Fold layout for draw_text's collapsible line ranges.
 
     `headless` — collapsed ranges (comment runs) that may hide their HEADER
-    line too, when the run carries a melty `# [...]` line: the whole run
+    line too, when the run carries a meltygui `# [...]` line: the whole run
     leaves the display, the fold ANCHORS at the end of the display line
     above it (the splice seam) and its CHEVRON sits on the line BELOW it —
     the line the metadata annotates — so the fold entry's display_line is
@@ -9742,7 +9882,8 @@ def draw_text(input_value: str, height=None,
               show_widgets=True, show_root_backgrounds=True,
               highlight_token_matches=True, roster_live_hold=True,
               roster_world=None, roster_table=None,
-              fim="", fim_state: FimState = None):
+              fim="", fim_state: FimState = None,
+              source_tools: SourceToolsState = None):
     """`show_widgets=False` hides every inline token widget (run/eye buttons,
     number drags, bool switches, icon pickers -- the token_views layer).
     `highlight_token_matches=False` turns off the caret-rest same-token wash
@@ -9848,7 +9989,7 @@ def draw_text(input_value: str, height=None,
     # diff folds track on ds._diff_fold_collapsed, seeded by `expand_diff`.
     # In-function import, same cycle-avoidance as the main Toggles import
     # further down (which harmlessly re-binds the same name).
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     _fold_key_of = None
     # not restore_active: the loading stand-in is ALREADY display-shaped
     # (the snapshot captured fold-spliced display text), so fold processing
@@ -10522,15 +10663,19 @@ def draw_text(input_value: str, height=None,
             _fhc = (_frt[1], _fh_tog,
                     _fold_headless_set(_fold_key_of, _frt[1]))
             ds._fold_headless_cache = _fhc
-        _fk = (_frt[1] + tuple(_diff_rngs), frozenset(_fold_union_col),
+        fold_layout_key = (_frt[1] + tuple(_diff_rngs), frozenset(_fold_union_col),
                _fhc[2])
         _fc = getattr(ds, '_fold_cache', None)
-        if _fc is not None and _fc[0] is input_value and _fc[1] == _fk:
+        _pf_info['fold_text_hit'] = _fc is not None and _fc[0] is input_value
+        if _fc is not None and _fc[0] is input_value and _fc[1] == fold_layout_key:
             _fold_built = _fc[2]
         else:
-            _fold_built = _fold_build(input_value, _fk[0], _fold_union_col,
-                                      _fk[2])
-            ds._fold_cache = (input_value, _fk, _fold_built)
+            _fold_built = (_fold_update_inline(_fc[0], input_value, _fc[2])
+                           if _fc is not None and _fc[1] == fold_layout_key else None)
+            if _fold_built is None:
+                _fold_built = _fold_build(input_value, fold_layout_key[0], _fold_union_col,
+                                          fold_layout_key[2])
+            ds._fold_cache = (input_value, fold_layout_key, _fold_built)
         _disp, _fold_segments, _fold_folds, _fold_d2b = _fold_built
         # Caret keeps its glyph across a toggle: offsets up to the toggled
         # fold's anchor are identical in both layouts, so the NEW layout's
@@ -10753,7 +10898,7 @@ def draw_text(input_value: str, height=None,
 
     # Same deal for the usage-jump popup (multi-user symbol Ctrl+B).
     if getattr(ds, '_uj_model', None) is None:
-        from src.lsd.gl_gui.view.core_views.usage_picker import UsagePickerModel
+        from meltygui.editor.usage_picker import UsagePickerModel
         ds._uj_model = UsagePickerModel()
     uj_model = ds._uj_model
     # Similarly for the import quick-fix chooser (Alt+Enter on a missing-import line).
@@ -10762,7 +10907,7 @@ def draw_text(input_value: str, height=None,
     qf_state = ds._qf_state
     # Imported in-function to avoid a module-load import cycle (toggles pulls in
     # decoration/window machinery). For the spell-check button + squiggles below.
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     # Error markers to highlight in red: the routed code_tree's parse errors plus
     # any exception routed in via the mode route (e.g. draw_modes hands us the
     # chain_in failure so the offending source line lights up here). Computed up
@@ -10836,7 +10981,7 @@ def draw_text(input_value: str, height=None,
 
     _qf_names = {}   # line → {names the fixes would bind} - drives the underlines
     if _active_fixes:
-        from src.lsd.gl_gui.view.core_conversion.chain_converters import _import_bound_name
+        from meltygui.code.chain_converters import _import_bound_name
         for _ln, _stmts in _active_fixes.items():
             try:
                 _ln = int(_ln)
@@ -10926,7 +11071,7 @@ def draw_text(input_value: str, height=None,
     # coordinates; its height folds into bar_height so the text clip/culling
     # below start at the floating row.
     if manual_search and ds.search_active and not single_line and not is_search_box:
-        from src.lsd.gl_gui.view.core_views.new_core_view import draw_search
+        from meltygui.views.values import draw_search
         _msx, _msy = imgui.get_cursor_screen_pos()
         _ms_h = 50.0
         # Pin at the view's absolute top (plus the jump bar's band when that
@@ -11063,7 +11208,7 @@ def draw_text(input_value: str, height=None,
         _pf_miss_t = time.perf_counter()
         if syntax_highlight:
             if syntax_language == "bash":
-                from src.lsd.gl_gui.view.core_views.bash_syntax import window_tokens as bash_window_tokens
+                from meltygui.editor.bash_syntax import window_tokens as bash_window_tokens
                 wl, start_off, toks = bash_window_tokens(ds, text, _line_offsets_cached(text), v0, v1)
             else:
                 if getattr(ds, '_lo_text', None) != text:
@@ -11205,10 +11350,9 @@ def draw_text(input_value: str, height=None,
     # hand the gutter the per-display-line numbers instead.
     if _fold_d2b is not None:
         if line_numbers is not None:
-            line_numbers = [line_numbers[b] if b < len(line_numbers) else None
-                            for b in _fold_d2b]
+            line_numbers = _FoldLineNumbers(_fold_d2b, line_numbers)
         elif jump_to is not None and getattr(jump_to, 'start', None) is not None:
-            line_numbers = [jump_to.start + b + 1 for b in _fold_d2b]
+            line_numbers = _FoldLineNumbers(_fold_d2b, offset=jump_to.start)
     show_gutter = (not single_line and not is_search_box
                    and (line_numbers is not None
                         or (jump_to is not None
@@ -11435,7 +11579,7 @@ def draw_text(input_value: str, height=None,
                 # file jump - broken targets appeared. The timeline stores
                 # FILE lines, so the display source line maps back through the
                 # fold layout first.
-                from src.lsd.gl_gui.view.core_views.core_undo import NavUndo
+                from meltygui.state.undo import NavUndo
                 _nav_win = _enclosing_editor_window(ds)
                 _nav_inst = ((getattr(_nav_win, 'instance', 0) or 0)
                              if _nav_win is not None else 0)
@@ -11503,7 +11647,7 @@ def draw_text(input_value: str, height=None,
                     if _mx is not None:
                         _target = min(_target, _mx)
                     ds.scroll_offset = (ds.scroll_offset[0], max(0.0, _target))
-                    from src.lsd.gl_gui.notifications import notify
+                    from meltygui.notifications import notify
                     notify(f"scroll goto-local ds={ds.name} line={_line} "
                            f"li={_li} src_li={_src_li} "
                            f"sy={_sy0:.0f}->{ds.scroll_offset[1]:.0f} "
@@ -11570,8 +11714,8 @@ def draw_text(input_value: str, height=None,
         cursor on the BEST match (the first target's row). `anchor` is the
         buffer index the picker hangs under; `gutter_line` docks it beside
         a gutter heat box instead."""
-        from src.lsd.gl_gui.view.core_views.usage_picker import (
-            build_usage_rows, scroll_row_into_view)
+        from meltygui.editor.usage_picker import build_usage_rows
+        from meltygui.editor.usage_picker import scroll_row_into_view
         _rows, _best = build_usage_rows(_targets, _names)
         if not _rows:
             return False
@@ -11596,7 +11740,7 @@ def draw_text(input_value: str, height=None,
         name, a site's symbol)."""
         if _row.kind == "more":
             uj_model.expand()      # list them all, picker stays open
-            from src.lsd.gl_gui.view.core_views.usage_picker import scroll_row_into_view
+            from meltygui.editor.usage_picker import scroll_row_into_view
             scroll_row_into_view(
                 Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)),
                 uj_model.index)
@@ -11604,7 +11748,7 @@ def draw_text(input_value: str, height=None,
             return
         ds._uj_open = False
         if _row.kind == "file" or _row.ref is None:
-            from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+            from meltygui.extensions import open_source as open_in_editor
             _uj_log(f"pick FILE {_row.path}")
             open_in_editor(str(_row.path),
                            editor_window=_enclosing_editor_window(ds))
@@ -11646,7 +11790,7 @@ def draw_text(input_value: str, height=None,
                and _dl < len(_fold_d2b) else _dl)
         _file_line = _usage_off + _fl + 1
         _t0 = time.monotonic()
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import usage_data_for_line
+        from meltygui.code.libcst_conversion import usage_data_for_line
         _su_map = usage_data_for_line(str(_vpath), _file_line)
         _ms = (time.monotonic() - _t0) * 1000
         _uj_log(f"recheck {ds.name!r} line={_file_line} "
@@ -11667,9 +11811,8 @@ def draw_text(input_value: str, height=None,
                                 for s in (getattr(_s, 'sites', None) or ()))}
             _diffs = _diff_usage_maps(_old_map, _new_map, _file_line)
             if _diffs:
-                from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-                    usage_graph_source)
-                from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+                from meltygui.code.libcst_conversion import usage_graph_source
+                from meltygui.editor.pending_save import PendingSave
                 _log_usage_mismatch(
                     _vpath, _file_line, _diffs, _old_map, _new_map,
                     ctx=dict(frame=Melty.frame_count,
@@ -11735,7 +11878,7 @@ def draw_text(input_value: str, height=None,
         if _vpath is None:
             return None
         try:
-            from src.lsd.gl_gui.view.core_views.roster_tints import ctrl_b_lookup
+            from meltygui.editor.roster_tints import ctrl_b_lookup
             _dl = text.count('\n', 0, pos)
             _col = pos - (text.rfind('\n', 0, pos) + 1)
             _fl = (_fold_d2b[_dl] if _fold_d2b is not None
@@ -11779,13 +11922,14 @@ def draw_text(input_value: str, height=None,
         # Try roster first (Toggles.TextEditor.SymbolUsages.ctrl_b_roster):
         # textual resolution over pending/live spans - a usage jumps to its
         # definition, a definition lists its usages (trigram index +
-        # resolve-back). Falls back to the graph/recheck below when the
-        # roster can't place the caret's symbol or finds no targets.
+        # resolve-back). A miss stays localized in this file's project;
+        # the legacy background graph must not supply a foreign definition.
         if Toggles.TextEditor.SymbolUsages.ctrl_b_roster and _vpath is not None:
             _rr = _roster_ctrl_b(pos)
             if _rr is not None and _rr[4]:
                 _rs, _re_, _rsym, _rat_def, _rtargets = _rr
                 return _present_usage_targets(_rs, _rsym, _rtargets, force_picker)
+            return False
         if Toggles.TextEditor.SymbolUsages.ctrl_b_always_recheck:
             _rechecked = True
             _fresh = _usage_recheck(pos)
@@ -12082,11 +12226,11 @@ def draw_text(input_value: str, height=None,
                     and _xdl < len(_fold_d2b) else _xdl)
             _xline = _usage_off + _xfl + 1
             import threading
-            from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
+            from meltygui.utils.jump_to_code import open_in_intellij
             threading.Thread(target=open_in_intellij, args=(str(_xp), _xline),
                              daemon=True, name="open_in_intellij").start()
         else:
-            from src.lsd.gl_gui.notifications import notify
+            from meltygui.notifications import notify
             notify("No file path for this buffer — can't open it externally.",
                    tint=(1.0, 0.65, 0.4, 1.0), tag="external_editor")
 
@@ -12172,7 +12316,7 @@ def draw_text(input_value: str, height=None,
                 ac_state.cursor_path = (_ac_cands[_ac_idx],)
                 # Keep the selection cursor visible: nudge the popup window to
                 # scroll the minimal amount (no-op while the row is in view).
-                from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
+                from meltygui.views.values import _dd_scroll_cursor_into_view
                 _dd_scroll_cursor_into_view(
                     Melty.cache.key_to_draw_state.get(getattr(ds, '_ac_menu_tile', None)),
                     _ac_idx)
@@ -12262,7 +12406,7 @@ def draw_text(input_value: str, height=None,
                 step = 1 if pressed(glfw.KEY_DOWN) else -1
                 uj_model.index = (uj_model.index + step) % len(_uj_rows)
                 uj_model.kbd_mode = True
-                from src.lsd.gl_gui.view.core_views.usage_picker import scroll_row_into_view
+                from meltygui.editor.usage_picker import scroll_row_into_view
                 scroll_row_into_view(
                     Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)),
                     uj_model.index)
@@ -12295,7 +12439,7 @@ def draw_text(input_value: str, height=None,
                 ds._qf_index = _qf_idx
                 qf_state._kbd_mode = True
                 qf_state.cursor_path = (_qf_opts[_qf_idx],)
-                from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
+                from meltygui.views.values import _dd_scroll_cursor_into_view
                 _dd_scroll_cursor_into_view(
                     Melty.cache.key_to_draw_state.get(getattr(ds, '_qf_menu_tile', None)),
                     _qf_idx)
@@ -12306,7 +12450,7 @@ def draw_text(input_value: str, height=None,
             elif _qf_enter and _qf_opts and not ctrl:
                 _stmt = _qf_opts[min(_qf_idx, len(_qf_opts) - 1)]
                 _fx_changed, _fx_text = _apply_import_fix(_stmt, jump_to, text)
-                from src.lsd.gl_gui.view.core_conversion.chain_converters import _import_bound_name
+                from meltygui.code.chain_converters import _import_bound_name
                 ds._qf_applied.add(_import_bound_name(_stmt))
                 if _fx_changed:
                     ds.text_cursor_pos += len(_fx_text) - len(text)
@@ -12321,7 +12465,7 @@ def draw_text(input_value: str, height=None,
             _qf_opts = _qf_fixes.get(_caret_ln) or []
             if len(_qf_opts) == 1:
                 _fx_changed, _fx_text = _apply_import_fix(_qf_opts[0], jump_to, text)
-                from src.lsd.gl_gui.view.core_conversion.chain_converters import _import_bound_name
+                from meltygui.code.chain_converters import _import_bound_name
                 ds._qf_applied.add(_import_bound_name(_qf_opts[0]))
                 if _fx_changed:
                     ds.text_cursor_pos += len(_fx_text) - len(text)
@@ -12337,6 +12481,11 @@ def draw_text(input_value: str, height=None,
                 ds._qf_open = True
                 qf_state._kbd_mode = True
                 qf_state.cursor_path = (_qf_opts[0],)
+                _fired.discard(glfw.KEY_ENTER)
+                _fired.discard(glfw.KEY_KP_ENTER)
+                request_render()
+            elif any(line == _caret_ln for line, message in _err_markers):
+                ds._err_open_line = _caret_ln - 1
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
                 request_render()
@@ -12935,9 +13084,28 @@ def draw_text(input_value: str, height=None,
                 _ac_line = _index_to_line_col(text, ds.text_cursor_pos)[0]
                 _pool_key = (id(_usage_tree), _ac_line, id(text))
                 if getattr(ds, '_ac_pool_key', None) != _pool_key:
-                    _pool_func = _ac_live_context(ds, text, jump_to)[1]
-                    ds._ac_pool = _completion_pool(_usage_tree, text, _ac_line, _pool_func)
+                    # Extending the current identifier changes the prefix,
+                    # not its scope. Build the pool until another part of the
+                    # buffer changes; pin the buffer to make identity safe.
+                    previous = getattr(text_editor_state, '_completion_buffer', None)
+                    previous_key = getattr(ds, '_ac_pool_key', None)
+                    reuse = False
+                    if (previous is not None and previous_key is not None
+                            and previous_key[:2] == _pool_key[:2]
+                            and getattr(text_editor_state, '_completion_anchor', None) == anchor):
+                        edit = _text_splice(previous, text)
+                        reuse = (edit is None or
+                                 (edit[0] >= anchor and edit[1] + edit[2] <= ds.text_cursor_pos
+                                  and not edit[3]
+                                  and all(c.isalnum() or c == '_'
+                                          for c in previous[edit[0]:edit[1]] +
+                                          text[edit[0]:edit[1] + edit[2]])))
+                    if not reuse:
+                        _pool_func = _ac_live_context(ds, text, jump_to)[1]
+                        ds._ac_pool = _completion_pool(_usage_tree, text, _ac_line, _pool_func)
                     ds._ac_pool_key = _pool_key
+                    text_editor_state._completion_buffer = text
+                    text_editor_state._completion_anchor = anchor
                 cands = _filter_completions(ds._ac_pool, prefix,
                                             users=_ac_users, tints=_ac_tinted,
                                             keep_exact=getattr(text_editor_state, '_completion_explicit', False))
@@ -12964,7 +13132,7 @@ def draw_text(input_value: str, height=None,
                     # Snap the (latched) popup back to the top so the restarted
                     # selection is visible - the popup keeps its scroll_offset
                     # across reshapes and reopens otherwise.
-                    from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
+                    from meltygui.views.values import _dd_scroll_cursor_into_view
                     _dd_scroll_cursor_into_view(
                         Melty.cache.key_to_draw_state.get(getattr(ds, '_ac_menu_tile', None)), 0)
                     # Assert keyboard-select mode so the top match is highlighted
@@ -13727,7 +13895,10 @@ def draw_text(input_value: str, height=None,
         _ll = getattr(ds, "_dt_line_lens", None)
         if _dt_blocks and (_ll is None
                            or getattr(ds, "_dt_line_lens_text", None) is not text):
-            _ll = ds._dt_line_lens = [len(_l.rstrip()) for _l in text.split('\n')]
+            previous = getattr(ds, '_dt_line_lens_text', None)
+            _ll = ds._dt_line_lens = (_update_line_widths(previous, text, _ll)
+                                     if previous is not None and _ll is not None else
+                                     [len(row.rstrip()) for row in text.split('\n')])
             ds._dt_line_lens_text = text
         _pf("w:pre_blocks")
         for _bi, (_b_line, _b_idx, _b_end, _b_tint) in enumerate(_dt_blocks):
@@ -13952,9 +14123,11 @@ def draw_text(input_value: str, height=None,
             # whole file - head -1 so it starts on line 0, and it REPLACES
             # the column-0 block guides (a root-level def's own guide would
             # only retrace it).
-            _sg_memo = ds._scope_guide_memo = (
-                text, [(-1, text.count('\n'), 0)]
-                + [_seg for _seg in _scope_guide_segments(text) if _seg[2] > 0])
+            segments = (_sg_memo[1] if _sg_memo is not None
+                        and _same_guide_shape(_sg_memo[0], text) else
+                        [(-1, text.count('\n'), 0)] +
+                        [segment for segment in _scope_guide_segments(text) if segment[2] > 0])
+            _sg_memo = ds._scope_guide_memo = (text, segments)
         _sg_segments = _sg_memo[1]
         if _sg_segments:
             _sg_factors = (Toggles.TextEditor.scope_guide_saturation,
@@ -14121,8 +14294,14 @@ def draw_text(input_value: str, height=None,
             _tok = None
         if _tok is not None:
             _t_start, _t_end, _t_word = _tok
-            _ranges = [r for r in _word_match_ranges(text, _t_word)
-                       if not _pos_in_string_or_comment(text, r[0], _lo_offs, _lo_open)]
+            matches = getattr(text_editor_state, '_token_matches', None)
+            if matches is None or matches[0] is not text or matches[1] != _t_word:
+                _ranges = [r for r in _word_match_ranges(text, _t_word)
+                           if not _pos_in_string_or_comment(text, r[0], _lo_offs, _lo_open)]
+                if text_editor_state is not None:
+                    text_editor_state._token_matches = (text, _t_word, _ranges)
+            else:
+                _ranges = matches[2]
             # Only when the token recurs (its own occurrence plus at least one
             # other) - so the caret's own occurrence is washed too.
             if len(_ranges) > 1:
@@ -14132,8 +14311,8 @@ def draw_text(input_value: str, height=None,
                     sy = origin_y + _m_line * line_px
                     ey = sy + line_px
                   
-                    # if ey < rect_min_y - 10.0 or sy > rect_max_y + 10.0:
-                    #     continue
+                    if ey < rect_min_y - 10.0 or sy > rect_max_y + 10.0:
+                        continue
                         
                     sx = origin_x + _colx(_ms)
                     ex = origin_x + _colx(_me)
@@ -14247,7 +14426,8 @@ def draw_text(input_value: str, height=None,
             ey0 = origin_y + _err_open_ln * line_px
             ey1 = ey0 + line_px
             if not (ey1 < rect_min_y or ey0 > rect_max_y):
-                draw_list.add_rect_filled(origin_x - 4, ey0, origin_x + visible_width, ey1,
+                error_line = _diagnostic_line_text(text, _err_open_ln)
+                draw_list.add_rect_filled(origin_x - 4, ey0, origin_x + min(visible_width, max(char_w, len(error_line) * char_w)), ey1,
                                           pack_color(*error_line_wash))
     # Import quick-fix affordance: every symbol an import would bind wears a
     # translucent yellow underline, and the floating Alt+Enter hint appears at
@@ -14835,7 +15015,7 @@ def draw_text(input_value: str, height=None,
                     # drag on its first value change); see the splice below.
                     _tv_edit = (src_i, len(token), _res[1],
                                 bool(_view.get("owns_mouse")) and not _lead)
-                # owns_mouse REPLACE widgets consume the melty mouse events, so
+                # owns_mouse TV widgets consume the meltygui mouse events, so
                 # a press on them never reaches the editor's click handling -
                 # read the raw mouse and place the caret at the column under
                 # it, exactly like a text click (the widget's cells are
@@ -15228,7 +15408,7 @@ def draw_text(input_value: str, height=None,
     # tree-driven list of (start, end, word) spans; the rendering stays the same.
     if Toggles.TextEditor.enable_spell_check:
         if getattr(ds, '_spell_cache_text', None) != text:
-            from src.lsd.gl_gui.view.core_views import spell_check
+            import meltygui.editor.spelling as spell_check
             ds._spell_cache_text = text
             ds._spell_errors = spell_check.find_misspellings(text)
         spell_color = 0xFF0000FF  # red (ABGR)
@@ -15332,13 +15512,13 @@ def draw_text(input_value: str, height=None,
         # Line-tint lookup for the heat wash below: a line with a definition
         # tint draws its number with THAT color instead of the usage heat ramp.
         _dt_line_map = {l[0]: l for l in _dt_lines} if _dt_lines else {}
-        # Live-marker open/close buttons (per _lv_btn_w above): raw draw-list
-        # icons; deliberately NOT melty buttons since a render_func per line
+        # Live-marker open/close buttons (see _lv_btn_w above): raw draw-list
+        # widgets - definitely NOT meltygui buttons; a render_func per line
         # would dominate the gutter pass. Click toggles every marker on the
         # line via set_marker_open and invalidates this tile so their marker
         # bodies re-run and create/hide their value windows.
         _lv_marks = (getattr(ds, "_lv_gutter_markers", None) or {}) if _lv_btn_w else {}
-        total_lines = text.count('\n') + 1
+        total_lines = len(_line_starts(text))
         # Visible band only - the old range(total_lines) walked every line of
         # the file per frame and culled inside the loop; the number/heat-box
         # work only ever applies to on-screen lines, so calculate the band once
@@ -15374,7 +15554,7 @@ def draw_text(input_value: str, height=None,
             clamped top / bottom row with `arrow` = up / down glyph, where
             the arrow is its OWN button (left) that scrolls the error line
             into view (centered), next to the error button proper."""
-            from src.lsd.gl_gui.view.core_views.headers import flat_button
+            from meltygui.views.headers import flat_button
             _eb_x0 = left + _lv_btn_w + 2.0
             _eb_h = max(6.0, line_px - 4.0)
             _eb_save = imgui.get_cursor_screen_pos()
@@ -15647,8 +15827,7 @@ def draw_text(input_value: str, height=None,
                 if getattr(ds, "_lv_btn_pressed_line", None) == line_idx:
                     ds._lv_btn_pressed_line = None
                     if not _inline_all:
-                        from src.lsd.gl_gui.view.core_views.live_view_views import (
-                            set_marker_open)
+                        from meltygui.editor.live_views import set_marker_open
                         for m in _mlist:
                             set_marker_open(m, not _open)
                         ds.invalidate()
@@ -15824,7 +16003,7 @@ def draw_text(input_value: str, height=None,
         draw_list.pop_clip_rect()
 
     if changed:
-        text_height = (text.count('\n') + 1) * line_px + 2
+        text_height = len(_line_starts(text)) * line_px + 2
     else:
         text_height = len(_line_starts(input_value)) * line_px + 2
 
@@ -15849,7 +16028,7 @@ def draw_text(input_value: str, height=None,
                     Melty.popover_focused_ds = None
             _io_root = getattr(ds, '_icon_dd_root', None)
             if _io_root is not None:
-                from src.lsd.gl_gui.view.core_views.new_core_view import _dd_close
+                from meltygui.views.values import _dd_close
                 _dd_close(_io_root)   # collapse paths / release the box's text focus
             ds._icon_open_name = None
             request_render()
@@ -15865,7 +16044,7 @@ def draw_text(input_value: str, height=None,
     # closed, so we must call draw_dd_menu EVERY frame and toggle `closed=` rather
     # than gating the call (a gated call would leave the last-open frame painted).
     # Only the open state feeds real items / drives the keep-alive repaint.
-    from src.lsd.gl_gui.view.core_views.new_core_view import draw_dd_menu
+    from meltygui.views.values import draw_dd_menu
     _ac_show = (Melty.text_focused_ds is draw_state and getattr(ds, '_ac_open', False)
                 and bool(getattr(ds, '_ac_candidates', None)))
     _ac_cands = ds._ac_candidates if _ac_show else []
@@ -16045,7 +16224,8 @@ def draw_text(input_value: str, height=None,
         _uj_y = origin_y + (_uj_gut - 1) * line_px
     else:
         _uj_x, _uj_y = _char_pos_to_xy(text, _uj_anchor, origin_x, origin_y, line_px, vcols=vcols)
-    from src.lsd.gl_gui.view.core_views.usage_picker import draw_usage_picker, picker_fit
+    from meltygui.editor.usage_picker import draw_usage_picker
+    from meltygui.editor.usage_picker import picker_fit
     # ── Popover size: fitted to the rows ONCE on open, then free ─ use the
     # dropdown's plumbing (auto_resize=False hands the window its resize
     # handle) without its every-frame stamp: on the opening frames the size
@@ -16057,7 +16237,7 @@ def draw_text(input_value: str, height=None,
     # resize and the frame-edge solve cap at draw_state.max_height), and only
     # only the handle width is remembered. Re-stamping every frame fought
     # the drag (Lukas 09-04).
-    from src.lsd.gl_gui.view.core_views.usage_picker import picker_content_height
+    from meltygui.editor.usage_picker import picker_content_height
     _uj_width = (getattr(text_editor_state, 'usage_picker_width', None)
                  if text_editor_state is not None else None)
     _uj_pop = Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None))
@@ -16159,7 +16339,7 @@ def draw_text(input_value: str, height=None,
         ds._qf_menu_sig = None      # force one repaint on the next open
     if qf_changed and isinstance(qf_pick, str):
         _fx_changed, _fx_text = _apply_import_fix(qf_pick, jump_to, text)
-        from src.lsd.gl_gui.view.core_conversion.chain_converters import _import_bound_name
+        from meltygui.code.chain_converters import _import_bound_name
         if getattr(ds, '_qf_applied', None) is None:
             ds._qf_applied = set()
         ds._qf_applied.add(_import_bound_name(qf_pick))
@@ -16175,63 +16355,33 @@ def draw_text(input_value: str, height=None,
 
     _pf("uj_picker")
     # --- Floating error box pinned to the bottom of the view ---
-    # The first error message floats inside a box sitting flush ABOVE the
-    # offending line, aligned flush to the editor's right edge, so it never
-    # covers the line it describes. Long messages wrap inside a capped-width
-    # box. Drawn after the body (and after the monospace font pop, so it uses
-    # the default UI font); save the cursor, paint, restore, layout untouched.
+    # The error popover owns its hit region, including below a one-line file.
+    # Background work keeps polling after it closes; completion uses the shared
+    # import statement path and the original file's selected environment.
+    # Hovering the affected source line reveals the same fix as its gutter.
+    mouse_x, mouse_y = imgui.get_mouse_pos()
+    for error_line, error_message in _err_markers:
+        error_index = error_line - 1
+        if 0 <= error_index < len(_line_starts(text)):
+            width = min(visible_width, max(char_w, len(_diagnostic_line_text(text, error_index)) * char_w))
+            if (origin_x <= mouse_x <= origin_x + width
+                    and origin_y + error_index * line_px <= mouse_y < origin_y + (error_index + 1) * line_px):
+                ds._err_open_line = error_index
+                break
     _err_open_line = getattr(ds, '_err_open_line', None)
     _err_open_msg = (dict((l - 1, m) for l, m in _err_markers).get(_err_open_line)
                      if _err_markers and _err_open_line is not None else None)
-    if jump_to is not None and _err_msg and _err_open_msg is not None:
-        _save_cursor = imgui.get_cursor_screen_pos()
-        clip_l, clip_t, clip_r, clip_b = draw_state.abs_clip_rect
-        # Right margin clears the overlay scrollbar (it draws over the
-        # content edge) plus breathing room — the old 6 px sat under it.
-        # [tint=(0.95, 0.55, 0.35)]
-        error_box_right_margin = 26
-        pad_x, pad_y, margin = 8, 5, 6
-        # The box shows the CLICKED marker's FULL message (every marker has
-        # a gutter icon); a click on the box copies it.
-        msg = str(_err_open_msg).rstrip()
-        max_w = min(520.0, max(80.0, (clip_r - clip_l) - 2 * pad_x
-                                       - margin - error_box_right_margin))
-        _ts = imgui.calc_text_size(msg, False, max_w)
-        box_w = _ts.x + 2 * pad_x
-        box_h = _ts.y + 2 * pad_y
-        bx1 = clip_r - error_box_right_margin
-        bx0 = bx1 - box_w
-        # Anchor flush against the error line's top (no gap); if the line sits
-        # too close to the viewport top for the box to fit, flip it below.
-        _err_line_top = origin_y + _err_open_line * line_px
-        by1 = min(_err_line_top, clip_b - margin)
-        by0 = by1 - box_h
-        if by0 < clip_t + margin:
-            by0 = min(_err_line_top + line_px, clip_b - margin - box_h)
-            by1 = by0 + box_h
-        # Keep the box inside the viewport vertically.
-        by0 = max(clip_t + margin, min(by0, clip_b - margin - box_h))
-        by1 = by0 + box_h
-        fill_col = (0.275, 0.118, 0.157, 0.922)
-        line_col = (0.588, 0.235, 0.275, 1.0)
-        err_draw_list = imgui.get_window_draw_list()
-        err_draw_list.add_rect_filled(bx0, by0, bx1, by1, pack_color(*fill_col), 4.0)
-        err_draw_list.add_rect(bx0, by0, bx1, by1, pack_color(*line_col), 4.0)
-        imgui.set_cursor_screen_pos((bx0 + pad_x, by0 + pad_y))
-        imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + max_w)
-        imgui.text_colored(msg, 1.0, 0.72, 0.68, 1.0)
-        imgui.pop_text_wrap_pos()
-        imgui.set_cursor_screen_pos(_save_cursor)
-        # Click on the message = copy it (draw_button's routing: an on_action
-        # claim on the editor's draw_state, bypassed on cache hits). A press
-        # here must not move the caret either.
-        ds._plain_tv_rects.append((bx0, by0, bx1, by1))
-        if ds.on_action("left_mouse_clicked", view_id="err_box",
-                        rect=(bx0, by0, bx1, by1), priority_delta=4,
-                        cursor=mouse_cursor.ARROW) is not None:
-            imgui.set_clipboard_text(msg)
-            from src.lsd.gl_gui.notifications import notify
-            notify("Error message copied", tag="error_copy")
+    from meltygui.extensions import call
+    dependency_statement = call('source_diagnostic_view', source_tools, jump_to, _err_open_msg,
+                                _err_open_line, draw_state, origin_x, origin_y, line_px)
+    if dependency_statement:
+        import_changed, imported_text = _apply_import_fix(dependency_statement, jump_to, text)
+        from meltygui.code.chain_converters import _import_bound_name
+        draw_state._qf_applied.add(_import_bound_name(dependency_statement))
+        if import_changed:
+            draw_state.text_cursor_pos += len(imported_text) - len(text)
+            text = imported_text
+            changed = True
     # window_pos is an offset from the parent window's absolute origin. The menu
     # window carries an intrinsic ~one-row top offset (draw_dropdown back-compensates
     # the same way), so anchor at the caret's line top minus a line to sit it snug
@@ -16260,6 +16410,14 @@ def draw_text(input_value: str, height=None,
             _full_now, _union_after, _fold_dropped, _fold_moved = \
                 _fold_reassemble(original_input, text, _fold_segments,
                                  _fold_union_col)
+            if not _fold_dropped and not _fold_moved:
+                updated = _fold_update_inline(_fold_full, _full_now, _fold_built)
+                if updated is not None:
+                    # The old pass just tokenized this exact display string.
+                    # Carry its results into the next pass, instead of
+                    # reconstructing an equal string and invalidating every
+                    # lexer, width, tint and token-window cache a second time.
+                    ds._fold_cache = (_full_now, fold_layout_key, (text, *updated[1:]))
             ds._fold_collapsed = {_fold_moved.get(r, r)
                                   for r in ds._fold_collapsed
                                   if r not in _fold_dropped}
@@ -16300,7 +16458,7 @@ def draw_text(input_value: str, height=None,
                     and syntax_highlight and jump_to is not None
                     and not single_line)
         if _fast_ok and len(_full_now) <= Toggles.TextEditor.fast_check_max_chars:
-            from src.lsd.gl_gui.view.core_conversion.new_converters import _compile_check
+            from meltygui.code.new_converters import _compile_check
             _fe = _compile_check(_full_now)
             ds._fast_err_state = (_full_now, _fe)
             ds._fast_err_extra = ((_full_now, _compile_check_more(_full_now, _fe))
@@ -16314,8 +16472,8 @@ def draw_text(input_value: str, height=None,
             # background payload rides along so the top block can tell when a
             # landed relint/reparse superseded this scan.
             try:
-                from src.lsd.gl_gui.view.core_conversion.code_checks import (
-                    collect_import_suggestions, has_scan_state)
+                from meltygui.code.code_checks import collect_import_suggestions
+                from meltygui.code.code_checks import has_scan_state
                 _fi_path = getattr(jump_to, 'path', None)
                 if has_scan_state(_fi_path):
                     _fi_scan = collect_import_suggestions(_full_now, path=_fi_path)
@@ -16340,8 +16498,7 @@ def draw_text(input_value: str, height=None,
             # big-file errors never wait out the background debounce to
             # reappear. "skip" (huge paste) drops the held state - the buffer
             # changed structurally and the background parse re-flags.
-            from src.lsd.gl_gui.view.core_conversion.new_converters import (
-                _region_compile_check)
+            from meltygui.code.new_converters import _region_compile_check
             _r_status, _r_err, _r_span = _region_compile_check(
                 _prev_text, _full_now, Toggles.TextEditor.fast_check_max_chars)
             _held = getattr(ds, '_fast_err_state', None)
@@ -16376,8 +16533,8 @@ def draw_text(input_value: str, height=None,
             # unset and the debounced background channel authoritative (its
             # next scan re-warms the incremental state).
             try:
-                from src.lsd.gl_gui.view.core_conversion.code_checks import (
-                    collect_import_suggestions, has_scan_state)
+                from meltygui.code.code_checks import collect_import_suggestions
+                from meltygui.code.code_checks import has_scan_state
                 _fi_path = getattr(jump_to, 'path', None)
                 _fi_scan = (collect_import_suggestions(_full_now, path=_fi_path,
                                                        incremental_only=True)

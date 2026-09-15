@@ -1,7 +1,7 @@
 """Incremental user-message timestamps from provider session logs (worker only)."""
 import json
 from pathlib import Path
-from .chat_proxy import epoch_seconds
+from meltygui.chat.chat_proxy import epoch_seconds
 
 
 class UserMessageTimes:

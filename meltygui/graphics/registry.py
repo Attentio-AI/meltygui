@@ -5,7 +5,10 @@ Shader and shader type registry with decorator-based registration.
 from typing import Dict, Type, Any, Optional, Callable
 from dataclasses import dataclass, field
 
-from src.shader_library.shader_manager.base import ShaderType, Shader, camel_to_snake, GLType
+from meltygui.graphics.base import ShaderType
+from meltygui.graphics.base import Shader
+from meltygui.graphics.base import camel_to_snake
+from meltygui.graphics.base import GLType
 
 
 class ShaderRegistry:

@@ -37,10 +37,11 @@ import weakref
 from enum import Enum
 
 # These imports are heavy but already resolved whenever the app is running.
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.model.dict_conversion_util import ClassUtility
-from src.lsd.gl_gui.model.core_model.core_enums import generate_id
-from src.lsd.gl_gui.model.missing_saved_class import missing_saved_class, restore_saved_class
+from meltygui.state.object import DictConversion
+from meltygui.state.class_utility import ClassUtility
+from meltygui.state.core_enums import generate_id
+from meltygui.state.missing_class import missing_saved_class
+from meltygui.state.missing_class import restore_saved_class
 
 log = logging.getLogger("load_save_v2")
 
@@ -376,7 +377,7 @@ def _live_inject_plan(cls):
     if plan is None:
         plan = []
         try:
-            from src.lsd.gl_gui.view.core_views.decoration.core_decoration import auto_eval
+            from meltygui.rendering.decorators.core_decoration import auto_eval
         except ImportError:
             auto_eval = ()                       # module absent - empty plan (L1)
         for name in dir(cls):
@@ -788,6 +789,13 @@ class _UnpicklerOverrides:
         raise pickle.UnpicklingError(f"unknown persistent id {pid!r}")
 
     def find_class(self, module, name):
+        from meltygui.state.module_names import canonical_name
+        old_path = f"{module}.{name}"
+        path = canonical_name(old_path)
+        if path != old_path and path.endswith("." + name):
+            module = path[:-(len(name) + 1)]
+        else:
+            module = canonical_name(module)
         # Legacy-pickle recovery: a numpy scalar saved before the ng-conversion fix
         # has a (numpy...scalar, (dtype, ...)) reduce that would crash. Hand it to a
         # tolerant reconstructor (recovers as 0.0). New saves don't use numpy scalar.
@@ -801,7 +809,7 @@ class _UnpicklerOverrides:
         # Fuzzy fallback via ClassUtility - handles moved / nested / re-rooted
         # classes the same way instantiate_from_class_path does.
         try:
-            ClassUtility().initialize_class_names("src")
+            ClassUtility().initialize_class_names("meltygui")
         except Exception:
             pass
         try:

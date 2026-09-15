@@ -7,8 +7,8 @@ autocomplete and type hints for dynamically generated shader methods.
 from pathlib import Path
 from typing import Any
 
-from src.shader_library.shader_manager.base import GLType
-from src.shader_library.shader_manager.registry import get_registry
+from meltygui.graphics.base import GLType
+from meltygui.graphics.registry import get_registry
 
 
 def _gltype_to_python_type(gltype: GLType) -> str:
@@ -239,21 +239,7 @@ def main():
     import os
     import sys
 
-    # Ensure shaders are registered by importing from parent package
-    parent_dir = os.path.dirname(os.path.dirname(__file__))
-    if parent_dir not in sys.path:
-        sys.path.insert(0, parent_dir)
-
-    # Import main package which triggers shader registration
-    try:
-        from shader_library import Filter  # noqa: F401
-    except ImportError:
-        # Fallback: try importing __init__ directly
-        import importlib.util
-        init_path = os.path.join(os.path.dirname(__file__), '..', '__init__.py')
-        spec = importlib.util.spec_from_file_location("shader_library", init_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+    from meltygui.graphics import Filter  # noqa: F401
 
     # Generate stub file next to filter.py
     stub_path = os.path.join(os.path.dirname(__file__), 'filter.pyi')

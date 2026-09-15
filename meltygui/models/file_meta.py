@@ -1,5 +1,5 @@
 """Per-file display attributes (tint, icon, order …) in ONE store shared
-by every melty app on the machine — the studio, melty_code_editor, the
+by every meltygui app on the machine — the studio, melty_code_editor, the
 folder windows — as `file_meta_store()`: a FileMetaProxy, path string ->
 FileMeta, backed by a pickle at ~/.melty/file_meta.pkl.
 
@@ -35,8 +35,9 @@ import threading
 import time
 from pathlib import Path
 
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, no_save
+from meltygui.state.object import DictConversion
+from meltygui.rendering.decorators.core_decoration import defaults
+from meltygui.rendering.decorators.core_decoration import no_save
 
 SAVE_DELAY_S = 0.4
 POLL_S = 0.5
@@ -71,6 +72,7 @@ class FileMeta(dict):
     # global search, the symbol's usage graph, tabs and editability. Files
     # never store it; read it through is_project() or project_roots().
     project = False
+    environment = None  # Project venv folder override; None means auto-detect.
 
     # The pre-09-02 class default; stored values of it are dropped at load
     # (folder_files._init_file_meta) so the files read as unpainted.
@@ -407,7 +409,7 @@ class FileMetaProxy(dict):
 
     def _repaint(self):
         try:
-            from src.lsd.gl_gui.melty import Melty
+            from meltygui.runtime import Melty
             cache = getattr(Melty, "cache", None)
             if cache is not None:
                 cache.invalidate_all()
@@ -511,7 +513,7 @@ class FileMetaProxy(dict):
 
 def _request_render():
     try:
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()
     except Exception:
         pass
@@ -530,106 +532,6 @@ def file_meta_store():
                 _store = FileMetaProxy()
                 _store._ensure_poller()
     return _store
-
-
-# ── Projects: folders flagged in the store ─────────────────────────────────
-# A project is a folder whose entry carries `project: True`. Same store,
-# same I/O (debounced atomic writes, cross-process locking), so a folder
-# marked in one melty app is a project in every other one after a poll.
-# The marker enables the editor's global search, editability
-# (address.add_editable_root) and, as the later phases land, the symbol
-# graph and git. `project_for(path)` is the project a file belongs to.
-
-_projects_memo = (None, None)     # (store generation, tuple of roots)
-
-
-def _norm_dir(path):
-    try:
-        return Path(path).expanduser().resolve()
-    except (OSError, ValueError):
-        return None
-
-
-def mark_project(path, on=True):
-    """Flag the folder `path` as a project (or clear the flag with
-    on=False). Returns the resolved root, or None when `path` is not a
-    directory. Marking also registers the tree as editable source, so its
-    code loads into the editor's code hosts at once."""
-    root = _norm_dir(path)
-    if root is None or not root.is_dir():
-        return None
-    meta = file_meta_store()
-    key = str(root)
-    if on:
-        entry = meta.get(key)
-        if not isinstance(entry, dict):
-            entry = meta[key] = FileMeta()
-        entry["project"] = True
-        try:
-            from src.lsd.gl_gui.view.core_conversion.address import add_editable_root
-            add_editable_root(root)
-        except Exception:
-            pass
-    else:
-        entry = meta.get(key)
-        if isinstance(entry, dict) and dict.__contains__(entry, "project"):
-            del entry["project"]
-            if not len(dict.keys(entry)):
-                del meta[key]
-    return root
-
-
-def is_project(path):
-    """True when the folder `path` is marked as a project."""
-    root = _norm_dir(path)
-    if root is None:
-        return False
-    entry = file_meta_store().get(str(root))
-    return bool(isinstance(entry, dict) and dict.get(entry, "project"))
-
-
-def project_roots():
-    """Every marked project folder that still exists, as resolved Paths in
-    path order. Memoized on the store's generation: a plain dict scan
-    otherwise (the studio's folder scan seeds thousands of entries)."""
-    global _projects_memo
-    meta = file_meta_store()
-    entries = list(meta.items())      # applies any pending reload first
-    gen = meta.generation
-    memo_gen, memo_roots = _projects_memo
-    if memo_gen == gen and memo_roots is not None:
-        return memo_roots
-    roots = []
-    for key, entry in entries:
-        if not (isinstance(entry, dict) and dict.get(entry, "project")):
-            continue
-        root = _norm_dir(key)
-        if root is not None and root.is_dir() and root not in roots:
-            roots.append(root)
-    roots = tuple(sorted(roots))
-    _projects_memo = (gen, roots)
-    return roots
-
-
-def project_for(path, implicit=True):
-    """The project root `path` (a file or folder) belongs to: the DEEPEST
-    marked project containing it, else — with implicit=True — the nearest
-    ancestor carrying a project marker (.git, pyproject.toml, ...;
-    address.project_root_of), else None. An open file outside every marked
-    project thus still has a project: shown and searched like one, just
-    not remembered until the user marks it."""
-    target = _norm_dir(path)
-    if target is None:
-        return None
-    best = None
-    for root in project_roots():
-        if target == root or target.is_relative_to(root):
-            if best is None or len(root.parts) > len(best.parts):
-                best = root
-    if best is not None or not implicit:
-        return best
-    from src.lsd.gl_gui.view.core_conversion.address import project_root_of
-    return project_root_of(target)
 
 
 @no_save("file_meta")

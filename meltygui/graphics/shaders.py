@@ -1,11 +1,12 @@
 """
 Built-in shader types and common shaders.
 
-These are automatically registered when importing melty.
+These are automatically registered when importing meltygui.
 """
 
-from src.shader_library.shader_manager.registry import register_shader_type, register_shader
-from src.shader_library.shader_manager.base import GLType
+from meltygui.graphics.registry import register_shader_type
+from meltygui.graphics.registry import register_shader
+from meltygui.graphics.base import GLType
 
 
 @register_shader

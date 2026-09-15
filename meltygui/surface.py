@@ -1,4 +1,4 @@
-"""OS-window surfaces: one melty frame per GLFW window (app.py's @glfw_window).
+"""OS-window surfaces: one meltygui frame per GLFW window (app.py's @glfw_window).
 
 A Surface owns everything that belongs to ONE OS window: the GLFW window and
 its GL context (all surfaces share one GL share group, rooted at app.py's
@@ -7,7 +7,7 @@ SplitOverlayRenderer, the GLFW-callback input backend and its InputHandler,
 the tile cache (FBO-bound), the fp16 scene target, and the frameless-window
 chrome state (titlebar.py, os_frame.py).
 
-melty was written for one window: that per-window state lives in `Melty`
+meltygui was written for one window: that per-window state lives in `Melty`
 class attributes and in module globals of titlebar / os_frame / scene_target
 / wayland_move / wayland_color / mouse_cursor. Surfaces render strictly one
 after another, so instead of threading a window through thousands of call
@@ -18,7 +18,7 @@ see the catalog in app.py's history. The studio, which never creates a
 Surface, is untouched: with no surface active nothing is ever swapped.
 
 Frame (``frame()``): the studio's root-window ritual (new_core_view.
-draw_melty_windows) with the melty title bar, window controls, corner cut
+draw_melty_windows) with the meltygui title bar, window controls, corner cut
 and drop shadow when the window is frameless (Toggles.Melty.
 wayland_show_frame off), and the body drawn inline into the root. Views the
 body draws at root level fill the window (Melty.root_fill, consumed by the
@@ -31,17 +31,22 @@ import time
 from collections import defaultdict
 from types import SimpleNamespace
 
-from src.lsd.gl_gui import window_api as glfw
-import imgui
+import meltygui.window_api as glfw
+import meltygui_imgui as imgui
 import OpenGL.GL as gl
 
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui import (mouse_cursor, os_frame, scene_target, titlebar, titlebar_buttons,
-                            wayland_color, wayland_move)
-from src.lsd.gl_gui.events import input_handler
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.utils import custom_views as views
-from src.lsd.gl_gui.utils.glfw_utils import request_render
+from meltygui.runtime import Melty
+import meltygui.mouse_cursor as mouse_cursor
+import meltygui.os_frame as os_frame
+import meltygui.scene_target as scene_target
+import meltygui.titlebar as titlebar
+import meltygui.titlebar_buttons as titlebar_buttons
+import meltygui.wayland_color as wayland_color
+import meltygui.wayland_move as wayland_move
+import meltygui.events.input_handler as input_handler
+from meltygui.toggles import Toggles
+import meltygui.utils.custom_views as views
+from meltygui.utils.glfw_utils import request_render
 
 # --- Per-window state -----------------------------------------------------------
 # Melty class attributes that persist across frames and belong to one window.
@@ -102,18 +107,18 @@ class Surface:
     active = None
     owner_window = None     # app.py's hidden share-group root
     owner_context = None    # the imgui context that owns the font atlas
-    app_id = 'melty'
+    app_id = 'meltygui'
     session = None            # the AppSession app.py loaded (app_session.py), if any
 
     def __init__(self, name, body, *, width=1280, height=800, parent=None,
                  draw_state=None, tint=None, on_close=None):
         """``name`` is the window's name AND its OS title (a child's `##suffix`
         is stripped from the title); ``width`` / ``height`` the content size —
-        the universal melty names, as on `@window` and every view.
+        the universal meltygui names, as on `@window` and every view.
         ``body(surface)`` draws the window's content inline into the root.
         ``parent``: the Surface this one is a child of (glfw_window=True calls);
         ``draw_state``: the child's root draw_state (its window_pos/size are the
-        parent-relative geometry, exactly as for a closable melty window);
+        parent-relative geometry, exactly as for a closable meltygui window);
         ``tint``: the root ground's tint (None: Toggles.Melty.app_root_tint)."""
         _capture_defaults()
         self.name, self.body, self.parent, self.draw_state = name, body, parent, draw_state
@@ -198,8 +203,8 @@ class Surface:
         self.activate()
         titlebar.note_surface_size(self.window)
         glfw.swap_interval(1)
-        from src.lsd.gl_gui.view.core_views.split_overlay_renderer import SplitOverlayRenderer
-        from src.lsd.gl_gui.view.core_views.blit_offscreen import TileCacheMasked
+        from meltygui.views.split_overlay_renderer import SplitOverlayRenderer
+        from meltygui.views.blit_offscreen import TileCacheMasked
         self.impl = SplitOverlayRenderer(self.window)
         Melty.init_input_backend(self.window)
         Melty.cache = TileCacheMasked()
@@ -319,7 +324,7 @@ class Surface:
             # the meantime (titlebar_buttons: rate-limited re-read).
             titlebar_buttons.refresh()
             # ... or flipped left-drag move in the desktop's Settings.
-            from src.lsd.gl_gui import hypr_left_drag
+            import meltygui.hypr_left_drag as hypr_left_drag
             hypr_left_drag.refresh()
 
     def _on_framebuffer_size(self, width, height):
@@ -333,14 +338,14 @@ class Surface:
     def _draw_render_hosts(self):
         """The studio's draw_main draws every registered RenderHost once a
         frame (RenderHost.draw_all); that is what loads a code_file_io host's
-        file, reparses it after an edit and auto-saves it. A melty app's body
+        file, reparses it after an edit and auto-saves it. A meltygui app's body
         is a plain draw function, so the surface runs the pump for it, after
         the body and inside the imgui frame. Hosts are process-global: once
         per app tick, however many surfaces draw in it."""
         if not Melty.render_hosts or Melty.render_hosts_tick == Melty.app_tick:
             return
         Melty.render_hosts_tick = Melty.app_tick
-        from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
+        from meltygui.code.render_host import RenderHost
         RenderHost.draw_all()
 
     def frame(self):
@@ -372,13 +377,13 @@ class Surface:
         imgui.push_style_var(imgui.STYLE_WINDOW_BORDERSIZE, 0.0)
         views.begin('main##window_melty', closable=False, flags=ROOT_FLAGS)
         imgui.pop_style_var(2)
-        # melty only routes mouse events to views while the root imgui
-        # window is hovered (draw_view.hover_eligible).
+        # meltygui only routes pointer events to apps while the root imgui
+        # window is hovered (draw_state.hover_eligible).
         Melty.imgui_main_window_hovered = imgui.is_window_hovered()
         Melty.begin_frame()
         # Standalone apps do not run the studio's draw_main. Commit source
         # edits deferred while a picker/slider held the pointer here too.
-        from src.lsd.gl_gui.view.core_views.anywhere import flush_deferred_writes
+        from meltygui.views.anywhere import flush_deferred_writes
         flush_deferred_writes()
         if self.chrome:
             os_frame.begin_frame()
@@ -394,7 +399,7 @@ class Surface:
         radius = titlebar.frame_corner_radius() if transparent else 0.0
         previous_tint, bg_color = self._root_background(disp_w, disp_h, radius)
         if transparent and Toggles.Melty.window_shadow_lift > 0:
-            from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
+            from meltygui.views.blit_offscreen import add_shadow
             add_shadow((0, 0, disp_w, disp_h), offset=0.5, corner_radius=radius, clip=False)
 
         top = titlebar.top_inset() if self.chrome else 0.0
@@ -456,7 +461,7 @@ class Surface:
         tint, capped at the same max_bg_value), edge to edge with the alpha
         cut's corner radius and no outline stroke. Sets the style tint for
         the body; returns (the tint to restore, the ground's colour)."""
-        from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
+        from meltygui.views.values import draw_bg
         style_manager = Melty.style_manager
         previous_tint = style_manager.get_tint()
         tint = self.tint if self.tint is not None else Toggles.Melty.app_root_tint
@@ -479,7 +484,8 @@ class Surface:
         if self.parent is not None and self in self.parent.children:
             self.parent.children.remove(self)
         self.activate()
-        from src.lsd.gl_gui.gl_state import GLState, current_context
+        from meltygui.gl_state import GLState
+        from meltygui.gl_state import current_context
         context = current_context()
         try:
             if len(Surface.all) > 1:
@@ -547,7 +553,7 @@ class Surface:
 
 
 def root_view_kwargs(name, /, **kwargs):
-    """The kwargs that draw a render func as the active surface's ROOT melty
+    """The kwargs that draw a render func as the active surface's ROOT meltygui
     window: a closable window pinned to the OS window (layouts — draw_rows /
     draw_columns — register their edges on the enclosing WINDOW, so the
     root must be one), sized to it, never dragged, its own close and shadow

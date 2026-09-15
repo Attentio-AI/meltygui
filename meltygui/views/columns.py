@@ -1,15 +1,15 @@
 from contextlib import contextmanager
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 
-from src.lsd.gl_gui import mouse_cursor
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
-from src.lsd.gl_gui.view.invalidation_tracker import Note
+import meltygui.mouse_cursor as mouse_cursor
+from meltygui.utils.glfw_utils import request_render
+from meltygui.views.blit_offscreen import snap_int
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.views.values import draw_any
+from meltygui.debug.invalidation_tracker import Note
 
 MIN_COLUMN_WIDTH = 60
 # Minimum span of a ROW cell (the row-axis twin of MIN_COLUMN_WIDTH), and
@@ -582,7 +582,7 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
     os_frame.applied_origin each frame; a nested window is parent-relative
     and restores plainly. Foreign (non-cursor) entries pass through
     untouched. The gesture ends when no mouse button is held."""
-    from src.lsd.gl_gui import os_frame
+    import meltygui.os_frame as os_frame
     gestures = getattr(window, "_edge_gestures", None)
     if gestures is None:
         gestures = window._edge_gestures = {}
@@ -600,7 +600,7 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
     # other frame and the app crawled 16 px per 200 of hand whenever a
     # context menu was open (09-13). The ancestor's move gesture replays
     # the OS edges; the child just rides.
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     move = (os_ctx is not None and bool(getattr(os_ctx, "move", False))
             and getattr(window, "_hand_move_frame", None) == Melty.frame_count)
     released = not os_frame._any_button_down()
@@ -618,14 +618,15 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
     parent = os_frame._frame_parent(window)
     is_root = parent is None
     # Whose coordinates move with the SURFACE: a root's (free: apply_rebase
-    # re-bases its window_pos to track the origin; pinned: its edges are
-    # that origin) and - the studio version of an app - a pinned root's
-    # nested child, re-based exactly like a pinned root
+    # re-bases its window_pos to hold the screen; pinned: its edges ride
+    # the origin) and — the studio roots of an app — a pinned root's
+    # child with no intervening window, re-based exactly like a free root
     # (os_frame._rebased_windows). Restored plainly, that child lost every
     # re-base the flip's push had just earned: the solve pushed the OS
     # edge along restored it, the push doubled frame after frame and the app
     # grew to the whole display in four frames (Lukas 09-13). A nested
     # window under a FREE root is parent-relative and restores plainly.
+    # An explicit ordinary-view parent is a layout anchor, not a re base.
     rides_surface = is_root or bool(getattr(parent, "_frame_pinned", False))
     # The CORNER the window's coordinates hang from, in SCREEN terms: the
     # surface's applied origin (os_ctx.base is near - unapplied + the
@@ -757,13 +758,13 @@ def _solve_collisions(window, axis="x", os_ctx=None):
     sees the OS edges as walls.
 
     THE FLIP: a cursor-driven drag whose owner is blocked by a wall grows
-    that window on the OPPOSITE side by the remainder — the rule melty
+    that window on the OPPOSITE side by the remainder — the rule meltygui
     windows always had against the display ("pin the bottom, let the top
     rise"), now for the OS window too, and the only way a near edge ever
     moves outward on its own: W's right edge blocked at the screen → W's
     left edge moves left → pushes the OS left edge → the OS window grows
     left (and moves) → the screen's left edge stops it."""
-    from src.lsd.gl_gui import os_frame
+    import meltygui.os_frame as os_frame
     pending_attr = _REGISTRY[axis][1]
     pending = getattr(window, pending_attr)
     setattr(window, pending_attr, [])
@@ -962,7 +963,7 @@ def _drag_live():
     """Mirror of the frozen-blit gate's activity test in blit_offscreen: a
     mouse drag (any button) is in flight. Programmatic edge moves (foreign
     width writes) fall outside it, so they still invalidate normally."""
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     return Melty.resize_gesture_live()
 
 
@@ -1040,7 +1041,7 @@ def _has_rows_ancestor(draw_state):
 def window_edge_pass(window):
     """Every window's FRAME edges — left/right on the x axis, top/bottom on
     the y axis — as draggable edge objects, run once per frame per window
-    (idempotent; called from core_render's melty-window path for ALL
+    (idempotent; called from core_render's meltygui-window path for ALL
     windows, and from the layouts as a fallback).
 
     Per axis the window owns two edge dicts seeded at [0, size] (window
@@ -1052,7 +1053,7 @@ def window_edge_pass(window):
     the solve the window lines up with its edges exactly like cells do:
     near edge off 0 → window_pos slides + everything re-bases; far edge off
     the size → the size follows."""
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     if getattr(window, "_edges_frame", None) == Melty.frame_count:
         return
     window._edges_frame = Melty.frame_count
@@ -1134,8 +1135,8 @@ def _frame_pass(window, axis):
     the foreign size change in, floor the window's minimum at the pile,
     offer the frame drag handles, solve, and line the window up with its
     frame edges. Returns True when any edge of the axis moved."""
-    from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.runtime import Melty
+    from meltygui.toggles import Toggles
     frame_attr = _REGISTRY[axis][2]
     size = window.width if axis == "x" else window.height
     fe = getattr(window, frame_attr, None)
@@ -1245,7 +1246,7 @@ def _frame_pass(window, axis):
     # THIS window's coordinates for the solve (and back in detach), so the
     # window's own edges are never written unless the solve moves them; an
     # idle frame moves nothing. Nested windows solve only their own frame.
-    from src.lsd.gl_gui import os_frame
+    import meltygui.os_frame as os_frame
     # The app root's handles resize the GLFW frame. Run that drag through
     # the OS graph (which contains its floating children), then pack this
     # root's columns into the resulting size. A local solve alone let the
@@ -1272,7 +1273,7 @@ def _frame_pass(window, axis):
     # a foreign size write queues None): a hand resize, stamped for the
     # nested windows that hang off the moved corner (_hand_moved)
     hand_resize = any(len(item) < 3 or bool(item[2]) for item in _pending(window, axis))
-    from src.lsd.gl_gui import resize_trace
+    import meltygui.resize_trace as resize_trace
     os_ctx = os_frame.attach(window, axis, has_pending=bool(_pending(window, axis)),
                              hand_move=_hand_moved(window, Melty.frame_count))
     try:
@@ -1767,7 +1768,7 @@ class ColumnLayout:
                     # Resize press, before any drag motion: freeze hosts
                     # snap their clean pre-drag capture this frame
                     # (mark_start_offscreen).
-                    from src.lsd.gl_gui.melty import Melty
+                    from meltygui.runtime import Melty
                     Melty.resize_press_frame = Melty.frame_count
 
                 if not drag:
@@ -2152,7 +2153,7 @@ class RowLayout:
                                              view_id=f"row_edge{handle_tag}_{k}",
                                              rect=rect, priority_delta=1)
                 if press:
-                    from src.lsd.gl_gui.melty import Melty
+                    from meltygui.runtime import Melty
                     Melty.resize_press_frame = Melty.frame_count
                 if not drag:
                     continue

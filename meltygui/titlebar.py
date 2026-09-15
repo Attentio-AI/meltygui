@@ -4,7 +4,7 @@ Removes the server-side decoration so the UI extends to the top of the
 display, draws the window controls as overlay-drawlist widgets in the top
 corners — WHICH of minimize / maximize / close, and on which side, follows
 the desktop's own title-bar button setting (titlebar_buttons.py, or
-Toggles.Melty.titlebar_button_layout; an OS window whose root melty window
+Toggles.Melty.titlebar_button_layout; an OS window whose root meltygui window
 has a header hosts them inside that header, draw_header_controls) — and
 hands drag / edge-resize back to the window manager via
 _NET_WM_MOVERESIZE — so snapping, tiling and drag smoothness stay native.
@@ -19,7 +19,7 @@ switched libdecor off at the first glfw.init (glfw_utils
 (always on Wayland; Toggles.Melty.enhanced_titlebar is an X11 knob), the
 right-drag resize (a cursor-driven drag of the OS window's own frame edges
 through the edge physics, gl_gui/os_frame.py — bottom-right corner, or the
-top-left on a DOUBLE right-drag, the melty windows' rule) and, through
+top-left on a DOUBLE right-drag, the meltygui windows' rule) and, through
 gl_gui/wayland_move.py, the SAME strip / drag-anywhere move and edge resize
 as X11: xdg_toplevel.move / .resize sent straight to the compositor (what
 Super+drag and the caption strip do), the grab then driven by GNOME. With libdecor still on, its own
@@ -34,16 +34,17 @@ each frame, so flipping the toggle takes effect without a restart.
 import ctypes
 import time
 
-from src.lsd.gl_gui import window_api as glfw
-import imgui
+import meltygui.window_api as glfw
+import meltygui_imgui as imgui
 import OpenGL.GL as gl
 
-from src.lsd.gl_gui import mouse_cursor
-from src.lsd.gl_gui import titlebar_buttons
-from src.lsd.gl_gui import wayland_move
-from src.lsd.gl_gui import hypr_left_drag
-from src.lsd.gl_gui.gl_state import GLState, is_gl_thread
-from src.lsd.gl_gui.shader_func import shader_func
+import meltygui.mouse_cursor as mouse_cursor
+import meltygui.titlebar_buttons as titlebar_buttons
+import meltygui.wayland_move as wayland_move
+import meltygui.hypr_left_drag as hypr_left_drag
+from meltygui.gl_state import GLState
+from meltygui.gl_state import is_gl_thread
+from meltygui.shader_func import shader_func
 
 # ---------------------------------------------------------------------------
 # X11 backend: _NET_WM_MOVERESIZE via ctypes → libX11
@@ -230,7 +231,7 @@ def backend_supported():
     (the fallback frame has no buttons — ours fill in), never beside
     libdecor's own title bar."""
     if _on_wayland():
-        from src.lsd.gl_gui.utils.glfw_utils import wayland_native_frame_active
+        from meltygui.utils.glfw_utils import wayland_native_frame_active
         return wayland_native_frame_active()
     return True
 
@@ -242,7 +243,7 @@ def titlebar_enabled():
     and the toggle is not consulted."""
     if _on_wayland():
         return backend_supported()
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     return Toggles.Melty.enhanced_titlebar and backend_supported()
 
 
@@ -256,7 +257,7 @@ def wants_os_decoration():
     if _on_wayland():
         if not backend_supported():
             return True
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         return bool(Toggles.Melty.wayland_show_frame)
     return not titlebar_enabled()
 
@@ -333,7 +334,7 @@ def _release_after_wayland_grab(window):
     synthesized X event; on Wayland GLFW's own state can't be poked, so the
     input handler is fed the release here and the polls read the button as
     up through wayland_move.button_masked until GLFW's next real event."""
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     backend = getattr(Melty, "backend", None)
     if backend is None or not hasattr(backend, "_on_button"):
         return
@@ -424,7 +425,7 @@ def button_layout():
     .titlebar_button_layout (GNOME syntax) when set, else the desktop's own
     title-bar button setting (titlebar_buttons.system_layout: gsettings,
     kwinrc, xfwm4, the settings portal)."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     pinned = Toggles.Melty.titlebar_button_layout
     if pinned:
         return titlebar_buttons.parse_gnome(pinned)
@@ -433,15 +434,15 @@ def button_layout():
 
 def drag_anywhere_enabled():
     """Whether an unclaimed left drag on bare background moves the OS window
-    through melty's OWN xdg_toplevel.move this frame:
+    through meltygui's OWN xdg_toplevel.move this frame:
     Toggles.Melty.move_drag_anywhere, and — on the patched Hyprland that
     carries the window-gesture toggle (hypr_left_drag) — only while the
     compositor's own left-drag move does NOT apply to this app's class
     (the chrome's "move" button faded). Lit, the compositor drives the
-    move itself and melty stands down; faded (the studio always, an app
-    after a click), melty moves and resizes the window itself. The drag
+    move itself and meltygui stands down; faded (the studio always, an app
+    after a click), meltygui moves and resizes the window itself. The drag
     strip is the app's caption and keeps moving either way."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     if not Toggles.Melty.move_drag_anywhere:
         return False
     if hypr_left_drag.available():
@@ -457,7 +458,7 @@ def control_kinds():
     Toggles.Melty.titlebar_move_toggle hides it. It sits INNERMOST of the
     right group like the hyprbars one (before minimize / maximize / close),
     or ends the left group when everything is on the left."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     left_kinds, right_kinds = button_layout()
     if not (Toggles.Melty.titlebar_move_toggle and hypr_left_drag.available()):
         return left_kinds, right_kinds
@@ -471,7 +472,7 @@ def _button_metrics():
     header's close button sizing (flat_button: glyph + px(15) wide, + px(8)
     tall — every kind its own glyph, like the header) inset by
     button_margin from the corner, button_gap apart."""
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     # [tint=(1.0, 0.55, 0.2)]
     button_margin = Melty.px(4.0)
     # [tint=(1.0, 0.55, 0.2)]
@@ -517,7 +518,7 @@ def _button_bands(buttons, disp_w):
 
 def chrome_insets():
     """(left_px, right_px) the window controls take from the window's top
-    corners this frame — what a melty header drawn in the chrome row keeps
+    corners this frame — what a meltygui header drawn in the chrome row keeps
     clear on each side (surface.root_view_kwargs: `header_indent` on the
     left, a reserving `with_header_end` on the right). 0 for an empty side
     or with the chrome off."""
@@ -544,7 +545,7 @@ _hosted_frame = -1
 
 def draw_header_controls(draw_state=None, **kwargs):
     """The `with_header_end` of an OS window's root view (surface
-    .root_view_kwargs): the window controls painted INSIDE the root's melty
+    .root_view_kwargs): the window controls painted INSIDE the root's meltygui
     header, where a header's close button sits — the same flat_button paint
     as _paint_buttons, in the root's own tile (an overlay paint under a
     cached root tile was blitted over — the glyphs vanished, 09-12), hover
@@ -556,7 +557,7 @@ def draw_header_controls(draw_state=None, **kwargs):
     coordinates agree). The overlay path stands down for the frame
     (_hosted_frame)."""
     global _hosted_frame
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     imgui.dummy(chrome_insets()[1], 0)
     if draw_state is None or not titlebar_enabled():
         return
@@ -602,7 +603,7 @@ def _studio_window():
     pointer. Native windows are Python objects with a class-level marker.
     """
     import ctypes
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     window = Melty.glfw_window or getattr(Melty.vis, "window", None)
     return window if glfw.is_native_window(window) or isinstance(window, ctypes._Pointer) else None
 
@@ -610,11 +611,11 @@ def _studio_window():
 def _main_window_ds():
     """The Main Window's draw_state (draw_main) — the owner the controls'
     flat-mask marks ride under. In an app (surface.py, no draw_main) the
-    surface's root melty window: with its header in the chrome row its
+    surface's root meltygui window: with its header in the chrome row its
     cached tile covers the corners, and an OWNERLESS mark never keeps a
     blit from copying over the buttons. None before the root's first
     frame."""
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     registry = getattr(Melty, "draw_state_registry", None) or {}
     main = next((d for d in registry.values() if getattr(d, "name", None) == "Main Window"), None)
     if main is not None:
@@ -639,8 +640,8 @@ def paint_window_controls(draw_list):
     under the corner from copying over them, and what gives them their
     depth for the shadow pass — the same mark a window gets."""
     global _pressed_button
-    from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.toggles import shadow_depth_at
+    from meltygui.runtime import Melty
+    from meltygui.toggles import shadow_depth_at
     if not titlebar_enabled() or _hosted_frame == Melty.frame_count:
         return      # off, or the root's header painted them this frame (draw_header_controls)
     window = _studio_window()
@@ -673,10 +674,10 @@ def _paint_buttons(dl, buttons, over_button):
     manager, the way a header runs under its window's tint (that tint is
     what make_color_rgb mixes the colour against). The previous tint is
     restored afterwards."""
-    from src.lsd.gl_gui.view.core_views.headers import flat_button
-    from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
-    from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.views.headers import flat_button
+    from meltygui.views.blit_offscreen import add_shadow
+    from meltygui.runtime import Melty
+    from meltygui.toggles import Toggles
     # The header close button's colour (draw_header_end).
     # [tint=(0.9, 0.15, 0.15)]
     close_color = (9, 1, 1)
@@ -718,15 +719,18 @@ def _close_blocked_by_merge():
     run over every drifted file) and the conflicts that are left flashed;
     Ctrl+M then applies. Errors never block the close."""
     try:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         if not PendingSave.needs_merge():
             return False
-        from src.lsd.gl_gui.view.core_views.merge_files import MergeFiles
-        from src.lsd.gl_gui.notifications import notify
-        MergeFiles.open(auto_merge=True)
+        from meltygui.extensions import get, call
+        from meltygui.notifications import notify
+        if get('conflicts_open') is None:
+            notify('External changes conflict with pending edits; save or discard them before closing.', tint=(1.0, 0.7, 0.2))
+            return True
+        call('conflicts_open', auto_merge=True)
         notify("Unmerged external changes — merge before closing "
                "(Ctrl+M applies the staged merge)", tint=(1.0, 0.7, 0.2))
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()
         return True
     except Exception:
@@ -741,7 +745,7 @@ def _close_window(window):
     finally) BEFORE the seconds-long teardown — never here, mid-frame: the
     frame that fires this still swaps, and swapping onto a surface GLFW has
     just unmapped is what the compositor-close callback path never does."""
-    from src.lsd.gl_gui.utils.glfw_utils import request_render
+    from meltygui.utils.glfw_utils import request_render
     glfw.set_window_should_close(window, True)
     request_render()      # posts the empty event that wakes wait_events
 
@@ -764,8 +768,8 @@ def draw_titlebar(window):
         _rdrag = None
         return
 
-    from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.runtime import Melty
+    from meltygui.toggles import Toggles
 
     io = imgui.get_io()
     disp_w, disp_h = io.display_size.x, io.display_size.y
@@ -834,9 +838,9 @@ def draw_titlebar(window):
     # Toggles.Melty.disable_double_click_maximize drops the double-click
     # subscription entirely, so the click reaches the view under the cursor.
     # Both the strip and the right-drag resize below subscribe NON-BLOCKING:
-    # a closable melty window is an event blocker (window_render with
-    # `blocker=closable`) and a melty window's root IS such a window, pinned
-    # over the whole surface - a plain subscription at worst priority sat
+    # a closable meltygui window is an event blocker (core_render registers
+    # `blocker=closable`) and a meltygui app's root IS such a window, pinned
+    # over the whole surface — a plain subscription at worst priority sat
     # behind that blocker and was dropped before dispatch (the app's left /
     # right drags never reached the OS chrome; the studio's roots leave its
     # background bare, which is why they worked there). A non_blocking
@@ -870,16 +874,16 @@ def draw_titlebar(window):
 
     # --- right-drag resize, anywhere in the window -------------------------
     # Same worst-priority pattern as the strip, but over the WHOLE window:
-    # any view that actually uses a right drag (camera orbits, melty window
+    # any view that actually uses a right drag (view orbits, meltygui window
     # resize) captures it first, and plain right-CLICKS are untouched
     # (dragged only fires past the handler's drag threshold, so context
     # menus keep working). The drag is a cursor-driven drag of the OS
     # window's OWN frame edges through the edge physics (os_frame.queue_drag
-    # → the roots' solve passes): the bottom-right corner, or the top-left
-    # on a DOUBLE right-drag (press-press-drag - the melty windows' rule),
-    # decided at the press for the whole gesture. The window's input area is
-    # the border; an edge blocked there grows the window on the other side,
-    # exactly like a melty window's edge at the display.
+    # → the roots' frame passes): the bottom-right corner, or the top-left
+    # on a DOUBLE right-drag (press-press-drag - the meltygui windows' rule),
+    # decided at the press for the whole gesture. The screen's work area is
+    # the wall; an edge blocked there grows the window on the other side,
+    # just like a meltygui window's edge against the display.
     if not maximized and over_button is None and edge is None:
         Melty.event_handler.register_hovered(
             _RESIZE_ID, ["non_blocking_right_mouse_dragged", "non_blocking_right_mouse_double_dragged"],
@@ -901,9 +905,9 @@ def poll_os_window_drag():
     window's frame edges — os_frame.queue_drag with the drag total's
     per-frame increment — so the first root window's pass solves them in
     THIS frame. Polled at the end of the frame (draw_titlebar runs after
-    the melty windows and os_frame.flush) the drag landed a frame late."""
+    the meltygui windows and os_frame.flush) the drag landed a frame late."""
     global _rdrag
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     handler = getattr(Melty, "event_handler", None)
     if handler is None:
         return
@@ -915,7 +919,7 @@ def poll_os_window_drag():
         if released:
             _rdrag = None
         return
-    from src.lsd.gl_gui import os_frame
+    import meltygui.os_frame as os_frame
     if _rdrag is None:
         _rdrag = {"top_left": "non_blocking_right_mouse_double_dragged" in resize_events, "x": 0.0, "y": 0.0}
     index = 0 if _rdrag["top_left"] else 1
@@ -938,7 +942,7 @@ def wants_transparent_framebuffer():
     """Boot hint (GLFW TRANSPARENT_FRAMEBUFFER): only a frameless window
     with a corner radius or a shadow margin needs per-pixel alpha at the
     compositor."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     return titlebar_enabled() and (Toggles.Melty.window_corner_radius > 0
                                    or Toggles.Melty.window_shadow_margin > 0)
 
@@ -974,7 +978,7 @@ def _maximized(window):
         # forces the maximized state at map (XDGShell.cpp) - reading GLFW's
         # attribute on the state-honouring build zeroed the inset and
         # dropped the right-drag again (09-10, first login on that build).
-        from src.lsd.gl_gui import geometry_feed
+        import meltygui.geometry_feed as geometry_feed
         frame = geometry_feed._STATE.get("frame") or {}
         return bool(frame.get("maximized", False))
     try:
@@ -996,8 +1000,8 @@ def shadow_reach(fb_w, fb_h):
     69/49 px right/down, the pass fades out by 57/42). 0 with the shadow
     pass off."""
     import math
-    from src.lsd.gl_gui.toggles import Toggles
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.toggles import Toggles
+    from meltygui.runtime import Melty
     if not Toggles.filters or fb_w <= 0 or fb_h <= 0:
         return 0
     total_layers = 100.0 / ((Melty.max_layer - 1.0) * (Melty.max_depth - 1.0))
@@ -1040,7 +1044,7 @@ def window_inset():
     window. imgui's display is the content: SplitOverlayRenderer
     .process_inputs shrinks display_size by twice this and shifts the
     pointer; the masks and tiles keep the whole surface."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     margin = int(Toggles.Melty.window_shadow_margin)
     if margin <= 0:
         return 0
@@ -1088,7 +1092,7 @@ def content_origin():
 def frame_corner_radius():
     """Corner radius of the content this frame: the toggle, 0 while
     maximized (square against the screen edge)."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     if _maximized(_studio_window()):
         return 0.0
     return float(Toggles.Melty.window_corner_radius)
@@ -1155,7 +1159,7 @@ def _on_hyprland():
     """The Hyprland backend (whatever it does with the window geometry):
     the box is resized through its IPC, and its `maximized` state is the
     feed's flag, not GLFW's."""
-    from src.lsd.gl_gui import geometry_feed
+    import meltygui.geometry_feed as geometry_feed
     return geometry_feed.backend() == "hyprland"
 
 
@@ -1170,7 +1174,7 @@ def _box_is_surface():
     geometry is the content rect, a configure names the content and the
     surface is regrown around it by the margin (geometry_feed
     .hypr_honors_geometry)."""
-    from src.lsd.gl_gui import geometry_feed
+    import meltygui.geometry_feed as geometry_feed
     return geometry_feed.backend() == "hyprland" and not geometry_feed.hypr_honors_geometry()
 
 
@@ -1196,7 +1200,7 @@ def set_surface_size(window, width, height, offset=None, box=True):
     finally:
         _self_resize = False
     if box and _on_hyprland():
-        from src.lsd.gl_gui import geometry_feed
+        import meltygui.geometry_feed as geometry_feed
         dx, dy = offset if offset else (0, 0)
         box_w, box_h = int(width), int(height)
         if geometry_feed.hypr_honors_geometry():
@@ -1262,7 +1266,8 @@ def apply_pending_surface_size(window):
     this frame lays out at the new size. Returns the size applied."""
     global _pending_surface_size, _pending_surface_offset, _frame_surface_offset
     global _pending_surface_wait, _pending_surface_fit
-    from src.lsd.gl_gui import wayland_move, os_frame
+    import meltygui.wayland_move as wayland_move
+    import meltygui.os_frame as os_frame
     wayland_move.clear_surface_offset()          # last frame's offset is spent
     # The roots' passes re-base with the OS near edge's motion lands HERE,
     # with the move it compensates (os_frame: the solve booked it).
@@ -1271,7 +1276,7 @@ def apply_pending_surface_size(window):
     if size is None or window is None:
         return None
     offset = _pending_surface_offset
-    from src.lsd.gl_gui import geometry_feed
+    import meltygui.geometry_feed as geometry_feed
     if (geometry_feed.backend() == "hyprland" and geometry_feed._hypr_selector() is None
             and _pending_surface_wait < PENDING_SURFACE_WAIT_FRAMES):
         # Hyprland resizes the box only through its IPC, addressed by the
@@ -1284,7 +1289,7 @@ def apply_pending_surface_size(window):
         # else asking, the held request never got its retry frame and a
         # @glfw_window stayed at Hyprland's default floating size until the
         # first hover (09-12). Ask for the frame that retries it.
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()
         return None
     _pending_surface_wait = 0
@@ -1304,14 +1309,14 @@ def apply_pending_surface_size(window):
     _pending_surface_fit = False
     _pending_surface_size = None
     _pending_surface_offset = None
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     if Toggles.Melty.push_os_window_edges_trace:
         try:
             was = glfw.get_framebuffer_size(window)
         except Exception:
             was = None
         print(f"[os_frame] apply pending surface size {size} (was {was}) offset {offset}")
-    from src.lsd.gl_gui import geometry_feed
+    import meltygui.geometry_feed as geometry_feed
     on_hyprland = _on_hyprland()
     # Hyprland ignores a toplevel's buffer offset (the surface stays
     # anchored at `at`): the move rides the box resize's own IPC request.
@@ -1351,8 +1356,8 @@ def on_surface_resized(window, width, height):
         # Any backend, ours or the compositor's: stamp the gesture for
         # freeze_resize views (Melty.resize_gesture_live); the cache keeps
         # frames coming past the last configure until they settle.
-        from src.lsd.gl_gui.melty import Melty
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.runtime import Melty
+        from meltygui.utils.glfw_utils import request_render
         _last_stamped_size = size
         Melty.os_resize_time = time.monotonic()
         request_render()
@@ -1454,7 +1459,7 @@ def composite_window_frame(fb_w, fb_h):
     desktop. No-op unless the window was created transparent; it runs
     maximized too (radius and inset 0), where it is purely the alpha lift."""
     global _corner_gl
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     radius = frame_corner_radius()
     inset = float(window_inset())
     origin = content_origin()
@@ -1478,7 +1483,7 @@ def composite_window_frame(fb_w, fb_h):
     depth = gl.glIsEnabled(gl.GL_DEPTH_TEST)
     stencil = gl.glIsEnabled(gl.GL_STENCIL_TEST)
     try:
-        from src.lsd.gl_gui.melty import Melty
+        from meltygui.runtime import Melty
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, Melty.default_framebuffer())
         gl.glViewport(0, 0, int(fb_w), int(fb_h))
         gl.glDisable(gl.GL_SCISSOR_TEST)

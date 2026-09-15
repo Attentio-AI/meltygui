@@ -1,4 +1,4 @@
-"""The desktop's window-gesture toggle, mirrored in melty's own title bar.
+"""The desktop's window-gesture toggle, mirrored in meltygui's own title bar.
 
 Lukas's patched Hyprland (~/.local/opt/hyprland-hdr, `general:left_drag_move`)
 moves a floating window by a plain left drag on its empty space, and its
@@ -6,7 +6,7 @@ hyprbars title bars carry a stateful button (`state = "left_drag_move"`)
 that shows whether that applies to the window's app and toggles it — the
 app's class goes in / out of `general:left_drag_move_exclude`, live and
 persisted through the desktop's Settings overrides, by
-`desktop/left-drag-toggle`. melty's frameless windows draw their own
+`desktop/left-drag-toggle`. meltygui's frameless windows draw their own
 controls (titlebar.py), so on that desktop they get the same button:
 
     available()   the compositor has the option (a stock Hyprland answers
@@ -18,10 +18,10 @@ controls (titlebar.py), so on that desktop they get the same button:
 The button owns BOTH compositor gestures for this app's class (09-13):
 plain left-drag MOVE (general:left_drag_move) and right-drag RESIZE
 (general:right_drag_resize). Lit = the compositor drives them; faded = the
-class is excluded from both and the melty app does them itself — its
+class is excluded from both and the meltygui app does them itself — its
 drag-anywhere xdg_toplevel.move (titlebar.drag_anywhere_enabled) and its
 right-drag resize through the edge physics (os_frame), which is also what
-lets nested melty windows keep their own right-drag (the compositor's
+lets nested meltygui windows keep their own right-drag (the compositor's
 resize swallows the press otherwise). The studio is excluded statically in
 hyprland.lua; apps flip through this button. `toggle()` runs the script
 with `--gestures`, which moves the class through both exclude lists; a
@@ -78,25 +78,25 @@ _state = globals().get("_state") or {
 
 def window_class():
     """The class Hyprland files this process's window under: what the feed
-    saw (`j/clients` → wm_class), else the BOOTED melty app's id
+    saw (`j/clients` → wm_class), else the BOOTED meltygui app's id
     (app.boot's app_id — the GLFW app_id / X11 class hint; known before
     any Surface exists, which is when the first probe runs), else the
     app's declared Surface.app_id, else the studio's own
     (geometry_feed.WM_CLASS). The studio fallback is LAST and only for a
     process that never booted as an app: a probe that read an app as
     "lsd-studio" toggled and synced the wrong class (09-13)."""
-    from src.lsd.gl_gui import geometry_feed
+    import meltygui.geometry_feed as geometry_feed
     frame = geometry_feed._STATE.get("frame") if isinstance(geometry_feed._STATE, dict) else None
     if frame and frame.get("wm_class"):
         return frame["wm_class"]
     try:
-        from src.lsd.gl_gui import app
+        import meltygui.app as app
         if app._state.get("booted") and app._state.get("app_id"):
             return app._state["app_id"]
     except Exception:
         pass
     try:
-        from src.lsd.gl_gui.surface import Surface
+        from meltygui.surface import Surface
         if Surface.all:
             return Surface.app_id
     except Exception:
@@ -111,12 +111,12 @@ def class_is_certain():
     enough to paint the button, never to WRITE the compositor's lists
     (an app probed before its Surface existed read itself as the studio
     and synced the studio's entry away, 09-13)."""
-    from src.lsd.gl_gui import geometry_feed
+    import meltygui.geometry_feed as geometry_feed
     frame = geometry_feed._STATE.get("frame") if isinstance(geometry_feed._STATE, dict) else None
     if frame and frame.get("wm_class"):
         return True
     try:
-        from src.lsd.gl_gui import app
+        import meltygui.app as app
         return bool(app._state.get("booted") and app._state.get("app_id"))
     except Exception:
         return False
@@ -125,7 +125,7 @@ def class_is_certain():
 def _getoption(name, request=None):
     """(kind, value) of a Hyprland option through the socket, or
     (None, None) when the option does not exist / no socket."""
-    from src.lsd.gl_gui import geometry_feed
+    import meltygui.geometry_feed as geometry_feed
     request = request or geometry_feed.hypr_request
     try:
         reply = request(f"j/getoption {name}")
@@ -172,7 +172,7 @@ def detect_gestures(request=None):
     whether the class's membership in right_drag_resize_exclude matches
     its left-list membership (True when the compositor has no
     right_drag_resize, or the feature is off — nothing to align)."""
-    from src.lsd.gl_gui import geometry_feed
+    import meltygui.geometry_feed as geometry_feed
     if geometry_feed.backend() != "hyprland":
         return False, False, "", True
     kind, value = _getoption(OPTION, request)
@@ -205,7 +205,7 @@ def _probe(run=None):
                   resize_synced=resize_synced, probed_at=time.monotonic())
     if changed:
         try:
-            from src.lsd.gl_gui.utils.glfw_utils import request_render
+            from meltygui.utils.glfw_utils import request_render
             request_render()
         except Exception:
             pass
@@ -259,7 +259,7 @@ def available():
 
 def enabled():
     """The compositor's gestures (left-drag move, right-drag resize) apply
-    to this window's class (as of the last probe). False = the melty app
+    to this window's class (as of the last probe). False = the meltygui app
     moves and resizes itself."""
     return bool(_state["enabled"])
 

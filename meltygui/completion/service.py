@@ -57,7 +57,7 @@ from typing import Any, Callable
 # ──────────────────────────────────────────────────────────────────────────
 
 def _melty():
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     return Melty
 
 
@@ -199,7 +199,7 @@ class EditorView:
     _tail: str | None = None
 
     def _split(self):
-        from src.lsd.gl_gui.fim_context import file_head_tail
+        from meltygui.completion.context import file_head_tail
         self._head, self._tail = file_head_tail(self.text, self.address)
 
     @property
@@ -226,7 +226,7 @@ class EditorView:
 
     def resolve_fn(self):
         if self.fn is None and self.path is not None:
-            from src.lsd.gl_gui.fim_context import span_function
+            from meltygui.completion.context import span_function
             self.fn = span_function(self.path, self.span_start)
         return self.fn
 
@@ -452,7 +452,7 @@ def sweep_sessions(now=None, idle_s=None):
     """Close zero-ref sessions idle longer than `idle_s`
     (`Toggles.Fim.session_idle_s`). Returns the number closed."""
     if idle_s is None:
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         idle_s = Toggles.Fim.session_idle_s
     now = time.monotonic() if now is None else now
     pool = _sessions()
@@ -668,13 +668,13 @@ def _wake(ds):
     except Exception:
         pass
     try:
-        from src.lsd.gl_gui.utils import glfw_utils
+        import meltygui.utils.glfw_utils as glfw_utils
         glfw_utils._needs_render.set()
     except Exception:
         pass
     try:
         if getattr(_melty(), "vis", None) is not None:     # a window exists (not headless)
-            from src.lsd.gl_gui import window_api as glfw
+            import meltygui.window_api as glfw
             glfw.post_empty_event()
     except Exception:
         pass
@@ -851,7 +851,7 @@ class FimState:
         returns what to draw (or None). `typed` = the buffer changed this
         frame: only typing arms a fresh request — a caret move never does,
         and one during the debounce cancels the armed request."""
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         if ds is not None:
             self._owner_ds = ds
         if not enabled or not Toggles.Fim.enabled:
@@ -953,7 +953,6 @@ class FimState:
         if t is not None:
             t.cancel()
         if delay <= 0:
-            self._refresh_context(view, now)
             self._submit(text, cursor, view, gen, continuation)
             return
         self._armed = (gen, now + delay)
@@ -982,12 +981,11 @@ class FimState:
         self._armed = None
         if gen != self._gen:
             return False
-        self._refresh_context(view, now)
         self._submit(text, cursor, view, gen, False)
         return True
 
     def _context_stale(self, view, now):
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         try:
             key = context_key_for(view)
         except Exception:
@@ -999,11 +997,12 @@ class FimState:
     def _submit(self, text, cursor, view, gen, continuation):
         """Start the worker for a request over the virtual buffer
         (`text`/`cursor` in buffer coordinates)."""
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         fn, rkw = self._provider()
         if fn is None:
             self.error = f"no provider for profile {self.profile_name!r}"
             return
+        self._refresh_context(view, time.monotonic())
         head = view.file_head if view is not None else ""
         tail = view.file_tail if view is not None else ""
         with self._lock:
@@ -1097,7 +1096,7 @@ class FimState:
     def accept(self, mode="chunk") -> str:
         """The text the editor should splice at the caret ("" if nothing).
         Advances the buffer; the editor then moves its caret by len()."""
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         with self._lock:
             chunk = self._chunk(max(1, Toggles.Fim.chunk_lines))
             if not chunk:
@@ -1177,7 +1176,7 @@ def context_key_for(view: EditorView) -> tuple:
     """What stable-tier membership is keyed on: the file, its pending gen,
     and the enclosing def of the caret (its line in the buffer) — NOT the
     caret itself, so typing inside one function reuses the prefix."""
-    from src.lsd.gl_gui.fim_context import enclosing_def_line
+    from meltygui.completion.context import enclosing_def_line
     return (view.path, view.version, enclosing_def_line(view.text, view.cursor))
 
 
@@ -1189,8 +1188,8 @@ def assemble_context(view: EditorView, budget_tokens=None) -> FimContext:
     its budget share by score (degrading definition → signature before
     dropping), and order deterministically within a tier (source order,
     then key). Stored order is prompt order: stable, run, volatile."""
-    from src.lsd.gl_gui.toggles import Toggles
-    import src.lsd.gl_gui.fim_context  # noqa: F401  (registers the built-in sources)
+    from meltygui.toggles import Toggles
+    import meltygui.completion.context  # noqa: F401  (registers the built-in sources)
     if budget_tokens is None:
         budget_tokens = Toggles.Fim.context_tokens
     view.resolve_fn()

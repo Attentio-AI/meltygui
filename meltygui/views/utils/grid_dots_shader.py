@@ -1,7 +1,7 @@
 import numpy as np
 from OpenGL.GL import *
 
-from src.lsd.gl_gui.global_style import BackgroundSettings
+from meltygui.global_style import BackgroundSettings
 
 
 class GridDotsBackground:

@@ -44,16 +44,17 @@ import threading
 import time
 from pathlib import Path
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.chat.backends import chat_backend, register_chat_backend
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from meltygui.runtime import Melty
+from meltygui.chat.backends import chat_backend
+from meltygui.chat.backends import register_chat_backend
+from meltygui.state.object import DictConversion
+from meltygui.utils.glfw_utils import request_render
+from meltygui.views.blit_offscreen import add_shadow
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.window_decoration import window
 
 # Where the store lives on disk - a data file, not a styling knob; shared
 # by the store methods, the footer row, and the tests' monkeypatch.
@@ -236,7 +237,7 @@ def accounts_changed():
     except Exception:
         pass
     try:
-        from src.lsd.gl_gui.fim import _wake
+        from meltygui.completion.service import _wake
         _wake(_window_draw_state)
     except Exception:
         pass
@@ -250,7 +251,7 @@ def _drop_sessions_for(account_entry):
     re-acquires with the new credential."""
     ids = {account_entry.get("id"), session_account_id(account_entry)}
     try:
-        from src.lsd.gl_gui import fim
+        import meltygui.completion.service as fim
         fim.drop_sessions(lambda session: getattr(session, "account", None) in ids
                           and getattr(session, "KIND", None) == account_entry.get("kind"))
     except Exception:
@@ -388,7 +389,7 @@ class AnthropicKind(AccountKind):
     def _profile_present():
         """An ACTIVE `ant auth login` profile a bare Anthropic() picks up on
         its own. The account's own sign-in is `login_info`, not this."""
-        from src.lsd.gl_gui.fim_providers.anthropic_oauth import active_profile_present
+        from meltygui.completion.providers.anthropic_oauth import active_profile_present
         return active_profile_present()
 
     @staticmethod
@@ -398,7 +399,7 @@ class AnthropicKind(AccountKind):
         account NAMED after the kind and "<that>-<account id>" for the
         others — keyed on the id, not on default-ness, so a row promoted to
         default (the kind-named one removed) keeps its profile files."""
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         name = (account.get("profile") or "").strip()
         if name:
             return name
@@ -410,7 +411,7 @@ class AnthropicKind(AccountKind):
         on the account (`_login_info`) so the per-frame button layout never
         touches the disk; probes, sign-in and sign-out refresh it."""
         if fresh or "_login_info" not in account:
-            from src.lsd.gl_gui.fim_providers import anthropic_oauth
+            import meltygui.completion.providers.anthropic_oauth as anthropic_oauth
             account["_login_info"] = anthropic_oauth.read_profile(self.profile_name(account))
         return account["_login_info"]
 
@@ -435,7 +436,7 @@ class AnthropicKind(AccountKind):
         return out
 
     def _source(self, account):
-        from src.lsd.gl_gui.fim_providers import anthropic_oauth
+        import meltygui.completion.providers.anthropic_oauth as anthropic_oauth
         key = account.get("api_key") or ""
         if key:
             return f"key …{key[-4:]}"
@@ -490,7 +491,7 @@ class AnthropicKind(AccountKind):
         Use-in-Claude-Code button or a `claude auth login` elsewhere — the
         numbers this row cached belonged to the previous account: drop them
         (`_forget_usage`), and ownership is re-decided on this very draw."""
-        from src.lsd.gl_gui.fim_providers import claude_usage
+        import meltygui.completion.providers.claude_usage as claude_usage
         login = claude_usage.cached_login(self._claude_code_login_path(account))
         previous = account.get("_claude_login")
         known = "_claude_login" in account
@@ -566,8 +567,8 @@ class AnthropicKind(AccountKind):
     # Paste code (clipboard → Claude Code's stdin).
 
     def switch_claude_code(self, account):
-        from src.lsd.gl_gui.fim_providers import claude_usage
-        from src.lsd.gl_gui.toggles import Toggles
+        import meltygui.completion.providers.claude_usage as claude_usage
+        from meltygui.toggles import Toggles
         email = (self.login_info(account) or {}).get("email")
         if not email:
             return
@@ -657,8 +658,8 @@ class AnthropicKind(AccountKind):
         (a note under the bars). Rate protection: never within
         usage_min_interval_s of the previous request (except `force`, the
         Refresh button) and never inside a 429 back-off window."""
-        from src.lsd.gl_gui.fim_providers import claude_usage
-        from src.lsd.gl_gui.toggles import Toggles
+        import meltygui.completion.providers.claude_usage as claude_usage
+        from meltygui.toggles import Toggles
         if account.get("_usage_loading"):
             return
         now = time.monotonic()
@@ -718,7 +719,7 @@ class AnthropicKind(AccountKind):
         still open then — so the persisted-open panel at boot shows last
         session's bars and a restart within the delay costs no request.
         A delay of 0 fetches at once (the tests' setting)."""
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         delay = Toggles.InternetAccounts.usage_fetch_delay_s
         if delay <= 0:
             self.fetch_usage(account)
@@ -751,7 +752,7 @@ class AnthropicKind(AccountKind):
         if not account.get("_usage_open"):
             self._disarm_usage_fetch(account)
             return []
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         login = self._claude_login_for(account)
         if login is not None and not self._owns_claude_login(account, login):
             # Another row is the login's account (or the default row for the
@@ -799,7 +800,7 @@ class AnthropicKind(AccountKind):
         source = self._source(account) or "?"
         try:
             import anthropic
-            from src.lsd.gl_gui.fim_providers.anthropic_requests import sdk_middleware
+            from meltygui.completion.providers.anthropic_requests import sdk_middleware
             client_kwargs = {"timeout": 15.0, "max_retries": 0,
                              "middleware": [sdk_middleware()]}
             client_kwargs.update(self.client_kwargs(account))
@@ -822,7 +823,7 @@ class AnthropicKind(AccountKind):
         """The Sign in button: open the Console consent page in the browser
         and wait for its redirect (anthropic_oauth.LoginFlow on a worker);
         clicked again while one is open it just re-opens the browser."""
-        from src.lsd.gl_gui.fim_providers import anthropic_oauth
+        import meltygui.completion.providers.anthropic_oauth as anthropic_oauth
         flow = account.get("_login")
         if flow is not None and not flow.done:
             flow.open_in_browser()
@@ -872,7 +873,7 @@ class AnthropicKind(AccountKind):
         """Forget the browser sign-in: removes the profile's credentials
         file (its org/workspace config stays, so a re-login skips the
         pickers) and drops the live sessions built on it."""
-        from src.lsd.gl_gui.fim_providers import anthropic_oauth
+        import meltygui.completion.providers.anthropic_oauth as anthropic_oauth
         anthropic_oauth.sign_out(self.profile_name(account))
         account.pop("_validated", None)
         account["_status"] = None
@@ -950,7 +951,7 @@ class AnthropicKind(AccountKind):
 def codex_chats(account, metadata=None, wake=None):
     if account.get("_codex_signing_in") or account.get("_busy"):
         return None
-    from src.lsd.gl_gui.chat.codex_proxy import CodexChats
+    from meltygui.chat.codex_proxy import CodexChats
     return CodexChats(account["id"], metadata, wake)
 
 
@@ -964,8 +965,9 @@ class CodexKind(AccountKind):
     fields = ()
 
     def _server(self, account):
-        from src.lsd.gl_gui.fim_providers.codex_accounts import AppServer, account_home
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.completion.providers.codex_accounts import AppServer
+        from meltygui.completion.providers.codex_accounts import account_home
+        from meltygui.toggles import Toggles
         return AppServer(account_home(account["id"]),
                          executable=Toggles.InternetAccounts.codex_bin,
                          timeout=Toggles.InternetAccounts.codex_request_timeout_s)
@@ -1020,7 +1022,7 @@ class CodexKind(AccountKind):
         accounts_changed()
 
         def run():
-            from src.lsd.gl_gui.toggles import Toggles
+            from meltygui.toggles import Toggles
             try:
                 with self._server(account) as server:
                     server.cancelled = account["_codex_cancel"]
@@ -1057,7 +1059,7 @@ class CodexKind(AccountKind):
             account["_status"] = self._read_account(account, server)
 
     def _read_usage(self, account, server):
-        from src.lsd.gl_gui.fim_providers.codex_accounts import usage_rows
+        from meltygui.completion.providers.codex_accounts import usage_rows
         try:
             account["_status"] = self._read_account(account, server)
             if (account.get("_codex_account") or {}).get("type") != "chatgpt":
@@ -1147,8 +1149,8 @@ class CopilotKind(AccountKind):
                     placeholder="(default ~/.config — shared with the IDE plugins)"),)
 
     def _session(self, account, create=True):
-        from src.lsd.gl_gui import fim
-        from src.lsd.gl_gui.fim_providers.copilot import CopilotSession
+        import meltygui.completion.service as fim
+        from meltygui.completion.providers.copilot import CopilotSession
         session_kwargs = {"account": session_account_id(account)}
         return fim.session_for(CopilotSession, session_kwargs, create=create)
 
@@ -1158,7 +1160,7 @@ class CopilotKind(AccountKind):
         # file on disk. The LS is spawned only when the user clicks Sign in
         # or when FIM actually asks Copilot for a completion - so opening the
         # accounts window (even at startup) costs nothing.
-        from src.lsd.gl_gui.fim_providers import copilot
+        import meltygui.completion.providers.copilot as copilot
         if copilot.find_node() is None:
             return ("error", "node ≥ 20.8 not found")
         if not copilot.server_installed():
@@ -1183,7 +1185,7 @@ class CopilotKind(AccountKind):
         return ("needs_login", "not signed in")
 
     def actions(self, account):
-        from src.lsd.gl_gui.fim_providers import copilot
+        import meltygui.completion.providers.copilot as copilot
         out = []
         if not copilot.server_installed():
             out.append(Button("Install",
@@ -1234,7 +1236,7 @@ class OllamaKind(AccountKind):
         return httpx.Client(base_url=host, timeout=httpx.Timeout(4.0, connect=1.0))
 
     def probe(self, account):
-        from src.lsd.gl_gui.fim_providers import ollama
+        import meltygui.completion.providers.ollama as ollama
         host = (account.get("host") or "http://localhost:11434").rstrip("/")
         try:
             with self._client(account) as client:
@@ -1260,7 +1262,7 @@ class OllamaKind(AccountKind):
         return ("ready", text)
 
     def actions(self, account):
-        from src.lsd.gl_gui.fim_providers import ollama
+        import meltygui.completion.providers.ollama as ollama
         models_open = bool(account.get("_models_open"))
         device = account.get("device") or "auto"
         return [Button(None, lambda account: _toggle(account, "_models_open"),
@@ -1271,7 +1273,7 @@ class OllamaKind(AccountKind):
                 Button(None, refresh, icon=f"", tip="Refresh")]
 
     def _cycle_device(self, account):
-        from src.lsd.gl_gui.fim_providers import ollama
+        import meltygui.completion.providers.ollama as ollama
         choices = ollama.device_choices(account.get("_gpus"))
         current = account.get("device") or "auto"
         next_device = (choices[(choices.index(current) + 1) % len(choices)]
@@ -1289,12 +1291,12 @@ class OllamaKind(AccountKind):
         return [("model", model) for model in models]
 
     def model_actions(self, account, model):
-        from src.lsd.gl_gui.fim_providers import ollama
+        import meltygui.completion.providers.ollama as ollama
         device = account.get("device") or "auto"
         target = ollama.device_label(device, account.get("_gpus"))
 
         def load(account, name=model["name"]):
-            from src.lsd.gl_gui.toggles import Toggles
+            from meltygui.toggles import Toggles
             _run_in_background(account, lambda: self._with_client(
                 account, lambda client: ollama.load_model(
                     client, name, account.get("device") or "auto", Toggles.Fim.ollama_keep_alive)))
@@ -1381,7 +1383,7 @@ def _copy_text(text):
 def _open_url(url):
     """A sign-in page: the placed Xwayland popup (oauth_popup), which falls
     back to plain xdg-open by itself."""
-    from src.lsd.gl_gui.fim_providers import oauth_popup
+    import meltygui.completion.providers.oauth_popup as oauth_popup
     oauth_popup.open_auth_popup(url)
 
 
@@ -1849,7 +1851,7 @@ def draw_internet_accounts(
                 # row. Layout uses the same label height used by this painter.
                 row = sub[1]
                 if visible(sub_top, sub_bottom):
-                    from src.lsd.gl_gui.fim_providers.claude_usage import reset_text
+                    from meltygui.completion.providers.claude_usage import reset_text
                     text_y = sub_top + (sub_row_height - line_height) / 2.0 + text_nudge_y
                     fill_color = severity_tints.get(row["severity"], state_tints["unknown"])
                     label_color = (text_color if row["active"]
@@ -1972,7 +1974,7 @@ def _draw_field(account, field, left, top, width, height):
     """An editable field: a single-line draw_text row (the editor, so focus,
     selection and paste all work). Returns True when the edit changed the
     stored value."""
-    from src.lsd.gl_gui.view.core_views.text_editor import draw_text
+    from meltygui.editor.text import draw_text
     key = f"acct_{account['id']}_{field.name}"
     value = account.get(field.name) or ""
     imgui.set_cursor_screen_pos((left, top))
@@ -1988,4 +1990,4 @@ def _draw_field(account, field, left, top, width, height):
 
 # Register the companion window on initial import and on an Accounts hotswap.
 # The import is last so its provider registry is already available.
-import src.lsd.gl_gui.view.playground.chat_interface  # noqa: E402,F401
+import meltygui.chat.ui  # noqa: E402,F401

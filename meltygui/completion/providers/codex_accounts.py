@@ -43,7 +43,7 @@ class AppServer:
         self.reader.start()
         try:
             self.request("initialize", {"clientInfo": {
-                "name": "melty", "title": "Melty", "version": "0.1.0"}})
+                "name": "meltygui", "title": "Melty", "version": "0.1.0"}})
             self._send({"method": "initialized", "params": {}})
         except Exception:
             self.close()

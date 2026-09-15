@@ -53,6 +53,8 @@ import threading
 import time
 from pathlib import Path
 
+from meltygui.code.source_context import analysis_project
+
 # ── Entry / table shapes ─────────────────────────────────────────────────────
 
 class Entry:
@@ -191,7 +193,7 @@ def _scan_tint(lines, line_no, name, tint_lines=None, lookback=40):
         elif tint_lines[k - 1] < i - lookback:
             return None
     try:
-        from src.lsd.gl_gui.view.core_views.text_editor import _scan_def_tint_lines
+        from meltygui.editor.text import _scan_def_tint_lines
     except ImportError:
         return None
     try:
@@ -212,7 +214,12 @@ def tint_line_index(lines):
     return [i for i, l in enumerate(lines) if "tint" in l and _TINT_ASSIGN_RE.search(l)]
 
 
-def extract_table(path, text, key=None, with_tints=True):
+# Identity-keyed scan that pins its table; stored separately from the
+# published tables so this optimization adds no slots to live FileTables.
+_EXTRACT_SCANS = {}
+
+
+def extract_table(path, text, key=None, with_tints=True, previous=None):
     """Build a FileTable from `text` in ONE indent-stack pass (same shape as
     text_index._extract_symbols, plus qualnames, assignments and imports).
     Defs nest by indent: a def inside a def is an entry ("outer.inner" — a
@@ -226,7 +233,31 @@ def extract_table(path, text, key=None, with_tints=True):
     imports, stars = {}, []
     pending_import = None   # a multi-line import statement being collected
     paren_depth = 0
-    for i, ln in enumerate(lines):
+    start = 0
+    checkpoints = []
+    scan = _EXTRACT_SCANS.get(id(previous)) if with_tints else None
+    if scan is not None and scan[0] is previous:
+        old_text = scan[1]
+        # The caller already found a generation/identity miss. Locate the
+        # prefix to resume a scan; this comparison is not cache invalidation.
+        prefix = 0
+        limit = min(len(old_text), len(text))
+        for step in (65536, 4096, 256, 16, 1):
+            while prefix + step <= limit and old_text[prefix:prefix + step] == text[prefix:prefix + step]:
+                prefix += step
+        # Tint lookup can look ahead 40 lines. Start earlier so edits to
+        # a class-body tint also refresh the class's preceding checkpoints.
+        before = max(0, text.count('\n', 0, prefix) - 64)
+        for checkpoint in scan[2]:
+            if checkpoint[0] > before:
+                break
+            checkpoints.append(checkpoint)
+        if checkpoints:
+            start, count, saved_imports, saved_stars = checkpoints.pop()
+            entries = list(previous.entries[:count])
+            imports, stars = dict(saved_imports), list(saved_stars)
+    for i in range(start, len(lines)):
+        ln = lines[i]
         s = ln.strip()
         if pending_import is not None:
             pending_import += " " + s.rstrip("\\").strip()
@@ -240,7 +271,9 @@ def extract_table(path, text, key=None, with_tints=True):
         indent = len(ln) - len(ln.lstrip())
         while open_ix and entries[open_ix[-1]].indent >= indent:
             entries[open_ix.pop()].end = i          # 1-based inclusive: i+1 is outside
-        m = _DEF_RE.match(ln)
+        if with_tints and indent == 0 and not open_ix:
+            checkpoints.append((i, len(entries), dict(imports), tuple(stars)))
+        m = _DEF_RE.match(ln) if s.startswith(('def', 'class', 'async')) else None
         if m is not None:
             name = m.group(3)
             parent = entries[open_ix[-1]] if open_ix else None
@@ -260,11 +293,13 @@ def extract_table(path, text, key=None, with_tints=True):
             else:
                 _parse_import(s, path, imports, stars)
             continue
-        m = _ASSIGN_RE.match(ln)
+        # Local assignments never enter the roster. Avoid running the
+        # assignment regexp over each expression in a nested function.
+        if open_ix and any(entries[ix].kind == "def" for ix in open_ix):
+            continue
+        m = _ASSIGN_RE.match(ln) if '=' in s else None
         if m is not None:
             # Module level or directly in a class body (no def on the stack).
-            if open_ix and any(entries[ix].kind == "def" for ix in open_ix):
-                continue
             parent = entries[open_ix[-1]] if open_ix else None
             name = m.group(2)
             qn = f"{parent.qualname}.{name}" if parent is not None else name
@@ -283,7 +318,12 @@ def extract_table(path, text, key=None, with_tints=True):
         last -= 1
     for ix in open_ix:
         entries[ix].end = last
-    return FileTable(path, key, entries, imports, stars, len(lines))
+    table = FileTable(path, key, entries, imports, stars, len(lines))
+    if with_tints:
+        if len(_EXTRACT_SCANS) >= 64:
+            del _EXTRACT_SCANS[next(iter(_EXTRACT_SCANS))]
+        _EXTRACT_SCANS[id(table)] = (table, text, checkpoints)
+    return table
 
 
 def _parse_import(stmt, path, imports, stars):
@@ -294,7 +334,7 @@ def _parse_import(stmt, path, imports, stars):
     stmt = stmt.replace("(", " ").replace(")", " ")
     m = _IMPORT_FROM_RE.match(stmt)
     if m is not None:
-        mod = _absolutize(m.group(1), path)
+        mod = m.group(1)  # Relative imports resolve in the consumer's package context.
         if mod is None:
             return
         names = m.group(2)
@@ -325,62 +365,61 @@ def _parse_import(stmt, path, imports, stars):
                 imports.setdefault(top, (top, None))
 
 
-def _absolutize(mod, path):
-    """Relative import module → absolute dotted path using the file's
-    location under the src root; absolute names pass through."""
+def _absolutize(mod, path, project=None):
+    """Resolve a relative import in its package, including src layouts."""
     if not mod.startswith("."):
         return mod
+    project = analysis_project(project, path)
     dots = len(mod) - len(mod.lstrip("."))
+    parent = Path(path).parent
+    # Prefer the deepest import root containing the file. The root/src
+    # pair supports both `pkg` and the checkout's explicit `src.pkg` imports.
+    roots = [Path(root) for root in project.import_paths
+             if parent.is_relative_to(root) and parent != Path(root)]
+    if not roots:
+        return None
+    root = max(roots, key=lambda value: len(value.parts))
+    package = list(parent.relative_to(root).parts)
+    if dots > len(package):
+        return None
+    package = package[:len(package) - dots + 1]
     rest = mod.lstrip(".")
-    try:
-        root = Path(_src_root())
-        rel = Path(path).resolve().relative_to(root.parent)
-        pkg = list(rel.parts[:-1])
-    except (OSError, ValueError):
-        pkg = [Path(path).parent.name]      # outside the tree: best effort
-    if dots > 1:
-        pkg = pkg[:len(pkg) - (dots - 1)] if dots - 1 <= len(pkg) else []
-    base = ".".join(pkg)
-    if rest:
-        return f"{base}.{rest}" if base else rest
-    return base or None
+    return ".".join(package + ([rest] if rest else [])) or None
 
-
-# ── Roots: module → path ────────────────────────────────────────────────────
 
 def _src_root():
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _SRC_PREFIX
+    from meltygui.code.libcst_conversion import _SRC_PREFIX
     return _SRC_PREFIX.rstrip("/")
 
 
 _mod_path_cache = {}
 
 
-def module_to_path(dotted):
-    """File path (resolved str) a dotted module name maps to, or None. Tries
-    the repo root (`src.lsd...`) then the src root (`lsd...`); package
-    `__init__.py` counts. Purely textual — the module need not be imported."""
-    hit = _mod_path_cache.get(dotted)
+def module_to_path(dotted, project=None):
+    """Resolve a module against this project's ordered source/venv paths."""
+    if not dotted:
+        return None
+    project = analysis_project(project)
+    key = (project.key, dotted)
+    hit = _mod_path_cache.get(key)
     if hit is not None:
-        return hit or None
-    src = Path(_src_root())
+        # Misses expire so a newly created module becomes resolvable.
+        if hit[0] or time.monotonic() - hit[1] < 2.0:
+            return hit[0] or None
+    found = None
     parts = dotted.split(".")
-    found = ""
-    for base in (src.parent, src):
-        p = base.joinpath(*parts)
-        for cand in (p.with_suffix(".py"), p / "__init__.py"):
-            try:
-                if cand.is_file():
-                    found = str(cand.resolve())
-                    break
-            except OSError:
-                continue
+    for base in project.import_paths:
+        path = Path(base).joinpath(*parts)
+        for candidate in (path / "__init__.py", path.with_suffix(".py"), path.with_suffix(".pyi")):
+            if candidate.is_file():
+                found = str(candidate.resolve())
+                break
         if found:
             break
     if len(_mod_path_cache) > 4096:
         _mod_path_cache.clear()
-    _mod_path_cache[dotted] = found
-    return found or None
+    _mod_path_cache[key] = (found, time.monotonic())
+    return found
 
 
 # ── Table management ──────────────────────────────────────────────────────────────
@@ -421,8 +460,19 @@ def _state():
     return st
 
 
-def generation():
-    return _state()["gen"]
+def _project_state(project):
+    project = analysis_project(project)
+    records = _state().setdefault("projects", {})
+    key = project.key
+    if key not in records:
+        records[key] = {"project": project, "gen": 0, "names": None,
+                        "names_gen": -1, "universe": None, "universe_at": 0,
+                        "loading": False, "complete": False, "paths": set(), "observed": set()}
+    return records[key]
+
+
+def generation(project=None):
+    return _state()["gen"] if project is None else _project_state(project)["gen"]
 
 
 def disk_generation():
@@ -510,12 +560,19 @@ def detached_table(path, text):
 # gen bump per file) doesn't invalidate every editor per table. Same
 # mechanics as RenderHost._notify_consumers_now (safe off-thread).
 
-def register_consumer(draw_state):
+def register_consumer(draw_state, project=None, path=None):
     """Mark `draw_state` as having drawn roster-derived content this pass."""
     if draw_state is None:
         return
     st = _state()
-    st["consumers"][draw_state] = st["gen"]
+    if project is None:
+        st["consumers"][draw_state] = st["gen"]
+    else:
+        project = analysis_project(project)
+        record = _project_state(project)
+        if path is not None:
+            record["observed"].add(str(path))
+        st["consumers"][draw_state] = (project.key, record["gen"])
     if len(st["consumers"]) > 128:
         st["consumers"] = {ds: g for ds, g in st["consumers"].items()
                            if not getattr(ds, "closed", False)}
@@ -537,13 +594,15 @@ def _notify_consumers():
     st = _state()
     with st["lock"]:
         st["notify_timer"] = None
-        targets = [(ds, g) for ds, g in list(st["consumers"].items()) if g < st["gen"]]
+        targets = [(ds, g) for ds, g in list(st["consumers"].items())
+                   if (g[1] < st.get("projects", {}).get(g[0], {}).get("gen", g[1])
+                       if isinstance(g, tuple) else g < st["gen"])]
     if not targets:
         return
     try:
-        from src.lsd.gl_gui.melty import Melty
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
-        from src.lsd.gl_gui.view.invalidation_tracker import Note
+        from meltygui.runtime import Melty
+        from meltygui.utils.glfw_utils import request_render
+        from meltygui.debug.invalidation_tracker import Note
     except Exception:
         return
     for ds, _g in targets:
@@ -562,10 +621,13 @@ def _notify_consumers():
         pass
 
 
-def _gen_bump(st):
+def _gen_bump(st, path=None):
     """Bump the generation (caller holds the lock) and wake the consumers."""
     st["gen"] += 1
     st["by_name_gen"] = -1
+    for record in list(st.get("projects", {}).values()):
+        if path is None or record["project"].resolves(path) or path in record["observed"]:
+            record["gen"] += 1
     if st["consumers"]:
         _schedule_notify()
 
@@ -582,6 +644,7 @@ class pass_scope:
         st["frozen"] = st.get("frozen", 0) + 1
         if st["frozen"] == 1:
             st["pass_names"] = None
+            st["pass_project_names"] = {}
         return self
 
     def __exit__(self, *exc):
@@ -589,6 +652,7 @@ class pass_scope:
         st["frozen"] -= 1
         if st["frozen"] == 0:
             st["pass_names"] = None
+            st["pass_project_names"] = {}
         return False
 
 
@@ -602,13 +666,13 @@ def _file_key(path):
     """Content-free identity of a file's CURRENT text: (identity of the
     FileWatch-cached disk string, pending generation). Never hashes."""
     try:
-        from src.lsd.gl_gui.melty import Melty
+        from meltygui.runtime import Melty
         disk = Melty.read_code(path)
         did = id(disk) if disk is not None else None
     except Exception:
         did = None
     try:
-        from src.lsd.gl_gui.view.core_views.text_editor import _pending_gen_of
+        from meltygui.editor.text import _pending_gen_of
         gen = _pending_gen_of(path)
     except Exception:
         gen = 0
@@ -623,7 +687,7 @@ def _file_key(path):
 
 def _current_text(path):
     try:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         t = PendingSave.current_file_text(Path(path))
         if t is not None:
             return t
@@ -672,7 +736,7 @@ def table_for(path, live_text=None, line_offset=0):
     if live_text is not None:
         # Several live buffers of ONE file can be open at once - the whole
         # file in the editor plus a def→call span per stack-trace pane, or
-        # four panes of melty fragments in one trace. Each is a PART
+        # four panes of meltygui.py in one trace. Each is a PART
         # (st["live_parts"][p]: part key → part) and the file's live table
         # is their MERGE; the table used to be the single last-keyed
         # buffer, so panes of one file replaced each other's spans every
@@ -686,7 +750,8 @@ def table_for(path, live_text=None, line_offset=0):
                 and held[0].key == ("live", frozenset(parts))):
             return held[0]
         if line_offset == 0:
-            whole = extract_table(p, live_text, lk)
+            previous = next((part[2] for part in parts.values() if part[0] == 0), None)
+            whole = extract_table(p, live_text, lk, previous=previous)
             part = (0, whole.nlines, whole, live_text)
             # One whole whole buffer at a time (a single editor buffer).
             for k in [k for k in parts if k[2] == 0]:
@@ -732,7 +797,7 @@ def table_for(path, live_text=None, line_offset=0):
             st["live"][p] = (tbl, pkey)
             _apply_overrides(st, p, tbl)
             if prev is None or _tables_differ(prev, tbl):
-                _gen_bump(st)
+                _gen_bump(st, p)
         return tbl
     ent = _pending_table(st, p)
     held = st["live"].get(p)
@@ -752,7 +817,7 @@ def _pending_table(st, p):
     key = _file_key(p)
     if ent is None or ent.key != key:
         text = _current_text(p)
-        tbl = extract_table(p, text or "", key)
+        tbl = extract_table(p, text or "", key, previous=ent)
         _install(st, p, tbl)
         ent = tbl
     return ent
@@ -764,7 +829,7 @@ def _install(st, p, tbl):
         st["tables"][p] = tbl
         _apply_overrides(st, p, tbl)
         if prev is None or _tables_differ(prev, tbl):
-            _gen_bump(st)
+            _gen_bump(st, p)
 
 
 def _apply_overrides(st, p, tbl):
@@ -781,7 +846,7 @@ def _apply_overrides(st, p, tbl):
             e.tint = ot
 
 
-def sweep(force=False):
+def sweep(force=False, project=None):
     """Notice edits in OTHER files cheaply: re-key every file with queued
     pending edits (O(edited files), every call ≥100ms apart) and every cached
     table every 2s (catches external disk changes through FileWatch's
@@ -789,7 +854,9 @@ def sweep(force=False):
     is what re-keys the editors' tint caches. Call outside a pass."""
     st = _state()
     now = time.monotonic()
-    if not st["universe_kicked"]:
+    if project is not None:
+        ensure_universe(blocking=False, project=project)
+    if project is None and not st["universe_kicked"]:
         # First consumer: load every src file's table in the background so the
         # by-name fallback sees the whole tree; consumers are notified as
         # tables land (coalesced), so tints fill in without a full pass.
@@ -798,15 +865,17 @@ def sweep(force=False):
             ensure_universe(blocking=False)
         except Exception:
             pass
-    if not force and now - st.get("last_sweep", 0.0) < 0.1:
+    dirty = st.setdefault("dirty_paths", set())
+    if not force and not dirty and now - st.get("last_sweep", 0.0) < 0.1:
         return
     st["last_sweep"] = now
     full = force or now - st.get("last_full_sweep", 0.0) > 2.0
     if full:
         st["last_full_sweep"] = now
-    paths = set()
+    paths = set(dirty)
+    dirty.difference_update(paths)
     try:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         for pp in list(PendingSave._pending_gen):
             paths.add(_norm(pp))
     except Exception:
@@ -861,84 +930,85 @@ def set_tint(path, qualname, tint):
                 e = tbl.by_qualname.get(qualname)
                 if e is not None:
                     e.tint = t
-        _gen_bump(st)
+        _gen_bump(st, p)
 
 
-# ── Universe (every .py under src) ───────────────────────────────────────────
+# ── Universe (every project .py) ───────────────────────────────────────────
 
 _UNIVERSE_TTL = 30.0
 
 
-def universe_paths():
-    """Every .py under the src root (resolved strs), walked at most every
-    _UNIVERSE_TTL seconds. Cheap (~ms); no file is read here."""
-    st = _state()
+def universe_paths(project=None):
+    """Every project .py, excluding environments and generated directories."""
+    project = analysis_project(project)
+    record = _project_state(project)
     now = time.monotonic()
-    if st["universe"] is not None and now - st["universe_at"] < _UNIVERSE_TTL:
-        return st["universe"]
-    try:
-        from src.lsd.gl_gui.text_index import _walk_rel_files
-        root = _src_root()
-        paths = [_norm(os.path.join(root, r)) for r in _walk_rel_files(root)
-                 if r.endswith(".py")]
-    except Exception:
-        paths = list(st["tables"])
-    st["universe"], st["universe_at"] = paths, now
+    if record["universe"] is not None and now - record["universe_at"] < _UNIVERSE_TTL:
+        return record["universe"]
+    from meltygui.text_index import _walk_rel_files
+    paths = [_norm(os.path.join(project.root, relative))
+             for relative in _walk_rel_files(project.root) if relative.endswith(".py")]
+    paths = [path for path in paths if project.owns(path)]
+    record["universe"], record["universe_at"] = paths, now
+    record["paths"] = set(paths)
     return paths
 
 
-def ensure_universe(blocking=False):
-    """Make sure every universe file has a table. Non-blocking by default:
-    kicks a daemon thread and returns whether the roster is complete right
-    now. `blocking=True` extracts inline (tests, Ctrl+B fallbacks)."""
-    st = _state()
-    missing = [p for p in universe_paths() if p not in st["tables"]]
-    if not missing:
-        return True
-    if blocking:
-        for p in missing:
-            table_for(p)
-        return True
-    if not st["loading"]:
-        st["loading"] = True
+def ensure_universe(blocking=False, project=None):
+    """Warm this project's name index, off the render thread by default."""
+    project = analysis_project(project)
+    record = _project_state(project)
+    state = _state()
+    if not blocking and record["loading"]:
+        return False
 
-        def _run():
-            try:
-                for p in missing:
-                    table_for(p)
-                    time.sleep(0.0005)
-            finally:
-                st["loading"] = False
-        threading.Thread(target=_run, daemon=True, name="symbol-roster-load").start()
+    def load():
+        try:
+            _watch_project(project)
+            for path in universe_paths(project):
+                if path not in state["tables"]:
+                    table_for(path)
+                    if not blocking:
+                        time.sleep(0.0005)
+            record["complete"] = True
+        finally:
+            record["loading"] = False
+    if blocking:
+        load()
+        return True
+    # A cached universe is enough; the walk itself happens on the worker.
+    if (record["universe"] is not None
+            and time.monotonic() - record["universe_at"] < _UNIVERSE_TTL
+            and record["complete"]):
+        return True
+    record["loading"] = True
+    threading.Thread(target=load, daemon=True, name="project-symbol-roster").start()
     return False
 
 
-def _name_indexes():
-    """(by_name, by_leaf): module-level entries by name, and member entries
-    (qualname with a dot) by leaf name — across every loaded table. Rebuilt
-    lazily when the generation moved."""
-    st = _state()
-    if st.get("frozen") and st.get("pass_names") is not None:
-        return st["pass_names"]
-    if st["by_name"] is not None and st["by_name_gen"] == st["gen"]:
-        if st.get("frozen"):
-            st["pass_names"] = (st["by_name"], st["by_leaf"])
-        return st["by_name"], st["by_leaf"]
-    by_name, by_leaf = {}, {}
-    live = st["live"]
-    eff = dict(st["tables"])
-    for p, held in list(live.items()):
-        eff[p] = held[0]                 # live buffers override pending tables
-    for p, tbl in eff.items():
-        for e in tbl.entries:
-            if "." in e.qualname:
-                by_leaf.setdefault(e.name, []).append(e)
-            else:
-                by_name.setdefault(e.name, []).append(e)
-    st["by_name"], st["by_leaf"], st["by_name_gen"] = by_name, by_leaf, st["gen"]
-    if st.get("frozen"):
-        st["pass_names"] = (by_name, by_leaf)
-    return by_name, by_leaf
+def _name_indexes(project=None):
+    """Project-local fallback names; unrelated repos cannot introduce ambiguity."""
+    project = analysis_project(project)
+    state = _state()
+    record = _project_state(project)
+    pass_names = state.setdefault("pass_project_names", {})
+    if state.get("frozen") and project.key in pass_names:
+        return pass_names[project.key]
+    if record["names"] is None or record["names_gen"] != record["gen"]:
+        by_name, by_leaf = {}, {}
+        effective = dict(state["tables"])
+        effective.update((path, held[0]) for path, held in list(state["live"].items()))
+        for path, table in effective.items():
+            if not project.owns(path):
+                continue
+            for entry in table.entries:
+                index = by_leaf if "." in entry.qualname else by_name
+                index.setdefault(entry.name, []).append(entry)
+        record["names"] = (by_name, by_leaf)
+        record["names_gen"] = record["gen"]
+    if state.get("frozen"):
+        pass_names[project.key] = record["names"]
+    return record["names"]
 
 
 # ── Resolution ───────────────────────────────────────────────────────────────
@@ -956,7 +1026,7 @@ def _walk_qualname(tbl, parts):
 
 
 def resolve(path, chain, table=None, allow_fallback=True, scope=None,
-            world=None):
+            world=None, project=None):
     """The Entry a dotted `chain` (str or list of parts) denotes in the
     context of file `path`, or None. Returns the entry for the WHOLE chain
     only (use `resolve_prefixes` for per-prefix). Order: enclosing scopes
@@ -966,12 +1036,12 @@ def resolve(path, chain, table=None, allow_fallback=True, scope=None,
     submodules) → unique same-named module-level definition anywhere in the
     roster. `self.x` / `cls.x` inside a class resolve to that class's member."""
     n = len(chain.split(".")) if isinstance(chain, str) else len(chain)
-    r = resolve_prefixes(path, chain, table, allow_fallback, scope, world=world)
+    r = resolve_prefixes(path, chain, table, allow_fallback, scope, world=world, project=project)
     return r[-1][0] if r and r[-1][1] == n else None
 
 
 def resolve_prefixes(path, chain, table=None, allow_fallback=True, scope=None,
-                     world=None):
+                     world=None, project=None):
     """[(entry, n_parts)] for every prefix of `chain` that resolves, shortest
     first (`Toggles`, `Toggles.TextEditor`, `Toggles.TextEditor.x`). The
     prefixes beyond the first resolved one walk qualnames inside the first
@@ -979,7 +1049,8 @@ def resolve_prefixes(path, chain, table=None, allow_fallback=True, scope=None,
     module level) — see `resolve`. `world`: the World whose tables the
     OTHER files resolve through (imports, star imports); None = the
     studio's (pending + live holds). The last-resort unique-name fallback
-    is always the studio's index."""
+    uses the owning project’s pending/live index."""
+    project = analysis_project(project, path)
     parts = chain.split(".") if isinstance(chain, str) else list(chain)
     if not parts:
         return []
@@ -1017,12 +1088,15 @@ def resolve_prefixes(path, chain, table=None, allow_fallback=True, scope=None,
     # 3. imports
     if tbl is not None and first in tbl.imports:
         mod, attr = tbl.imports[first]
+        mod = _absolutize(mod, tbl.path, project)
+        if mod is None:
+            return []
         if attr is None:
             # `import a.b.c [as z]`: greedy longest module prefix that is a file.
             best = None
             for k in range(len(parts), 0, -1):
                 dotted = mod if k == 1 else mod + "." + ".".join(parts[1:k])
-                mp = module_to_path(dotted)
+                mp = module_to_path(dotted, project)
                 if mp is not None:
                     best = (mp, k)
                     break
@@ -1035,14 +1109,14 @@ def resolve_prefixes(path, chain, table=None, allow_fallback=True, scope=None,
                 if w is not None:
                     return [(e, n + k) for e, n in _expand(w, t2, parts[k:])]
             return []
-        mp = module_to_path(mod)
+        mp = module_to_path(mod, project)
         if mp is not None:
             t2 = tables(mp)
             if attr in t2.by_qualname:
                 w = _walk_qualname(t2, [attr] + parts[1:])
                 return [(e, n) for e, n in _expand(w, t2, [attr] + parts[1:])]
         # `from pkg import submodule`
-        mp2 = module_to_path(f"{mod}.{attr}")
+        mp2 = module_to_path(f"{mod}.{attr}", project)
         if mp2 is not None and len(parts) > 1:
             t2 = tables(mp2)
             w = _walk_qualname(t2, parts[1:])
@@ -1051,7 +1125,8 @@ def resolve_prefixes(path, chain, table=None, allow_fallback=True, scope=None,
         return []
     if tbl is not None and tbl.star_imports:
         for mod in tbl.star_imports:
-            mp = module_to_path(mod)
+            mod = _absolutize(mod, tbl.path, project)
+            mp = module_to_path(mod, project)
             if mp is None:
                 continue
             t2 = tables(mp)
@@ -1059,7 +1134,7 @@ def resolve_prefixes(path, chain, table=None, allow_fallback=True, scope=None,
                 return _expand(_walk_qualname(t2, parts), t2, parts)
     # 4. unique definition anywhere
     if allow_fallback:
-        by_name, _leaf = _name_indexes()
+        by_name, _leaf = _name_indexes(project)
         cands = by_name.get(first)
         if cands and len(cands) == 1:
             st = _state()
@@ -1115,32 +1190,36 @@ class Usage:
         return f"Usage({os.path.basename(self.path)}:{self.line}:{self.col} in {self.scope}{' ?' if self.probable else ''})"
 
 
-def usages_of(entry, live=None, max_files=400, include_probable=True):
-    """Every code occurrence in the src tree that resolves to `entry`
+def usages_of(entry, live=None, max_files=400, include_probable=True, project=None):
+    """Every code occurrence in the owning project that resolves to `entry`
     (excluding its own definition line). `live` = {path: (text, line_offset)}
     of editor buffers to read instead of pending text. Runs the trigram
     candidate query (builds the text index on first call — call off the
     render thread the first time)."""
     with pass_scope():
-        return _usages_of(entry, live, max_files, include_probable)
+        return _usages_of(entry, live, max_files, include_probable, project)
 
 
-def _usages_of(entry, live, max_files, include_probable):
+def _usages_of(entry, live, max_files, include_probable, project=None):
+    project = analysis_project(project, entry.path)
     name = entry.name
     try:
-        from src.lsd.gl_gui.text_index import candidate_paths
-        cands = candidate_paths(name)
+        from meltygui.text_index import candidate_paths
+        cands = candidate_paths(name, root=project.root)
     except Exception:
-        cands = list(universe_paths())
-    cands = [_norm(c) for c in cands]
+        cands = list(universe_paths(project))
+    cands = [_norm(c) for c in cands if project.owns(str(c))]
+    # New/live files may not yet be in the disk index.
+    cands.extend(path for path in list(_state()["live"])
+                 if project.owns(path) and path not in cands)
     if entry.path not in cands:
         cands.insert(0, entry.path)
     if live:
         for lp in live:
             lp = _norm(lp)
-            if lp not in cands:
+            if project.owns(lp) and lp not in cands:
                 cands.insert(0, lp)
-    _by_name, by_leaf = _name_indexes()
+    _by_name, by_leaf = _name_indexes(project)
     is_member = "." in entry.qualname
     leaf_unique = is_member and len(by_leaf.get(name, ())) == 1
     word = re.compile(r"(?<![\w.])" + re.escape(name) + r"(?!\w)")
@@ -1157,7 +1236,9 @@ def _usages_of(entry, live, max_files, include_probable):
         else:
             tbl = table_for(ap)
         if text is None:
-            text = _current_text(ap)
+            parts = _state().get("live_parts", {}).get(ap, {})
+            whole = next((part for part in list(parts.values()) if part[0] == 0), None)
+            text = whole[3] if whole is not None else _current_text(ap)
         if not text or name not in text:
             continue
         if not word.search(text) and ("." + name) not in text:
@@ -1182,7 +1263,7 @@ def _usages_of(entry, live, max_files, include_probable):
             mkey = (prefix, sc.qualname if sc is not None else None)
             got = memo.get(mkey)
             if got is None:
-                res = resolve_prefixes(ap, parts[:k + 1], tbl, scope=sc)
+                res = resolve_prefixes(ap, parts[:k + 1], tbl, scope=sc, project=project)
                 hit = None
                 for ent, n in res:
                     if n == k + 1:
@@ -1479,3 +1560,29 @@ def local_key(table, scope, name, bindings):
         if k in bindings:
             return k
     return None
+
+
+def _project_file_changed(path):
+    if not str(path).endswith((".py", ".pyi", ".pth", "pyvenv.cfg")):
+        return
+    path = _norm(path)
+    state = _state()
+    with state["lock"]:
+        state.setdefault("dirty_paths", set()).add(path)
+        for record in list(state.get("projects", {}).values()):
+            if record["project"].resolves(path) and (path not in record["paths"] or not os.path.exists(path)):
+                record["universe"] = None
+                record["complete"] = False
+        _gen_bump(state, path)
+    # A formerly missing import may now exist.
+    for key, value in list(_mod_path_cache.items()):
+        if value[0] is None or value[0] == path:
+            _mod_path_cache.pop(key, None)
+
+
+def _watch_project(project):
+    from meltygui.runtime import FileWatch
+    FileWatch.global_listeners[:] = [listener for listener in FileWatch.global_listeners
+                                    if getattr(listener, "__name__", "") != "_project_file_changed"]
+    FileWatch.global_listeners.append(_project_file_changed)
+    FileWatch.watch_recursive(project.root)

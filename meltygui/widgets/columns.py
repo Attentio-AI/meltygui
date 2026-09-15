@@ -9,12 +9,14 @@ A right-drag anywhere latches the column edge to the cursor's right AND
 the row edge below it (left+right-drag: the edges to its left / above)
 and drives both through the same solve.
 """
-import imgui
+import meltygui_imgui as imgui
 
-from src.lsd.gl_gui.view.core_views.columns import (draw_columns, draw_rows,
-                                                    Columns, Rows)
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from meltygui.views.columns import draw_columns
+from meltygui.views.columns import draw_rows
+from meltygui.views.columns import Columns
+from meltygui.views.columns import Rows
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.window_decoration import window
 
 # Module-level so hotswap re-exec reuses it and edits keep their state while
 # iterating on draw_columns.

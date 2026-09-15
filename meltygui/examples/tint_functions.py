@@ -1,11 +1,15 @@
 """One reusable layout, three root-window tint accumulation policies."""
 import math
 
-import imgui
-from melty import Style, default_tint_accumulation, glfw_window, pressed
-from melty.examples.style_layouts import panel, terraces
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.headers import draw_header
+import meltygui_imgui as imgui
+from meltygui import Style
+from meltygui import default_tint_accumulation
+from meltygui import glfw_window
+from meltygui import pressed
+from meltygui.examples.style_layouts import panel
+from meltygui.examples.style_layouts import terraces
+from meltygui.rendering.core import render_func
+from meltygui.views.headers import draw_header
 
 
 def darken(context_tint, tint_res):
@@ -20,7 +24,7 @@ def wave(context_tint, tint_res):
 
 @render_func(use_cache=False)
 def reusable_window(input_value, draw_state):
-    from melty.examples.gui_playground import toggle_styles
+    from meltygui.examples.gui_playground import toggle_styles
     if pressed('ctrl+d'):
         toggle_styles()
     imgui.text('Same render function. Same positive residuals.')
@@ -46,7 +50,7 @@ def reusable_window(input_value, draw_state):
 for title, accumulate in (('Lighten', default_tint_accumulation),
                           ('Darken', darken), ('Wave', wave)):
     glfw_window(name=f'Tint policy / {title}', width=560, height=720,
-                show_name=True, with_header=draw_header, app_id='melty-gui-playground',
+                show_name=True, with_header=draw_header, app_id='meltygui-gui-playground',
                 disable_scroll=False,
                 style=Style((.52, .56, .60), absolute=True, tint_fn=accumulate))(
                     reusable_window)

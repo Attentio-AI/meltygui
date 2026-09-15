@@ -2,13 +2,27 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.lsd.gl_gui.chat.messages import (
-    ITEM_TYPES, AssistantMessage, UserMessage, UnknownMessage, CommandExecution,
-    FileChange, PythonString, CodeString, MarkdownString, ShellString, ToolOutput,
-    ImageReference, AudioReference, FileReference, JsonData,
-    from_codex, input_text, set_text, text_blocks, upsert, user_message,
-)
+from meltygui.chat.messages import ITEM_TYPES
+from meltygui.chat.messages import AssistantMessage
+from meltygui.chat.messages import UserMessage
+from meltygui.chat.messages import UnknownMessage
+from meltygui.chat.messages import CommandExecution
+from meltygui.chat.messages import FileChange
+from meltygui.chat.messages import PythonString
+from meltygui.chat.messages import CodeString
+from meltygui.chat.messages import MarkdownString
+from meltygui.chat.messages import ShellString
+from meltygui.chat.messages import ToolOutput
+from meltygui.chat.messages import ImageReference
+from meltygui.chat.messages import AudioReference
+from meltygui.chat.messages import FileReference
+from meltygui.chat.messages import JsonData
+from meltygui.chat.messages import from_codex
+from meltygui.chat.messages import input_text
+from meltygui.chat.messages import set_text
+from meltygui.chat.messages import text_blocks
+from meltygui.chat.messages import upsert
+from meltygui.chat.messages import user_message
 
 
 def test_python_fences_preserve_indentation_and_other_languages_stay_distinct():
@@ -83,7 +97,8 @@ def test_outbound_prompt_comes_from_mutated_content():
 
 
 def test_changed_file_summary_counts_hunks_and_keeps_file_identity():
-    from src.lsd.gl_gui.chat.messages import changed_files, DiffString
+    from meltygui.chat.messages import changed_files
+    from meltygui.chat.messages import DiffString
     message = from_codex({'type': 'fileChange', 'changes': [
         {'path': '/a.py', 'diff': '--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,2 @@\n-old\n+new\n+more\n context\n'},
         {'path': '/b.py', 'diff': '+new file\n'},
@@ -99,7 +114,8 @@ def test_changed_file_summary_counts_hunks_and_keeps_file_identity():
 
 def test_bash_commands_and_fences_are_typed_and_file_intent_is_parsed():
     import shlex
-    from src.lsd.gl_gui.chat.messages import BashString, FileTags
+    from meltygui.chat.messages import BashString
+    from meltygui.chat.messages import FileTags
     source = "python - <<'PYTHON'\nfrom pathlib import Path\np = Path('/repo') / 'first.py'\ns = p.read_text()\np.write_text(s.replace('old', 'new'))\nPath('/repo/second.py').write_text('hello')\nPYTHON\nsed -n '1,20p' /repo/read.py"
     message = from_codex({'type': 'commandExecution', 'command': '/bin/bash -lc ' + shlex.quote(source)})
     assert type(message['content']['command']) is BashString
@@ -122,14 +138,14 @@ def test_captured_python_script_references_follow_history_without_file_reads():
 
 
 def test_command_parser_does_not_resolve_dynamic_paths_or_unused_functions():
-    from src.lsd.gl_gui.chat.command_parser import parse_command
+    from meltygui.chat.command_parser import parse_command
     source = "python - <<'PY'\nfrom pathlib import Path\ndef unused():\n    Path('/never.py').write_text('x')\nPath(get_path()).write_text('x')\nPY\necho ok > '$DYNAMIC/file.py'"
     _, files = parse_command(source)
     assert files == {}
 
 
 def test_script_capture_with_redirect_after_heredoc_and_shell_line_separators():
-    from src.lsd.gl_gui.chat.command_parser import parse_command
+    from meltygui.chat.command_parser import parse_command
     _, files = parse_command("cat <<'PY' > /tmp/edit.py\nfrom pathlib import Path\nPath('/repo/edit.py').write_text('new')\nPY\npython /tmp/edit.py;\ntouch /repo/new.py")
     assert files == {'/tmp/edit.py': 'write', '/repo/edit.py': 'write', '/repo/new.py': 'write'}
 
@@ -145,7 +161,9 @@ def test_command_file_references_deduplicate_provider_aliases():
 
 
 def test_diff_counts_split_a_turn_diff_per_file():
-    from src.lsd.gl_gui.chat.messages import diff_counts, count_diff_lines, match_file
+    from meltygui.chat.messages import diff_counts
+    from meltygui.chat.messages import count_diff_lines
+    from meltygui.chat.messages import match_file
     diff = ('diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n@@ -1,2 +1,2 @@\n-old\n+new\n+more\n'
             'diff --git a/gone.py b/gone.py\n--- a/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\n')
     assert diff_counts(diff) == {'src/a.py': (2, 1), 'gone.py': (0, 1)}

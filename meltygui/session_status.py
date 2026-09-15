@@ -27,8 +27,8 @@ from pathlib import Path
 
 # session_status.py -> src/lsd/gl_gui/session_status.py -> parents[3] -> latent-descent/
 # Same depth/root as mcp_server.py so both agree on the .melty location.
-_ROOT = Path(__file__).resolve().parents[3]
-STATE_DIR = _ROOT / ".melty"
+from meltygui.paths import cache_root
+STATE_DIR = cache_root()
 STATUS_PATH = STATE_DIR / "session_status.json"
 
 

@@ -18,9 +18,9 @@ from collections import deque
 from typing import TYPE_CHECKING
 import time
 
-from src.lsd.gl_gui import window_api as glfw
+import meltygui.window_api as glfw
 
-from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
+from meltygui.utils.glfw_utils import print_stack_trace
 
 # Bare modifiers never count as "typing" for Melody._keys_down / typing_hold.
 _MODIFIER_KEYS = {glfw.KEY_LEFT_SHIFT, glfw.KEY_RIGHT_SHIFT,
@@ -39,7 +39,7 @@ except ImportError:
     mouse = keyboard = Key = KeyCode = Button = None
 
 if TYPE_CHECKING:
-    from input_handler import InputHandler
+    from meltygui.events.input_handler import InputHandler
 
 
 # =============================================================================
@@ -125,7 +125,7 @@ from typing import TYPE_CHECKING
 import time
 
 try:
-    import imgui
+    import meltygui_imgui as imgui
 
     HAS_IMGUI = True
 except ImportError:
@@ -133,7 +133,7 @@ except ImportError:
     imgui = None
 
 if TYPE_CHECKING:
-    from input_handler import InputHandler
+    from meltygui.events.input_handler import InputHandler
 
 
 
@@ -414,7 +414,7 @@ class GlfwQueueBackend:
         # read, not left).
         self._prev_enter = glfw.set_cursor_enter_callback(window, self._on_enter)
         # The handler asks this before emitting HELD/DRAGGED each frame.
-        from src.lsd.gl_gui.events.input_handler import set_button_probe
+        from meltygui.events.input_handler import set_button_probe
         set_button_probe(self.button_really_down)
 
     def button_really_down(self, input_id):
@@ -438,7 +438,7 @@ class GlfwQueueBackend:
         except Exception:
             pass
         try:
-            from src.lsd.gl_gui import wayland_move
+            import meltygui.wayland_move as wayland_move
             if wayland_move.button_masked(button):
                 return False
             held = wayland_move.button_held(button)
@@ -455,7 +455,7 @@ class GlfwQueueBackend:
         display, so the handler's press positions must shift like io.mouse_pos."""
         x, y = glfw.get_cursor_pos(window)
         try:
-            from src.lsd.gl_gui.melty import Melty
+            from meltygui.runtime import Melty
             ox, oy = getattr(Melty, "frame_origin", None) or (0, 0)
         except Exception:
             ox, oy = 0, 0
@@ -482,15 +482,15 @@ class GlfwQueueBackend:
         # the background parse so the render thread stays smooth. Bare hover does
         # NOT (it's cheap and would stall the parse indefinitely - see _on_move).
         try:
-            from src.lsd.gl_gui.melty import Melty
+            from meltygui.runtime import Melty
             Melty._last_input_time = time.monotonic()
         except Exception:
             pass
 
     def _on_key(self, window, key, scancode, action, mods):
         try:
-            from src.lsd.gl_gui.melty import Melty
-            from src.lsd.gl_gui.utils.glfw_utils import request_render
+            from meltygui.runtime import Melty
+            from meltygui.utils.glfw_utils import request_render
             self._stamp_input()   # key activity (press/repeat/release) defers the parse
             self._set_mods(self.handler, mods)
             x, y = self._content_cursor(window)
@@ -499,7 +499,7 @@ class GlfwQueueBackend:
                 # Orchestrator funnel: records the keystroke for a replayable
                 # take, or consumes it while a replay is driving (Esc aborts
                 # there). Consumed = imgui never sees it either (chain skipped).
-                from src.lsd.gl_gui.events.input_handler import input_tap
+                from meltygui.events.input_handler import input_tap
                 if input_tap("key", key, mods):
                     return
                 # Ordered record for the text editor (preserves typed order, and
@@ -535,14 +535,14 @@ class GlfwQueueBackend:
         # uses frame_key_events. Just chain so imgui still gets the character.
         # The Orchestrator tap records the char for replay (injected back via
         # io.add_input_character) and mutes real typing while replaying.
-        from src.lsd.gl_gui.events.input_handler import input_tap
+        from meltygui.events.input_handler import input_tap
         if input_tap("char", codepoint):
             return
         self._chain(self._prev_char, window, codepoint)
 
     def _on_button(self, window, button, action, mods):
         try:
-            from src.lsd.gl_gui.utils.glfw_utils import request_render
+            from meltygui.utils.glfw_utils import request_render
             self._stamp_input()   # mouse button press/release defers the parse
             self._set_mods(self.handler, mods)
             x, y = self._content_cursor(window)
@@ -558,7 +558,7 @@ class GlfwQueueBackend:
 
     def _on_scroll(self, window, x_offset, y_offset):
         try:
-            from src.lsd.gl_gui.utils.glfw_utils import request_render
+            from meltygui.utils.glfw_utils import request_render
             self._stamp_input()   # scrolling defers the parse
             if y_offset:
                 self.handler.feed_change("scroll_y", y_offset)
@@ -582,8 +582,8 @@ class GlfwQueueBackend:
         # on _needs_render - a wait_events wake alone is no frame), so a
         # new move here triggers the frame that answers it.
         try:
-            from src.lsd.gl_gui.melty import Melty
-            from src.lsd.gl_gui.utils.glfw_utils import request_render
+            from meltygui.runtime import Melty
+            from meltygui.utils.glfw_utils import request_render
             Melty._last_presence_time = time.monotonic()
             request_render()
         except Exception:
@@ -592,8 +592,8 @@ class GlfwQueueBackend:
 
     def _on_enter(self, window, entered):
         try:
-            from src.lsd.gl_gui.melty import Melty
-            from src.lsd.gl_gui.utils.glfw_utils import request_render
+            from meltygui.runtime import Melty
+            from meltygui.utils.glfw_utils import request_render
             Melty._pointer_inside = bool(entered)
             if entered:
                 Melty._last_presence_time = time.monotonic()

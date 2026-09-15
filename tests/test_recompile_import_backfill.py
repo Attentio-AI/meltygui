@@ -17,8 +17,8 @@ _root = os.path.join(os.path.dirname(__file__), '..')
 sys.path.insert(0, os.path.join(_root, 'src'))
 sys.path.insert(0, _root)
 
-from src.lsd.gl_gui.view.core_conversion.file_converters import (
-    _backfill_declared_imports, _recompile)
+from meltygui.code.file_converters import _backfill_declared_imports
+from meltygui.code.file_converters import _recompile
 
 
 # The file's CURRENT text: imports `dumps` and decorates with a helper that
@@ -67,7 +67,7 @@ class _NullCache:
 
 
 def test_recompile_retries_after_backfill(tmp_path, monkeypatch):
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     if getattr(Melty, "cache", None) is None:
         monkeypatch.setattr(Melty, "cache", _NullCache(), raising=False)
     p, mod = _stale_module(tmp_path)

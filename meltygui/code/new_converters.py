@@ -67,6 +67,7 @@ displays no error, so the highlight clears as soon as a fresh background parse
 succeeds. Recompile (hotswap, no disk write) is a separate concern: it just
 hotswaps the live object and flashes a checkmark.
 """
+from meltygui.extensions import get as get_service
 
 import inspect
 import linecache
@@ -82,47 +83,62 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
-import imgui
+import meltygui_imgui as imgui
 import libcst as cst
 
-from src.lsd.gl_gui import toggles
-from src.lsd.gl_gui.melty import FileWatch, Melty
-from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
-from src.lsd.gl_gui.model.core_model.draw_state import TabState, DrawState
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.model.model_enums import RelaxedEnum
-from src.lsd.gl_gui.modes import Modes
-from src.lsd.gl_gui.notifications import notify
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, get_exception_frames
-from src.lsd.gl_gui.view.core_conversion import hotswap_guard
-from src.lsd.gl_gui.view.core_conversion.address import (
-    Address, _evict_linecache,
-)
-from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-    record_compile, _enclosing_function, live_apply_edits, _blank_line_variant,
-    chain_parse_cache_get, chain_parse_cache_put, chain_parse_cache_has,
-)
-from src.lsd.gl_gui.view.core_conversion.code_checks import (
-    check_source, check_source_incremental, collect_import_suggestions)
-from src.lsd.gl_gui.view.core_conversion.file_converters import (
-    _recompile, _recompile_class, _recompile_module, module_for_path,
-)
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-    cst_module_to_dict, dict_to_cst_module,
-)
-from src.lsd.gl_gui.view.core_conversion.new_codecs import Codec, CallSite, Decorations, SaveConflict, \
-    type_to_codec, extension_to_codec, codec_for_path
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save_exclude, no_save
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.headers import draw_header
-from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
-from src.lsd.gl_gui.view.invalidation_tracker import Note
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
-from src.lsd.gl_gui.perf_trace import (trace as _ptrace, trace_rl as _ptrace_rl,
-                                       span as _pspan, once as _ponce)
+import meltygui.toggles as toggles
+from meltygui.runtime import FileWatch
+from meltygui.runtime import Melty
+from meltygui.state.core_enums import ProfileMode
+from meltygui.state.draw_state import TabState
+from meltygui.state.draw_state import DrawState
+from meltygui.state.object import DictConversion
+from meltygui.state.enums import RelaxedEnum
+from meltygui.modes import Modes
+from meltygui.notifications import notify
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.toggles import Toggles
+from meltygui.utils.glfw_utils import request_render
+from meltygui.utils.glfw_utils import print_stack_trace
+from meltygui.utils.glfw_utils import get_exception_frames
+import meltygui.code.hotswap_guard as hotswap_guard
+from meltygui.code.address import Address
+from meltygui.code.address import _evict_linecache
+from meltygui.code.chain_converters import record_compile
+from meltygui.code.chain_converters import _enclosing_function
+from meltygui.code.chain_converters import live_apply_edits
+from meltygui.code.chain_converters import _blank_line_variant
+from meltygui.code.chain_converters import chain_parse_cache_get
+from meltygui.code.chain_converters import chain_parse_cache_put
+from meltygui.code.chain_converters import chain_parse_cache_has
+from meltygui.code.code_checks import check_source
+from meltygui.code.code_checks import check_source_incremental
+from meltygui.code.code_checks import collect_import_suggestions
+from meltygui.code.file_converters import _recompile
+from meltygui.code.file_converters import _recompile_class
+from meltygui.code.file_converters import _recompile_module
+from meltygui.code.file_converters import module_for_path
+from meltygui.code.libcst_conversion import cst_module_to_dict
+from meltygui.code.libcst_conversion import dict_to_cst_module
+from meltygui.code.new_codecs import Codec
+from meltygui.code.new_codecs import CallSite
+from meltygui.code.new_codecs import Decorations
+from meltygui.code.new_codecs import SaveConflict
+from meltygui.code.new_codecs import type_to_codec
+from meltygui.code.new_codecs import extension_to_codec
+from meltygui.code.new_codecs import codec_for_path
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.core_decoration import no_save_exclude
+from meltygui.rendering.decorators.core_decoration import no_save
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.views.headers import draw_header
+from meltygui.editor.pending_save import PendingSave
+from meltygui.debug.invalidation_tracker import Note
+from meltygui.rendering.decorators.core_decoration import defaults
+from meltygui.perf_trace import trace as _ptrace
+from meltygui.perf_trace import trace_rl as _ptrace_rl
+from meltygui.perf_trace import span as _pspan
+from meltygui.perf_trace import once as _ponce
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -935,36 +951,11 @@ def _compile_check(text):
     a line on top). NOTE: pure syntax/compile only — it does NOT catch undefined
     names / typos (`print(myvarr)`), which are runtime NameErrors needing scope
     analysis (pyflakes)."""
-    if not isinstance(text, str):
-        return None
-    import textwrap
-    dedented = textwrap.dedent(text)
-    try:
-        compile(dedented, "<editor>", "exec")
-        return None
-    except SyntaxError as e:
-        # Retry inside a function - then an async function - so a statement valid
-        # only inside a function body isn't flagged just for missing that context:
-        # `return` / `yield` / `yield from` need a `def`, `await` needs `async def`.
-        # Clean under EITHER wrapper → not a bug, report nothing. Both wrappers are
-        # one line, so map a surviving error's line back by 1.
-        indented = textwrap.indent(dedented, "    ")
-        wrapped_e = None
-        for prefix in _CALL_WRAP_PREFIXES:
-            try:
-                compile(prefix + indented, "<editor>", "exec")
-                return None
-            except SyntaxError as we:
-                wrapped_e = we
-            except Exception:
-                return e
-        if wrapped_e is not None and wrapped_e.lineno is not None:
-            wrapped_e.lineno = max(1, wrapped_e.lineno - 1)
-        return wrapped_e if wrapped_e is not None else e
-    except Exception:
-        # Any non-SyntaxError exception (e.g. ValueError on null bytes) isn't the
-        # user's code being wrong in a way we can pin to a line - ignore it.
-        return None
+    from meltygui.code.syntax_check import check_syntax
+    if isinstance(text, str) and len(text) > Toggles.TextEditor.fast_check_max_chars:
+        from meltygui.code.syntax_check_worker import check_isolated
+        return check_isolated(text, _CALL_WRAP_PREFIXES)
+    return check_syntax(text, _CALL_WRAP_PREFIXES)
 
 
 # Process-boot timestamp for the lint/suggestion boot window: within
@@ -1003,14 +994,17 @@ def _region_compile_check(old, new, max_chars):
     a = old.split("\n")
     b = new.split("\n")
     na, nb = len(a), len(b)
-    pre = 0
-    m = min(na, nb)
-    while pre < m and a[pre] == b[pre]:
-        pre += 1
-    if pre == na and pre == nb:
+    from meltygui.editor.text import _text_splice
+    edit = _text_splice(old, new)
+    if edit is None:
         return "skip", None, None
-    suf = 0
-    while suf < (na - pre) and suf < (nb - pre) and a[na - 1 - suf] == b[nb - 1 - suf]:
+    pre, end_line = edit[4], edit[5]
+    # Character boundaries can sit on an unchanged empty line. Refine only
+    # those two rows; the common prefix/suffix already covers the rest.
+    while pre < min(na, nb) and a[pre] == b[pre]:
+        pre += 1
+    suf = max(0, min(na - end_line - 1, na - pre, nb - pre))
+    while suf < min(na - pre, nb - pre) and a[na - 1 - suf] == b[nb - 1 - suf]:
         suf += 1
     lo, hi = pre, nb - suf
     # Expand to enclosing top-level block(s): up to the nearest column-0 line
@@ -1079,7 +1073,7 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
     # Imported once for the WHOLE body: a branch-local import would make the
     # name function-local everywhere, and the lint section's call then throws
     # UnboundLocalError whenever the incremental branch skipped the import.
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _yield_to_ui
+    from meltygui.code.libcst_conversion import _yield_to_ui
 
     # ── libcst-dict cache over the chain parse ────────────────────────────────────
     # Only for a PRISTINE disk buffer: DiskCodec.load stamps the loaded text
@@ -1173,7 +1167,7 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
             and getattr(_tail, "__name__", "") == "cst_module_to_dict"):
         _prev_gp = _last_good_routed.get(_out_name)
         if _prev_gp is not None:
-            from src.lsd.gl_gui.notifications import lag_span
+            from meltygui.notifications import lag_span
             _prev_melty = _prev_gp.get("__origin__") is not None
             if _prev_melty and Toggles.TextEditor.melty_syntax:
                 # Increment incremental parse: re-parse only the top-level statements
@@ -1183,15 +1177,14 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
                 # would trigger as a user edit; it falls back to a full parse
                 # (reparse_reusing) for header/tail edits. A broken keystroke
                 # falls through to the full path, which is what reports the error.
-                from src.lsd.gl_gui.view.core_conversion.core_syntax import reparse_incremental
+                from meltygui.code.core_syntax import reparse_incremental
                 try:
                     with lag_span("melty_syntax reparse", 30):
                         _inc_gp = reparse_incremental(_prev_gp, input_value)
                 except SyntaxError:
                     _inc_gp = None
             elif not _prev_melty and not Toggles.TextEditor.melty_syntax:
-                from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-                    cst_dict_incremental_update)
+                from meltygui.code.libcst_conversion import cst_dict_incremental_update
                 with lag_span("incremental cst merge", 30):
                     _inc_gp = cst_dict_incremental_update(
                         _prev_gp, _last_good_src, input_value)
@@ -1256,14 +1249,9 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
         _yield_to_ui()
         _lint_fn = (check_source_incremental
                     if Toggles.TextEditor.incremental_lint else check_source)
-        # _last_good_src gate: a buffer's FIRST parse (app launch, fresh
-        # window) skips lint entirely - the incremental lint's seeding step is
-        # a full check_source per file, and paying it for every open editor at
-        # boot was the launch stall. The first EDIT reconvert (which always
-        # carries a parse) seeds it instead, parked until input goes quiet.
+        # The lint stays on the input-quiet worker, including unedited files.
         if (error is None and Toggles.TextEditor.check_syntax_errors
                 and Toggles.TextEditor.enable_lint
-                and _last_good_src is not None
                 and (Toggles.TextEditor.incremental_lint
                      or len(input_value) <= Toggles.TextEditor.lint_max_chars)):
             try:
@@ -1306,28 +1294,15 @@ def _run_relint(input_value=None, lint_path=None, lint_span=False):
             return {"lint": [], "imports": {}}
         # Park until input goes quiet - a kicked relint must never be GIL
         # convoy an actively-typing render thread (no-op when idle).
-        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _yield_to_ui
+        from meltygui.code.libcst_conversion import _yield_to_ui
         _yield_to_ui()
         # Over the lint cap the O(buffer) passes downgrade: no check_source,
         # and the import rescan runs the incremental step instead of full -
         # see Toggles.TextEditor.lint_max_chars for the trade-off.
         _small = len(input_value) <= Toggles.TextEditor.lint_max_chars
         _inc = Toggles.TextEditor.incremental_lint
-        # Launch gate: the boot-deferred relint fires for every open buffer -
-        # only run (and seed) the lint on files actually EDITED this session
-        # (queue_save bumps the pending generation). The import-suggestion
-        # scan below still runs, warming the fast-path cache as before.
-        _edited = True
-        try:
-            from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
-            from pathlib import Path as _P
-            _lp = _P(lint_path)
-            _edited = (PendingSave.pending_gen_for(_lp) > 0
-                       or PendingSave.pending_gen_for(_lp.resolve()) > 0)
-        except Exception:
-            pass
         lint = []
-        if (Toggles.TextEditor.check_syntax_errors and _edited
+        if (Toggles.TextEditor.check_syntax_errors
                 and Toggles.TextEditor.enable_lint and (_small or _inc)):
             _lint_fn = check_source_incremental if _inc else check_source
             try:
@@ -1709,7 +1684,7 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
         # dedented to parse, so chain_out must restore it. Computed here (not inside
         # the chain) because only the live buffer knows the indent; "" for top-level
         # source, so a no indent for all class/function/module codecs.
-        indent = _common_indent(input_value)
+        indent = _common_indent(input_value) if co_start else ""
         co_changed, co_payload = run_in_background(
             _run_chain_out,
             child_kwargs={"input_value": converted_edit if co_start else None,
@@ -1896,7 +1871,7 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
     # ── (identical) chain_out in background ───────────────────────────────────────
     if chain_out:
         co_start = converted_edit is not UNSET
-        indent = _common_indent(input_value)
+        indent = _common_indent(input_value) if co_start else ""
         # The edit that produced converted_edit is this frame's (the view_func reported it
         # now, same frame bubbling stamped the held value), so its generation is the
         # current frame. Threaded through the worker snapshot so the output string is
@@ -2038,14 +2013,14 @@ def _codec_view(codec, value, caller_view):
       3. A str renders in whatever text view the caller wired (the mode-
          pinned draw_text_from_code_cache, RenderFuncs.draw_text, …).
       4. Anything else routes by type through draw_any (is_default_for)."""
-    from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
+    from meltygui.code.render_host import RenderHost
     if isinstance(getattr(caller_view, "__self__", None), RenderHost):
         return caller_view
     if getattr(codec, "view_func", None) is not None:
         return codec.view_func
     if isinstance(value, str):
         return caller_view
-    from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+    from meltygui.views.values import draw_any
     return draw_any
 
 
@@ -2108,7 +2083,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
 
         if address is None:
             # A refused file used to be a blank view; name the reason.
-            from src.lsd.gl_gui.view.core_conversion.address import writable_file_refusal
+            from meltygui.code.address import writable_file_refusal
             why = None
             if isinstance(input_value, (Path, str)):
                 why = writable_file_refusal(input_value) or (
@@ -2193,7 +2168,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         # pure held-object identity check (no content compare); a NEW external
         # write replaces the disk object and naturally re-parks the view.
         if file_stale and not self_write and not code_state._save_refused:
-            from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
+            from meltygui.editor.external_changes import ExternalChanges
             _dpath = str(address.path)
             _disk_now = Melty.read_code(_dpath)
             if _disk_now is not None and ExternalChanges.is_absorbed(_dpath, _disk_now):
@@ -2274,10 +2249,10 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 imgui.align_text_to_frame_padding()
                 imgui.text_colored("\uf071 changed on disk", 1.0, 0.55, 0.15, 1.0)
                 imgui.same_line(spacing=4)
-                if RenderFuncs.button("Merge…", width=100, height=top_line_height,
+                if get_service("conflicts_open") and RenderFuncs.button("Merge…", width=100, height=top_line_height,
                                       name=f"openmerge{unique}")[0]:
-                    from src.lsd.gl_gui.view.core_views.merge_files import MergeFiles
-                    MergeFiles.open(address.path)
+                    from meltygui.extensions import call
+                    call('conflicts_open', address.path)
                 imgui.same_line()
                 if RenderFuncs.button("Load", width=100, height=top_line_height, name=f"reload{unique}")[0]:
                     load = True
@@ -2297,10 +2272,10 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             imgui.align_text_to_frame_padding()
             imgui.text_colored("\uf071 changed on disk", 1.0, 0.55, 0.15, 1.0)
             imgui.same_line(spacing=4)
-            if RenderFuncs.button("Merge…", width=100, height=top_line_height,
+            if get_service("conflicts_open") and RenderFuncs.button("Merge…", width=100, height=top_line_height,
                                   name=f"openmerge{unique}")[0]:
-                from src.lsd.gl_gui.view.core_views.merge_files import MergeFiles
-                MergeFiles.open(address.path)
+                from meltygui.extensions import call
+                call('conflicts_open', address.path)
             imgui.same_line()
             if RenderFuncs.button("Load theirs", width=110, height=top_line_height, name=f"reload{unique}")[0]:
                 load = True
@@ -2566,7 +2541,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             frames = get_frames(e)
             setattr(code_state, "_resolve_stack", frames)
 
-        from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+        from meltygui.views.values import draw_any
         call_stack = getattr(code_state, "_resolve_stack", [])
         RenderFuncs.draw_collection(call_stack, name=f"resolve_stack{unique}{id(call_stack)}",
                                     mode=Modes.WINDOW, tint=(0.9, 0.4, 0.1))
@@ -2644,7 +2619,7 @@ def code_hosts_for(ref):
         # patched object instead of a stale pre-swap wrapper.
         pair[0].input_value = ref
     if pair is None:
-        from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
+        from meltygui.code.render_host import RenderHost
         label = getattr(ref, "__name__", None) or type(ref).__name__
         # Unique disambiguator: resolve_host_view resolves a host BY NAME, so two live
         # hosts must not collide. Every cached ref is held alive as a dict key, so
@@ -2696,12 +2671,10 @@ def code_hosts_for(ref):
                 **({"run_chain_kwargs": {"lint_path": lint_path,
                                          "lint_span": lint_span}} if lint_path else {}),
             })
-        # Pre-delay the host's first relint: the deferred initial lint (the
-        # cst-cache-hit path skips the scan - see _run_chain_in) must be
-        # happen while the app is still starting. The launch floor in
-        # draw_text_from_code_cache triggers a run once now > _last_relint_t +
-        # 1s, so stamping creation+4 here holds the first to ~5s.
-        dict_host._last_relint_t = time.monotonic() + 4.0
+        # The visible editor requests its first lint on the input-quiet worker.
+        # A future timestamp prevents a scheduled lint stranded idle files.
+        dict_host._last_relint_t = 0.0
+        dict_host._relint_pending = bool(lint_path)
         pair = (str_host, dict_host)
         if cacheable:
             _code_host_cache[key] = pair
@@ -2744,7 +2717,7 @@ def _post_symbol_attach(dict_host, gen, flat):
     is walked live every frame and inserting __symbol_usages__ keys mid-iteration
     raises 'dictionary changed size during iteration' (see _index_host_in_place).
     Shared by the inline fast path and the background recompute path."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _distribute_by_name
+    from meltygui.code.libcst_conversion import _distribute_by_name
 
     def _attach():
         gp = dict_host._held()
@@ -2773,8 +2746,7 @@ def _post_symbol_attach(dict_host, gen, flat):
             # mid-hold (a newly imported name) never got indexed or tinted.
             # On a stale attach, clear the nudge key so the per-frame ensure
             # pass respawns (stagger-throttled) until a real gen fires.
-            from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-                usages_fresh_for_address)
+            from meltygui.code.libcst_conversion import usages_fresh_for_address
             if usages_fresh_for_address(dict_host.child_kwargs.get("jump_to")):
                 gp._symbol_gen = gen
             else:
@@ -2827,7 +2799,7 @@ def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
             and Toggles.TextEditor.SymbolUsages.auto_index
             and not Toggles.jedi_correctness):
         return
-    from src.lsd.gl_gui.view.core_conversion import libcst_conversion as _lc
+    import meltygui.code.libcst_conversion as _lc
     gen = _lc._index_generation
     # An incremental merge carried the previous flat symbol map but could not
     # redistribute the leaf-node __symbol_usages__ (shared-dict mutation from
@@ -2866,7 +2838,7 @@ def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
         return  # host hasn't resolved its span yet
     if dict_host.child_kwargs.get("jump_to") is not jump_to:
         dict_host.child_kwargs["jump_to"] = jump_to
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    from meltygui.editor.pending_save import PendingSave
     pgen = PendingSave.pending_gen_for(jump_to.path)
     key = (id(code_dict), gen, pgen)
     if getattr(dict_host, "_auto_index_key", None) == key:
@@ -2939,8 +2911,8 @@ def _index_host_in_place(str_host, dict_host, gen):
     small slice — mtime/generation-cached, ~25ms warm. In-place dict writes on
     the gp are safe here: consumers only re-read after _notify_consumers
     invalidates their subtrees (the same wake a background parse uses)."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-        compute_symbol_usages_for_address, _wait_for_no_drag)
+    from meltygui.code.libcst_conversion import compute_symbol_usages_for_address
+    from meltygui.code.libcst_conversion import _wait_for_no_drag
     _t_ih0 = time.monotonic()
     if not _wait_for_no_drag(label=f"index-host {_host_label(dict_host)}"):
         # Gesture outlasted the wait - bail rather than steal GIL time from
@@ -3007,7 +2979,7 @@ def _wake_stale_code_hosts(gen):
 
 
 def _register_index_bump_hook():
-    from src.lsd.gl_gui.view.core_conversion import libcst_conversion as _lc
+    import meltygui.code.libcst_conversion as _lc
     cbs = getattr(_lc, "_index_bump_callbacks", None)
     if cbs is None:
         return  # older libcst_conversion.py loaded
@@ -3038,7 +3010,8 @@ def _host_relint_and_fixes(dict_host, _str_host, wds):
     host is plenty — when suppressed the flag stays LATCHED, so a later
     frame runs the trailing state and the final answer is never lost."""
     for v in (getattr(wds, "misc", None) or {}).values():
-        if isinstance(v, ModesState) and getattr(v, '_lint_deferred', False):
+        if isinstance(v, ModesState) and (getattr(v, '_lint_deferred', False)
+                                         or not hasattr(dict_host, '_last_relint_t')):
             v._lint_deferred = False
             dict_host._relint_pending = True
     _relint = bool(getattr(dict_host, '_relint_pending', False))
@@ -3046,6 +3019,18 @@ def _host_relint_and_fixes(dict_host, _str_host, wds):
         _rl_now = time.monotonic()
         if _rl_now - getattr(dict_host, '_last_relint_t', 0.0) < 1.0:
             _relint = False         # retry soon - flag stays set
+            if getattr(dict_host, '_relint_timer', None) is None:
+                import threading
+                def wake_relint():
+                    def notify():
+                        dict_host._relint_timer = None
+                        dict_host._notify_consumers(name='deferred lint ready')
+                        request_render()
+                    Melty.post_to_render(notify)
+                delay = max(0.01, 1.0 - (_rl_now - dict_host._last_relint_t))
+                dict_host._relint_timer = threading.Timer(delay, wake_relint)
+                dict_host._relint_timer.daemon = True
+                dict_host._relint_timer.start()
         else:
             dict_host._relint_pending = False
             dict_host._last_relint_t = _rl_now
@@ -3237,8 +3222,7 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
                 # lays out fold-spliced display text. Expands any collapsed
                 # fold at the line, then shifts the selection start - the
                 # end rides the same line, so it shifts by the same delta.
-                from src.lsd.gl_gui.view.core_views.text_editor import (
-                    fold_project_jump)
+                from meltygui.editor.text import fold_project_jump
                 _sel_s, _ = fold_project_jump(
                     ds, buffer_text, _line_start + _indent, _li)
                 ds.text_selection_start = _sel_s
@@ -3383,7 +3367,8 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
         # far edges by reference - same adoption draw_columns gives nested
         # Columns. Absent (the usual standalone window), ColumnLayout falls back
         # to the window frame edges.
-        from src.lsd.gl_gui.view.core_views.columns import ColumnLayout, MIN_ROW_HEIGHT
+        from meltygui.views.columns import ColumnLayout
+        from meltygui.views.columns import MIN_ROW_HEIGHT
 
         cols = ColumnLayout(draw_state, len(tab_state.selected_tabs),
                             column_edges=column_edges, column_widths=column_widths,

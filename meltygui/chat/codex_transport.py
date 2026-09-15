@@ -3,7 +3,7 @@ import json
 import queue
 import threading
 
-from src.lsd.gl_gui.fim_providers.codex_accounts import AppServer
+from meltygui.completion.providers.codex_accounts import AppServer
 
 
 class CodexTransport(AppServer):

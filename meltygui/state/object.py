@@ -21,12 +21,13 @@ def _loaded_class(module, name):
     return getattr(mod, name, None) if mod is not None else None
 
 
-from src.lsd.gl_gui.model.core_markers import FieldMeta
-from src.lsd.gl_gui.model.dict_conversion_util import ClassUtility
-from src.lsd.gl_gui.model.core_model.core_enums import generate_id
-from src.lsd.gl_gui.model.model_enums import RelaxedEnum
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import exclude, deep_refresh
-from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
+from meltygui.state.markers import FieldMeta
+from meltygui.state.class_utility import ClassUtility
+from meltygui.state.core_enums import generate_id
+from meltygui.state.enums import RelaxedEnum
+from meltygui.rendering.decorators.core_decoration import exclude
+from meltygui.rendering.decorators.core_decoration import deep_refresh
+from meltygui.rendering.decorators.invalidation_decoration import live
 
 _SEGMENT_RE = re.compile(
     r'(?:[^.\[]+|\[[^\]]*\])+')  # matches a segment like: attr, attr[0], attr["a.b"][1], [0], ...
@@ -115,7 +116,7 @@ class DictConversion(metaclass=FieldMeta):
                 print(f"Cannot resolve saved class {class_path}: {error}; preserving its state")
                 instance = None
             if instance is None:
-                from src.lsd.gl_gui.model.missing_saved_class import missing_saved_class
+                from meltygui.state.missing_class import missing_saved_class
                 instance = missing_saved_class(class_path)()
             instantiated_objects[okey] = instance
 
@@ -281,7 +282,7 @@ class DictConversion(metaclass=FieldMeta):
             shallow_parse = self.to_dict(excluded=excluded, objects=objects, shallow=True, use_references=False)
             if is_root:
                 shallow_parse["is_root"] = is_root
-            from src.lsd.gl_gui.model.dynamic_obj import DynamicObj
+            from meltygui.models.dynamic_obj import DynamicObj
             if isinstance(self, DynamicObj):
                 pass
 
@@ -1202,12 +1203,15 @@ class DictConversion(metaclass=FieldMeta):
 
     @staticmethod
     def instantiate_from_class_path(class_path: str, last_try=False):
+        from meltygui.state.module_names import canonical_name
+        class_path = canonical_name(class_path)
+        ClassUtility().initialize_class_names()
         parts = class_path.split('.')
         class_name = parts[-1]
         parent_name = parts[-2] if len(parts) >= 2 else ""
         combined_name = f"{parent_name}.{class_name}" if parent_name else class_name
 
-        if class_name in ClassUtility().class_names:
+        if "." not in class_path and class_name in ClassUtility().class_names:
             class_path = ClassUtility().class_names[class_name]
         elif combined_name in ClassUtility().class_names:
             class_path = ClassUtility().class_names[combined_name]
@@ -1227,8 +1231,6 @@ class DictConversion(metaclass=FieldMeta):
         i = 0
         for i in range(len(parts) - 1, 0, -1):
             try:
-                if parts[0] != ClassUtility().root and ClassUtility().root is not None and ClassUtility().root != "":
-                    parts.insert(0, ClassUtility().root)
                 module_path = '.'.join(parts[:i])
 
                 if module_path in sys.modules:
@@ -1283,6 +1285,8 @@ class DictConversion(metaclass=FieldMeta):
 
     @staticmethod
     def get_enum_value(class_path: str, value_name: str, value: Optional[int], last_try=False):
+        from meltygui.state.module_names import canonical_name
+        class_path = canonical_name(class_path)
         # First get the enum class
         parts = class_path.split('.')
         module = None
@@ -1302,7 +1306,7 @@ class DictConversion(metaclass=FieldMeta):
             class_path = ClassUtility().class_names[class_parent]
             parts = class_path.split('.')
 
-        elif class_name in ClassUtility().class_names:
+        elif "." not in class_path and class_name in ClassUtility().class_names:
             class_path = ClassUtility().class_names[class_name]
             parts = class_path.split('.')
 
@@ -1312,8 +1316,6 @@ class DictConversion(metaclass=FieldMeta):
 
         for i in range(len(parts) - 1, 0, -1):
             try:
-                if parts[0] != ClassUtility().root and ClassUtility().root is not None and ClassUtility().root != "":
-                    parts.insert(0, ClassUtility().root)
 
                 module_path = '.'.join(parts[:i])
                 module = sys.modules.get(module_path)
@@ -1397,11 +1399,12 @@ class DictConversion(metaclass=FieldMeta):
     def resolve_callable(ref):
         """Inverse of serialize_callable: marker tuple -> the live callable (or
         None if it can't be resolved)."""
-        name, module = ref[0], ref[1]
+        from meltygui.state.module_names import canonical_name
+        name, module = ref[0], canonical_name(ref[1])
         if module == DictConversion.RENDER_FUNC_MODULE:
             # Registry handle - rely on RenderFuncs giving back a lazy handle
             # that resolves against the live @render_func registry at call time.
-            from src.lsd.gl_gui.render_funcs import RenderFuncs
+            from meltygui.rendering.registry import RenderFuncs
             return getattr(RenderFuncs, name)
         try:
             obj = importlib.import_module(module)

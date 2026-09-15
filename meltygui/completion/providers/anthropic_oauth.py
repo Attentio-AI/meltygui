@@ -224,7 +224,7 @@ def exchange_code(base_url: str, client_id: str, code: str, verifier: str, redir
     WITHOUT an anthropic-beta header — that is the authorization_code
     grant's route (`state` is required on this leg too: it is the bound
     CSRF check across both legs)."""
-    from src.lsd.gl_gui.fim_providers.anthropic_requests import notify_request
+    from meltygui.completion.providers.anthropic_requests import notify_request
     notify_request("POST /v1/oauth/token", "browser sign-in code exchange")
     body = urllib.parse.urlencode({"grant_type": "authorization_code", "code": code,
                                    "code_verifier": verifier, "client_id": client_id,
@@ -314,7 +314,7 @@ class LoginFlow:
                  console_url: str | None = None, base_url: str | None = None,
                  organization_id: str | None = None, workspace_id: str | None = None,
                  open_browser: bool = True, timeout_s: float | None = None, on_change=None):
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         self.profile = profile
         self.client_id = client_id or Toggles.InternetAccounts.anthropic_oauth_client_id
         self.scope = scope or Toggles.InternetAccounts.anthropic_oauth_scope
@@ -372,7 +372,7 @@ class LoginFlow:
     def open_in_browser(self) -> bool:
         if not self.url:
             return False
-        from src.lsd.gl_gui.fim_providers import oauth_popup
+        import meltygui.completion.providers.oauth_popup as oauth_popup
         popup = oauth_popup.open_auth_popup(self.url)   # falls back to xdg-open itself
         if popup is not None:
             self._popup = popup

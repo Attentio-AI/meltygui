@@ -9,12 +9,8 @@ Run from the shader_library directory:
 import sys
 import os
 
-# Add parent directory to path for imports
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, parent_dir)
-
 # Import to register all shaders
-from src.shader_library.shader_manager.stub_generator import generate_filter_stub
+from meltygui.graphics.stub_generator import generate_filter_stub
 
 # Generate the stub file
 stub_path = os.path.join(os.path.dirname(__file__), '', 'filter.pyi')

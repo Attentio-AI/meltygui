@@ -24,18 +24,24 @@ menu bar does. Hovering another title while a menu is open switches to it.
 import traceback
 from colorsys import rgb_to_hsv, hsv_to_rgb
 
-from src.lsd.gl_gui import window_api as glfw
-import imgui
+import meltygui.window_api as glfw
+import meltygui_imgui as imgui
 
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.model.core_model.draw_state import DropDownState, MenuBarState
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
-from src.lsd.gl_gui.view.core_views.headers import flat_button
-from src.lsd.gl_gui.view.core_views.new_core_view import (
-    draw_dd_menu, _dd_close, _dd_handle_keys, _dd_as_tuple, _dd_walk, _dd_menu_fit,
-    _DD_MENU_MIN_W, _DD_MENU_MAX_H)
+from meltygui.runtime import Melty
+from meltygui.state.draw_state import DropDownState
+from meltygui.state.draw_state import MenuBarState
+from meltygui.utils.glfw_utils import request_render
+from meltygui.rendering.core import render_func
+from meltygui.code.cache_tree import UNSET_VALUE
+from meltygui.views.headers import flat_button
+from meltygui.views.values import draw_dd_menu
+from meltygui.views.values import _dd_close
+from meltygui.views.values import _dd_handle_keys
+from meltygui.views.values import _dd_as_tuple
+from meltygui.views.values import _dd_walk
+from meltygui.views.values import _dd_menu_fit
+from meltygui.views.values import _DD_MENU_MIN_W
+from meltygui.views.values import _DD_MENU_MAX_H
 
 
 @render_func(use_cache=True, show_bg=False, shadow=False, selectable=False, is_tree=False,

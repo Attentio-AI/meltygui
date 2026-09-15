@@ -27,13 +27,14 @@ import traceback
 from pathlib import Path
 
 # Project root: src/lsd/gl_gui/mcp_server.py -> parents[3] == latent-descent/
-_ROOT = Path(__file__).resolve().parents[3]
-STATE_DIR = _ROOT / ".melty"
+from meltygui.paths import cache_root
+_ROOT = cache_root()
+STATE_DIR = _ROOT
 LOG_PATH = STATE_DIR / "console.log"
 
 import os
 
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from meltygui.rendering.decorators.window_decoration import window
 
 PORT = int(os.environ.get("MELTY_MCP_PORT", "8787"))
 HOST = "127.0.0.1"
@@ -296,7 +297,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
     # give httpx its own one-line handler (install_concise_http_logging).
     root_logger = logging.getLogger()
     root_handlers, root_level = list(root_logger.handlers), root_logger.level
-    mcp = FastMCP("latent-descent-launcher", host=host, port=port)
+    mcp = FastMCP("meltygui", host=host, port=port)
     for handler in list(root_logger.handlers):
         if handler not in root_handlers:
             root_logger.removeHandler(handler)
@@ -322,8 +323,8 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
                 # appending to the OLD, pre-hotswap class - toasts land in an
                 # orphaned deque nothing draws (the post-hotswap silent-toast bug).
                 # Re-importing here always hits the live sys.modules entry.
-                from src.lsd.gl_gui.view.core_views.monitor import MCPServerLog
-                from src.lsd.gl_gui.notifications import notify
+                from meltygui.views.monitor import MCPServerLog
+                from meltygui.notifications import notify
                 # Bind positional args to names so the log is self-describing.
                 call_args = dict(kwargs)
                 names = list(fn.__code__.co_varnames[:fn.__code__.co_argcount])
@@ -370,7 +371,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         window) from a crash worth investigating, instead of treating every idle
         studio as a bug.
         """
-        from src.lsd.gl_gui import session_status
+        import meltygui.session_status as session_status
         return f"{model_server.mcp_status()}; {session_status.summary()}"
 
     @logged_tool()
@@ -417,9 +418,9 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         compiles but throws at runtime is auto-reverted by the editor's hotswap
         guard. Library/stdlib paths are refused. Returns a status line.
         """
-        from src.lsd.gl_gui.notifications import notify
+        from meltygui.notifications import notify
         notify(f"hotswap requested: {path}", tint=MCP_TOOL_TINTS.get("hotswap", MCP_DEFAULT_TINT), tag="MCP")
-        from src.lsd.gl_gui import mcp_hotswap
+        import meltygui.mcp_hotswap as mcp_hotswap
         return mcp_hotswap.hotswap_file(path, source or None)
 
     @logged_tool()
@@ -439,10 +440,10 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         in place with hotswap-guard rollback. Returns the same summary string
         the button shows.
         """
-        from src.lsd.gl_gui.notifications import notify
+        from meltygui.notifications import notify
         notify("recompile requested",
                tint=MCP_TOOL_TINTS.get("recompile_external_changes", MCP_DEFAULT_TINT), tag="MCP")
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         return PendingSave.recompile_all_ui()
 
     @logged_tool()
@@ -453,11 +454,11 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         list_windows to see what's open. Captures a single window rather than
         the whole display, which may span an ultra-wide monitor.
         """
-        from src.lsd.gl_gui.notifications import notify
+        from meltygui.notifications import notify
         notify(f"screenshot requested: {window}", tint=MCP_TOOL_TINTS.get("screenshot", MCP_DEFAULT_TINT), tag="MCP")
         if not model_server._studio_running():
             return "no studio session running — call launch first"
-        from src.lsd.gl_gui.screenshot import request_capture
+        from meltygui.screenshot import request_capture
         path, error = request_capture(window)
         if error:
             return f"screenshot failed: {error}"
@@ -468,7 +469,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         """List the names of currently-open Melty studio windows."""
         if not model_server._studio_running():
             return "no studio session running — call launch first"
-        from src.lsd.gl_gui.screenshot import list_window_names
+        from meltygui.screenshot import list_window_names
         names = list_window_names()
         return "\n".join(sorted(set(names))) if names else "(no named windows open)"
 
@@ -483,7 +484,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         else. A trailing expression's repr is returned. Arbitrary in-process
         code — for inspecting/poking live state while iterating.
         """
-        from src.lsd.gl_gui.mcp_eval import request_eval
+        from meltygui.mcp_eval import request_eval
         return request_eval(code, model_server)
 
     # --- Typed state queries (mcp_query.py): JSON read on the render thread ---
@@ -491,7 +492,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
     def _query(collect):
         if not model_server._studio_running():
             return "no studio session running — call launch first"
-        from src.lsd.gl_gui.mcp_query import run_query
+        from meltygui.mcp_query import run_query
         return run_query(collect, model_server)
 
     @logged_tool()
@@ -503,7 +504,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         are front-most first with rect, clip, closed / hidden / hovered flags,
         layer, z_pos, parent window and the input value's type. Use the
         returned `tile_id` with describe_view / param_sources / tile_cache."""
-        from src.lsd.gl_gui.mcp_query import collect_find_views
+        from meltygui.mcp_query import collect_find_views
         return _query(lambda: collect_find_views(func, name, window, include_closed, limit))
 
     @logged_tool()
@@ -515,7 +516,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         render-tree ancestors and window chain, and children to
         `children_depth`. `view` = a tile_id (exact or unique substring) or
         a draw_state id prefix."""
-        from src.lsd.gl_gui.mcp_query import collect_describe_view
+        from meltygui.mcp_query import collect_describe_view
         return _query(lambda: collect_describe_view(view, children_depth))
 
     @logged_tool()
@@ -526,7 +527,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         pointer (`pointer`, `pointer_matches_point`); elsewhere the stack is
         exact but subscriptions are empty. Also: Melty.hovered_ds, the
         resolved cursor shape, drag capture and blocker views."""
-        from src.lsd.gl_gui.mcp_query import collect_hit_test
+        from meltygui.mcp_query import collect_hit_test
         return _query(lambda: collect_hit_test(x, y))
 
     @logged_tool()
@@ -535,7 +536,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         view (or just `param`) the value it reads, the DRIVING source (the
         SourcePriority pick) and every source that sets it in priority order
         (kind, writable, value). `sources` lists the sources with file:line."""
-        from src.lsd.gl_gui.mcp_query import collect_param_sources
+        from meltygui.mcp_query import collect_param_sources
         return _query(lambda: collect_param_sources(view, param))
 
     @logged_tool()
@@ -547,7 +548,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         frames, or `history_frames`), the latest `limit` invalidations and the
         top invalidators over the window — a per-frame invalidator shows up
         here with a count near the frame count."""
-        from src.lsd.gl_gui.mcp_query import collect_tile_cache
+        from meltygui.mcp_query import collect_tile_cache
         return _query(lambda: collect_tile_cache(view, history_frames, limit))
 
     @logged_tool()
@@ -595,7 +596,7 @@ def _serving_ready():
     if _draining.is_set():
         return False
     try:
-        from src.lsd.gl_gui.melty import Melty
+        from meltygui.runtime import Melty
         return Melty.init_complete()
     except Exception:
         return True
@@ -615,7 +616,7 @@ def _make_gate(app):
                 "headers": [(b"content-type", b"text/plain; charset=utf-8"),
                             (b"connection", b"close")],
             })
-            await send({"type": "http.response.body", "body": b"melty not ready"})
+            await send({"type": "http.response.body", "body": b"meltygui not ready"})
             return
         await app(scope, receive, send)
 
@@ -645,7 +646,7 @@ def notify_melty_shutdown():
             for task in list(getattr(server.server_state, "tasks", ())):
                 task.cancel()
         except Exception as e:
-            print(f"[mcp] error dropping connections on melty shutdown: {e}")
+            print(f"[mcp] error dropping connections on meltygui shutdown: {e}")
         finally:
             loop.call_later(1.0, _draining.clear)
 

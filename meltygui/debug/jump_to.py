@@ -1,11 +1,11 @@
 import types
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 
-from src.lsd.gl_gui.view.core_conversion import address
-from src.lsd.gl_gui.view.core_conversion.address import Address
-from src.lsd.gl_gui.view.core_views.core_render import render_func
+import meltygui.code.address as address
+from meltygui.code.address import Address
+from meltygui.rendering.core import render_func
 
 
 def draw_jump_to(input_value: Address, unique, width=30, error_msg=None,
@@ -21,7 +21,7 @@ def draw_jump_to(input_value: Address, unique, width=30, error_msg=None,
     # line via the cached _enclosing_function helper.
     fn = input_value.source if isinstance(input_value.source, types.FunctionType) else None
     if fn is None and line_number is not None and input_value.path is not None:
-        from src.lsd.gl_gui.view.core_conversion.chain_converters import _enclosing_function
+        from meltygui.code.chain_converters import _enclosing_function
         fn = _enclosing_function(str(input_value.path), line_number)
 
     label = f"{file_name}:{line_number}" if line_number is not None else file_name
@@ -61,8 +61,8 @@ def draw_jump_to(input_value: Address, unique, width=30, error_msg=None,
     # selection pass can null the PRESS inside it (the old button's own
     # draw_state used to claim that press; without the null, clicking Open
     # would also place the caret in the document under the floating bar).
-    from src.lsd.gl_gui.view.core_views.headers import flat_button
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.views.headers import flat_button
+    from meltygui.runtime import Melty
     imgui.set_cursor_screen_pos((x0 + pad_x, y0 + pad_y))
     _open_label = f"{folder_icon} Open"
     _bw = imgui.calc_text_size(_open_label).x + Melty.px(15)
@@ -72,7 +72,7 @@ def draw_jump_to(input_value: Address, unique, width=30, error_msg=None,
         draw_state._jump_btn_rect = (_bx, _by, _bx + _bw, _by + _bh)
     if flat_button(f"{_open_label}##jump_to{unique}", draw_state,
                    view_id=f"jump_open{unique}", width=_bw, height=_bh):
-        from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+        from meltygui.extensions import open_source as open_in_editor
         open_in_editor(str(input_value.path), line_number=line_number,
                        token=fn.__name__ if fn is not None else None)
 

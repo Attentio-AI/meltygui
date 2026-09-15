@@ -1,7 +1,7 @@
 """File import graph — which files import which files.
 
-Built from the melty syntax scanner (`melty_scan.scan` → `iter_imports`),
-never from `ast`: the same tokenize-based front end the melty syntax trees
+Built from the meltygui syntax scanner (`melty_scan.scan` → `iter_imports`),
+never from `ast`: the same tokenize-based front end the meltygui syntax trees
 use, so the graph reads exactly the statements the trees do. Every `.py`
 under the root is scanned once (`build_import_graph`), each import resolved
 to a FILE under the same root:
@@ -31,10 +31,14 @@ import time
 from pathlib import Path
 
 
-from src.lsd.gl_gui.text_index import _SKIP_DIRS
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_conversion.melty_scan import (
-    Import, ImportFrom, ScanError, alias, scan_imports, _k)
+from meltygui.text_index import _SKIP_DIRS
+from meltygui.utils.glfw_utils import request_render
+from meltygui.code.melty_scan import Import
+from meltygui.code.melty_scan import ImportFrom
+from meltygui.code.melty_scan import ScanError
+from meltygui.code.melty_scan import alias
+from meltygui.code.melty_scan import scan_imports
+from meltygui.code.melty_scan import _k
 
 
 class ImportGraph:

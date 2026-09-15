@@ -14,11 +14,12 @@ import traceback
 
 def record(stage, window, event=None, error=False, **details):
     try:
-        from src.lsd.gl_gui.melty import Melty
-        logger = logging.getLogger(f"melty.resize.{os.getpid()}")
+        from meltygui.runtime import Melty
+        logger = logging.getLogger(f"meltygui.resize.{os.getpid()}")
         if not logger.handlers:
-            path = Path(__file__).resolve().parents[3] / ".melty"
-            path.mkdir(exist_ok=True)
+            from meltygui.paths import cache_root
+            path = cache_root()
+            path.mkdir(parents=True, exist_ok=True)
             handler = RotatingFileHandler(path / f"resize-{os.getpid()}.log",
                                           maxBytes=4 * 1024 * 1024, backupCount=2)
             logger.addHandler(handler)
@@ -41,7 +42,7 @@ def record(stage, window, event=None, error=False, **details):
                               for key in ('x', 'y', 'dx', 'dy', 'total_dx', 'total_dy')}
         if error:
             entry['traceback'] = traceback.format_exc()
-        from src.lsd.gl_gui import os_frame
+        import meltygui.os_frame as os_frame
         entry['geometry_mode'] = os_frame._STATE['mode']
         entry['geometry_generation'] = os_frame._STATE['generation']
         entry['os_expected'] = list(os_frame._STATE['expected'])

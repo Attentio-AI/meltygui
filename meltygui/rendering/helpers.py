@@ -1,7 +1,7 @@
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 
-from src.lsd.gl_gui.melty import Melty
+from meltygui.runtime import Melty
 
 # Cache to track used space - key is snapped y position, value is max x used
 _floating_text_cache = {}

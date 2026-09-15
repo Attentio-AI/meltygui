@@ -12,8 +12,8 @@ from PIL import Image
 import io
 from typing import Any
 
-from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
+from meltygui.utils.glfw_utils import print_stack_trace
+from meltygui.rendering.decorators.core_decoration import defaults
 
 # Map PIL modes to GL formats
 PIL_TO_GL_FORMAT = {

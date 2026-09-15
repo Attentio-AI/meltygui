@@ -25,15 +25,15 @@ import json
 import time
 import traceback
 
-import imgui
+import meltygui_imgui as imgui
 
-from src.lsd.gl_gui import mcp_query
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.headers import flat_button
+import meltygui.mcp_query as mcp_query
+from meltygui.runtime import Melty
+from meltygui.state.object import DictConversion
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.views.headers import flat_button
 
 # Tool name -> its arguments and their defaults, in the order the real tool
 # declares them. This table IS the API: an argument dict is rendered by

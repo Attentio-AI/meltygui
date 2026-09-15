@@ -5,26 +5,32 @@ import types
 from types import NoneType
 from typing import MutableMapping
 
-from src.lsd.gl_gui import window_api as glfw
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
-from src.lsd.gl_gui.style import Style
-from imgui.core import _DrawList
+import meltygui.window_api as glfw
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
+from meltygui.style import Style
+from meltygui_imgui.core import _DrawList
 
-from src.lsd.gl_gui import mouse_cursor
-from src.lsd.gl_gui.global_style import GlobalStyle
-from src.lsd.gl_gui.melty import Melty, add_to_collection
-from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
-from src.lsd.gl_gui.model.core_model.draw_state import TileMode
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.toggles import Toggles, Tint
-from src.lsd.gl_gui.utils.custom_views import push_style_var, push_style_color, pop_style_color, pop_style_var
-from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
-from src.lsd.gl_gui.view.core_conversion.bubbling import _BubblingDict
-from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
-from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
-from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+import meltygui.mouse_cursor as mouse_cursor
+from meltygui.global_style import GlobalStyle
+from meltygui.runtime import Melty
+from meltygui.runtime import add_to_collection
+from meltygui.state.core_enums import ProfileMode
+from meltygui.state.draw_state import TileMode
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.toggles import Toggles
+from meltygui.toggles import Tint
+from meltygui.utils.custom_views import push_style_var
+from meltygui.utils.custom_views import push_style_color
+from meltygui.utils.custom_views import pop_style_color
+from meltygui.utils.custom_views import pop_style_var
+from meltygui.utils.glfw_utils import request_render
+from meltygui.utils.glfw_utils import print_stack_trace
+from meltygui.code.bubbling import _BubblingDict
+from meltygui.views.basic_view_utils import same_line
+from meltygui.views.blit_offscreen import add_shadow
+from meltygui.views.search_glow import draw_search_highlight
+from meltygui.rendering.decorators.window_decoration import window
 
 
 def open_file(path, app=None):
@@ -73,7 +79,7 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
     tab become untypeable once focus clears.
     """
 
-    from src.lsd.gl_gui.view.core_views.text_editor import draw_text
+    from meltygui.editor.text import draw_text
     # Grab focus on first open, and re-grab whenever nothing holds text focus.
     # Window focus management (move-to-front / window activation) clears
     # text_focused_ds when a window comes forward that doesn't contain the
@@ -84,7 +90,7 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
     # leaves text_focused_ds non-None).
     # `_search_focus_pending` is the one-shot set when Ctrl+F opened the search:
     # claim focus this frame regardless of who holds text focus (the underlying
-    # searchable view can reclaim melty text focus before this box renders, so
+    # searchable view can reclaim meltygui text focus before this box renders, so
     # "text_focused_ds is None" alone misses the just-opened case). Consume it so
     # later frames fall back to the gentle re-grab and don't fight a deliberate
     # click into the editor.
@@ -141,7 +147,7 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
     # arrows step the active match and ask the body to scroll it into view.
 
     imgui.same_line()
-    from src.lsd.gl_gui.view.core_views.new_core_view import button
+    from meltygui.views.values import button
     fa_x_icon = ""
 
     imgui.set_cursor_screen_pos((draw_state.abs_left + width-25, imgui.get_cursor_screen_pos()[1]))
@@ -205,8 +211,8 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
                     # window, focus an input, …). Queued + the tile invalidated so
                     # it re-renders and reads the click next frame (the find UI
                     # renders too late to inject for this frame).
-                    from src.lsd.gl_gui.view.core_views.new_core_view import search_activate_target
-                    from src.lsd.gl_gui.events.input_handler import InputEvent
+                    from meltygui.views.values import search_activate_target
+                    from meltygui.events.input_handler import InputEvent
                     _target = search_activate_target(Melty.search_current_node)
                     if _target is not None and _target.width and _target.height:
                         _cx = _target.abs_left + _target.width / 2.0
@@ -257,9 +263,9 @@ def _brightness_clamp_fn():
     """new_core_view._brightness_clamp through sys.modules (that module
     imports this one, so the import stays lazy; a dict lookup per call
     instead of an import statement, and a hotswapped body is still seen)."""
-    module = sys.modules.get("src.lsd.gl_gui.view.core_views.new_core_view")
+    module = sys.modules.get("meltygui.views.values")
     if module is None:
-        from src.lsd.gl_gui.view.core_views import new_core_view as module
+        import meltygui.views.values as module
     return module._brightness_clamp
 
 
@@ -420,14 +426,14 @@ def _jump_to_view_source(draw_state):
         return
     if not fn_file:
         return
-    from src.lsd.gl_gui.view.core_views.global_search import _jump_to_symbol_def
+    from meltygui.extensions import jump_to_symbol as _jump_to_symbol_def
     _jump_to_symbol_def(view_fn, Path(fn_file))
 
 
 def draw_header_arrow(expanded, color=None, alpha=0.071):
     """The header's transparent tree control, also usable by flat views.
     Dimmed by Toggles.Melty.arrow_brightness (every arrow, everywhere)."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     dim = float(Toggles.Melty.arrow_brightness)
     alpha = alpha * dim
     if color is None:
@@ -450,7 +456,7 @@ def draw_header_arrow(expanded, color=None, alpha=0.071):
         imgui.pop_style_color(3)
 
 
-def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=7, suffix="",
+def draw_header(input_value=None, name="", key=None, meltygui=None, parent_show_add_delete=False, width=7, suffix="",
                 collection=None, icon=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False, name_color=None,
                 on_search=False, trigger_collapse=False, trigger_expand=False, header_same_line=False,
@@ -591,7 +597,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # back to whichever source DRIVES it — code, comment, decoration,
     # instance attr. (The property pair lives in anywhere.py; this is its
     # first caller.) Outlined so the swatch reads apart from the labels.
-    from src.lsd.gl_gui.view.core_views.anywhere import get_source_for
+    from meltygui.views.anywhere import get_source_for
     _aw_attr = "tint"
     _aw_tint = draw_state.locate_tint
     if Toggles.dynamic_styles and draw_state.locate_style is not None:
@@ -601,7 +607,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # The caption re-resolves this often while it still reads the draw_state
     # fallback: the view's code hosts load in the background, so the first
     # popover open (which creates them) resolves before the source that
-    # really drives the tint has parsed — a melty app's `@glfw_window(tint=)`
+    # really drives the tint has parsed — a meltygui app's `@glfw_window(tint=)`
     # showed as "draw_state" until a write forced a fresh collection (09-12).
     # [tint=(0.85, 0.55, 0.25)]
     source_retry_frames = 30
@@ -640,7 +646,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         # header paid a full wrapper call per frame for this 17 px chip
         # (~0.19 ms each, use_cache=False). The chip claims its own 17×17
         # footprint here since the fast path draws without layout.
-        from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple_fast
+        from meltygui.views.values import draw_tuple_fast
         _aw_x, _aw_y = imgui.get_cursor_screen_pos()
         _aw_ch, _aw_val = draw_tuple_fast(
             _aw_tint, draw_state, view_id="aw_tint", x=_aw_x, y=_aw_y,
@@ -803,7 +809,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # ── Profiler ───────────────────────────────────────────────
     is_profiling = Toggles.profile_mode == ProfileMode.ON
     if is_profiling:
-        from src.lsd.gl_gui.view.core_views.new_core_view import render_profiler_time
+        from meltygui.views.values import render_profiler_time
         render_profiler_time(
             input_value=draw_state.render_time, brief=True,
             style_manager=style_manager,
@@ -831,7 +837,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     return on_change, return_val
 
 
-def draw_footer(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",
+def draw_footer(input_value=None, name="", key=None, meltygui=None, parent_show_add_delete=False, width=0, suffix="",
                 collection=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False,
                 on_search=False, trigger_collapse=False, trigger_expand=False,
@@ -842,14 +848,14 @@ def draw_footer(input_value=None, name="", key=None, melty=None, parent_show_add
     # for key, pending in draw_state._all_pending.items():
     #     if pending is not None:
     #         if pending.state == PendingState.ERROR:
-    #             from src.lsd.gl_gui.view.core_views.new_core_view import draw_pending
+    #             from meltygui.views.values import draw_pending
     #             draw_pending(pending, name=f"{key}", tint=(1, 0, 0))
 
     imgui.dummy(1,1)
 
 
 
-def draw_header_end(input_value=None, name="", show_close=True, key=None, melty=None, parent_show_add_delete=False,
+def draw_header_end(input_value=None, name="", show_close=True, key=None, meltygui=None, parent_show_add_delete=False,
                     collection=None, draw_state=None, closable=False, style_manager=None,
                     unique=None, show_tint=False, **kwargs):
     close_icon = ""
@@ -886,7 +892,7 @@ def draw_header_end(input_value=None, name="", show_close=True, key=None, melty=
                            color=(9, 1, 1)):
                 _was_closed = draw_state.closed
                 draw_state.closed = not draw_state.closed
-                from src.lsd.gl_gui.view.core_views.core_undo import NavUndo
+                from meltygui.state.undo import NavUndo
                 NavUndo.record_window(draw_state, _was_closed, draw_state.closed)
                 Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
     

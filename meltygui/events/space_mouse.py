@@ -41,7 +41,7 @@ import time
 import weakref
 from collections import deque
 
-from src.lsd.gl_gui.toggles import Toggles
+from meltygui.toggles import Toggles
 
 # The input_id a view subscribes to: `space_mouse_changed(event` on a
 # render_func signature. Buttons are `space_mouse_button_0_down` etc.
@@ -204,7 +204,7 @@ class _Reader:
 
 def _wake():
     try:
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()
     except Exception:
         pass

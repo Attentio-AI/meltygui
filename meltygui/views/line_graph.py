@@ -38,32 +38,47 @@ ctrl = y only).
 
 import math
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 import numpy
 import numpy as np
 import OpenGL.GL as gl
 
-from src.lsd.gl_gui.gl_state import GLState, GLTexture, gl_limits, texture3d_fit
-from src.lsd.gl_gui.modes import Modes
-from src.lsd.gl_gui.shader_func import shader_func
-from src.lsd.gl_gui.shaped import Shaped
-from src.lsd.gl_gui.toggles import SwooshMode
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.headers import draw_header
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+from meltygui.gl_state import GLState
+from meltygui.gl_state import GLTexture
+from meltygui.gl_state import gl_limits
+from meltygui.gl_state import texture3d_fit
+from meltygui.modes import Modes
+from meltygui.shader_func import shader_func
+from meltygui.rendering.shaped import Shaped
+from meltygui.toggles import SwooshMode
+from meltygui.utils.glfw_utils import request_render
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.views.headers import draw_header
+from meltygui.views.values import draw_any
 # Shared with draw_voxels on purpose: the same typed params (TensorDim /
 # TensorDims / Lut route to the same pickers), the same dtype coercion, the
 # same LUTs, the same error drawing / notice / footprint helpers.
-from src.lsd.gl_gui.view.playground.voxel_playground import (
-    source_identity,
-    LUTS, Lut, TensorDim, TensorDims, _LUT_TEXTURES, _clean_dim_name,
-    _describe_tensor, _draw_image_notice, _draw_voxel_error, _ensure_host,
-    _resolve_dim, _tick_values, _view_size, demo_4d, demo_5d, to_display_dtype,
-    voxel_io)
-from src.lsd.gl_gui.view.playground.voxel_playground import _cached_volume_texture
+from meltygui.tensor.voxels import source_identity
+from meltygui.tensor.voxels import LUTS
+from meltygui.tensor.voxels import Lut
+from meltygui.tensor.voxels import TensorDim
+from meltygui.tensor.voxels import TensorDims
+from meltygui.tensor.voxels import _LUT_TEXTURES
+from meltygui.tensor.voxels import _clean_dim_name
+from meltygui.tensor.voxels import _describe_tensor
+from meltygui.tensor.voxels import _draw_image_notice
+from meltygui.tensor.voxels import _draw_voxel_error
+from meltygui.tensor.voxels import _ensure_host
+from meltygui.tensor.voxels import _resolve_dim
+from meltygui.tensor.voxels import _tick_values
+from meltygui.tensor.voxels import _view_size
+from meltygui.tensor.voxels import demo_4d
+from meltygui.tensor.voxels import demo_5d
+from meltygui.tensor.voxels import to_display_dtype
+from meltygui.tensor.voxels import voxel_io
+from meltygui.tensor.voxels import _cached_volume_texture
 
 
 # ── shaders ────────────────────────────────────────────────────────────────
@@ -470,7 +485,7 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
         tex = None
         try:
             if vol.is_cuda:
-                from src.lsd.gl_gui import cuda_interop
+                import meltygui.tensor.interop as cuda_interop
                 tex = cuda_interop.tensor_to_texture(gl_state, "series_cuda", vol,
                                                      version=version)
             if tex is None:
@@ -572,7 +587,7 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
             zoom_y = nz
             draw_state.locate_zoom_y = zoom_y
             draw_state.locate_pan_y = pan_y
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     if Melty.text_focused_ds is None and (slash_pressed is not None
                                           or kp_divide_pressed is not None
                                           or kp_decimal_pressed is not None):

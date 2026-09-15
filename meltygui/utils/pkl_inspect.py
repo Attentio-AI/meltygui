@@ -1,7 +1,7 @@
 """
 pkl_inspect — make a binary load_save_v2 .pkl debuggable.
 
-  python -m src.lsd.gl_gui.utils.pkl_inspect [path/to/custom.pkl] [--depth N]
+  python -m meltygui.utils.pkl_inspect [path/to/custom.pkl] [--depth N]
 
 Loads the pkl and prints the object tree with, per field, the SERIALIZED size
 (re-pickling just that subtree) and node count — sorted biggest-first, so you can
@@ -10,10 +10,10 @@ see exactly what dominates the file and spot anything that's growing.
 import sys
 from enum import Enum
 
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.model.dict_conversion_util import ClassUtility
-from src.lsd.gl_gui.utils import load_save_v2 as v2
-from src.lsd.gl_gui.utils import graph_compare as gc
+from meltygui.state.object import DictConversion
+from meltygui.state.class_utility import ClassUtility
+import meltygui.state.serialization as v2
+import meltygui.state.graph_compare as gc
 
 _PRIM = (int, float, bool, str, bytes, type(None))
 
@@ -68,12 +68,14 @@ def dump_tree(o, depth=2, label="root", indent=0, min_kb=0.0):
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    path = args[0] if args else "/home/lukas/Desktop/latent-descent/custom.pkl"
+    if not args:
+        raise SystemExit("Usage: python -m meltygui.utils.pkl_inspect SESSION.pkl [--depth=N]")
+    path = args[0]
     depth = 2
     for a in sys.argv[1:]:
         if a.startswith("--depth"):
             depth = int(a.split("=")[-1]) if "=" in a else int(sys.argv[sys.argv.index(a) + 1])
-    ClassUtility().initialize_class_names("src")
+    ClassUtility().initialize_class_names("meltygui")
     sys.setrecursionlimit(1_000_000)
     import os
     print(f"file: {path}  ({os.path.getsize(path)/1024/1024:.2f} MB on disk)\n")

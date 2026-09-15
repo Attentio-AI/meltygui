@@ -17,12 +17,15 @@ are created once per process.
 
 import ctypes
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 import OpenGL.GL as gl
 
-from src.lsd.gl_gui.gl_state import GLTexture
-from src.lsd.gl_gui.hdr_color import GLSL_DECODE as _GLSL_DECODE, GLSL_UNPREMULTIPLY as _GLSL_UNPREMULTIPLY, GLSL_TEXT_CLAMP as _GLSL_TEXT_CLAMP, set_decode_uniforms
+from meltygui.gl_state import GLTexture
+from meltygui.hdr_color import GLSL_DECODE as _GLSL_DECODE
+from meltygui.hdr_color import GLSL_UNPREMULTIPLY as _GLSL_UNPREMULTIPLY
+from meltygui.hdr_color import GLSL_TEXT_CLAMP as _GLSL_TEXT_CLAMP
+from meltygui.hdr_color import set_decode_uniforms
 
 _VS = """
 #version 330 core

@@ -13,12 +13,12 @@ import textwrap
 
 import pytest
 
-from src.lsd.gl_gui.view.core_conversion import code_checks
-from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+import meltygui.code.code_checks as code_checks
+from meltygui.editor.pending_save import PendingSave
 
 
 MODULE_SRC = textwrap.dedent("""\
-    import imgui
+    import meltygui_imgui as imgui
     import json
 
 
@@ -216,7 +216,7 @@ def test_doc_signature_alias_name(module_file):
     # pyimgui aliases share the canonical signature's doc line
     # (set_cursor_position's doc reads "set_cursor_pos(local_pos)") - the
     # doc parser accepts the alias and reports under the caller's spelling.
-    import imgui
+    import meltygui_imgui as imgui
     spec = code_checks._spec_from_doc("set_cursor_position",
                                       imgui.set_cursor_position.__doc__)
     assert spec is not None and spec.named == ["local_pos"], spec
@@ -273,7 +273,7 @@ def test_span_call_shadowed_name_stays_silent(module_file):
 
 
 def test_span_toggle_off_restores_old_behavior(module_file, monkeypatch):
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     monkeypatch.setattr(Toggles.TextEditor, "lint_span_calls", False)
     assert _span_lint("def caller():\n    helper(1, 2, 3)\n",
                       module_file) == []

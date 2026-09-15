@@ -12,7 +12,7 @@ free of an import cycle with the view code that calls it.
 
 from enum import Enum
 
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
+from meltygui.rendering.decorators.core_decoration import Core
 
 # We want to use the order of the tab elements as a way of determining the
 # source of the input. From the function's perspective it just has parameters
@@ -20,7 +20,7 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 # best to pick sane defaults when there are multiple sources. Which source
 # takes priority depends on how the code is written, and the code may change.
 # Rather than trying to infer the priority, we're just hard coding it here -
-# adjust the order of the elements to reflect the runtime behavior of melty.
+# edit the order of the elements to change the runtime behavior of meltygui.
 # (Below is a rough memory of which sources take priority; reorder freely.)
 class SourcePriority(Enum):
     LIVE_COMMENT = 0             # the `# [tint=...]` override comment - the
@@ -126,8 +126,8 @@ def _sources_for(draw_state, class_to_show=None):
     (a drag writing per-release, say) reuse the parsed hosts. class_to_show
     defaults to the value's runtime class, so the @defaults/class-var rows
     resolve the same way here as under the context menu."""
-    from src.lsd.gl_gui.view.core_views.new_core_view import (
-        ContextMenuState, collect_input_sources)
+    from meltygui.views.values import ContextMenuState
+    from meltygui.views.values import collect_input_sources
     if not draw_state._call_site_captured and not draw_state._call_site_requested:
         draw_state._call_site_requested = True
         draw_state.invalidate_up(max_depth=6)
@@ -376,7 +376,7 @@ def _apply_glfw_window_decoration(attr_name, value, draw_state, class_to_show):
     """`app._ROOTS[i] = (fn, config)`: the root body reads
     `config['view_kwargs']` every frame (app._root_body), and a re-run
     decorator updates that same dict in place."""
-    from src.lsd.gl_gui import app
+    import meltygui.app as app
     view_func = (draw_state._kwargs or {}).get("_view_func_origin", getattr(draw_state, "_view_func", None))
     owners = {id(o) for o in (view_func, _raw_of(view_func)) if o is not None}
     hit = False
@@ -474,7 +474,7 @@ def live_apply(attr_name, value, draw_state, kind, class_to_show=None):
         print(f"[live_apply] {kind} {attr_name}: {e}")
         return False
     if hit:
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()
     return hit
 
@@ -504,7 +504,7 @@ def flush_deferred_writes():
         # Rendering is event-driven: after the last scroll tick no further
         # input arrives, so keep frames flowing until the quiet window expires
         # and the deferred writes actually flush.
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()
         return
     for ds in list(_DEFERRED_DS):
@@ -585,7 +585,7 @@ def _setting_source(srcs, attr_name):
                   and not _unset_value(sources[sname].get(attr_name))]
     if attr_name == "view_func" and srcs.get("view_func") is not None:
         import inspect
-        from src.lsd.gl_gui.view.core_views.view_func_selection import resolve_view_func
+        from meltygui.views.view_func_selection import resolve_view_func
         live = inspect.unwrap(resolve_view_func(srcs["view_func"]))
         candidates = [s for s in candidates if not (getattr(sources[s], "direct", False)
                                                    or getattr(sources[s], "implicit_view_func", False))
@@ -622,14 +622,13 @@ def get_source_for(attr_name, draw_state, class_to_show=None):
 # plumbing would restyle every view app-wide. Caller rows located here are
 # skipped by default_write_source's pick - they stay visible and manually
 # pickable in the info tab's dropdown.
-_FRAMEWORK_CALLER_DIRS = ("view/core_views", "view/core_conversion",
-                          "model/", "utils/")
-_FRAMEWORK_CALLER_FILES = ("melty.py", "lsd_studio.py", "background.py",
-                           "latent_descent.py")
+_FRAMEWORK_CALLER_DIRS = ("/meltygui/rendering/", "/meltygui/views/",
+                          "/meltygui/code/", "/meltygui/state/", "/meltygui/utils/")
+_FRAMEWORK_CALLER_FILES = ("runtime.py", "app.py", "surface.py", "background.py")
 
 
 def _is_framework_caller(location):
-    """True when a caller row's (file, line) sits inside the melty framework
+    """True when a caller row's (file, line) sits inside the meltygui framework
     — or is unknown, which must never be defaulted into either."""
     if not location or not location[0]:
         return True
@@ -812,10 +811,10 @@ def _anywhere_verify_tick(attr_name, draw_state, live):
         return
     del verify[attr_name]
     if not _anywhere_agrees(live, set_value):
-        from src.lsd.gl_gui.notifications import notify
+        from meltygui.notifications import notify
         notify(f"set_anywhere: '{attr_name}' settled at {live!r}, not the "
                f"{set_value!r} that was set — SourcePriority may not match "
-               f"melty's routing for this view", tag="set_anywhere")
+               f"meltygui's routing for this view", tag="set_anywhere")
 
 
 def _owning_code_host(cm_state, kind):
@@ -868,8 +867,8 @@ def _anywhere_recompile_tick(draw_state):
     if pend.get("tick_frame") == Core.melty.frame_count:
         return
     pend["tick_frame"] = Core.melty.frame_count
-    from src.lsd.gl_gui.view.core_conversion.new_converters import (
-        host_code_state, run_recompile)
+    from meltygui.code.new_converters import host_code_state
+    from meltygui.code.new_converters import run_recompile
     # Keep the owning host alive through the wait - it may be an idle-swept
     # cache host that still needs to load and run its chain.
     pend["host"].notify_on_change(draw_state)
@@ -940,13 +939,13 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
     also CREATE the entry at that source (a new caller kwarg, a new class
     var), which is how the picker's + affordance stamps a param nothing
     sets yet."""
-    from src.lsd.gl_gui.notifications import notify
+    from meltygui.notifications import notify
     if not allow_any and attr_name not in SET_ANYWHERE_PARAMS:
         notify(f"set_anywhere: '{attr_name}' not in SET_ANYWHERE_PARAMS",
                tag="set_anywhere")
         return None
     if attr_name == "view_func":
-        from src.lsd.gl_gui.view.core_views.view_func_selection import resolve_view_func
+        from meltygui.views.view_func_selection import resolve_view_func
         try:
             value = resolve_view_func(value)
         except ValueError as error:
@@ -1013,8 +1012,7 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
         # the old draw_state fallback for calls without a renderer source.
         _setting = _setting_source(srcs, attr_name)
         _kind = srcs["kinds"].get(_setting) if _setting is not None else None
-        from src.lsd.gl_gui.view.core_views.core_render import (
-            _draw_state_reserved_names)
+        from meltygui.rendering.core import _draw_state_reserved_names
         # None (DrawState not constructible yet) makes reserved set unknown;
         # keep the legacy pick for the call rather than throwing.
         _mirrored = attr_name not in (_draw_state_reserved_names() or ())
@@ -1093,7 +1091,8 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
             except Exception:
                 pass
     if attr_name == "view_func":
-        from src.lsd.gl_gui.view.core_views.view_func_selection import resolve_view_func, view_reference_code
+        from meltygui.views.view_func_selection import resolve_view_func
+        from meltygui.views.view_func_selection import view_reference_code
         value = resolve_view_func(value)
         if _t_kind == "code comment":
             write_value = f"RenderFuncs.{value.__name__}" if value is not None else None
@@ -1142,7 +1141,7 @@ def _arm_recompile(draw_state, sources, target, kind):
         # upstream render host's input is the real source object. Stamp the
         # deferred hotswap against exactly that; without it the trip never
         # lands and the pending cache shows the un-landed value forever.
-        from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
+        from meltygui.code.render_host import RenderHost
         _row = sources.get(target)
         _broot = (getattr(_row, "_bubble_root", None)
                   or getattr(getattr(_row, "_dp", None), "_bubble_root", None))
@@ -1150,7 +1149,7 @@ def _arm_recompile(draw_state, sources, target, kind):
             _sh = _broot.input_value if isinstance(_broot.input_value, RenderHost) else None
             _src_obj = getattr(_sh, "input_value", None) if _sh is not None else None
             if _sh is not None and _src_obj is not None:
-                from src.lsd.gl_gui.view.core_conversion.new_converters import host_code_state
+                from meltygui.code.new_converters import host_code_state
                 _cs = host_code_state(_sh)
                 draw_state._sa_recompile = {
                     "host": _sh, "source": _src_obj, "started": False,
@@ -1161,7 +1160,7 @@ def _arm_recompile(draw_state, sources, target, kind):
     if cm_state is not None:
         _rc_host, _rc_source = _owning_code_host(cm_state, kind)
         if _rc_host is not None and _rc_source is not None:
-            from src.lsd.gl_gui.view.core_conversion.new_converters import host_code_state
+            from meltygui.code.new_converters import host_code_state
             _cs = host_code_state(_rc_host)
             draw_state._sa_recompile = {
                 "host": _rc_host, "source": _rc_source, "started": False,
@@ -1177,7 +1176,7 @@ def clear_anywhere(attr_name, draw_state, source, class_to_show=None):
     auto_param (and nulls a whitelisted ds attr), so lower-priority layers
     resume driving. Returns the source cleared, or None when it held
     nothing."""
-    from src.lsd.gl_gui.notifications import notify
+    from meltygui.notifications import notify
     srcs = _sources_for(draw_state, class_to_show)
     # In-flight caches for this attr are stale either way a clear goes.
     for _slot in ("_sa_pending", "_sa_precise", "_sa_deferred"):
@@ -1191,7 +1190,7 @@ def clear_anywhere(attr_name, draw_state, source, class_to_show=None):
         if isinstance(_ap, dict) and attr_name in _ap:
             del _ap[attr_name]
             cleared = True
-        from src.lsd.gl_gui.view.core_views.core_render import OBJ_ATTR_PARAMS
+        from meltygui.rendering.core import OBJ_ATTR_PARAMS
         if (attr_name in OBJ_ATTR_PARAMS
                 and getattr(draw_state, attr_name, None) is not None):
             setattr(draw_state, attr_name, None)
@@ -1266,7 +1265,7 @@ def reorder_anywhere(keys, draw_state, class_to_show=None):
     derives from. Only parse-node dicts qualify: the adapter rows (instance
     attr, draw_state, codec) are snapshots over live objects with no
     persisted order. Returns the source names written, in priority order."""
-    from src.lsd.gl_gui.view.core_conversion.bubbling import _BubblingDictMixin
+    from meltygui.code.bubbling import _BubblingDictMixin
     srcs = _sources_for(draw_state, class_to_show)
     order = {k: i for i, k in enumerate(keys)}
     writable = set(srcs["writable"])
@@ -1336,8 +1335,8 @@ def _func_param_names(func):
         params = inspect.signature(inspect.unwrap(func)).parameters
     except (TypeError, ValueError):
         return []
-    from src.lsd.gl_gui.view.core_views.core_render import (
-        _AUTO_PARAM_EXCLUDE, _is_event_param_name)
+    from meltygui.rendering.core import _AUTO_PARAM_EXCLUDE
+    from meltygui.rendering.core import _is_event_param_name
     out = []
     for name, p in params.items():
         if name in _AUTO_PARAM_EXCLUDE or _is_event_param_name(name):
@@ -1377,7 +1376,7 @@ def signature_default_for(attr_name, draw_state):
 
 # Header plumbing _AUTO_PARAM_EXCLUDE didn't cover - the header receives
 # these from the wrapper/parent per call, they're never user inputs.
-_HEADER_PARAM_EXCLUDE = {"melty", "parent_show_add_delete", "name_func"}
+_HEADER_PARAM_EXCLUDE = {"meltygui", "parent_show_add_delete", "name_func"}
 
 
 def header_param_names(draw_state):

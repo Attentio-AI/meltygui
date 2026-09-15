@@ -1,4 +1,4 @@
-"""draw_texture: melty's zoom/pan texture view, in its own module.
+"""draw_texture: meltygui's zoom/pan texture view, in its own module.
 
 It lives apart from new_core_view so that a host wanting only this view (the
 hdr-viewer) can import it without new_core_view's converter registry, which
@@ -9,16 +9,16 @@ where it used to be defined, so registration order and
 import math
 
 import OpenGL.GL as gl
-from src.lsd.gl_gui import window_api as glfw
-import imgui
+import meltygui.window_api as glfw
+import meltygui_imgui as imgui
 import numpy
-from imgui.core import _DrawList
+from meltygui_imgui.core import _DrawList
 
-from src.lsd.gl_gui.hdr_color import pack_color
-from src.lsd.gl_gui.model.core_model.draw_state import ZoomState
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
-from src.lsd.gl_gui.view.core_views.headers import draw_header
+from meltygui.hdr_color import pack_color
+from meltygui.state.draw_state import ZoomState
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.views.headers import draw_header
 
 
 @render_func(is_default_for=numpy.uint32, show_bg=False, use_cache=False, show_add_delete=False, z_offset=0,
@@ -200,7 +200,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     forced_zoom = -1.0
     key_1 = 49
     numpad_key_1 = 321
-    # Not while a text field has the keyboard (a melty draw_text editor or an
+    # Not while a text field has the keyboard (a meltygui draw_text editor or an
     # imgui input): typing a path with a "4" in it over the image zoomed the
     # hdr-viewer to 12.5 % (09-14).
     typing = Core.melty.text_focused_ds is not None or io.want_text_input

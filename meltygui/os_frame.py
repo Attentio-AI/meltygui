@@ -1,10 +1,10 @@
-"""The OS window as a melty window: its four edges are collision edges in
-the columns edge system, one level outside the root melty windows, and the
+"""The OS window as a meltygui window: its four edges are collision edges in
+the columns edge system, one level outside the root meltygui windows, and the
 screen's work area is the wall outside it.
 
 Per axis the OS window owns a frame pair of edge dicts in SCREEN
 coordinates (``_STATE["edges"]``) and the work area a wall pair
-(``_STATE["screen"]``). Every ROOT melty window's frame pass
+(``_STATE["screen"]``). Every ROOT meltygui window's frame pass
 (columns._frame_pass) solves against them: the root's edges are shifted
 into screen coordinates for the solve, and two zero-floor GAP cells —
 [os_near, W_near] and [W_far, os_far] — link its frame to the OS frame,
@@ -14,7 +14,7 @@ surface grows, or the window moves through the attach-offset — see flush),
 the OS edge pushed into the screen is clamped there (a wall), and a
 cursor-driven drag whose owner is blocked by a wall grows that window on
 the OPPOSITE side instead (the flip in columns._solve_collisions — the one
-rule melty windows always had against the display, now for both). Nothing
+rule meltygui windows always had against the display, now for both). Nothing
 else: no caps, no inference, no sticky bookkeeping — edges move when a
 hand drags them or when something pushes them.
 
@@ -27,7 +27,7 @@ them along. Without a position (extension not installed, no bus) the OS
 edges are immovable walls at the display's edges and the old in-display
 pin-and-slide is what remains. Gate: Toggles.Melty.push_os_window_edges.
 """
-from src.lsd.gl_gui import window_api as glfw
+import meltygui.window_api as glfw
 
 # Smallest OS window the physics allows (content px): the OS frame cell is
 # zero, so a drag to it pushes the other OS edge instead of collapsing.
@@ -93,7 +93,7 @@ _STATE.setdefault("move_requests", {"x": [], "y": []})
 
 
 def _trace(msg):
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     if Toggles.Melty.push_os_window_edges_trace:
         print(f"[os_frame] {msg}")
 
@@ -104,7 +104,7 @@ def reset(reason="studio start"):
     _STATE outlives a studio restart inside the server process, and a new
     window met the old one's numbers as a giant foreign change — roots
     re-based against a stale origin, pushed, left outside (08-27)."""
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     _STATE["expected"] = [None, None]
     _STATE["inflight"] = [None, None]
     _STATE["size_expected"] = [None, None]
@@ -129,7 +129,7 @@ def reset(reason="studio start"):
 
 
 def _enabled():
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     return bool(Toggles.Melty.push_os_window_edges)
 
 
@@ -156,7 +156,7 @@ def screen_edges(axis):
 def display_top():
     """The top of the DISPLAY (the work area's top edge — below GNOME's
     bar) in the studio's CONTENT coordinates, comparable straight against a
-    window's abs_top. The hard limit a melty window's top may never pass
+    window's abs_top. The hard limit a meltygui window's top may never pass
     (columns._frame_pass, Toggles.Melty.window_top_hard_limit). Against the
     APPLIED surface origin (the model's near edge less what apply_rebase
     has not applied yet — attach's ctx.base convention), so it holds on
@@ -184,9 +184,9 @@ def _observe():
     window_id) of the content rect on screen — the far edges from the
     SAME source as the position (the feed's own width / height; glfw's on
     X11) — or None when no position is known."""
-    from src.lsd.gl_gui import titlebar
+    import meltygui.titlebar as titlebar
     if titlebar._on_wayland():
-        from src.lsd.gl_gui import geometry_feed
+        import meltygui.geometry_feed as geometry_feed
         geometry_feed.ensure_started()      # a hotswap, not a restart (or a backend switch): start it here
         # the Hyprland backend reports the SURFACE: shrink by the shadow
         # inset to the content (a no-op on the GNOME feed's geometry rect)
@@ -214,8 +214,8 @@ def _root_windows():
     uses its registered windows; GLFW surfaces keep their own live roots
     because the persisted registry also contains other surfaces' windows.
     Include parentless entries in the surface-local root_draw_states too."""
-    from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.surface import Surface
+    from meltygui.runtime import Melty
+    from meltygui.surface import Surface
     seen, roots = set(), []
     if Surface.active is not None:
         candidates = list(getattr(Surface.active, "root_windows", {}).values())
@@ -269,7 +269,7 @@ def _frame_parent(window):
 
 
 def _pinned_children(axis, side):
-    """The DIRECT nested closable windows of the frame-pinned roots that
+    """The nested closable windows immediately inside frame-pinned roots that
     hang from the root's ``side`` ("near" / "far") corner on ``axis``
     (os_frame._driver_of: parent_anchor_pos). A pinned root's frame IS
     the OS window's, so its children are the studio roots of that world:
@@ -280,7 +280,8 @@ def _pinned_children(axis, side):
     from the app's right corner and dragged right pushed the OS edge out,
     hung further right for it and pushed again — the app grew to the
     screen in a dozen frames, 09-13). Pins with a booked actual anchor
-    defer to rebase_pin after parent layout instead."""
+    defer to rebase_pin after parent layout instead. Ordinary placement
+    parents (such as the inline panel's text view) do not add a window level."""
     pinned = {id(ds) for ds in _movable_roots() if _frame_pinned(ds)}
     if not pinned:
         return []
@@ -347,7 +348,7 @@ def _book_pin_rebases():
 
 def rebase_pin(ds):
     """After parent layout, before the child's edge pass: keep its screen
-    position through an OS resize using the pin's measured displacement.
+    position through an OS resize using the placement anchor's displacement.
     The parent has not been laid out yet at apply_rebase (frame start).
     """
     previous = _STATE["pin_rebases"].pop(id(ds), None)
@@ -395,11 +396,11 @@ def _depth(ds):
 
 
 def _all_windows():
-    """Every melty window that collides at the OS level — the roots AND
+    """Every meltygui window that collides at the OS level — the roots AND
     the nested windows (Melty.root_draw_states holds those under their
     parent's id) — parents before children (write-backs of a child are
     relative to its parent's motion). Deduped by identity."""
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     seen, windows = set(), []
     for ds in _root_windows():
         seen.add(id(ds))
@@ -468,7 +469,7 @@ def begin_frame():
     resizes land at frame start, a compositor's through the resize
     callback) and the observed position — and fold in what we did not
     request."""
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     # Surfaces saved before this code was hotswapped have no move history.
     _STATE.setdefault("move_requests", {"x": [], "y": []})
     _STATE["frame"] = Melty.frame_count
@@ -737,8 +738,8 @@ def attach(window, axis, has_pending=True, hand_move=False):
     Toggles.Melty.window_move_pushes_os_edges), none of the OS window's
     own drags, no OS edge moved since this window last saw it — so an
     idle frame touches nothing."""
-    from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.runtime import Melty
+    from meltygui.toggles import Toggles
     if not _enabled() or _STATE["frame"] != Melty.frame_count:     # only in a frame begin_frame set up
         return None
     # Nested windows take part exactly like roots (Lukas 08-27): their
@@ -836,7 +837,7 @@ def content_size(display):
     back to the old size for a frame and pushed out again the next — the
     dividers froze and jittered against it (Lukas 09-13). Foreign sizes
     are folded into the model at begin_frame, so this never hides one."""
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     if not _enabled() or _STATE["frame"] != Melty.frame_count:
         return display
     out = []
@@ -877,7 +878,7 @@ def expect_own_move(dx, dy):
     near edge and every root was re-based by it: a @glfw_window app came up
     with its content shoved right by the fit's distance (09-12). Before the
     feed's first sight the move is parked for begin_frame to fold in."""
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     for axis, i in _AXIS.items():
         d = float((dx, dy)[i])
         if not d:
@@ -977,7 +978,7 @@ def _chain_floor(a, role_a, b, role_b, axis):
         return 0.0
     if role_a == ROOT_FAR and role_b == ROOT_NEAR:
         return 0.0
-    from src.lsd.gl_gui.view.core_views.columns import _axis_min
+    from meltygui.views.columns import _axis_min
     return min(_axis_min(axis), max(0.0, b[axis] - a[axis]))
 
 
@@ -994,7 +995,7 @@ def _window_floor(ds, axis):
     """How far the OS-level solve may compress ``ds`` on ``axis``: its
     declared minimum (raised to its columns' pile by its own pass), never
     below the axis minimum, never above its size."""
-    from src.lsd.gl_gui.view.core_views.columns import _axis_min
+    from meltygui.views.columns import _axis_min
     size = float(ds.width if axis == "x" else ds.height)
     declared = float((ds.min_width if axis == "x" else ds.min_height) or 0)
     return min(size, max(_axis_min(axis), declared))
@@ -1017,7 +1018,7 @@ def _root_of(ds):
 def _any_button_down():
     """A mouse button is held — a hand gesture is alive (the sticky replay's
     lifetime, here and in columns)."""
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     handler = getattr(Melty, "event_handler", None)
     if handler is None:
         return False
@@ -1080,7 +1081,7 @@ def _extent_of(root, children, frames, axis):
     is larger (a child overhanging the far side leaves no give at all:
     compressing a parent never moves its children, they hang off its near
     edge). Returns (near, far, floor) with floor as the cell's floor."""
-    from src.lsd.gl_gui.view.core_views.columns import _axis_min
+    from meltygui.views.columns import _axis_min
     r_n, r_f, r_floor, _size0 = frames[id(root)]
     r_size = r_f[axis] - r_n[axis]                # as phase A left it, not as built
     near, far = r_n[axis], r_f[axis]
@@ -1112,7 +1113,7 @@ def solve():
     every window's frame as a cell floored at its minimum and capped at
     its size, the OS frame cell, the screen walls, and a cell between each
     consecutive pair of edges in position order (_chain_floor). No other
-    drag collides windows with each other: a melty window's own resize and
+    drag collides windows with each other: a meltygui window's own resize and
     a hand move solve in the window's own pass (attach). A frame-pinned
     app root sends its frame-handle drags here too: it IS the GLFW frame.
 
@@ -1131,9 +1132,11 @@ def solve():
     Pushed windows get position / size written back; their own pass packs
     their columns as a foreign size write. The OS near edge's motion is
     booked for apply_rebase like any other."""
-    from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.view.core_views.columns import (_cells_from_lists, _EdgeGraph,
-                                                        _solve_graph, snap_int)
+    from meltygui.runtime import Melty
+    from meltygui.views.columns import _cells_from_lists
+    from meltygui.views.columns import _EdgeGraph
+    from meltygui.views.columns import _solve_graph
+    from meltygui.views.columns import snap_int
     if not _enabled() or _STATE["frame"] != Melty.frame_count:
         return
     for axis, i in _AXIS.items():
@@ -1182,7 +1185,7 @@ def solve():
         start = {wid: (n[axis], f[axis]) for wid, (n, f, _fl, _sz) in frames.items()}
         gesture = gestures.get(axis)
         if own:
-            from src.lsd.gl_gui.view.core_views.columns import snapshot_edges
+            from meltygui.views.columns import snapshot_edges
             if gesture is None:
                 gesture = gestures[axis] = {"snap": list(cur), "totals": [0.0, 0.0], "windows": {}}
             snapshots = gesture.setdefault("windows", {})
@@ -1370,8 +1373,8 @@ def flush():
     size / position → ONE surface request, applied at the next frame's
     start (titlebar.apply_pending_surface_size: size + attach-offset move
     in one commit). Returns the requested content size or None."""
-    from src.lsd.gl_gui import titlebar
-    from src.lsd.gl_gui.melty import Melty
+    import meltygui.titlebar as titlebar
+    from meltygui.runtime import Melty
     if not _enabled():
         return None
     window = titlebar._studio_window()

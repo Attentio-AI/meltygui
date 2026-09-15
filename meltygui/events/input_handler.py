@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 import time
 
-import imgui
+import meltygui_imgui as imgui
 
 
 class EventAction:
@@ -839,8 +839,8 @@ class InputHandler:
 
         # --- Regular events ---
         # Hoist import once (sys.modules lookup still has overhead in a loop)
-        from src.lsd.gl_gui.melty import Melty
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.runtime import Melty
+        from meltygui.utils.glfw_utils import request_render
         get_latest_mouse = Melty.get_latest_mouse
 
         drag_capture = self._drag_capture
@@ -1030,8 +1030,8 @@ class InputHandler:
             )
             add_event(captured_view, drag_key, drag_event)
 
-        # --- Flush pending clicks whose double-click window expired with no
-        # double. Dispatch into this frame's result (melty: begin() then
+        # --- Flush deferred clicks whose double-click window expired with no
+        # double. Dispatch into THIS frame's result (meltygui's begin_frame then
         # invalidates the target tile so a cached view re-renders + consumes it).
         # While anything is still pending, keep the render loop alive so the
         # deadline is actually reached even if the app would otherwise idle. ----

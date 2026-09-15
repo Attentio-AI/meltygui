@@ -201,8 +201,7 @@ def twin_snap(value, name=None, dims=None):
         except Exception:
             same_file = False
         if not same_file:
-            from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-                _enclosing_function)
+            from meltygui.code.chain_converters import _enclosing_function
             fn = _enclosing_function(code.co_filename, lineno)
         if (isinstance(fn, types.FunctionType)
                 and isinstance(name, str) and name.isidentifier()):
@@ -234,8 +233,7 @@ def twin_ret(value=None):
     finally:
         del frame
     try:
-        from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-            _enclosing_function)
+        from meltygui.code.chain_converters import _enclosing_function
         fn = _enclosing_function(code.co_filename, lineno)
         if isinstance(fn, types.FunctionType):
             stamp_run_marker(fn, "__live_return_line__",
@@ -290,7 +288,7 @@ def stamp_run_marker(fn, attr, value):
             now = time.time()
             if now - _last_wake > 0.033:
                 _last_wake = now
-                from src.lsd.gl_gui.utils.glfw_utils import request_render
+                from meltygui.utils.glfw_utils import request_render
                 request_render()
     except Exception:
         pass
@@ -324,7 +322,7 @@ def call_with_body_capture(func, kwargs, on_captured=None):
             # LOCAL half - `on_captured` (the context menu's CodeEditor
             # adopting the body locals into its own stack copy) - always
             # fires; it touches nothing global.
-            from src.lsd.gl_gui.toggles import Toggles
+            from meltygui.toggles import Toggles
             if Toggles.TextEditor.enable_live_view:
                 if exit_line[0] is not None:
                     stamp_run_marker(inner, "__live_return_line__",
@@ -443,8 +441,8 @@ def site_for_line(filename, lineno):
     token on every repaint, and the resolver chain behind it (realpath,
     enclosing-def walk, span parse, linemap) is once-per-edit work, not
     per-frame work."""
-    from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-        _enclosing_function, _module_for_file)
+    from meltygui.code.chain_converters import _enclosing_function
+    from meltygui.code.chain_converters import _module_for_file
     try:
         path = Path(filename).resolve()
         mtime = path.stat().st_mtime
@@ -501,7 +499,7 @@ def install_builtin(name="live_view"):
     if existing is not None and existing is not live_view:
         return
     setattr(builtins, name, live_view)
-    checks = sys.modules.get("src.lsd.gl_gui.view.core_conversion.code_checks")
+    checks = sys.modules.get("meltygui.code.code_checks")
     if checks is not None and hasattr(checks, "_BUILTIN_NAMES"):
         checks._BUILTIN_NAMES = frozenset(checks._BUILTIN_NAMES) | {name}
 
@@ -781,7 +779,7 @@ def _notify_watchers(store_obj, key_path, first):
             win = getattr(ds, "_lv_window_ds", None)
             if win is not None and not getattr(win, "closed", False):
                 try:
-                    from src.lsd.gl_gui.melty import Melty
+                    from meltygui.runtime import Melty
                     Melty.cache.invalidate_up(win._tile_id, force=True,
                                               max_depth=8)
                     notified = True
@@ -828,7 +826,7 @@ def _wake_render(throttle):
     _last_wake = now
     _wake_timer = None
     try:
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()
     except Exception:
         pass  # headless (tests) - nothing to wake
@@ -1179,7 +1177,7 @@ def _record_scope_type(site, value, name, bare):
         if not local_name.isidentifier():
             return
     try:
-        from src.lsd.gl_gui.func_metadata import FuncsMetadata
+        from meltygui.func_metadata import FuncsMetadata
         FuncsMetadata.record_value(store_obj, local_name, value)
     except Exception:
         pass
@@ -1386,7 +1384,7 @@ def _release_key_watchers(store_obj, key_path):
     store. The per-run peak-VRAM guard (see _publish); same release as a
     prune, minus the prune. Any thread."""
     try:
-        from src.lsd.gl_gui.view.core_views.live_view_views import release_live_value
+        from meltygui.editor.live_views import release_live_value
     except Exception:
         return
     for attr in ("__live_watchers__", "__live_first_watchers__"):
@@ -1452,8 +1450,7 @@ def _retained_markers(store_obj, store, removed):
             surviving_ds.update(id(d) for d in t)
             old_gen.append(k)
     try:
-        from src.lsd.gl_gui.view.core_views.live_view_views import (
-            _stable_key_names)
+        from meltygui.editor.live_views import _stable_key_names
         old_names = _stable_key_names(old_gen)
         new_names = set(_stable_key_names(survivors).values())
     except Exception:
@@ -1543,8 +1540,7 @@ def _prune_keys(store_obj, removed):
                 # value they hold (and the window's GPU texture), or every
                 # pruned key leaves a generation of tensors for the session.
                 try:
-                    from src.lsd.gl_gui.view.core_views.live_view_views import (
-                        release_live_value)
+                    from meltygui.editor.live_views import release_live_value
                     release_live_value(ds, gl=False)
                     if win is not None:
                         release_live_value(win)
@@ -1562,7 +1558,7 @@ def _prune_keys(store_obj, removed):
         except Exception:
             pass
     try:
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from meltygui.utils.glfw_utils import request_render
         request_render()
     except Exception:
         pass  # headless (test)
@@ -1612,7 +1608,7 @@ def clear_file_stores(filename):
     and store-level watchers repaint; per-run markers (return/error line
     washes) are dropped too. The editor's live-badge × calls this. Returns
     the number of values dropped."""
-    from src.lsd.gl_gui.view.core_conversion.chain_converters import _module_for_file
+    from meltygui.code.chain_converters import _module_for_file
     try:
         path = Path(filename).resolve()
     except Exception:
@@ -1960,10 +1956,10 @@ def _publish_stack_locals_sync(frames, extra_snapshots=None):
     publishes only cover source-bound names), so the capture site pays for
     nothing but the stack grab itself. Best-effort per item — a resolution
     hiccup must never break the batch."""
-    from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-        _is_dispatch_frame, _enclosing_function)
-    from src.lsd.gl_gui.view.core_conversion.address import is_editable_source
-    from src.lsd.gl_gui.func_metadata import FuncsMetadata
+    from meltygui.code.chain_converters import _is_dispatch_frame
+    from meltygui.code.chain_converters import _enclosing_function
+    from meltygui.code.address import is_editable_source
+    from meltygui.func_metadata import FuncsMetadata
     with _snapshot_lock:
         for entry in frames or ():
             if len(entry) < 5 or not entry[4]:
@@ -1997,8 +1993,8 @@ def _stamp_delta(path, anchor_line):
     (co_firstlineno / the resolved function), never at the stamp itself: a
     grown function's stamps can sit past its own span's disk end, which
     would wrongly count the span's own edit into the delta."""
-    from src.lsd.gl_gui.view.core_conversion.live_instrument import (
-        _delta_above, _pending_gen)
+    from meltygui.code.live_instrument import _delta_above
+    from meltygui.code.live_instrument import _pending_gen
     if not _pending_gen(str(path)):
         return 0
     return _delta_above(str(path), anchor_line)
@@ -2012,8 +2008,8 @@ def _resolve_site(code, lineno):
     and the published line:N keys keep the raw DISK-anchored stamp — live
     co_firstlineno values and the editor overlay both speak that
     convention."""
-    from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-        _enclosing_function, _module_for_file)
+    from meltygui.code.chain_converters import _enclosing_function
+    from meltygui.code.chain_converters import _module_for_file
 
     path = Path(code.co_filename).resolve()
     mtime = path.stat().st_mtime
@@ -2151,8 +2147,7 @@ def _ast_for(path, mtime):
     adjacent-line key jumbling / bare line:N fallback bug. Cache signature =
     (mtime, pending gen) — both cheap; the O(file) splice runs on miss
     only."""
-    from src.lsd.gl_gui.view.core_conversion.live_instrument import (
-        _pending_gen)
+    from meltygui.code.live_instrument import _pending_gen
     key = str(path)
     gen = _pending_gen(key)
     sig = (mtime, gen)
@@ -2161,14 +2156,14 @@ def _ast_for(path, mtime):
         return cached[1], cached[2], sig
     text = None
     if gen:
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from meltygui.editor.pending_save import PendingSave
         text = PendingSave.current_file_text(path)
     if text is None:
         text = path.read_text()
     _t0 = time.perf_counter()
     tree = ast.parse(text)
     try:  # TEMP perf: how often the full-file reparse actually fires
-        from src.lsd.gl_gui.perf_trace import trace as _pt
+        from meltygui.perf_trace import trace as _pt
         _pt("live_view ast reparse", path=path.name, gen=gen,
             ms=round((time.perf_counter() - _t0) * 1000.0, 1))
     except Exception:
@@ -2198,8 +2193,8 @@ def _linemap_for(path, sig, span, text):
     pass holds the GIL for ~1s on big modules (see chain_converters'
     measurement) and this runs on the calling thread."""
     import libcst as cst
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-        LineMap, cst_module_to_dict)
+    from meltygui.code.libcst_conversion import LineMap
+    from meltygui.code.libcst_conversion import cst_module_to_dict
 
     start = span[0] if span else 1
     key = (str(path), start)
@@ -2211,7 +2206,7 @@ def _linemap_for(path, sig, span, text):
     else:
         lines = text.splitlines(keepends=True)
         snippet = "".join(lines[span[0] - 1:span[1]])
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     if Toggles.TextEditor.melty_syntax:
         parse = cst_module_to_dict(snippet)                 # core_syntax (raw input)
     else:
@@ -2245,7 +2240,7 @@ def _truncate_into_call(root, path):
     statement key is the site's address; which argument the line landed on is
     not. Returns (path, call_parse) where call_parse is the CallParse the path
     was cut at (None if the path never enters one)."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import CallParse
+    from meltygui.code.libcst_conversion import CallParse
     node = root
     for i, seg in enumerate(path):
         node = node.get(seg) if isinstance(node, dict) else None

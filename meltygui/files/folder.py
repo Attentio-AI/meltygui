@@ -24,23 +24,24 @@ appeared/vanished with no edit to invalidate it).
 import shutil
 import threading
 
-from src.lsd.gl_gui.lifecycle import module_is_live
+from meltygui.lifecycle import module_is_live
 import time
 from pathlib import Path
 
-import imgui
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.modes import Modes
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling
-from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+import meltygui_imgui as imgui
+from meltygui.runtime import Melty
+from meltygui.modes import Modes
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.utils.glfw_utils import request_render
+from meltygui.code.bubbling import install_bubbling
+from meltygui.code.render_host import RenderHost
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.rendering.decorators.window_decoration import window
 
 ROOT = Path(__file__).parent
-TEST_FOLDER = Path("/home/lukas/test_folder")
+from meltygui.paths import application_root
+TEST_FOLDER = application_root()
 
 
 def _scan(folder):
@@ -94,7 +95,7 @@ def _delete(path):
     """A key the user DELETED → remove from disk (rmtree for a folder).
     Toggles.FileSafety.block_file_delete gates ALL disk deletes (read live);
     the poller re-discovers the surviving file and restores its key."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     if Toggles.FileSafety.block_file_delete:
         print(f"[folder_files] delete blocked (Toggles.FileSafety.block_file_delete): {path}")
         return
@@ -175,7 +176,7 @@ def _file_meta(root=None):
     """The shared path→params store (file_meta.file_meta_store()) — what
     AppModel.file_meta_collection.file_meta is too. `root` is accepted for
     the on_load callers and ignored: the store exists before any model."""
-    from src.lsd.gl_gui.model.file_meta import file_meta_store
+    from meltygui.models.file_meta import file_meta_store
     return file_meta_store()
 
 
@@ -193,7 +194,7 @@ def _apply_meta(tree, folder, meta):
         if not isinstance(entry, dict):
             continue
         params = {k: v for k, v in entry.items()
-                  if k not in ("order", "project") and not (isinstance(k, str) and k.startswith("__"))
+                  if k not in ("order", "project", "environment") and not (isinstance(k, str) and k.startswith("__"))
                   # unpainted (alpha-0) tint: no override, the row keeps its own
                   and not (k == "tint" and isinstance(v, (tuple, list))
                            and len(v) >= 4 and not v[3])}
@@ -252,7 +253,7 @@ def _collect_meta(tree, folder, meta):
             entry["order"] = old["order"]
         if entry:
             if old != entry:
-                from src.lsd.gl_gui.model.open_files import FileMeta
+                from meltygui.models.file_meta import FileMeta
                 meta[path] = FileMeta(entry)
         elif old is not None:
             meta.pop(path, None)
@@ -272,8 +273,8 @@ _META_SKIP_SUFFIXES = {".pyc"}
 
 @Melty.on_load
 def _init_file_meta(vis, root):
-    from src.lsd.gl_gui.model.open_files import FileMeta
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.models.file_meta import FileMeta
+    from meltygui.toggles import Toggles
     meta = _file_meta(root)
     if meta is None:
         return
@@ -294,8 +295,9 @@ def _init_file_meta(vis, root):
         if (FileMeta.painted_tint({"tint": stored}) is None
                 or tuple(round(c, 3) for c in stored[:3]) in unpainted):
             dict.pop(meta[key], "tint", None)
-            meta.touch(key)      # raw dict op: tell the shared cache
-    module_root = Path(__file__).resolve().parents[4]   # .../src
+            meta.touch(key)      # raw dict op: tell the shared store
+    from meltygui.paths import PACKAGE_ROOT
+    module_root = PACKAGE_ROOT   # .../src
     for p in module_root.rglob("*"):
         rel = p.relative_to(module_root).parts
         if any(part == "__pycache__" or part.startswith(".") for part in rel):

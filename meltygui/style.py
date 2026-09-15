@@ -144,7 +144,8 @@ def draw_background(style, parent, tint_fn=None):
     Absolute colours keep HDR headroom and wide gamut. Alpha composites in
     linear light against the enclosing background before descendants use it.
     """
-    from src.lsd.gl_gui.hdr_color import srgb_to_linear, linear_to_srgb
+    from meltygui.hdr_color import srgb_to_linear
+    from meltygui.hdr_color import linear_to_srgb
 
     if style is None:
         return parent

@@ -21,7 +21,7 @@ import bisect
 import re
 import time
 
-from src.lsd.gl_gui.view.core_conversion import symbol_roster as roster
+import meltygui.code.symbol_roster as roster
 
 _ASN_RE = re.compile(r"^(\s*)([A-Za-z_]\w*)\s*[:=](?!=)")
 _IDENT_RE = re.compile(r"[A-Za-z_][\w.]*")
@@ -50,7 +50,7 @@ def _decor_start(lines, def_line):
 
 
 def collect_def_tints(text, line_offset=0, view_path=None, window=None,
-                      line_open=None, hold_live=True, world=None, table=None):
+                      line_open=None, hold_live=True, world=None, table=None, project=None):
     """(blocks, spans, line_tints, name_tints) — see module doc.
 
     blocks:     [(def_buf_line, indent_buf_index, end_buf_line, tint)] per
@@ -88,9 +88,10 @@ def collect_def_tints(text, line_offset=0, view_path=None, window=None,
     studio's. Neither installs anything in the roster."""
     if view_path is None:
         return ((), (), (), {})
+    project = roster.analysis_project(project, view_path)
     with roster.pass_scope():
         return _collect(text, line_offset, view_path, window, line_open,
-                        hold_live=hold_live, world=world, table=table)
+                        hold_live=hold_live, world=world, table=table, project=project)
 
 
 # Local-binding memo: (id(text), path) -> (text, {scope-qualname tuple:
@@ -143,8 +144,8 @@ def _scan_range(lines, line_start_idx, text, window, line_open):
 
 
 def _collect(text, line_offset, view_path, window=None, line_open=None,
-             hold_live=True, world=None, table=None):
-    from src.lsd.gl_gui.toggles import Toggles
+             hold_live=True, world=None, table=None, project=None):
+    from meltygui.toggles import Toggles
     lines = text.split("\n")
     line_start_idx = [0]
     for l in lines:
@@ -190,7 +191,7 @@ def _collect(text, line_offset, view_path, window=None, line_open=None,
     # (and nested closures) are a symbol; it SHADOWS roster names; and its
     # tint is its own `# [tint=...]` or - with propagation on - a faded
     # blend of what its binding line reads (chained locals fade per hop).
-    from src.lsd.gl_gui.view.core_views.text_editor import _scan_def_tint_lines
+    from meltygui.editor.text import _scan_def_tint_lines
     fade = Toggles.TextEditor.def_propagation_fade
     mix_on = Toggles.TextEditor.def_tint_propagation
     win_file_lo, win_file_hi = win_lo + 1 + line_offset, win_hi + 1 + line_offset
@@ -237,7 +238,7 @@ def _collect(text, line_offset, view_path, window=None, line_open=None,
         if got is None:
             got = []
             for ent, n in roster.resolve_prefixes(vpath, chain, own, scope=sc,
-                                                  world=world):
+                                                  world=world, project=project):
                 if ent.tint is not None:
                     got.append((n, ent))
             memo[mkey] = got
@@ -426,7 +427,7 @@ class _Sym:
         self.entry = entry
 
 
-def ctrl_b_lookup(full_text, pos, view_path, line_offset=0):
+def ctrl_b_lookup(full_text, pos, view_path, line_offset=0, project=None):
     """Resolve Ctrl+B at full-buffer index `pos`. Returns None when the
     caret isn't on a resolvable symbol, else
       (start, end, sym, at_def, targets)
@@ -434,7 +435,7 @@ def ctrl_b_lookup(full_text, pos, view_path, line_offset=0):
     carrying `.name`, and `targets` a list of UsageRef: [definition] at a
     usage, or the usages at the definition. Coordinates are pending/live
     throughout — no disk bridge."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import UsageRef
+    from meltygui.code.libcst_conversion import UsageRef
     from pathlib import Path
     if view_path is None:
         return None
@@ -445,14 +446,15 @@ def ctrl_b_lookup(full_text, pos, view_path, line_offset=0):
     parts = chain.split(".")
     vpath = roster._norm(str(view_path))
     t0 = time.perf_counter()
-    roster.sweep(force=True)       # Ctrl+B is rare and wants fresh tables
+    project = roster.analysis_project(project, view_path)
+    roster.sweep(force=True, project=project)       # Ctrl+B is live and wants fresh tables
     with roster.pass_scope():
         return _lookup(full_text, pos, vpath, line_offset, cs, ce, chain, parts,
-                       part_ix, t0)
+                       part_ix, t0, project)
 
 
-def _lookup(full_text, pos, vpath, line_offset, cs, ce, chain, parts, part_ix, t0):
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import UsageRef
+def _lookup(full_text, pos, vpath, line_offset, cs, ce, chain, parts, part_ix, t0, project=None):
+    from meltygui.code.libcst_conversion import UsageRef
     from pathlib import Path
     own = roster.table_for(vpath, live_text=full_text, line_offset=line_offset)
     caret_line = full_text.count("\n", 0, cs) + 1 + line_offset
@@ -463,7 +465,7 @@ def _lookup(full_text, pos, vpath, line_offset, cs, ce, chain, parts, part_ix, t
         loc = _local_ctrl_b(full_text, line_offset, own, sc, parts[0], cs, caret_line)
         if loc is not None:
             return loc
-    res = roster.resolve_prefixes(vpath, parts[:part_ix + 1], own, scope=sc)
+    res = roster.resolve_prefixes(vpath, parts[:part_ix + 1], own, scope=sc, project=project)
     entry = None
     for ent, n in res:
         if n == part_ix + 1:
@@ -486,7 +488,7 @@ def _lookup(full_text, pos, vpath, line_offset, cs, ce, chain, parts, part_ix, t
         d = UsageRef(Path(entry.path), entry.line, entry.col,
                      scope=entry.parent or "<module>", module_name="")
         return ps, pe, sym, False, [d]
-    uses = roster.usages_of(entry, live={vpath: (full_text, line_offset)})
+    uses = roster.usages_of(entry, live={vpath: (full_text, line_offset)}, project=project)
     targets = [UsageRef(Path(u.path), u.line, u.col, scope=u.scope,
                         module_name="") for u in uses]
     ms = (time.perf_counter() - t0) * 1000.0
@@ -498,7 +500,7 @@ def _lookup(full_text, pos, vpath, line_offset, cs, ce, chain, parts, part_ix, t
 def _local_ctrl_b(full_text, line_offset, own, sc, name, cs, caret_line):
     """Ctrl+B on a function local. Returns (start, end, sym, at_def, targets)
     or None when `name` isn't a local visible from `sc`."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import UsageRef
+    from meltygui.code.libcst_conversion import UsageRef
     from pathlib import Path
     # Outermost enclosing def: its scope covers every nested scope.
     outer = sc

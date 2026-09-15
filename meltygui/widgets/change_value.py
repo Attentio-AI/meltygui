@@ -51,14 +51,21 @@ harnesses that drive frames themselves.
 import threading
 import time
 
-from src.lsd.gl_gui import window_api as glfw
+import meltygui.window_api as glfw
 
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.view.core_views.core_undo import UndoManager
-from src.lsd.gl_gui.view.playground.orchestrator import Orchestrator, cue_get
-from src.lsd.gl_gui.view.playground.selectors import (
-    resolve, parse, format_path, ancestor_chain, display_name, full_name, NoMatch, Ambiguous)
+from meltygui.runtime import Melty
+from meltygui.toggles import Toggles
+from meltygui.state.undo import UndoManager
+from meltygui.widgets.orchestrator import Orchestrator
+from meltygui.widgets.orchestrator import cue_get
+from meltygui.widgets.selectors import resolve
+from meltygui.widgets.selectors import parse
+from meltygui.widgets.selectors import format_path
+from meltygui.widgets.selectors import ancestor_chain
+from meltygui.widgets.selectors import display_name
+from meltygui.widgets.selectors import full_name
+from meltygui.widgets.selectors import NoMatch
+from meltygui.widgets.selectors import Ambiguous
 
 # editor kind -> archetype. A take demonstrated on ANY field of a kind
 # drives every field of that kind; add a row here when a new leaf editor
@@ -315,7 +322,7 @@ def _visible_rect(ds):
 
 
 def _front_window_at(x, y):
-    """The frontmost melty window under (x, y). Read from the renderer's
+    """The frontmost meltygui window under (x, y). Read from the renderer's
     own paint order (`Melty.paint_ordered_ds`, back → front, rebuilt from
     live state every frame) — NOT the BVH: a blit-cached window that was
     raised or moved over the target keeps its hit boxes / z stamp until

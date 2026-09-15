@@ -23,12 +23,15 @@ import threading
 import time
 from pathlib import Path
 
-from src.lsd.gl_gui.fim import FimRequest, FimResult, FimSession, fim_provider
+from meltygui.completion.service import FimRequest
+from meltygui.completion.service import FimResult
+from meltygui.completion.service import FimSession
+from meltygui.completion.service import fim_provider
 
 LS_ROOT = Path.home() / ".lsd" / "copilot-ls"
 LS_ENTRY = LS_ROOT / "node_modules" / "@github" / "copilot-language-server" / "dist" / "language-server.js"
 EDITOR_INFO = {"name": "LatentDescent", "version": "1.0"}
-PLUGIN_INFO = {"name": "latent-descent-fim", "version": "1.0"}
+PLUGIN_INFO = {"name": "meltygui-fim", "version": "1.0"}
 
 
 def find_node() -> str | None:
@@ -274,10 +277,11 @@ class CopilotSession(FimSession):
     def __init__(self, account="default", config_dir=None, workspace=None, node=None):
         self.account = account
         if config_dir is None:
-            from src.lsd.gl_gui.view.playground.internet_accounts import account_field
+            from meltygui.accounts.ui import account_field
             config_dir = account_field("copilot", account, "config_dir")
         self.config_dir = os.path.expanduser(config_dir) if config_dir else None
-        self.workspace = workspace or str(Path(__file__).resolve().parents[4])
+        from meltygui.paths import application_root
+        self.workspace = workspace or str(application_root())
         self.node = node or find_node()
         self._lock = threading.RLock()
         self._docs = {}            # uri -> (version, text)
@@ -564,7 +568,7 @@ def _utf16_to_index(s: str, units: int) -> int:
 def _notify_account_change():
     """Repaint whoever shows account status (the Internet Accounts window)."""
     try:
-        from src.lsd.gl_gui.view.playground.internet_accounts import accounts_changed
+        from meltygui.accounts.ui import accounts_changed
         accounts_changed()
     except Exception:
         pass
@@ -590,7 +594,7 @@ def copilot_fim(req: FimRequest, session: CopilotSession, neighbors=4) -> FimRes
         for it in req.context.items:
             if it.kind in ("definition", "signature") and it.path and it.path != req.path:
                 try:
-                    from src.lsd.gl_gui.view.core_conversion.symbol_roster import file_text
+                    from meltygui.code.symbol_roster import file_text
                     session.sync_document(it.path, file_text(it.path))
                     seen += 1
                 except Exception:

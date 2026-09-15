@@ -8,11 +8,13 @@ from functools import partial
 
 import numpy as np
 
-from src.shader_library.shader_manager.compiler import ProgramCompiler, CompiledProgram, ShaderCompilationError
-from src.shader_library.shader_manager.executor import FilterExecutor
-from src.shader_library.shader_manager.registry import get_registry
+from meltygui.graphics.compiler import ProgramCompiler
+from meltygui.graphics.compiler import CompiledProgram
+from meltygui.graphics.compiler import ShaderCompilationError
+from meltygui.graphics.executor import FilterExecutor
+from meltygui.graphics.registry import get_registry
 
-from src.shader_library.shader_manager import texture_min_max
+import meltygui.graphics.texture_min_max as texture_min_max
 
 
 class FilterChain:

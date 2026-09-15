@@ -234,7 +234,7 @@ RGB_MASK = 0x00FFFFFF
 def _curve_params():
     """(range, octaves) of the HDR byte curve — Toggles.HDR, read live so a
     toggle edit reaches the packer and the shaders (uniforms) together."""
-    from src.lsd.gl_gui.toggles import Toggles
+    from meltygui.toggles import Toggles
     return float(Toggles.HDR.vertex_range), float(Toggles.HDR.vertex_octaves)
 
 
@@ -440,7 +440,7 @@ def set_decode_uniforms(program: int) -> None:
         gl.glUniform1f(loc, octaves)
     loc = gl.glGetUniformLocation(program, "MeltyTextMax")   # GLSL_TEXT_CLAMP
     if loc >= 0:
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         gl.glUniform1f(loc, float(2.0 ** float(Toggles.HDR.text_max_stops)))
 
 

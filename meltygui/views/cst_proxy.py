@@ -4,8 +4,8 @@ import hashlib
 import re
 import libcst as cst
 
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import exclude
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
+from meltygui.rendering.decorators.core_decoration import exclude
+from meltygui.rendering.decorators.core_decoration import defaults
 
 # ==============================
 # Formatting & whitespace constants

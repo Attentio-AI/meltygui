@@ -1,20 +1,7 @@
-"""melty — the public face of the GUI framework in src/lsd/gl_gui.
+"""MeltyGUI: immediate-mode apps, live code editing, HDR and tensor views.
 
-    from melty import glfw_window, draw_text, pressed
-
-    @glfw_window
-    def editor():
-        changed, new = draw_text(text)
-
-Install it into the interpreter your app runs on (editable, so the checkout
-is live and IDEs resolve the import):
-
-    pip install -e /path/to/latent-descent
-
-Light on import: app.py boots melty on the first @glfw_window (see its
-docstring); views are resolved lazily so the heavy modules load on the
-import thread, not at ``import melty``. The TYPE_CHECKING block below gives
-IDEs and type checkers the real definitions for completion.
+Install with ``uv pip install meltygui``; define windows with ``@glfw_window``.
+Renderers are imported lazily, so importing this package does not start a GUI.
 """
 import os
 import sys
@@ -25,28 +12,47 @@ if sys.platform.startswith('linux') and (os.environ.get('WAYLAND_DISPLAY') or os
     os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
 
 from typing import TYPE_CHECKING
-from src.lsd.gl_gui.style import Style, default_tint_accumulation, default_scalar_accumulation
+from meltygui.style import Style
+from meltygui.style import default_tint_accumulation
+from meltygui.style import default_scalar_accumulation
 
-from src.lsd.gl_gui.app import boot, glfw_window, run, pressed, content_size, mark, persisted
-from src.lsd.gl_gui.app_search import global_search
+from meltygui.app import boot
+from meltygui.app import glfw_window
+from meltygui.app import run
+from meltygui.app import pressed
+from meltygui.app import content_size
+from meltygui.app import mark
+from meltygui.app import persisted
 
 if TYPE_CHECKING:   # IDE / type checkers only; never executed
-    from src.lsd.gl_gui.view.core_views.text_editor import draw_text
-    from src.lsd.gl_gui.view.core_views.texture_view import draw_texture
-    from src.lsd.gl_gui.view.core_views.new_core_view import (
-        draw_any, draw_button, draw_str, draw_float, draw_int, draw_enum, draw_dropdown, draw_view_func_selector,
-        draw_color_picker, draw_collection_as_tabs)
-    from src.lsd.gl_gui.view.core_views.columns import draw_columns, draw_rows
-    from src.lsd.gl_gui.view.core_views.menu_bar import draw_menu_bar
-    from src.lsd.gl_gui.view.playground.file_selector import draw_file_selector
-    from src.lsd.gl_gui.view.playground.fast_file_explorer import draw_fast_file_explorer, draw_shortcuts
-    from src.lsd.gl_gui.view.playground.folder_files import draw_folder_files
-    from src.lsd.gl_gui.view.playground.terminal_playground import draw_terminal
+    from meltygui.editor.text import draw_text
+    from meltygui.views.texture_view import draw_texture
+    from meltygui.views.values import draw_any
+    from meltygui.views.values import draw_button
+    from meltygui.views.values import draw_str
+    from meltygui.views.values import draw_float
+    from meltygui.views.values import draw_int
+    from meltygui.views.values import draw_enum
+    from meltygui.views.values import draw_dropdown
+    from meltygui.views.values import draw_view_func_selector
+    from meltygui.views.values import draw_color_picker
+    from meltygui.views.values import draw_collection_as_tabs
+    from meltygui.views.columns import draw_columns
+    from meltygui.views.columns import draw_rows
+    from meltygui.views.menu_bar import draw_menu_bar
+    from meltygui.files.selector import draw_file_selector
+    from meltygui.files.explorer import draw_fast_file_explorer
+    from meltygui.files.explorer import draw_shortcuts
+    from meltygui.files.folder import draw_folder_files
+    from meltygui.widgets.terminal import draw_terminal
 
-_NCV = 'src.lsd.gl_gui.view.core_views.new_core_view'
+_NCV = 'meltygui.views.values'
 _VIEWS = {
-    'draw_text': ('src.lsd.gl_gui.view.core_views.text_editor', 'draw_text'),
-    'draw_texture': ('src.lsd.gl_gui.view.core_views.texture_view', 'draw_texture'),
+    'draw_voxels': ('meltygui.tensor.voxels', 'draw_voxels'),
+    'draw_line_graph': ('meltygui.views.line_graph', 'draw_line_graph'),
+    'render_func': ('meltygui.rendering.core', 'render_func'),
+    'draw_text': ('meltygui.editor.text', 'draw_text'),
+    'draw_texture': ('meltygui.views.texture_view', 'draw_texture'),
     'draw_any': (_NCV, 'draw_any'),
     'draw_button': (_NCV, 'draw_button'),
     'draw_str': (_NCV, 'draw_str'),
@@ -57,45 +63,37 @@ _VIEWS = {
     'draw_view_func_selector': (_NCV, 'draw_view_func_selector'),
     'draw_color_picker': (_NCV, 'draw_color_picker'),
     'draw_collection_as_tabs': (_NCV, 'draw_collection_as_tabs'),
-    'draw_columns': ('src.lsd.gl_gui.view.core_views.columns', 'draw_columns'),
-    'draw_rows': ('src.lsd.gl_gui.view.core_views.columns', 'draw_rows'),
-    'draw_menu_bar': ('src.lsd.gl_gui.view.core_views.menu_bar', 'draw_menu_bar'),
-    'draw_file_selector': ('src.lsd.gl_gui.view.playground.file_selector', 'draw_file_selector'),
-    'draw_fast_file_explorer': ('src.lsd.gl_gui.view.playground.fast_file_explorer', 'draw_fast_file_explorer'),
-    'draw_shortcuts': ('src.lsd.gl_gui.view.playground.fast_file_explorer', 'draw_shortcuts'),
-    'draw_folder_files': ('src.lsd.gl_gui.view.playground.folder_files', 'draw_folder_files'),
-    'draw_terminal': ('src.lsd.gl_gui.view.playground.terminal_playground', 'draw_terminal'),
-    'draw_code_editor': ('src.lsd.gl_gui.view.playground.open_files', 'draw_code_editor'),
-}
-# Projects (model/file_meta.py): folders flagged in the shared file-meta
-# store. Resolved lazily like the views - the model module is not needed
-# inside the loop.
-_FM = 'src.lsd.gl_gui.model.file_meta'
-_FUNCS = {
-    'mark_project': (_FM, 'mark_project'),
-    'is_project': (_FM, 'is_project'),
-    'project_roots': (_FM, 'project_roots'),
-    'project_for': (_FM, 'project_for'),
+    'draw_columns': ('meltygui.views.columns', 'draw_columns'),
+    'draw_rows': ('meltygui.views.columns', 'draw_rows'),
+    'draw_menu_bar': ('meltygui.views.menu_bar', 'draw_menu_bar'),
+    'draw_file_selector': ('meltygui.files.selector', 'draw_file_selector'),
+    'draw_fast_file_explorer': ('meltygui.files.explorer', 'draw_fast_file_explorer'),
+    'draw_shortcuts': ('meltygui.files.explorer', 'draw_shortcuts'),
+    'draw_folder_files': ('meltygui.files.folder', 'draw_folder_files'),
+    'draw_terminal': ('meltygui.widgets.terminal', 'draw_terminal'),
 }
 
 
 def __getattr__(name):
+    if name == 'imgui':
+        import meltygui_imgui
+        return meltygui_imgui
     if name == 'toggles':
-        from src.lsd.gl_gui.toggles import Toggles
+        from meltygui.toggles import Toggles
         return Toggles
     if name == 'window_api':
-        from src.lsd.gl_gui import window_api
+        import meltygui.window_api as window_api
         return window_api
-    spec = _VIEWS.get(name) or _FUNCS.get(name)
+    spec = _VIEWS.get(name)
     if spec is None:
         raise AttributeError(name)
     import importlib
-    from src.lsd.gl_gui.app import _wait_imports
+    from meltygui.app import _wait_imports
     _wait_imports()
     value = getattr(importlib.import_module(spec[0]), spec[1])
     globals()[name] = value
     return value
 
 
-__all__ = ['Style', 'boot', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', 'global_search', 'toggles', 'window_api',
-           *_FUNCS, *_VIEWS]
+__all__ = ['Style', 'boot', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', 'toggles', 'window_api', 'imgui',
+           *_VIEWS]

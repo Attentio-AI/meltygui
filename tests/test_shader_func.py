@@ -9,11 +9,16 @@ import numpy as np
 import OpenGL.GL as gl
 import pytest
 
-from src.lsd.gl_gui.gl_state import GLState, GLTexture
-from src.lsd.gl_gui.shader_func import (
-    ShaderFunc, shader_func, strip_comments, glsl_identifiers,
-    declared_uniform_names, infer_glsl_type, inject_uniforms, _remap_log,
-)
+from meltygui.gl_state import GLState
+from meltygui.gl_state import GLTexture
+from meltygui.shader_func import ShaderFunc
+from meltygui.shader_func import shader_func
+from meltygui.shader_func import strip_comments
+from meltygui.shader_func import glsl_identifiers
+from meltygui.shader_func import declared_uniform_names
+from meltygui.shader_func import infer_glsl_type
+from meltygui.shader_func import inject_uniforms
+from meltygui.shader_func import _remap_log
 
 
 # ── pure logic ─────────────────────────────────────────────────────────────
@@ -389,7 +394,7 @@ def test_texture3d_upload_survives_dirty_unpack_state(st):
         arr = np.frombuffer(raw, np.float32) if isinstance(raw, bytes) else np.asarray(raw, np.float32)
         assert np.array_equal(arr.reshape(2, 3, 5), data)
         # neighbourliness: the dirty state we left is put back
-        from src.lsd.gl_gui.gl_state import _scalar
+        from meltygui.gl_state import _scalar
         assert _scalar(gl.glGetIntegerv(gl.GL_UNPACK_ROW_LENGTH)) == 7
         assert _scalar(gl.glGetIntegerv(gl.GL_UNPACK_SKIP_PIXELS)) == 3
     finally:

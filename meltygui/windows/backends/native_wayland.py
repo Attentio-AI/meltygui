@@ -1,4 +1,4 @@
-"""Native Wayland/EGL window backend for melty's Surface share group.
+"""Native Wayland/EGL window backend for meltygui's Surface share group.
 
 GLFW-compatible constants/callbacks let existing input/chrome code share this
 backend without loading GLFW. All protocol dispatch and graphics calls run on
@@ -14,9 +14,13 @@ import threading
 import time
 from types import SimpleNamespace
 
-from src.lsd.gl_gui import window_constants as codes
+import meltygui.window_constants as codes
 
-from .wayland_protocol import Native, function, P, U, I
+from meltygui.windows.backends.wayland_protocol import Native
+from meltygui.windows.backends.wayland_protocol import function
+from meltygui.windows.backends.wayland_protocol import P
+from meltygui.windows.backends.wayland_protocol import U
+from meltygui.windows.backends.wayland_protocol import I
 
 
 class NativeWindow:
@@ -211,7 +215,7 @@ class Backend:
                 self.listen(window.toplevel, [([I, I, P], lambda w, h, states: self.toplevel_size(window, w, h, states)),
                                               ([], lambda: self.request_close(window))])
                 native.request(window.toplevel, 2, ctypes.c_char_p(title.encode()))
-                app_id = self.string_hints.get(codes.WAYLAND_APP_ID, 'melty')
+                app_id = self.string_hints.get(codes.WAYLAND_APP_ID, 'meltygui')
                 native.request(window.toplevel, 3, ctypes.c_char_p(app_id.encode()))
                 self.sync_decoration(window)
                 native.request(window.surface, 6)
@@ -674,7 +678,7 @@ class Backend:
             pixels[:, :, :3] = ((pixels[:, :, :3].astype(numpy.uint16) *
                                 pixels[:, :, 3:4].astype(numpy.uint16) + 127) // 255).astype(numpy.uint8)
             payload = pixels.tobytes()
-            descriptor = os.memfd_create('melty-cursor', os.MFD_CLOEXEC)
+            descriptor = os.memfd_create('meltygui-cursor', os.MFD_CLOEXEC)
             try:
                 os.ftruncate(descriptor, len(payload))
                 with mmap.mmap(descriptor, len(payload)) as memory:
@@ -807,12 +811,12 @@ class Backend:
         self.post_empty_event()
 
     def get_window_pos(self, window):
-        from src.lsd.gl_gui import geometry_feed
+        import meltygui.geometry_feed as geometry_feed
         rect = geometry_feed.surface_rect(window.title)
         return (int(rect[0]), int(rect[1])) if rect else (0, 0)
 
     def set_window_pos(self, window, x, y):
-        from src.lsd.gl_gui import geometry_feed
+        import meltygui.geometry_feed as geometry_feed
         geometry_feed.place_window(window.title, (x, y, window.width, window.height), resize=False)
 
     def get_monitors(self):

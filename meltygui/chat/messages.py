@@ -1,6 +1,6 @@
 """Provider-neutral message values. Types select views; no rendering or file I/O."""
 import re
-from .command_parser import parse_command
+from meltygui.chat.command_parser import parse_command
 
 
 class TextString(str):

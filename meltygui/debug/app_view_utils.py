@@ -1,4 +1,4 @@
-from src.lsd.gl_gui.global_style import GlobalStyle
+from meltygui.global_style import GlobalStyle
 
 
 def should_exclude(name, root=None):

@@ -1,14 +1,17 @@
 import inspect
 import sys
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
 
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.utils.custom_views import LSDView, print_stack_trace, push_style_color, pop_style_color, \
-    print_colored_traceback
-from src.lsd.gl_gui.melty import Melty
+from meltygui.state.object import DictConversion
+from meltygui.toggles import Toggles
+from meltygui.utils.custom_views import LSDView
+from meltygui.utils.custom_views import print_stack_trace
+from meltygui.utils.custom_views import push_style_color
+from meltygui.utils.custom_views import pop_style_color
+from meltygui.utils.custom_views import print_colored_traceback
+from meltygui.runtime import Melty
 
 
 def set_cursor_pos_y(pos_y):

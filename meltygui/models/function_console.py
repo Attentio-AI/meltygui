@@ -178,7 +178,7 @@ class FunctionConsole:
                 self.wake()
             done(result)
 
-        self.thread = threading.Thread(target=worker, name='melty-function-console', daemon=True)
+        self.thread = threading.Thread(target=worker, name='meltygui-function-console', daemon=True)
         self.thread.start()
         self.wake()
         return True

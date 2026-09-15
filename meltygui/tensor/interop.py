@@ -31,8 +31,11 @@ import ctypes
 
 import OpenGL.GL as gl
 
-from src.lsd.gl_gui.gl_state import (GLTexture, _scalar, is_gl_thread, texture3d_fit,
-                                     tight_unpack)
+from meltygui.gl_state import GLTexture
+from meltygui.gl_state import _scalar
+from meltygui.gl_state import is_gl_thread
+from meltygui.gl_state import texture3d_fit
+from meltygui.gl_state import tight_unpack
 
 # Keeps the test/standalone-pushed primary context referenced; the
 # globals().get idiom survives hotswap re-exec (NB: gl_state's _persistent
@@ -52,8 +55,9 @@ def cuda_ready():
     """True when the interop path can run RIGHT HERE: pycuda built with GL
     support and a CUDA context current on this thread."""
     try:
-        import pycuda.driver as cuda
-        import pycuda.gl  # noqa: F401 - raises if pycuda lacks GL support
+        import meltygui_pycuda.driver as cuda
+        import meltygui_pycuda.gl
+        import meltygui_pycuda as pycuda  # noqa: F401 - raises if pycuda lacks GL support
     except Exception:
         return False
     try:
@@ -70,7 +74,7 @@ def _detach_primary():
     if _primary_ctx is None:
         return
     try:
-        import pycuda.driver as cuda
+        import meltygui_pycuda.driver as cuda
         cuda.Context.pop()
         _primary_ctx.detach()
     except Exception:
@@ -85,8 +89,9 @@ def ensure_context():
     case this touches nothing). Returns whether a context is current."""
     global _primary_ctx
     try:
-        import pycuda.driver as cuda
-        import pycuda.gl  # noqa: F401
+        import meltygui_pycuda.driver as cuda
+        import meltygui_pycuda.gl
+        import meltygui_pycuda as pycuda  # noqa: F401
         import torch
     except Exception:
         return False
@@ -113,7 +118,7 @@ def current_device_index():
     copies happen in exactly that context — never push a different device's
     context around GL interop calls (registering a GL buffer from the wrong
     device's context faults the driver and takes the whole studio down)."""
-    import pycuda.driver as cuda
+    import meltygui_pycuda.driver as cuda
     ctx = cuda.Context.get_current()
     if ctx is None:
         return None
@@ -156,8 +161,8 @@ def tensor_to_texture(gl_state, key, tensor, version):
     if tensor.dtype not in (torch.float16, torch.float32):
         return None
 
-    import pycuda.driver as cuda
-    from pycuda import gl as cuda_gl
+    import meltygui_pycuda.driver as cuda
+    from meltygui_pycuda import gl as cuda_gl
 
     # The interop device is the current context's device (where GL lives).
     # A tensor on another GPU is moved there by torch first - torch stages

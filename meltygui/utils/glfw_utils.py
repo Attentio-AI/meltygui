@@ -14,10 +14,10 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from src.lsd.gl_gui import window_api as glfw
+import meltygui.window_api as glfw
 
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
+from meltygui.toggles import Toggles
+from meltygui.rendering.decorators.core_decoration import Core
 
 # ── Module roots for user code detection ─────────────────
 _MODULE_ROOTS = ["src/lsd/"]
@@ -726,7 +726,7 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
     # table; live objects can't be saved).
     # Gated like the Context menu's Code-tab capture: locals of any PROJECT
     # frame (tests included), never library code.
-    from src.lsd.gl_gui.view.core_conversion.address import is_editable_source
+    from meltygui.code.address import is_editable_source
     report_frames = []
     for frame in frames or ():
         scope = None
@@ -935,7 +935,8 @@ def git_head_commit(root=None):
     render thread for a value that changes once per commit). (None, None)
     when there is no git checkout; memoized on HEAD's and the ref file's
     mtimes so a commit or checkout is seen on the next report."""
-    root = Path(root) if root is not None else Path(__file__).resolve().parents[4]
+    from meltygui.paths import application_root
+    root = Path(root) if root is not None else application_root()
     try:
         git_dir = root / ".git"
         if git_dir.is_file():                     # a worktree: `gitdir: <path>`
@@ -1011,7 +1012,7 @@ def save_crash_report(text, exception=None, thread_name=None, frames=None, error
         path.write_text(header + _ANSI_RE.sub("", text), encoding="utf-8")
         _prune_crash_reports(directory)
         try:
-            from src.lsd.gl_gui.view.playground.crash_reports import reports_changed
+            from meltygui.widgets.crash_reports import reports_changed
             reports_changed()
         except Exception:
             pass                                  # window's not loaded yet: nothing to repaint
@@ -1300,9 +1301,9 @@ def request_render(for_frames: int | None = None):
     # which raises GLFWError "The GLFW library is not initialized" when called before
     # init - i.e. the guard check is what produces the error. So gate on the GLFW
     # window FIRST, a pure-Python object-attr check (None until create_window), no glfw
-    # call. Lazy import because melty imports this module (circular at top level); melty
+    # call. Lazy import because Meltygui imports this module (circular at top level); meltygui
     # is fully loaded by the time any thread calls request_render at start.
-    from src.lsd.gl_gui.melty import Melty
+    from meltygui.runtime import Melty
     if Melty.glfw_window is None:
         return
     # NOTE: no glfw.get_current_context() readiness check here - it returns the
@@ -1327,7 +1328,8 @@ def request_render(for_frames: int | None = None):
     # - an urgent notify would call back into request_render.
     if (Toggles.InvalidateTracker.enable or Toggles.InvalidateTracker.invalidate_request_render
             or Toggles.InvalidateTracker.invalidate_stack_trace):
-        from src.lsd.gl_gui.notifications import notify, capture_stack
+        from meltygui.notifications import notify
+        from meltygui.notifications import capture_stack
         stack = capture_stack(skip_files=("glfw_utils.py",), skip_funcs=("request_render",))
         if stack:
             fn = stack[-1][2]

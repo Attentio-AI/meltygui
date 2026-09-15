@@ -2,7 +2,7 @@
 import inspect
 import sys
 
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
+from meltygui.rendering.decorators.core_decoration import Core
 
 
 def resolve_view_func(value):
@@ -16,7 +16,7 @@ def resolve_view_func(value):
         registered = Core.melty.render_funcs_by_name.get(name)
         if registered is not None and inspect.unwrap(registered) is inspect.unwrap(value):
             return registered
-        from src.lsd.gl_gui.render_funcs import _LazyRenderFunc
+        from meltygui.rendering.registry import _LazyRenderFunc
         if isinstance(value, _LazyRenderFunc):
             return value._resolve()
         if hasattr(value, "__render_func__"):
@@ -24,7 +24,7 @@ def resolve_view_func(value):
         raise ValueError(f"Not a registered render function: {name or value!r}")
     if isinstance(value, str):
         reference = str(value)
-        prefix = "__import__('src.lsd.gl_gui.render_funcs', fromlist=['RenderFuncs']).RenderFuncs."
+        prefix = "__import__('meltygui.rendering.registry', fromlist=['RenderFuncs']).RenderFuncs."
         if reference.startswith(prefix):
             reference = reference[len(prefix):]
         parts = reference.split(".")
@@ -32,7 +32,7 @@ def resolve_view_func(value):
             candidate = Core.melty.render_funcs_by_name.get(parts[-1])
             if candidate is not None:
                 module = getattr(inspect.unwrap(candidate), "__module__", "")
-                if len(parts) == 1 or ".".join(parts[:-1]) in ("RenderFuncs", "melty", module):
+                if len(parts) == 1 or ".".join(parts[:-1]) in ("RenderFuncs", "meltygui", module):
                     return candidate
         raise ValueError(f"Unknown render function: {value}")
     raise ValueError(f"Invalid render function reference: {value!r}")
@@ -44,11 +44,11 @@ def view_func_name(value):
 
 def view_reference_code(value, filename=None):
     """Use an existing binding, else an import expression valid in any module."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import CodeLine
+    from meltygui.code.libcst_conversion import CodeLine
     function = resolve_view_func(value)
     if function is None:
         return None
-    from src.lsd.gl_gui.render_funcs import RenderFuncs
+    from meltygui.rendering.registry import RenderFuncs
     for module in tuple(sys.modules.values()):
         if module is None or not filename or getattr(module, "__file__", None) != str(filename):
             continue
@@ -60,7 +60,7 @@ def view_reference_code(value, filename=None):
         for name, binding in tuple(vars(module).items()):
             if name.isidentifier() and binding is RenderFuncs:
                 return CodeLine(f"{name}.{function.__name__}")
-    return CodeLine("__import__('src.lsd.gl_gui.render_funcs', "
+    return CodeLine("__import__('meltygui.rendering.registry', "
                     f"fromlist=['RenderFuncs']).RenderFuncs.{function.__name__}")
 
 
@@ -84,7 +84,7 @@ def comment_view_func(input_value, kwargs):
 def configured_view_func(input_value, kwargs, decoration=None, state_view=None):
     """Resolve selection before entering a wrapper's layout/cache scopes."""
     defaults = Core.melty.default_kwargs_by_type[kwargs.get("real_type", type(input_value))]
-    from src.lsd.gl_gui.view.core_views.core_render import _codec_render_kwargs
+    from meltygui.rendering.core import _codec_render_kwargs
     selected = _codec_render_kwargs(type(input_value)).get("view_func")
     if not isinstance(input_value, (dict, type)):
         selected = getattr(input_value, "view_func", selected)
@@ -132,7 +132,7 @@ class CallerViewSource(dict):
             if value is None:
                 raise ValueError("A direct call needs a render function")
             self.parsed["__callee__"] = view_reference_code(value, self.filename)
-            from src.lsd.gl_gui.view.core_conversion.bubbling import _notify
+            from meltygui.code.bubbling import _notify
             _notify(self.parsed)
         else:
             self.parsed[key] = value

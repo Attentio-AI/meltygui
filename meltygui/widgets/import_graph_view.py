@@ -24,18 +24,22 @@ import colorsys
 import math
 from pathlib import Path
 
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
-from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.toggles import Toggles
-from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_views.core_render import render_func
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.headers import flat_button, _brightness_clamp_fn
-from src.lsd.gl_gui.view.playground import file_graph
-from src.lsd.gl_gui.view.playground.file_graph import start_build
-from src.lsd.gl_gui.view.playground.file_tree import ROOT, _meta, _tint_of, open_file
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
+from meltygui.runtime import Melty
+from meltygui.state.object import DictConversion
+from meltygui.toggles import Toggles
+from meltygui.utils.glfw_utils import request_render
+from meltygui.rendering.core import render_func
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.views.headers import flat_button
+from meltygui.views.headers import _brightness_clamp_fn
+import meltygui.widgets.file_graph as file_graph
+from meltygui.widgets.file_graph import start_build
+from meltygui.widgets.file_tree import ROOT
+from meltygui.widgets.file_tree import _meta
+from meltygui.widgets.file_tree import _tint_of
+from meltygui.widgets.file_tree import open_file
 
 
 class GraphViewState(DictConversion):

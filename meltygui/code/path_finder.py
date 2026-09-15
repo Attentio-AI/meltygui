@@ -17,7 +17,7 @@ from collections import deque
 from enum import Enum
 from typing import Any, Callable, TypeVar
 
-from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
+from meltygui.utils.glfw_utils import print_stack_trace
 
 T = TypeVar("T")
 
@@ -143,7 +143,7 @@ def convert(value: Any, target: type[T] = None, *, registry, path: list | None =
             return value  # type: ignore[return-value]
 
     if cache_id is None:
-        from src.lsd.gl_gui.melty import Melty
+        from meltygui.runtime import Melty
         cache_id = Melty.unique_stack[-1] if Melty.unique_stack else None
 
     if path is not None:

@@ -1,6 +1,6 @@
-import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
-from imgui.core import _DrawList
+import meltygui_imgui as imgui
+from meltygui.hdr_color import pack_color
+from meltygui_imgui.core import _DrawList
 
 
 class Box:

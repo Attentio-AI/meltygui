@@ -1,4 +1,4 @@
-from src.lsd.gl_gui.view.core_conversion.address import Address
+from meltygui.code.address import Address
 
 
 class _Unset:

@@ -5,30 +5,67 @@ from enum import Enum
 from pathlib import Path, PosixPath
 from typing import Optional, Any
 
-from src.lsd.gl_gui.model.core_model.draw_state import Anchor, Pin
-from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.model.model_enums import RelaxedEnum
-from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.toggles import WindowManager
-from src.lsd.gl_gui.view.core_conversion.chain_converters import module_to_address, address_to_general_parse, \
-    general_parse_to_address, address_to_module, class_to_address, address_to_class, function_to_address, \
-    address_to_function, general_parse_to_str, str_to_general_parse, focus, \
-    caller_to_address, address_to_call_parse, call_dict_to_save, \
-    class_to_address_incl_overrides
-from src.lsd.gl_gui.view.core_conversion.file_converters import path_to_dict, bytes_to_str, \
-    rf_dict_to_path, rf_str_to_bytes
-from src.lsd.gl_gui.view.core_conversion.libcst_conversion import GeneralParse, Conditional, Comment, \
-    dict_to_cst, cst_module_to_str, str_to_cst_module, cst_module_to_dict, dict_to_cst_module
-from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite, Decorations
-from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.headers import draw_footer, draw_header_end, draw_header
-from src.lsd.gl_gui.view.core_views.cst_proxy import *
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_comment, \
-    sort_dict_alphabetically, unsort_dict_alphabetically, draw_with_modes, draw_type, \
-    class_to_var_dict, var_dict_to_class, draw_dropdown, draw_blank, draw_drop_down_item, draw_type_name, type_lens
-from src.lsd.gl_gui.view.core_views.text_editor import draw_text
-from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io, convert_in_and_out, string_to_cst_module, \
-    cst_module_to_string, draw_with_view_funcs, draw_text_from_code_cache, draw_code_tabs_from_cache
+from meltygui.state.draw_state import Anchor
+from meltygui.state.draw_state import Pin
+from meltygui.state.object import DictConversion
+from meltygui.state.enums import RelaxedEnum
+from meltygui.rendering.registry import RenderFuncs
+from meltygui.toggles import WindowManager
+from meltygui.code.chain_converters import module_to_address
+from meltygui.code.chain_converters import address_to_general_parse
+from meltygui.code.chain_converters import general_parse_to_address
+from meltygui.code.chain_converters import address_to_module
+from meltygui.code.chain_converters import class_to_address
+from meltygui.code.chain_converters import address_to_class
+from meltygui.code.chain_converters import function_to_address
+from meltygui.code.chain_converters import address_to_function
+from meltygui.code.chain_converters import general_parse_to_str
+from meltygui.code.chain_converters import str_to_general_parse
+from meltygui.code.chain_converters import focus
+from meltygui.code.chain_converters import caller_to_address
+from meltygui.code.chain_converters import address_to_call_parse
+from meltygui.code.chain_converters import call_dict_to_save
+from meltygui.code.chain_converters import class_to_address_incl_overrides
+from meltygui.code.file_converters import path_to_dict
+from meltygui.code.file_converters import bytes_to_str
+from meltygui.code.file_converters import rf_dict_to_path
+from meltygui.code.file_converters import rf_str_to_bytes
+from meltygui.code.libcst_conversion import GeneralParse
+from meltygui.code.libcst_conversion import Conditional
+from meltygui.code.libcst_conversion import Comment
+from meltygui.code.libcst_conversion import dict_to_cst
+from meltygui.code.libcst_conversion import cst_module_to_str
+from meltygui.code.libcst_conversion import str_to_cst_module
+from meltygui.code.libcst_conversion import cst_module_to_dict
+from meltygui.code.libcst_conversion import dict_to_cst_module
+from meltygui.code.new_codecs import CallSite
+from meltygui.code.new_codecs import Decorations
+from meltygui.rendering.decorators.window_decoration import window
+from meltygui.views.headers import draw_footer
+from meltygui.views.headers import draw_header_end
+from meltygui.views.headers import draw_header
+from meltygui.views.cst_proxy import *
+from meltygui.views.values import draw_collection
+from meltygui.views.values import draw_comment
+from meltygui.views.values import sort_dict_alphabetically
+from meltygui.views.values import unsort_dict_alphabetically
+from meltygui.views.values import draw_with_modes
+from meltygui.views.values import draw_type
+from meltygui.views.values import class_to_var_dict
+from meltygui.views.values import var_dict_to_class
+from meltygui.views.values import draw_dropdown
+from meltygui.views.values import draw_blank
+from meltygui.views.values import draw_drop_down_item
+from meltygui.views.values import draw_type_name
+from meltygui.views.values import type_lens
+from meltygui.editor.text import draw_text
+from meltygui.code.new_converters import code_file_io
+from meltygui.code.new_converters import convert_in_and_out
+from meltygui.code.new_converters import string_to_cst_module
+from meltygui.code.new_converters import cst_module_to_string
+from meltygui.code.new_converters import draw_with_view_funcs
+from meltygui.code.new_converters import draw_text_from_code_cache
+from meltygui.code.new_converters import draw_code_tabs_from_cache
 
 
 def compute_height(draw_state):
@@ -714,7 +751,7 @@ def class_var(name, default=None):
                 chain=lambda root: _build_code_chain(root, (name,), default, "Class variable"))
 
 
-_DEFAULTS_IMPORT = ("src.lsd.gl_gui.view.core_views.decoration.core_decoration", "defaults")
+_DEFAULTS_IMPORT = ("meltygui.rendering.decorators.core_decoration", "defaults")
 
 
 def decoration(name, default=None, decorator="defaults"):
