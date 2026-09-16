@@ -323,7 +323,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
                 # appending to the OLD, pre-hotswap class - toasts land in an
                 # orphaned deque nothing draws (the post-hotswap silent-toast bug).
                 # Re-importing here always hits the live sys.modules entry.
-                from meltygui.views.monitor import MCPServerLog
+                from meltygui.core.monitor_core import MCPServerLog
                 from meltygui.notifications import notify
                 # Bind positional args to names so the log is self-describing.
                 call_args = dict(kwargs)

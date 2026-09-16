@@ -4,7 +4,7 @@ import pytest
 from meltygui.state.new_core_model import DrawState
 from meltygui.toggles import Toggles
 from meltygui.views import anywhere
-from meltygui.views.new_core_view import _LazyOverrideEntry
+from meltygui.core.render_dispatch import _LazyOverrideEntry
 from meltygui.window_visibility import (
     adopt_window_position, marker_user_visibility, sync_marker_visibility,
     requested_window_closed, resolved_window_kwargs, user_window_position,
@@ -174,7 +174,7 @@ def test_generic_comment_position_is_movable_without_live_marker(comment_window)
 def parameter_panel_sources(monkeypatch):
     """Use real source discovery on a panel nested under a captured value."""
     from meltygui.views import new_core_view as values
-    from meltygui.views.new_core_view import ContextMenuState
+    from meltygui.core.render_dispatch import ContextMenuState
     from unittest.mock import MagicMock
     empty_host = MagicMock()
     monkeypatch.setattr(values, 'code_hosts_for',

@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from meltygui.tensor import cuda_march as kernels, line_kernels
-from meltygui.views.line_graph_playground import slice_lines
+from meltygui.core.graph_core import slice_lines
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available() or not kernels.available(),
                                 reason='CUDA and meltygui-pycuda required')

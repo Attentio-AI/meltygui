@@ -131,13 +131,25 @@ def symbol_tables(root=None):
     seg = st["seg"]
     overlay = sorted(st["dirty"] | st["extra"])
     gens = _pending_gens()
-    key = (root, id(seg), tuple(overlay),
-           sum(g for p, g in gens.items() if _under(p, root)))
+    overlay_sigs = []
+    for ap in overlay:
+        try:
+            stat = os.stat(ap)
+            sig = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            sig = None
+        overlay_sigs.append((ap, sig, gens.get(ap, 0)))
+    key = (root, id(seg), tuple(overlay_sigs))
+    memo = st.get("symbol_tables_memo")
+    if memo is not None and memo[0] == key:
+        return memo
     out = []
     seen = set()
-    for ap in overlay:
+    for ap, disk_sig, pending_gen in overlay_sigs:
         rel = os.path.relpath(ap, root)
         seen.add(rel)
+        if disk_sig is None and not pending_gen:
+            continue
         text = _current_text(ap)
         out.append((rel, _extract_symbols(text, rel.endswith(".py")) if text else []))
     if seg is not None:
@@ -145,6 +157,7 @@ def symbol_tables(root=None):
             if rel not in seen:
                 out.append((rel, syms))
     out.sort(key=lambda t: t[0])
+    st["symbol_tables_memo"] = (key, out)
     return key, out
 
 

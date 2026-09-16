@@ -4,7 +4,7 @@ draw_any, a right-click menu on each (`@window` -> `@glfw_window`)."""
 import meltygui_imgui as imgui
 from meltygui import glfw_window
 from meltygui.rendering.core_render import render_func
-from meltygui.views.new_core_view import draw_any
+from meltygui.core.render_dispatch import draw_any
 
 demo = {"greeting": "right-click me", "count": 3}
 

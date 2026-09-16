@@ -175,8 +175,8 @@ def test_outside_app_decorator_is_the_tint_source(tmp_path, no_boot, fresh_roots
     _ensure_gl_context()
     H._init_melty()
     from meltygui.melty import Melty
-    from meltygui.views.anywhere import get_source_for
-    from meltygui.views.anywhere import _sources_for
+    from meltygui.core.parameter_core import get_source_for
+    from meltygui.core.parameter_core import _sources_for
 
     path = _write_app(tmp_path)
     module = _load(path)

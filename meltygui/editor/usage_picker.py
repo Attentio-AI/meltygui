@@ -36,8 +36,8 @@ from meltygui.editor.code_line_fast import shift_spans
 from meltygui.rendering.core_render import render_func
 
 # Row pitch shared with the scroll-into-view helper — the Code tab's 24 + 2.
-ROW_H = 24.0
-ROW_GAP = 2.0
+ROW_H = Toggles.UsagePicker.row_height
+ROW_GAP = Toggles.UsagePicker.row_gap
 ROW_PITCH = ROW_H + ROW_GAP
 
 
@@ -70,62 +70,7 @@ class UsageRow:
         self.emphasis = emphasis
 
 
-class UsagePickerModel:
-    """What draw_text hands the picker window: the rows, the keyboard cursor
-    (`index`), the hover-vs-keyboard highlight mode, and the row a mouse
-    click picked (`picked`, consumed by draw_text). Plain object — draw_text
-    change-gates the popover's repaint on (rows, index, kbd_mode)."""
-    __slots__ = ("rows", "all_rows", "index", "kbd_mode", "picked", "_last_mouse",
-                 "hover", "measured", "chrome_h")
-
-    def __init__(self):
-        self.rows = []
-        self.all_rows = []
-        self.index = 0
-        self.kbd_mode = True
-        self.picked = None
-        self._last_mouse = None
-        self.hover = None
-        # (frame, row height) the body laid out) - the sizing reads the
-        # wrapper's content rect only when it was measured this frame.
-        self.measured = None
-        # Window chrome above + below the rows (content rect - rows height),
-        # learned from a window measure; sizes the rows without one.
-        self.chrome_h = 8.0
-
-    def set_rows(self, rows, best_index=0, max_rows=None):
-        """Install `rows`; past `max_rows` the list is cut (never above the
-        best row) and ends in a selectable "+ N more" row — `expand()`."""
-        self.all_rows = rows
-        if max_rows is not None and max_rows > 0 and len(rows) > max_rows:
-            keep = max(max_rows, best_index + 1)
-            if keep < len(rows):
-                hidden = len(rows) - keep
-                rows = rows[:keep] + [UsageRow("more", 0, None, 0,
-                                               f"+ {hidden} more", label=str(hidden))]
-        self.rows = rows
-        self.index = max(0, min(best_index, len(rows) - 1)) if rows else 0
-        self.kbd_mode = True
-        self.picked = None
-        self.hover = None
-
-    def expand(self):
-        """List every row (the "+ N more" row was picked); the cursor stays
-        on the first newly listed row."""
-        if self.rows is self.all_rows:
-            return
-        cut = len(self.rows) - 1
-        self.rows = self.all_rows
-        self.index = max(0, min(cut, len(self.rows) - 1))
-        self.kbd_mode = True
-        self.picked = None
-
-    def signature(self):
-        return (id(self.rows), self.index, self.kbd_mode, self.hover)
-
-    def current(self):
-        rows = self.rows
-        return rows[self.index] if 0 <= self.index < len(rows) else None
+from meltygui.model.code_model import UsagePickerModel
 
 
 # ── row builder ─────────────────────────────────────────────────────────────
@@ -274,8 +219,8 @@ def _same_tint(a, b):
 # drag width, TextEditorState.usage_picker_width, when there is one); after
 # that the handle resizes it freely, constrained only by the content height
 # (every row + the "+ N more" row) measured in draw_text's call.
-PICKER_MIN_W = 680
-PICKER_MIN_H = 33
+PICKER_MIN_W = Toggles.UsagePicker.min_width
+PICKER_MIN_H = Toggles.UsagePicker.min_height
 
 
 def _fresh_rect(menu_ds, model):
@@ -322,27 +267,11 @@ def picker_fit(menu_ds, model):
 def scroll_row_into_view(menu_ds, row_index):
     """Minimal scroll of the picker window so `row_index` is fully visible
     (the dd-menu helper at this module's row pitch)."""
-    from meltygui.views.new_core_view import _dd_scroll_cursor_into_view
+    from meltygui.core.dropdown_core import _dd_scroll_cursor_into_view
     _dd_scroll_cursor_into_view(menu_ds, row_index, pitch=ROW_PITCH)
 
 
-@render_func(use_cache=True, show_bg=True, shadow=True, selectable=False, temp=True,
-             closable=True, melty_window=False, auto_resize=False, with_header=None,
-             min_width=PICKER_MIN_W, swoosh=False, min_height=PICKER_MIN_H,
-             enforce_max_height=True,   # the content height cap holds mid-drag
-             is_default_for=UsagePickerModel, tint=(0.071, 0.354, 0.511))
-def draw_usage_picker(input_value: UsagePickerModel, draw_state,
-                      row_height=ROW_H, row_gap=ROW_GAP, tree_indent=16.0,
-                      code_font=Font.FONTAWESOME_MONO_19, collapsible=False,
-                      group_tint=None, change_kinds=None, **kwargs):
-    """Paint the picker rows Code-tab style. Hover moves the highlight only
-    while the pointer MOVES over the window (a resting pointer never steals
-    the keyboard cursor); a click on a row sets `model.picked` for draw_text
-    to consume. Returns (True, model) on a pick."""
-    return paint_usage_rows(
-        input_value, draw_state, row_height=row_height, row_gap=row_gap,
-        tree_indent=tree_indent, code_font=code_font, collapsible=collapsible,
-        group_tint=group_tint, change_kinds=change_kinds)
+from meltygui.view.code_view import draw_usage_picker
 
 
 def paint_usage_rows(input_value, draw_state, *, width=None,
@@ -356,7 +285,7 @@ def paint_usage_rows(input_value, draw_state, *, width=None,
     embedded list uses its column's draw_state for events and clipping;
     the standalone picker supplies its own draw_state above.
     """
-    from meltygui.views.new_core_view import _dd_row_width
+    from meltygui.view.dropdown_view import _dd_row_width
     # [tint=(0.9, 0.6, 0.2)] layout knobs — the Code tab's numbers
     ICON_COL = 22.0
     ICON_X = 4.0

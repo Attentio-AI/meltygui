@@ -37,8 +37,8 @@ from meltygui.toggles import SwooshMode
 from meltygui.fonts import Font
 from meltygui.fonts import detect_auto_scale
 from meltygui.rendering.decorators.window_decoration import set_window_registrar
-from meltygui.views.monitor import Monitor
-from meltygui.views.utils.imgui_style_manager_class import ImGuiStyleManager
+from meltygui.core.monitor_core import Monitor
+from meltygui.core.style_core import ImGuiStyleManager
 from meltygui.graphics.texture_manager import TextureManager
 from meltygui.graphics.filter import Filter
 # Importing shaders.py is what registers every built-in @register_shader class
@@ -205,11 +205,43 @@ class FileWatch:
         return False
 
     @classmethod
+    def _polling_fallback(cls, error):
+        """Keep registered watches and listeners when native watch limits are hit."""
+        import errno
+        from watchdog.observers.polling import PollingObserver
+        if (error.errno not in (errno.EMFILE, errno.ENFILE, errno.ENOSPC)
+                or isinstance(cls.observer, PollingObserver)):
+            raise error
+        previous = cls.observer
+        # Startup can fail after starting some emitters. Stop all of them,
+        # including when the observer's dispatcher never started.
+        previous.stop()
+        if previous.is_alive():
+            previous.join()
+        observer = PollingObserver()
+        for root in cls._recursive_roots:
+            observer.schedule(cls.handler, root, recursive=True)
+        watches = {path: observer.schedule(cls.handler, path, recursive=False)
+                   for path in cls._dir_watches}
+        cls.observer = observer
+        cls._dir_watches = watches
+        observer.start()
+        print(f"FileWatch: native watch limit reached ({error}); using polling", flush=True)
+
+    @classmethod
+    def _schedule(cls, path, *, recursive):
+        try:
+            return cls.observer.schedule(cls.handler, path, recursive=recursive)
+        except OSError as error:
+            cls._polling_fallback(error)
+            return cls.observer.schedule(cls.handler, path, recursive=recursive)
+
+    @classmethod
     def watch_dir(cls, dirpath):
         """Make sure events arrive for files in `dirpath` (resolved str):
         a no-op when a recursive root already covers it, else one
-        non-recursive emitter. Returns False if the observer refused
-        (typically EMFILE — the instance cap)."""
+        non-recursive emitter. Native resource limits switch to polling;
+        returns False if the directory still cannot be watched."""
         dirpath = str(dirpath)
         if dirpath in cls._watched_dirs:
             return True
@@ -217,8 +249,7 @@ class FileWatch:
             cls._watched_dirs.add(dirpath)
             return True
         try:
-            cls._dir_watches[dirpath] = cls.observer.schedule(
-                cls.handler, dirpath, recursive=False)
+            cls._dir_watches[dirpath] = cls._schedule(dirpath, recursive=False)
         except OSError as e:
             print(f"FileWatch: cannot watch {dirpath}: {e}")
             return False
@@ -236,7 +267,7 @@ class FileWatch:
         if root in cls._recursive_roots:
             return True
         try:
-            cls.observer.schedule(cls.handler, root, recursive=True)
+            cls._schedule(root, recursive=True)
         except OSError as e:
             print(f"FileWatch: cannot watch {root} recursively: {e}")
             return False
@@ -310,7 +341,10 @@ class FileWatch:
         cls.handler.on_created = cls._on_event
         cls.handler.on_moved = cls._on_moved
         cls.handler.on_deleted = cls._on_deleted
-        cls.observer.start()
+        try:
+            cls.observer.start()
+        except OSError as error:
+            cls._polling_fallback(error)
 
     @classmethod
     def _on_deleted(cls, event):
@@ -899,7 +933,7 @@ class Melty:
             if req.surface is not None:
                 req.surface.closed = True
             return req
-        from meltygui.views.anywhere import window_position_movable
+        from meltygui.core.parameter_core import window_position_movable
         req.pinned = not window_position_movable(draw_state, kwargs)
         # The parent-relative geometry lives on the request; the pare
         # draw_state rendering INLINE in the child surface, and the inline
@@ -1067,6 +1101,9 @@ class Melty:
     # against it lazily so modules can reference render_funcs by symbol without
     # importing the (often cycle-prone) module that defines them.
     render_funcs_by_name = {}
+
+    # Stable callable identities whose implementation moved to another module.
+    relocated_functions = {}
 
     silence_invalidate = False
     unique_stack = []
@@ -2242,7 +2279,7 @@ class Melty:
         # Submit over the existing shadow pass while its clip/layer are live.
         from meltygui.style import resolve_shadow_offset
         from meltygui.style import default_scalar_accumulation
-        from meltygui.views.blit_offscreen import add_shadow
+        from meltygui.core.tile_cache import add_shadow
         if index == 0:
             cls.background_shadow_offsets.clear()
         # Walk up to the nearest ancestor resolved THIS frame, else one whose
@@ -3560,7 +3597,7 @@ class Melty:
 
         original_bg_stack = copy(Melty.bg_stack)
         if draw_state._bg_stack is not None:
-            from meltygui.views.drag_drop import DragDrop
+            from meltygui.core.drag_drop_core import DragDrop
             if DragDrop.active and draw_state is DragDrop.item_ds:
                 # A dragged item is the one window that flips inline ->
                 # window mid-life. Its contents lay out with
@@ -3872,7 +3909,7 @@ class Melty:
         # The floating DnD window rides the cursor and must survive its
         # source view auto-scrolling out from under the drag.
         try:
-            from meltygui.views.drag_drop import DragDrop
+            from meltygui.core.drag_drop_core import DragDrop
             if DragDrop.is_dragged_item(ds):
                 return False
         except Exception:
@@ -3950,7 +3987,7 @@ class Melty:
         Melty.mode_stack = []
 
         from meltygui.modes import Modes
-        from meltygui.views.new_core_view import draw_with_modes
+        from meltygui.core.render_dispatch import draw_with_modes
         # draw_with_modes(Counters, name="counters", modes=(Modes.CODE_UI, Modes.CODE_PLAIN_TEXT), mode=Modes.WINDOW)
 
         if Toggles.debug_z_depth:
@@ -4022,7 +4059,7 @@ class Melty:
         # (see view/core_views/drag_drop.py). No per-frame invalidation:
         # the drag rides the closable-window blit fastpath.
         try:
-            from meltygui.views.drag_drop import DragDrop
+            from meltygui.core.drag_drop_core import DragDrop
             DragDrop.frame_update()
         except Exception as dnd_e:
             print(f"DragDrop.frame_update failed: {dnd_e}")
@@ -5603,7 +5640,7 @@ class Melty:
         draw_list = imgui.get_window_draw_list()
         current_clip = cls.get_clip_rect()
         if current_clip is not None:
-            from meltygui.views.blit_offscreen import snap_int
+            from meltygui.core.tile_cache import snap_int
             clip_new_rect = (
                 max(current_clip[0], snap_int(rect[0])),
                 max(current_clip[1], snap_int(rect[1])),

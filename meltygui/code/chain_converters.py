@@ -56,8 +56,7 @@ from meltygui.code.libcst_conversion import FunctionParse
 from meltygui.code.libcst_conversion import NO_DEFAULT
 from meltygui.perf_trace import trace as _ptrace
 from meltygui.perf_trace import span as _pspan
-from meltygui.views.headers import draw_header
-from meltygui.editor.text_editor import draw_text
+from meltygui.core.header_runtime import draw_header
 from meltygui.rendering.decorators.core_decoration import defaults
 
 
@@ -1074,38 +1073,7 @@ def _live_apply_class_vars(cls: type, gp: dict) -> None:
     live_apply_edits(cls, gp)
 
 
-@render_func(use_cache=True, selectable=False)
-def run_button(input_value: any, with_kwargs=None, draw_state=None, clicked=False):
-    is_render_func = hasattr(input_value, "__render_func__")
-    if not is_render_func:
-        imgui.text_colored(f"Value of type {type(input_value).__name__} needs @render_func",
-                           1.0, 0.5, 0.0)
-        return False, None
-    if with_kwargs is None:
-        with_kwargs = {}
-
-    if hasattr(input_value, "__header_defaults__"):
-        run_in_background = input_value.__header_defaults__.get("background", False)
-    else:
-        run_in_background = True
-
-    running = draw_state._running is input_value if run_in_background else False
-
-    fa_run_arrow = ""
-    from meltygui.views.new_core_view import button
-    if clicked or running or button(f"{fa_run_arrow} {input_value.__name__}##{draw_state.unique}",
-                                    height=30, draw=True, value=0.4, saturation=1.5,
-                                    name=f"{input_value.__name__}{draw_state.unique}_run")[0]:
-        with_kwargs['changed'] = True
-        changed, value = input_value(**with_kwargs)
-        if isinstance(value, Pending):
-            draw_state._running = input_value
-            return False, None
-
-        draw_state._running = False
-        return True, (changed, value)
-
-    return False, None
+from meltygui.view.code_view import run_button
 
 
 @render_func(use_cache=True, selectable=False)
@@ -1120,7 +1088,7 @@ def address_to_general_parse(input_value: Address, pending=False, unique=None, c
     if draw_state.frame_count < 2 and auto_load:
         load = True
 
-    from meltygui.views.new_core_view import button
+    from meltygui.core.render_dispatch import button
     file_name = input_value.path.name if input_value.path is not None else "Unknown file"
     folder_icon = ""
     # if button(f"{folder_icon} {file_name}", height=30, value=0.4, saturation=1.5)[0]:
@@ -1315,8 +1283,8 @@ def focus(input_value, path=(), default=None, kind=None, draw_state=None, unique
     GeneralParse dict (code-comment / decoration tint), a draw_state, or a data
     class instance.
     """
-    from meltygui.views.new_core_view import draw_tuple
-    from meltygui.views.new_core_view import button
+    from meltygui.core.render_dispatch import draw_tuple
+    from meltygui.core.render_dispatch import button
 
     changed, new_value = False, input_value
     if not path:

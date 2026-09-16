@@ -71,7 +71,9 @@ payload = None if error is None else (type(error), error.args, {
 channels.send(CHANNEL, pickle.dumps(payload))
 del TEXT, PREFIXES, error
 ''', shared={'HELPER': str(Path(__file__).with_name('syntax_check.py')),
-             'TEXT': text, 'PREFIXES': pickle.dumps(prefixes), 'CHANNEL': int(self.channel)})
+             # DiskSpanText carries codec/mtime metadata. Only exact str
+             # instances are shareable; the compiler needs just the source.
+             'TEXT': str(text), 'PREFIXES': pickle.dumps(prefixes), 'CHANNEL': int(self.channel)})
                 payload = pickle.loads(channels.recv(self.channel))
                 if payload is None:
                     return None

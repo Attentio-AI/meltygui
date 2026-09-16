@@ -42,9 +42,11 @@ bubbling-wrapped: a dict mutation there reads as a user edit).
 from __future__ import annotations
 
 import ast
+import atexit
 import enum
 import os
 import pickle
+import queue
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -418,10 +420,13 @@ class _ParseUnpickler(pickle.Unpickler):
             "NComment": Comment, "NCodeLine": CodeLine, "NSpan": RelSpan, "NNoDefault": lambda: NO_DEFAULT}
 
     def find_class(self, module, name):
-        if module.endswith(".melty_scan"):
+        if module == "_melty_scan" or module.endswith(".melty_scan"):
             real = self._MAP.get(name)
             if real is not None:
                 return real
+            if module == "_melty_scan":
+                from meltygui.code import melty_scan
+                return getattr(melty_scan, name)
         return super().find_class(module, name)
 
 
@@ -429,11 +434,19 @@ class _ParseUnpickler(pickle.Unpickler):
 
 _WORKER_SCRIPT = r"""
 import sys
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+import importlib.util
 import pickle
 import _xxinterpchannels as _ch
-from meltygui.code import melty_scan as _ms
+# Importing the package also initializes app/threading state in this
+# interpreter. It can then hang at shutdown waiting for the original
+# caller thread. The scanner is stdlib-only: load it without the GUI.
+if '_melty_scan' not in sys.modules:
+    _spec = importlib.util.spec_from_file_location('_melty_scan', SCANNER)
+    _ms = importlib.util.module_from_spec(_spec)
+    sys.modules['_melty_scan'] = _ms
+    _spec.loader.exec_module(_ms)
+else:
+    _ms = sys.modules['_melty_scan']
 import gc as _gc
 _gc.disable()                    # ~20% of the scan was gen-2 collections over the fresh tree
 try:
@@ -450,7 +463,7 @@ _ch.send(CID, _blob)
 
 class _ScanWorker:
     """One 3.12 subinterpreter (`_xxsubinterpreters`, per-interpreter GIL) that
-    runs melty_scan.scan_extract. The CALLING thread executes inside the
+    runs melty_scan.scan_extract. A dedicated owner thread executes inside the
     subinterpreter, under ITS GIL — the main interpreter's GIL is free for the
     render thread the whole time (measured: a 130 ms parse and 130 ms of main-
     thread Python overlap to 130 ms wall). One run at a time; a second caller
@@ -462,6 +475,36 @@ class _ScanWorker:
         self._interp = None
         self._cid = None
         self._broken = False
+        self._requests = queue.Queue()
+        self._thread = None
+
+    def _run(self):
+        try:
+            while True:
+                request = self._requests.get()
+                if request is None:
+                    return
+                text, reply = request
+                try:
+                    reply.put(self._execute(text))
+                except BaseException as error:
+                    reply.put(error)
+        finally:
+            if self._interp is not None:
+                import _xxsubinterpreters as si
+                import _xxinterpchannels as ch
+                si.destroy(self._interp)
+                ch.destroy(self._cid)
+                self._interp = self._cid = None
+
+    def close(self):
+        with self._lock:
+            thread = self._thread
+            if thread is not None:
+                self._requests.put(None)
+        if thread is not None:
+            thread.join()
+            self._thread = None
 
     def available(self):
         if self._broken:
@@ -479,29 +522,44 @@ class _ScanWorker:
         worker can't run (the caller parses in-process)."""
         if not self.available():
             return None
+        reply = queue.Queue(maxsize=1)
+        with self._lock:
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, name='syntax-scanner', daemon=True)
+                self._thread.start()
+            self._requests.put((text, reply))
+        blob = reply.get()
+        if isinstance(blob, BaseException):
+            raise blob
+        if blob is None:
+            return None
+        import io
+        from meltygui.code.libcst_conversion import _yield_to_ui
+        _yield_to_ui()  # deserialization is back under the application's GIL
+        return _ParseUnpickler(io.BytesIO(blob)).load()
+
+    def _execute(self, text):
         import _xxsubinterpreters as si
         import _xxinterpchannels as ch
-        root = str(Path(__file__).resolve().parents[2])
+        scanner = str(Path(__file__).with_name('melty_scan.py'))
         with self._lock:
             try:
                 if self._interp is None:
                     self._interp = si.create()
                     self._cid = ch.create()
                 si.run_string(self._interp, _WORKER_SCRIPT,
-                              shared={"TEXT": text, "ROOT": root, "CID": int(self._cid)})
+                              shared={"TEXT": str(text), "SCANNER": scanner, "CID": int(self._cid)})
                 blob = ch.recv(self._cid)
             except Exception as e:
                 print(f"core_syntax: scan worker failed ({type(e).__name__}: {str(e)[:200]}); "
                       "parsing in-process from now on")
                 self._broken = True
                 return None
-        import io
-        from meltygui.code.libcst_conversion import _yield_to_ui
-        _yield_to_ui()  # deserialization is back under the application's GIL
-        return _ParseUnpickler(io.BytesIO(blob)).load()
+        return blob
 
 
 _worker = _ScanWorker()
+atexit.register(_worker.close)
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗

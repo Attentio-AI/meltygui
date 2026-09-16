@@ -144,7 +144,7 @@ def defaults(*args, **kwargs):
 
     def decorator(cls):
 
-        # from meltygui.views.core_meta import Meta
+        # from meltygui.state.annotation_state import Meta
         if attr is None:
             # DecorationManager.melty.type_defaults[cls] = Meta(**kwargs)
             for key in kwargs:

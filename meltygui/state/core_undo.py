@@ -11,7 +11,7 @@ from meltygui.rendering.render_funcs import RenderFuncs
 from meltygui.utils.glfw_utils import request_render
 from meltygui.rendering.decorators.core_decoration import Core
 from meltygui.rendering.decorators.window_decoration import window
-from meltygui.views.headers import draw_header
+from meltygui.view.header_view import draw_header
 
 
 class Change:

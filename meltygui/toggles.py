@@ -6,7 +6,7 @@ from meltygui.rendering.render_funcs import RenderFuncs
 from meltygui.rendering.decorators.core_decoration import Core
 from meltygui.rendering.decorators.core_decoration import defaults
 from meltygui.rendering.decorators.window_decoration import window
-from meltygui.views.utils.imgui_style_manager_class import ImGuiStyleManager
+from meltygui.core.style_core import ImGuiStyleManager
 import json
 from meltygui.hdr_color import pack_color
 from meltygui.hdr_color import scale_saturation
@@ -483,6 +483,53 @@ class Swoosh:
 
 @window(tint=(0.27, 0.19, 0.14))
 class Toggles:
+    @defaults(tint=(0.85, 0.75, 0.05))
+    class ColorPicker:
+        # [tint=(0.85, 0.75, 0.05)]
+        square_size = 180
+        # [tint=(0.85, 0.75, 0.05)]
+        tabs_height = 30
+        # [tint=(0.85, 0.75, 0.05)]
+        extension_width = 60
+        # [tint=(0.85, 0.75, 0.05)]
+        exposure_band_height = 54
+        # [tint=(0.85, 0.75, 0.05)]
+        anchor_gap = 10
+        # [tint=(0.85, 0.75, 0.05)]
+        offsets_height = 8 + 2 * 20
+        # [tint=(0.85, 0.75, 0.05)]
+        view_offset_rows = (("bg_offset", "Bg offset", 0.05),
+                            ("z_offset", "Z offset", 0.05))
+
+    @defaults(tint=(0.85, 0.75, 0.05))
+    class Dropdown:
+        # [tint=(0.85, 0.75, 0.05)]
+        menu_width = 170
+        # [tint=(0.85, 0.75, 0.05)]
+        row_height = 24
+        # [tint=(0.85, 0.75, 0.05)]
+        min_width = 300
+        # [tint=(0.85, 0.75, 0.05)]
+        min_height = 33
+        # [tint=(0.85, 0.75, 0.05)]
+        max_height = 500
+        # [tint=(0.85, 0.75, 0.05)]
+        code_label_max_width = 150.0
+        # [tint=(0.85, 0.75, 0.05)]
+        tag_color = (0.55, 0.6, 0.72, 0.85)
+        # [tint=(0.85, 0.75, 0.05)]
+        tag_gap = 8.0
+        # [tint=(0.85, 0.75, 0.05)]
+        row_tint_alpha = 0.35
+
+    @defaults(tint=(0.811, 0.59, 0.29))
+    class UsagePicker:
+        # [tint=(0.811, 0.59, 0.29)]
+        row_height = 24.0
+        row_gap = 2.0
+        min_width = 680
+        min_height = 33
+
 
     # Allow window gestures to edit caller/default source code as a GUI editor.
     # Comment overrides and local window state do not require this flag.
@@ -3021,7 +3068,7 @@ class Actions:
         pixels inside it are saved as a PNG (Toggles.screenshots), opened in
         the code editor, and the file path is copied to the clipboard. Esc
         cancels."""
-        from meltygui.widgets.region_screenshot import arm
+        from meltygui.core.screenshot_core import arm
         arm()
 
     @staticmethod

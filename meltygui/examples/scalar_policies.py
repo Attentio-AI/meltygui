@@ -8,7 +8,7 @@ from meltygui import pressed
 from meltygui.examples.style_layouts import panel
 from meltygui.fonts import Font
 from meltygui.rendering.core_render import render_func
-from meltygui.views.headers import draw_header
+from meltygui.core.header_runtime import draw_header
 
 
 def subtract(context, residual):

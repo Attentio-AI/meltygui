@@ -10,7 +10,7 @@ from meltygui.fonts import Font
 from meltygui.melty import Melty
 from meltygui.toggles import Toggles
 from meltygui.rendering.core_render import render_func
-from meltygui.views.headers import draw_header
+from meltygui.core.header_runtime import draw_header
 
 
 strength = 0.22

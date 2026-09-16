@@ -144,7 +144,7 @@ def _run_imports():
         import meltygui.melty as runtime  # noqa: F401
         import meltygui.surface as surface  # noqa: F401
         import meltygui.editor.text_editor as text_editor
-        import meltygui.views.texture_view as texture_view  # noqa: F401
+        import meltygui.view.texture_view as texture_view  # noqa: F401
         mark('meltygui imported (bg)')
     except BaseException as e:  # re-raised on the main thread
         _state['import_error'] = e
@@ -170,7 +170,7 @@ def _init_melty():
     from meltygui.fonts import FontManager
     from meltygui.surface import Surface
     from meltygui.toggles import Toggles
-    from meltygui.views.utils.imgui_style_manager_class import ImGuiStyleManager
+    from meltygui.core.style_core import ImGuiStyleManager
     import meltygui.warm_start as warm_start
     owner = _state['owner']
     glfw.make_context_current(owner)

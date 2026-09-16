@@ -429,8 +429,8 @@ def collect_param_sources(view, param=""):
     ds, error = resolve_view(view)
     if ds is None:
         return {"frame": Melty.frame_count, "error": error}
-    import meltygui.views.anywhere as A
-    from meltygui.views.new_core_view import param_source_matrix
+    import meltygui.core.parameter_core as A
+    from meltygui.core.render_dispatch import param_source_matrix
     try:
         srcs = A._sources_for(ds)
     except Exception as exc:

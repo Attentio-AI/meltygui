@@ -32,8 +32,8 @@ from meltygui.code.live_view import live_values_for
 from meltygui.code.live_view import label_for
 from meltygui.rendering.core_render import render_func
 from meltygui.rendering.decorators.window_decoration import window
-from meltygui.views.new_core_view import draw_any
-from meltygui.views.new_core_view import draw_collection
+from meltygui.core.render_dispatch import draw_any
+from meltygui.core.render_dispatch import draw_collection
 from meltygui.debug.mode import Mode
 from meltygui.rendering.decorators.core_decoration import defaults
 import json

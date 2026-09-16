@@ -821,11 +821,14 @@ def gap_lists(ctx, window_near, window_far, rigid=False):
     frame edge BOTH ways: a divider pushed past the pile pushes it out,
     a capped column at its maximum PULLS it in, a right-drag on the
     frame edge shrinks the window — exactly what a studio window's own
-    frame does, with no special handling on the drags (Lukas 09-13)."""
+    frame does, with no special handling on the drags (Lukas 09-13).
+    A body below native chrome has a fixed near gap instead of zero;
+    both its floor and cap preserve that inset when either edge moves."""
     near, far = _STATE["edges"][ctx.axis]
+    inset = float(window_near.get("surface_inset", 0.0)) if rigid else 0.0
     cap = 0.0 if rigid else None
     return ([[near, window_near], [window_far, far]],
-            [([0.0], [cap]), ([0.0], [cap])])
+            [([inset], [inset if rigid else None]), ([0.0], [cap])])
 
 
 def content_size(display):
@@ -978,7 +981,7 @@ def _chain_floor(a, role_a, b, role_b, axis):
         return 0.0
     if role_a == ROOT_FAR and role_b == ROOT_NEAR:
         return 0.0
-    from meltygui.views.columns import _axis_min
+    from meltygui.core.column_core import _axis_min
     return min(_axis_min(axis), max(0.0, b[axis] - a[axis]))
 
 
@@ -995,7 +998,7 @@ def _window_floor(ds, axis):
     """How far the OS-level solve may compress ``ds`` on ``axis``: its
     declared minimum (raised to its columns' pile by its own pass), never
     below the axis minimum, never above its size."""
-    from meltygui.views.columns import _axis_min
+    from meltygui.core.column_core import _axis_min
     size = float(ds.width if axis == "x" else ds.height)
     declared = float((ds.min_width if axis == "x" else ds.min_height) or 0)
     return min(size, max(_axis_min(axis), declared))
@@ -1081,7 +1084,7 @@ def _extent_of(root, children, frames, axis):
     is larger (a child overhanging the far side leaves no give at all:
     compressing a parent never moves its children, they hang off its near
     edge). Returns (near, far, floor) with floor as the cell's floor."""
-    from meltygui.views.columns import _axis_min
+    from meltygui.core.column_core import _axis_min
     r_n, r_f, r_floor, _size0 = frames[id(root)]
     r_size = r_f[axis] - r_n[axis]                # as phase A left it, not as built
     near, far = r_n[axis], r_f[axis]
@@ -1133,10 +1136,10 @@ def solve():
     their columns as a foreign size write. The OS near edge's motion is
     booked for apply_rebase like any other."""
     from meltygui.melty import Melty
-    from meltygui.views.columns import _cells_from_lists
-    from meltygui.views.columns import _EdgeGraph
-    from meltygui.views.columns import _solve_graph
-    from meltygui.views.columns import snap_int
+    from meltygui.core.column_core import _cells_from_lists
+    from meltygui.core.column_core import _EdgeGraph
+    from meltygui.core.column_core import _solve_graph
+    from meltygui.core.column_core import snap_int
     if not _enabled() or _STATE["frame"] != Melty.frame_count:
         return
     for axis, i in _AXIS.items():
@@ -1185,7 +1188,7 @@ def solve():
         start = {wid: (n[axis], f[axis]) for wid, (n, f, _fl, _sz) in frames.items()}
         gesture = gestures.get(axis)
         if own:
-            from meltygui.views.columns import snapshot_edges
+            from meltygui.core.column_core import snapshot_edges
             if gesture is None:
                 gesture = gestures[axis] = {"snap": list(cur), "totals": [0.0, 0.0], "windows": {}}
             snapshots = gesture.setdefault("windows", {})
@@ -1199,8 +1202,12 @@ def solve():
                 frames[identity] = n, f, floor, size
                 for edge, value in saved_edges:
                     edge[axis] = value
-        os_floor = max([MIN_SIZE[i]] + [_window_floor(ds, axis) for ds in _movable_roots()
-                                       if _frame_pinned(ds) and _open(ds)])
+        # A pinned body's minimum excludes native chrome above it. The
+        # OS frame must reserve that fixed gap as well as the body pile.
+        from meltygui.core.column_core import _frame
+        os_floor = max([MIN_SIZE[i]] + [
+            _window_floor(ds, axis) + ((_frame(ds, axis) or [{}])[0].get("surface_inset", 0.0))
+            for ds in _movable_roots() if _frame_pinned(ds) and _open(ds)])
 
         if walls_mode:
             os_list, os_spec = [near, far], ([os_floor], [None])

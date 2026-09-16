@@ -34,7 +34,7 @@ _io.fonts.get_tex_data_as_rgba32()
 from meltygui.melty import Melty
 import meltygui.rendering.core_render as core_render
 from meltygui.rendering.core_render import render_func
-from meltygui.views.blit_offscreen import TileCacheMasked
+from meltygui.core.tile_cache import TileCacheMasked
 from meltygui.state.new_core_model import DrawState
 
 PC = time.perf_counter_ns
@@ -89,7 +89,7 @@ def _init_melty():
         Melty.original_frame_padding = style.frame_padding
 
     try:
-        from meltygui.views.utils.imgui_style_manager_class import ImGuiStyleManager
+        from meltygui.core.style_core import ImGuiStyleManager
         Melty.style_manager = ImGuiStyleManager()
     except Exception as e:
         print(f"(real ImGuiStyleManager unavailable, using stub: {e})")

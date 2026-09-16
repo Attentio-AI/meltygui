@@ -203,8 +203,8 @@ class Surface:
         self.activate()
         titlebar.note_surface_size(self.window)
         glfw.swap_interval(1)
-        from meltygui.views.split_overlay_renderer import SplitOverlayRenderer
-        from meltygui.views.blit_offscreen import TileCacheMasked
+        from meltygui.core.overlay_renderer import SplitOverlayRenderer
+        from meltygui.core.tile_cache import TileCacheMasked
         self.impl = SplitOverlayRenderer(self.window)
         Melty.init_input_backend(self.window)
         Melty.cache = TileCacheMasked()
@@ -383,7 +383,7 @@ class Surface:
         Melty.begin_frame()
         # Standalone apps do not run the studio's draw_main. Commit source
         # edits deferred while a picker/slider held the pointer here too.
-        from meltygui.views.anywhere import flush_deferred_writes
+        from meltygui.core.parameter_core import flush_deferred_writes
         flush_deferred_writes()
         if self.chrome:
             os_frame.begin_frame()
@@ -399,7 +399,7 @@ class Surface:
         radius = titlebar.frame_corner_radius() if transparent else 0.0
         previous_tint, bg_color = self._root_background(disp_w, disp_h, radius)
         if transparent and Toggles.Melty.window_shadow_lift > 0:
-            from meltygui.views.blit_offscreen import add_shadow
+            from meltygui.core.tile_cache import add_shadow
             add_shadow((0, 0, disp_w, disp_h), offset=0.5, corner_radius=radius, clip=False)
 
         top = titlebar.top_inset() if self.chrome else 0.0
@@ -461,7 +461,7 @@ class Surface:
         tint, capped at the same max_bg_value), edge to edge with the alpha
         cut's corner radius and no outline stroke. Sets the style tint for
         the body; returns (the tint to restore, the ground's colour)."""
-        from meltygui.views.new_core_view import draw_bg
+        from meltygui.core.render_dispatch import draw_bg
         style_manager = Melty.style_manager
         previous_tint = style_manager.get_tint()
         tint = self.tint if self.tint is not None else Toggles.Melty.app_root_tint
@@ -477,6 +477,10 @@ class Surface:
 
     # --- teardown --------------------------------------------------------------------
     def destroy(self):
+        # A parent destroys its children recursively. The app shutdown loop
+        # may still hold those children in its snapshot of Surface.all.
+        if self not in Surface.all:
+            return
         if _DEBUG:
             print(f'[surface] destroy {self.title!r} (active={getattr(Surface.active, "title", None)!r})', flush=True)
         for child in list(self.children):

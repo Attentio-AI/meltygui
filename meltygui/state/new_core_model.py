@@ -1027,7 +1027,7 @@ class DrawState(DictConversion):
         # Reached only when normal lookup failed. `locate_params` and any
         # future explicit property resolve BEFORE this and never arrive here.
         if name.startswith("locate_"):
-            from meltygui.views.anywhere import anywhere_value
+            from meltygui.core.parameter_core import anywhere_value
             return anywhere_value(name[7:], self)
         raise AttributeError(name)
 
@@ -1040,7 +1040,7 @@ class DrawState(DictConversion):
         view function's signature default."""
         if isinstance(getattr(type(self), name, None), property):
             raise AttributeError(f"{name} is read-only")
-        from meltygui.views.anywhere import set_anywhere
+        from meltygui.core.parameter_core import set_anywhere
         set_anywhere(name[7:], value, self, allow_any=True, ds_fallback=True)
 
     @property
@@ -1061,7 +1061,7 @@ class DrawState(DictConversion):
         handed, so a fresh object per frame would look like a new value every
         frame. Stored via object.__setattr__ — like _anc_scroll_key above, it
         never appears on the default instance, so it isn't serialized."""
-        from meltygui.views.anywhere import ParamProxy
+        from meltygui.core.parameter_core import ParamProxy
         proxy = self.__dict__.get('_locate_proxy')
         if proxy is None:
             proxy = ParamProxy(self)
@@ -1076,7 +1076,7 @@ class DrawState(DictConversion):
         each a live ParamProxy (reads resolve, item-writes go through
         set_anywhere). A separate cached instance, same identity rules as
         locate_params above."""
-        from meltygui.views.anywhere import GroupedParamProxy
+        from meltygui.core.parameter_core import GroupedParamProxy
         proxy = self.__dict__.get('_locate_all_proxy')
         if proxy is None or not isinstance(proxy, GroupedParamProxy):
             proxy = GroupedParamProxy(self)
@@ -1461,7 +1461,7 @@ class DrawState(DictConversion):
             # Exempt the floating DnD window: glue_window_to_cursor assumes abs
             # is linear in window_pos, and a clamp makes its per-frame
             # correction accumulate without bound (see _cap_to_display).
-            from meltygui.views.drag_drop import DragDrop
+            from meltygui.core.drag_drop_core import DragDrop
             if DragDrop.is_dragged_item(self):
                 return base_y
         except Exception:
@@ -1505,7 +1505,7 @@ class DrawState(DictConversion):
         if not capped:
             return pos
         try:
-            from meltygui.views.drag_drop import DragDrop
+            from meltygui.core.drag_drop_core import DragDrop
             if DragDrop.is_dragged_item(self):
                 return pos
         except Exception:

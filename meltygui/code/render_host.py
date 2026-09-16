@@ -285,8 +285,18 @@ class RenderHost(_DeepAttrMixin, dict):
         doing nothing — that is what dropped drags to 70fps. ``mark(label)``,
         if given, receives a perf-trace label per gate decision and host drawn."""
         import meltygui_imgui as imgui
+        from meltygui.surface import Surface
+        import meltygui.window_api as glfw
         any_mouse_held = (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
                           or imgui.is_mouse_down(2) or Melty.space_mouse_drag)
+        # The host pump is process-wide and runs on the first surface. A
+        # picker drag belongs to the child's input context, so the parent's
+        # ImGui state alone misses it and runs deferred hosts throughout
+        # the drag. Read the windows' button state without changing contexts.
+        any_mouse_held = any_mouse_held or any(
+            glfw.get_mouse_button(surface.window, button) == glfw.PRESS
+            for surface in Surface.all if surface.window is not None and not surface.closed
+            for button in (glfw.MOUSE_BUTTON_LEFT, glfw.MOUSE_BUTTON_RIGHT, glfw.MOUSE_BUTTON_MIDDLE))
         typing_held = cls.typing_hold()
         if mark is not None:
             mark(f"hosts_gate(held={int(any_mouse_held)},typing={int(bool(typing_held))})")
@@ -1029,7 +1039,7 @@ def render_host_view(input_value, external_change=False, draw=False, draw_state=
 
     # data-bag (no wrapper): just render the dict itself.
     if host.io_function is None:
-        from meltygui.views.new_core_view import draw_collection
+        from meltygui.core.render_dispatch import draw_collection
         return draw_collection(host, name=host.name)
 
     # external_change for the wrapper: the framework's, OR the input-changed flag that

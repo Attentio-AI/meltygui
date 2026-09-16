@@ -250,3 +250,13 @@ def test_pointer_motion_generation_includes_identical_local_coordinates(backend)
         backend.pointer_motion(0, 100 * 256, 200 * 256)
         assert window.cursor_pos == (100, 200)
         assert window.cursor_motion_generation == expected
+
+
+def test_destroyed_child_in_shutdown_snapshot_is_not_destroyed_again(monkeypatch):
+    from meltygui.surface import Surface
+    # Parent teardown already removed this child; app.run's shutdown snapshot
+    # still contains it. No context or GLFW handle may be touched a second time.
+    child = object.__new__(Surface)
+    monkeypatch.setattr(Surface, 'all', [])
+    monkeypatch.setattr(child, 'activate', lambda: pytest.fail('destroyed context reactivated'))
+    child.destroy()

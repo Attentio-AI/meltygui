@@ -888,7 +888,7 @@ class TestScannerParity(unittest.TestCase):
         self.assertGreater(checked, 50)
 
     def test_worker_on_big_files(self):
-        for name in ("editor/text_editor.py", "toggles.py", "views/new_core_view.py"):
+        for name in ("editor/text_editor.py", "toggles.py", "core/render_dispatch.py"):
             path = SRC / name
             self._check(path.read_text(encoding="utf-8"), path, frontends=("worker",))
 

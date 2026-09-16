@@ -55,18 +55,18 @@ from meltygui.melty import apply_collection_action
 from meltygui.melty import MeltyState
 from meltygui.melty import SearchTerm
 from meltygui.melty import search_walk
-from meltygui.views.basic_view_utils import same_line
-from meltygui.views.blit_offscreen import snap_int
-from meltygui.views.blit_offscreen import add_shadow
-from meltygui.views.blit_offscreen import clear_shadows
-from meltygui.views.core_meta import AnnotationOverride
+from meltygui.core.cursor_core import same_line
+from meltygui.core.tile_cache import snap_int
+from meltygui.core.tile_cache import add_shadow
+from meltygui.core.tile_cache import clear_shadows
+from meltygui.state.annotation_state import AnnotationOverride
 from meltygui.state.core_undo import UndoManager
 from meltygui.state.core_undo import handle_undo
 from meltygui.rendering.decorators.core_decoration import Core
 from meltygui.rendering.decorators.window_decoration import window
 # Imported as a module (not `from ... import DragDrop`) so hotswapping
 # drag_drop.py rebinds through the module object on the next call.
-import meltygui.views.drag_drop as _drag_drop
+import meltygui.core.drag_drop_core as _drag_drop
 from meltygui.debug.invalidation_tracker import Note
 
 
@@ -779,7 +779,7 @@ def render_func(*args, **o_kwargs):
         selection_call_kwargs = dict(kwargs)
         selection_silence = Melty.silence_invalidate
         if not selected_entry and view_func_selection and _has_imgui:
-            from meltygui.views.view_func_selection import configured_view_func
+            from meltygui.core.view_selection import configured_view_func
             try:
                 selected_view = configured_view_func(input_value, kwargs, merge_o_kwargs)
             except ValueError as error:
@@ -865,8 +865,8 @@ def render_func(*args, **o_kwargs):
             kwargs['show_header'] = True
             kwargs['disable_scroll'] = False
 
-            from meltygui.views.headers import draw_header_end
-            from meltygui.views.headers import draw_header
+            from meltygui.core.header_runtime import draw_header_end
+            from meltygui.core.header_runtime import draw_header
             # A caller-passed header wins (SourcePriority: caller kwargs beat
             # defaults) - the window chrome fills in the empty slots, so a
             # custom header like fast_dock.dock_header isn't clobbered here.
@@ -2250,7 +2250,7 @@ def render_func(*args, **o_kwargs):
                 # Resolved through the module each call so columns.py hotswaps
                 # keep reaching the width-retargeting below (and to avoid a
                 # circular import at module load).
-                import meltygui.views.columns as _columns
+                import meltygui.core.column_core as _columns
                 corner_rect = get_resize_handle(draw_state)
                 handle_drag = None if frame_pinned else draw_state.on_action(
                     "left_mouse_drag", view_id="window_resize",
@@ -2843,7 +2843,7 @@ def render_func(*args, **o_kwargs):
                 # column-edge collision system (columns.window_edge_pass).
                 # Resolved through the module each call so columns.py
                 # hotswaps before reaching here.
-                import meltygui.views.columns as _columns
+                import meltygui.core.column_core as _columns
                 import meltygui.os_frame as os_frame
                 os_frame.rebase_pin(draw_state)
                 try:
@@ -3501,7 +3501,7 @@ def render_func(*args, **o_kwargs):
 
                 if closable:
                     Melty.root_draw_states[draw_state.id]
-                from meltygui.views.new_core_view import pending_window
+                from meltygui.core.render_dispatch import pending_window
 
                 from meltygui.debug.mode import Mode
 
@@ -3510,8 +3510,8 @@ def render_func(*args, **o_kwargs):
                 # pill in a window anchored to this view's bottom-right corner.
                 _has_header = kwargs.get("show_header", True)
                 # if draw_state.search_active and not _has_header and kwargs.get("searchable", False):
-                from meltygui.views.new_core_view import draw_search
-                from meltygui.views.new_core_view import search_pill_layout
+                from meltygui.core.render_dispatch import draw_search
+                from meltygui.view.search_view import search_pill_layout
                 # WINDOW_PILL: WINDOW_CLEAN's look (no resize arrow / tint,
                 # matching pending_window) without its fixed 500px width, so
                 # the pill is exactly as wide as its row.
@@ -4108,7 +4108,7 @@ def render_func(*args, **o_kwargs):
                         kwargs["tint"] = style_manager.get_tint()
 
                 nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
-                from meltygui.views.new_core_view import compute_bg_color
+                from meltygui.core.render_dispatch import compute_bg_color
                 # max_bg_depth pins the ceiling on the effective depth
                 # (meltygui.bg_depth + bg_offset) the ramp is sampled at, so a
                 # deeply nested view stops getting lighter past that step;
@@ -4139,7 +4139,7 @@ def render_func(*args, **o_kwargs):
                     # Stamped onto the draw_state so framework painters (meltygui
                     # highlights, blurr mask) read this view's effective radius.
                     draw_state.corner_radius = kwargs.get("corner_radius", 5.0)
-                    from meltygui.views.new_core_view import draw_bg
+                    from meltygui.core.render_dispatch import draw_bg
                     style_manager = Melty.global_attrs['style_manager']
 
                     bg_color = (0, 0, 0, 0)
@@ -4272,9 +4272,9 @@ def render_func(*args, **o_kwargs):
                     draw_state.selected = draw_state in Melty.selected
 
                 ########### CONTEXT MENU HANDLING ############
-                from meltygui.views.new_core_view import draw_context_menu
-                from meltygui.views.new_core_view import draw_context_menu_items
-                from meltygui.views.new_core_view import INSPECT
+                from meltygui.core.render_dispatch import draw_context_menu
+                from meltygui.core.render_dispatch import draw_context_menu_items
+                from meltygui.core.render_dispatch import INSPECT
                 # context_menu={label: callable}: a right-click opens the labels as
                 # a dropdown menu at the origin (draw_context_menu_items) instead
                 # of the inspector; an Inspect row opens the inspector. No dict:
@@ -4370,7 +4370,7 @@ def render_func(*args, **o_kwargs):
                 # if "with_footer" in kwargs and kwargs.get("with_footer", None) is not None:
                 #     imgui.set_cursor_screen_pos(
                 #         (draw_state.left, draw_state.top + draw_state.height - draw_state.footer_height))
-                #     from meltygui.views.new_core_view import empty
+                #     from meltygui.core.render_dispatch import empty
 
                 # if "with_footer" in kwargs and kwargs.get("with_footer", None) is not None:
                 #     if closable and draw_state.expanded:
@@ -4386,7 +4386,7 @@ def render_func(*args, **o_kwargs):
                 # if draw_state.closable:
                 #
                 #     imgui.set_cursor_screen_pos(header_start)
-                #     from meltygui.views.new_core_view import empty
+                #     from meltygui.core.render_dispatch import empty
                 #     empty(input_value=input_value, name=f"shadow{unique}", shadow=True, width=draw_state.width - 2,
                 #           show_bg=False, height=draw_state.header_height + 2, z_offset=-2)
                 if "with_header" in kwargs and kwargs.get("with_header", None) is not None and kwargs.get("show_header",
@@ -4524,7 +4524,7 @@ def render_func(*args, **o_kwargs):
                 # header_end_cursor = imgui.get_cursor_screen_pos()
                 # if draw_state.closable:
                 #     imgui.set_cursor_screen_pos(header_start)
-                #     from meltygui.views.new_core_view import empty
+                #     from meltygui.core.render_dispatch import empty
                 #     empty(input_value=input_value, name=f"empty_{unique}", width=draw_state.width,
                 #           show_bg=False, height=draw_state.header_height + 2, z_offset=-1)
                 #     imgui.set_cursor_screen_pos(header_end_cursor)
@@ -5677,7 +5677,7 @@ def render_func(*args, **o_kwargs):
         # if draw_state.abs_content_height > draw_state.height + draw_state.header_height + draw_state.footer_height or draw_state.closable:
         #     current_cursor = imgui.get_cursor_screen_pos()
         #     imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
-        #     from meltygui.views.new_core_view import empty
+        #     from meltygui.core.render_dispatch import empty
         #     #
         #     # empty(name=f"header space{unique}", z_offset=0.0,
         #     #       tile_mode=TileMode.MAX, width=draw_state.width,
@@ -5760,7 +5760,7 @@ def render_func(*args, **o_kwargs):
                     if getattr(draw_state, '_eval_pending', False):
                         draw_state._eval_pending = False
                         try:
-                            from meltygui.views.new_core_view import run_scoped_eval
+                            from meltygui.core.render_dispatch import run_scoped_eval
                             _eval_code = getattr(draw_state, 'eval_code', '') or ''
                             draw_state._eval_result = run_scoped_eval(
                                 _eval_code, func, draw_state, clean_args)
@@ -6075,7 +6075,7 @@ _rf_kwarg_names_cache = None
 @render_func
 def draw_kwargs_names():
     global _rf_kwarg_names_cache
-    from meltygui.views.new_core_view import draw_any
+    from meltygui.core.render_dispatch import draw_any
     draw_any(_rf_kwarg_names_cache, name="Names cache")
 
 def render_func_kwarg_names():

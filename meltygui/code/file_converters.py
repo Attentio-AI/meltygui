@@ -25,6 +25,8 @@ from importlib import reload
 
 from pathlib import Path
 from meltygui.melty import Melty
+from meltygui.core.definition_hotswap import patch_function
+from meltygui.core.definition_hotswap import canonicalize_definitions
 
 import libcst as cst
 
@@ -68,18 +70,24 @@ def _snapshot_class(cls: type) -> type:
             # keeps its own descriptors anyway - nothing to snapshot.
             continue
         if isinstance(val, types.FunctionType):
+            if val.__dict__.get("__melty_relocated__"):
+                val = inspect.unwrap(val)
             clone = types.FunctionType(val.__code__, val.__globals__, val.__name__,
                                        val.__defaults__, val.__closure__)
             clone.__kwdefaults__ = val.__kwdefaults__
             clone.__annotations__ = dict(val.__annotations__ or {})
             clone.__doc__ = val.__doc__
+            clone.__qualname__ = val.__qualname__
             members[name] = clone
         elif isinstance(val, (staticmethod, classmethod)):
             inner = val.__func__
+            if inner.__dict__.get("__melty_relocated__"):
+                inner = inspect.unwrap(inner)
             clone = types.FunctionType(inner.__code__, inner.__globals__, inner.__name__,
                                        inner.__defaults__, inner.__closure__)
             clone.__kwdefaults__ = inner.__kwdefaults__
             clone.__annotations__ = dict(inner.__annotations__ or {})
+            clone.__qualname__ = inner.__qualname__
             members[name] = type(val)(clone)
         else:
             members[name] = val
@@ -875,8 +883,18 @@ def _recompile_module(module: types.ModuleType, source: str,
         with Melty.annotation_scope():
             exec(code, module.__dict__)
 
+        new_attrs = dict(module.__dict__)
+        replacements = {
+            id(new_attrs[name]): (new_attrs[name], old)
+            for name, old in old_attrs.items()
+            if name in new_attrs and new_attrs[name] is not old
+            and ((isinstance(old, types.FunctionType) and isinstance(new_attrs[name], types.FunctionType))
+                 or (isinstance(old, type) and isinstance(new_attrs[name], type)))
+        }
+        canonicalize_definitions(replacements)
+
         for name, old_obj in old_attrs.items():
-            new_obj = module.__dict__.get(name)
+            new_obj = new_attrs.get(name)
             if new_obj is old_obj or new_obj is None:
                 continue
 
@@ -891,24 +909,13 @@ def _recompile_module(module: types.ModuleType, source: str,
                 both_wrapped = old_raw is not old_obj and new_raw is not new_obj
                 tgt, src = (old_raw, new_raw) if both_wrapped else (old_obj, new_obj)
 
-                _prev = (tgt.__code__, tgt.__defaults__,
-                         tgt.__kwdefaults__, dict(tgt.__annotations__ or {}),
-                         tgt.__doc__)
-
-                def _restore_fn(o=tgt, p=_prev):
-                    o.__code__, o.__defaults__, o.__kwdefaults__, ann, o.__doc__ = p
-                    o.__annotations__ = dict(ann)
-                _member_restores.append(_restore_fn)
-
-                tgt.__code__ = src.__code__
-                tgt.__defaults__ = src.__defaults__
-                tgt.__kwdefaults__ = src.__kwdefaults__
-                tgt.__annotations__ = src.__annotations__
-                tgt.__doc__ = src.__doc__
+                _member_restores.append(patch_function(tgt, src))
+                old_obj.__module__ = new_obj.__module__
+                old_obj.__qualname__ = new_obj.__qualname__
                 module.__dict__[name] = old_obj
                 # Mirror onto the function's other module identity (src./non-src
                 # twin) so registry-resolved addresses update too.
-                _twins = _patch_twin_raws(tgt)
+                _twins = [] if tgt.__dict__.get("__melty_relocated__") else _patch_twin_raws(tgt)
                 if _twins:
                     def _restore_twins_fn(t=tuple(_twins)):
                         _restore_twin_raws(t)
@@ -954,7 +961,14 @@ def _recompile_module(module: types.ModuleType, source: str,
                 # what the binding ends up as regardless, so moving it up is
                 # free and closes the window for every hotswappable class.
                 module.__dict__[name] = old_obj
-                _hotswap_class(old_obj, new_obj, src_map=src_map, qualname=name)
+                class_source_map = src_map
+                if new_obj.__module__ != module.__name__:
+                    import sys
+                    owner = sys.modules.get(new_obj.__module__)
+                    owner_path = vars(owner).get("__file__") if owner is not None else None
+                    if owner_path is not None:
+                        class_source_map = _attr_source_map(Path(owner_path).read_text())
+                _hotswap_class(old_obj, new_obj, src_map=class_source_map, qualname=new_obj.__qualname__)
                 _redirect_class_registrations(old_obj, new_obj)
                 invalidate_address_cache(old_obj)
                 new_code_ids |= _class_code_objects(new_obj)
@@ -1273,27 +1287,11 @@ def _hotswap_class(old_cls: type, new_cls: type, src_map: dict = None,
                 # patching its code would mutate the shared renderer itself.
                 setattr(old_cls, name, new_val)
                 continue
-            old_val.__code__ = new_val.__code__
-            old_val.__defaults__ = new_val.__defaults__
-            old_val.__kwdefaults__ = new_val.__kwdefaults__
-            old_val.__annotations__ = new_val.__annotations__
-            old_val.__doc__ = new_val.__doc__
+            patch_function(old_val, new_val, force=force)
         elif type(old_val) is staticmethod and type(new_val) is staticmethod:
-            old_fn = old_val.__func__
-            new_fn = new_val.__func__
-            old_fn.__code__ = new_fn.__code__
-            old_fn.__defaults__ = new_fn.__defaults__
-            old_fn.__kwdefaults__ = new_fn.__kwdefaults__
-            old_fn.__annotations__ = new_fn.__annotations__
-            old_fn.__doc__ = new_fn.__doc__
+            patch_function(old_val.__func__, new_val.__func__, force=force)
         elif type(old_val) is classmethod and type(new_val) is classmethod:
-            old_fn = old_val.__func__
-            new_fn = new_val.__func__
-            old_fn.__code__ = new_fn.__code__
-            old_fn.__defaults__ = new_fn.__defaults__
-            old_fn.__kwdefaults__ = new_fn.__kwdefaults__
-            old_fn.__annotations__ = new_fn.__annotations__
-            old_fn.__doc__ = new_fn.__doc__
+            patch_function(old_val.__func__, new_val.__func__, force=force)
         elif isinstance(new_val, property):
             try:
                 setattr(old_cls, name, new_val)

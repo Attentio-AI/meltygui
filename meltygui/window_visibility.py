@@ -33,7 +33,7 @@ def override_state(draw_state):
 
 
 def resolved_window_kwargs(draw_state, kwargs):
-    from meltygui.views.anywhere import anywhere_value
+    from meltygui.core.parameter_core import anywhere_value
     resolved = kwargs
     pending = getattr(draw_state, '_sa_pending', None) or {}
     for name in ('closed', 'window_pos'):

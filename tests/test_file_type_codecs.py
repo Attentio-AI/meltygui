@@ -166,7 +166,7 @@ def test_codec_view_keeps_render_host_capture():
 
 def test_codec_view_routes_by_type():
     from meltygui.code.new_converters import _codec_view
-    from meltygui.views.new_core_view import draw_any
+    from meltygui.core.render_dispatch import draw_any
 
     def text_view(**kw):
         return False, None

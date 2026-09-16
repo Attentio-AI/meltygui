@@ -1012,7 +1012,7 @@ def save_crash_report(text, exception=None, thread_name=None, frames=None, error
         path.write_text(header + _ANSI_RE.sub("", text), encoding="utf-8")
         _prune_crash_reports(directory)
         try:
-            from meltygui.widgets.crash_reports import reports_changed
+            from meltygui.model.trace_report_model import reports_changed
             reports_changed()
         except Exception:
             pass                                  # window's not loaded yet: nothing to repaint

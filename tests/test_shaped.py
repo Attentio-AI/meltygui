@@ -281,8 +281,8 @@ def test_registered_app_defaults_route_the_two_use_cases():
     for 1-D/2-D tensors, draw_voxels for 3-D+ (importing the views registers
     them)."""
     from meltygui.melty import Melty
-    import meltygui.views.new_core_view as new_core_view
-    import meltygui.views.line_graph_playground as line_graph_playground
+    import meltygui.core.render_dispatch as new_core_view
+    import meltygui.core.graph_core as line_graph_playground
     import meltygui.tensor.voxel_playground as voxel_playground
 
     look = lambda v, key="value": Melty.get_default_view_function(real_type=type(v), attrib_key=key, value=v)
