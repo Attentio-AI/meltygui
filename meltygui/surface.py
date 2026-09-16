@@ -35,7 +35,7 @@ import meltygui.window_api as glfw
 import meltygui_imgui as imgui
 import OpenGL.GL as gl
 
-from meltygui.runtime import Melty
+from meltygui.melty import Melty
 import meltygui.mouse_cursor as mouse_cursor
 import meltygui.os_frame as os_frame
 import meltygui.scene_target as scene_target
@@ -45,7 +45,7 @@ import meltygui.wayland_color as wayland_color
 import meltygui.wayland_move as wayland_move
 import meltygui.events.input_handler as input_handler
 from meltygui.toggles import Toggles
-import meltygui.utils.custom_views as views
+import meltygui.utils.render_utils as views
 from meltygui.utils.glfw_utils import request_render
 
 # --- Per-window state -----------------------------------------------------------
@@ -461,7 +461,7 @@ class Surface:
         tint, capped at the same max_bg_value), edge to edge with the alpha
         cut's corner radius and no outline stroke. Sets the style tint for
         the body; returns (the tint to restore, the ground's colour)."""
-        from meltygui.views.values import draw_bg
+        from meltygui.views.new_core_view import draw_bg
         style_manager = Melty.style_manager
         previous_tint = style_manager.get_tint()
         tint = self.tint if self.tint is not None else Toggles.Melty.app_root_tint

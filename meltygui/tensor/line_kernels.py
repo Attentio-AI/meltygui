@@ -4,7 +4,7 @@ Only per-line range metadata and the final RGBA image are allocated. Source
 samples are read in place, in their original dtype; no packed series texture.
 """
 import numpy as np
-from meltygui.tensor import kernels
+from meltygui.tensor import cuda_march as kernels
 
 _SOURCE = kernels.KERNEL.split('struct Vol {', 1)[0] + r'''
 extern "C" __global__ void line_ranges(const unsigned char *data, int dtype,

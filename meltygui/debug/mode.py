@@ -5,11 +5,11 @@ from enum import Enum
 from pathlib import Path, PosixPath
 from typing import Optional, Any
 
-from meltygui.state.draw_state import Anchor
-from meltygui.state.draw_state import Pin
-from meltygui.state.object import DictConversion
-from meltygui.state.enums import RelaxedEnum
-from meltygui.rendering.registry import RenderFuncs
+from meltygui.state.new_core_model import Anchor
+from meltygui.state.new_core_model import Pin
+from meltygui.state.dict_conversion import DictConversion
+from meltygui.state.model_enums import RelaxedEnum
+from meltygui.rendering.render_funcs import RenderFuncs
 from meltygui.toggles import WindowManager
 from meltygui.code.chain_converters import module_to_address
 from meltygui.code.chain_converters import address_to_general_parse
@@ -45,20 +45,20 @@ from meltygui.views.headers import draw_footer
 from meltygui.views.headers import draw_header_end
 from meltygui.views.headers import draw_header
 from meltygui.views.cst_proxy import *
-from meltygui.views.values import draw_collection
-from meltygui.views.values import draw_comment
-from meltygui.views.values import sort_dict_alphabetically
-from meltygui.views.values import unsort_dict_alphabetically
-from meltygui.views.values import draw_with_modes
-from meltygui.views.values import draw_type
-from meltygui.views.values import class_to_var_dict
-from meltygui.views.values import var_dict_to_class
-from meltygui.views.values import draw_dropdown
-from meltygui.views.values import draw_blank
-from meltygui.views.values import draw_drop_down_item
-from meltygui.views.values import draw_type_name
-from meltygui.views.values import type_lens
-from meltygui.editor.text import draw_text
+from meltygui.views.new_core_view import draw_collection
+from meltygui.views.new_core_view import draw_comment
+from meltygui.views.new_core_view import sort_dict_alphabetically
+from meltygui.views.new_core_view import unsort_dict_alphabetically
+from meltygui.views.new_core_view import draw_with_modes
+from meltygui.views.new_core_view import draw_type
+from meltygui.views.new_core_view import class_to_var_dict
+from meltygui.views.new_core_view import var_dict_to_class
+from meltygui.views.new_core_view import draw_dropdown
+from meltygui.views.new_core_view import draw_blank
+from meltygui.views.new_core_view import draw_drop_down_item
+from meltygui.views.new_core_view import draw_type_name
+from meltygui.views.new_core_view import type_lens
+from meltygui.editor.text_editor import draw_text
 from meltygui.code.new_converters import code_file_io
 from meltygui.code.new_converters import convert_in_and_out
 from meltygui.code.new_converters import string_to_cst_module

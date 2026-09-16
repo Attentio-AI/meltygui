@@ -1,7 +1,7 @@
 """File labels shared by the file UI and chat change summaries."""
 from pathlib import Path
 import meltygui_imgui as imgui
-from meltygui.runtime import Melty
+from meltygui.melty import Melty
 from meltygui.toggles import Toggles, Tint
 from meltygui.hdr_color import pack_color
 from meltygui.views.headers import flat_button

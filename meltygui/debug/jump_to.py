@@ -3,9 +3,9 @@ import types
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
-import meltygui.code.address as address
-from meltygui.code.address import Address
-from meltygui.rendering.core import render_func
+import meltygui.code.fileref as address
+from meltygui.code.fileref import Address
+from meltygui.rendering.core_render import render_func
 
 
 def draw_jump_to(input_value: Address, unique, width=30, error_msg=None,
@@ -62,7 +62,7 @@ def draw_jump_to(input_value: Address, unique, width=30, error_msg=None,
     # draw_state used to claim that press; without the null, clicking Open
     # would also place the caret in the document under the floating bar).
     from meltygui.views.headers import flat_button
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     imgui.set_cursor_screen_pos((x0 + pad_x, y0 + pad_y))
     _open_label = f"{folder_icon} Open"
     _bw = imgui.calc_text_size(_open_label).x + Melty.px(15)

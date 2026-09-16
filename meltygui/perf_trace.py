@@ -75,7 +75,7 @@ def _open_log():
 
 
 def _frame() -> int:
-    mel = (sys.modules.get("meltygui.runtime")
+    mel = (sys.modules.get("meltygui.melty")
            or sys.modules.get("lsd.gl_gui.melty"))
     try:
         return mel.Melty.frame_count if mel is not None else -1

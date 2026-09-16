@@ -2,7 +2,7 @@ import itertools
 import random
 import uuid
 
-from meltygui.state.enums import RelaxedEnum
+from meltygui.state.model_enums import RelaxedEnum
 from meltygui.rendering.decorators.core_decoration import defaults
 
 # Monotonic id source: a per-process RANDOM start + a counter. next() on an

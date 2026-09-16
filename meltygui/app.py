@@ -141,9 +141,9 @@ def _run_imports():
         import meltygui_imgui as imgui  # noqa: F401
         import OpenGL.GL  # noqa: F401
         mark('imgui/numpy/GL imported (bg)')
-        import meltygui.runtime as runtime  # noqa: F401
+        import meltygui.melty as runtime  # noqa: F401
         import meltygui.surface as surface  # noqa: F401
-        import meltygui.editor.text as text_editor
+        import meltygui.editor.text_editor as text_editor
         import meltygui.views.texture_view as texture_view  # noqa: F401
         mark('meltygui imported (bg)')
     except BaseException as e:  # re-raised on the main thread
@@ -166,7 +166,7 @@ def _init_melty():
     the global style manager, meltygui's flags."""
     import meltygui.window_api as glfw
     import meltygui_imgui as imgui
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     from meltygui.fonts import FontManager
     from meltygui.surface import Surface
     from meltygui.toggles import Toggles
@@ -252,7 +252,7 @@ def _register_editable(file):
     and its files hotswap, exactly like the checkout's."""
     if not file:
         return
-    from meltygui.code.address import add_editable_root
+    from meltygui.code.fileref import add_editable_root
     add_editable_root(file)
 
 
@@ -263,7 +263,7 @@ def _register_projects():
     app's own tree. The store is a small pickle; read once at init."""
     try:
         from meltygui.extensions import source_folders as project_roots
-        from meltygui.code.address import add_editable_root
+        from meltygui.code.fileref import add_editable_root
         for root in project_roots():
             add_editable_root(root)
     except Exception:
@@ -348,7 +348,7 @@ def _root_body(fn, name, view_kwargs=None, config=None):
         if tint is None:
             fn()
             return
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         previous = Melty.style_manager.get_tint()
         Melty.style_manager.set_imgui_tint(*tint[:4])
         try:
@@ -452,7 +452,7 @@ def run():
     import meltygui.window_api as glfw
     _wait_imports()
     _init_melty()
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     from meltygui.surface import Surface
     from meltygui.extensions import call
     if _ROOTS:
@@ -562,7 +562,7 @@ def _save_session():
 def _open_requested_children():
     """Child surfaces the render wrapper asked for (glfw_window=True) since
     the last tick: Melty.surface_requests, filled by surface_window_request."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     from meltygui.surface import Surface
     requests = Melty.surface_requests
     while requests:
@@ -581,7 +581,7 @@ def _open_requested_children():
 
 def _child_body(req):
     def body(surface):
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         Melty.draw_surface_root(req, surface)
     return body
 
@@ -590,7 +590,7 @@ def _close_stale_children():
     """Immediate mode: a child whose glfw_window=True call was not made
     this tick closes (its parent stopped drawing it); the next call
     reopens it."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     for req in list(Melty.surface_windows.values()):
         child = req.surface
         if child is not None and req.tick != Melty.app_tick:
@@ -701,7 +701,7 @@ def pressed(combo):
     events of the active window (GLFW press + repeat, so a held chord
     repeats). Modifiers must match exactly."""
     import meltygui.window_api as glfw
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     parts = [p.strip().lower() for p in combo.split('+') if p.strip()]
     mods = 0
     key = None
@@ -718,5 +718,5 @@ def pressed(combo):
 
 def content_size():
     """The (width, height) a root-level view fills in the active window."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     return Melty.root_fill

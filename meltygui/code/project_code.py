@@ -26,7 +26,7 @@ _sync_spans.
 
 from pathlib import Path
 
-from meltygui.code.address import Address
+from meltygui.code.fileref import Address
 
 
 def _pending_generation(path):
@@ -228,8 +228,8 @@ class FileCode:
         the editor-keystroke shape). Records the disk baseline on the first
         queue (no-op detection + merge base) and arms the flush-time conflict
         fingerprint, both exactly as a load through code_file_io would."""
-        from meltygui.runtime import Melty
-        from meltygui.code.address import is_writable_file
+        from meltygui.melty import Melty
+        from meltygui.code.fileref import is_writable_file
         from meltygui.code.new_codecs import codec_for_path
         from meltygui.code.new_codecs import _span_fingerprint
         from meltygui.editor.pending_save import PendingSave

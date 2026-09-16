@@ -53,9 +53,9 @@ import time
 
 import meltygui.window_api as glfw
 
-from meltygui.runtime import Melty
+from meltygui.melty import Melty
 from meltygui.toggles import Toggles
-from meltygui.state.undo import UndoManager
+from meltygui.state.core_undo import UndoManager
 from meltygui.widgets.orchestrator import Orchestrator
 from meltygui.widgets.orchestrator import cue_get
 from meltygui.widgets.selectors import resolve

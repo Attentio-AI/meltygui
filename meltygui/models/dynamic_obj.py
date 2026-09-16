@@ -1,5 +1,5 @@
-from meltygui.state.object import DictConversion
-from meltygui.utils.custom_views import LSDView
+from meltygui.state.dict_conversion import DictConversion
+from meltygui.utils.render_utils import LSDView
 from meltygui.state.core_enums import generate_id
 
 

@@ -9,7 +9,7 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip('meltygui_pycuda.gl')
 
-import meltygui.tensor.interop as cuda_interop
+import meltygui.tensor.cuda_interop as cuda_interop
 from meltygui.gl_state import GLState
 
 needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="no CUDA device")
@@ -123,7 +123,7 @@ def test_voxel_io_preserves_source_for_renderer(gl_context):
         pytest.skip("no CUDA context available alongside the GL context")
     from test_render_func_integration import _init_melty, _tick_frame
     from conftest import begin_frame, end_frame
-    from meltygui.tensor.voxels import voxel_io
+    from meltygui.tensor.voxel_playground import voxel_io
 
     meltygui = _init_melty()
     got = {}

@@ -1,5 +1,5 @@
 """State owned by optional source-view integrations."""
-from meltygui.state.object import DictConversion
+from meltygui.state.dict_conversion import DictConversion
 from meltygui.rendering.decorators.core_decoration import no_save
 
 

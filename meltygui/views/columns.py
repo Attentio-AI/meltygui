@@ -6,9 +6,9 @@ from meltygui.hdr_color import pack_color
 import meltygui.mouse_cursor as mouse_cursor
 from meltygui.utils.glfw_utils import request_render
 from meltygui.views.blit_offscreen import snap_int
-from meltygui.rendering.core import render_func
+from meltygui.rendering.core_render import render_func
 from meltygui.rendering.decorators.core_decoration import Core
-from meltygui.views.values import draw_any
+from meltygui.views.new_core_view import draw_any
 from meltygui.debug.invalidation_tracker import Note
 
 MIN_COLUMN_WIDTH = 60
@@ -600,7 +600,7 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
     # other frame and the app crawled 16 px per 200 of hand whenever a
     # context menu was open (09-13). The ancestor's move gesture replays
     # the OS edges; the child just rides.
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     move = (os_ctx is not None and bool(getattr(os_ctx, "move", False))
             and getattr(window, "_hand_move_frame", None) == Melty.frame_count)
     released = not os_frame._any_button_down()
@@ -963,7 +963,7 @@ def _drag_live():
     """Mirror of the frozen-blit gate's activity test in blit_offscreen: a
     mouse drag (any button) is in flight. Programmatic edge moves (foreign
     width writes) fall outside it, so they still invalidate normally."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     return Melty.resize_gesture_live()
 
 
@@ -1053,7 +1053,7 @@ def window_edge_pass(window):
     the solve the window lines up with its edges exactly like cells do:
     near edge off 0 → window_pos slides + everything re-bases; far edge off
     the size → the size follows."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     if getattr(window, "_edges_frame", None) == Melty.frame_count:
         return
     window._edges_frame = Melty.frame_count
@@ -1135,7 +1135,7 @@ def _frame_pass(window, axis):
     the foreign size change in, floor the window's minimum at the pile,
     offer the frame drag handles, solve, and line the window up with its
     frame edges. Returns True when any edge of the axis moved."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     from meltygui.toggles import Toggles
     frame_attr = _REGISTRY[axis][2]
     size = window.width if axis == "x" else window.height
@@ -1768,7 +1768,7 @@ class ColumnLayout:
                     # Resize press, before any drag motion: freeze hosts
                     # snap their clean pre-drag capture this frame
                     # (mark_start_offscreen).
-                    from meltygui.runtime import Melty
+                    from meltygui.melty import Melty
                     Melty.resize_press_frame = Melty.frame_count
 
                 if not drag:
@@ -2153,7 +2153,7 @@ class RowLayout:
                                              view_id=f"row_edge{handle_tag}_{k}",
                                              rect=rect, priority_delta=1)
                 if press:
-                    from meltygui.runtime import Melty
+                    from meltygui.melty import Melty
                     Melty.resize_press_frame = Melty.frame_count
                 if not drag:
                     continue

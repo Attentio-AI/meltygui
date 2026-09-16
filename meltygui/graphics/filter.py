@@ -8,9 +8,9 @@ from functools import partial
 
 import numpy as np
 
-from meltygui.graphics.compiler import ProgramCompiler
-from meltygui.graphics.compiler import CompiledProgram
-from meltygui.graphics.compiler import ShaderCompilationError
+from meltygui.graphics.shader_compiler import ProgramCompiler
+from meltygui.graphics.shader_compiler import CompiledProgram
+from meltygui.graphics.shader_compiler import ShaderCompilationError
 from meltygui.graphics.executor import FilterExecutor
 from meltygui.graphics.registry import get_registry
 

@@ -1,7 +1,7 @@
 import functools
 from typing import Any
 
-from meltygui.utils.custom_views import print_stack_trace
+from meltygui.utils.render_utils import print_stack_trace
 from meltygui.utils.glfw_utils import request_render
 from meltygui.rendering.decorators.core_decoration import auto_eval
 from meltygui.rendering.decorators.core_decoration import Core

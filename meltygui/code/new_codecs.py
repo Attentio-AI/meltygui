@@ -12,11 +12,11 @@ from dataclasses import dataclass
 from enum import EnumType
 from pathlib import Path
 
-from meltygui.code.address import Address
-from meltygui.code.address import _evict_linecache
-from meltygui.code.address import shift_sibling_linenos
-from meltygui.code.address import is_editable_source
-from meltygui.code.address import is_writable_file
+from meltygui.code.fileref import Address
+from meltygui.code.fileref import _evict_linecache
+from meltygui.code.fileref import shift_sibling_linenos
+from meltygui.code.fileref import is_editable_source
+from meltygui.code.fileref import is_writable_file
 from meltygui.code.chain_converters import _ensure_import_lines
 from meltygui.code.chain_converters import _resolve_call_address
 from meltygui.code.chain_converters import _split_span_at_call
@@ -25,8 +25,8 @@ from meltygui.code.bubbling import base_of_bubbling
 from meltygui.code.file_converters import _detect_newline
 from meltygui.rendering.decorators.core_decoration import Core
 
-from meltygui.runtime import Melty
-from meltygui.runtime import FileWatch
+from meltygui.melty import Melty
+from meltygui.melty import FileWatch
 from meltygui.perf_trace import trace_rl as _ptrace_rl
 from meltygui.graphics.texture_manager import PIL_TO_GL_FORMAT
 from meltygui.graphics.texture_manager import PendingTexture

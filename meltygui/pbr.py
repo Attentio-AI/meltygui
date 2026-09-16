@@ -66,7 +66,7 @@ from meltygui.shader_func import shader_func
 
 def _frame_framebuffer():
     """The frame's render target (the fp16 scene while a frame is open)."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     return Melty.default_framebuffer()
 
 

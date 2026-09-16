@@ -11,7 +11,7 @@ def requested_window_closed(closed, kwargs, *, first_request=False):
     return closed
 
 
-from meltygui.state.object import DictConversion
+from meltygui.state.dict_conversion import DictConversion
 
 
 class WindowOverrideState(DictConversion):

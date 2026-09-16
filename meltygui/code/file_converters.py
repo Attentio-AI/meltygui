@@ -24,17 +24,17 @@ from enum import EnumMeta
 from importlib import reload
 
 from pathlib import Path
-from meltygui.runtime import Melty
+from meltygui.melty import Melty
 
 import libcst as cst
 
 from meltygui.utils.glfw_utils import print_stack_trace
 import meltygui.code.hotswap_guard as _hotswap_guard
-from meltygui.code.address import Address
-from meltygui.code.address import invalidate_address_cache
-from meltygui.code.address import update_address_cache
-from meltygui.code.address import is_editable_source
-from meltygui.code.address import shift_sibling_linenos
+from meltygui.code.fileref import Address
+from meltygui.code.fileref import invalidate_address_cache
+from meltygui.code.fileref import update_address_cache
+from meltygui.code.fileref import is_editable_source
+from meltygui.code.fileref import shift_sibling_linenos
 from meltygui.code.libcst_conversion import invalidate_usage_cache
 
 
@@ -164,7 +164,7 @@ def load_span_text(ref: Address) -> str:
 # ║  @render_func converters                                                     ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-from meltygui.rendering.core import render_func
+from meltygui.rendering.core_render import render_func
 
 
 # --- Basic type converters ---
@@ -1152,7 +1152,7 @@ def stamp_hotswap_baselines(delay: float = 0.0) -> int:
     08-24), amplified by get_source_segment's quadratic re-split (fixed in
     _segment)."""
     import sys as _sys
-    from meltygui.code.address import is_editable_source
+    from meltygui.code.fileref import is_editable_source
     from meltygui.perf_trace import span as _pt_span
     if delay:
         time.sleep(delay)

@@ -152,7 +152,7 @@ class Background:
             return result
 
 
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         if Melty.frame_count < 2:
             debounce = None
 
@@ -277,7 +277,7 @@ class Background:
                         cls._user_cache[uid].popitem(last=False)
             cls._active.discard(h)
             if invalidate_id is not None:
-                from meltygui.runtime import Melty
+                from meltygui.melty import Melty
                 from meltygui.utils.glfw_utils import request_render
                 if on_frame is None or abs(Melty.frame_count - on_frame) >= 1:
                     note = Note(name=f"Background Invalidate {invalidate_id}", reason=f"func={func_name}", tint=(0,0,1))

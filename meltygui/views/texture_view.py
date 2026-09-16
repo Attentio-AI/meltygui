@@ -15,8 +15,8 @@ import numpy
 from meltygui_imgui.core import _DrawList
 
 from meltygui.hdr_color import pack_color
-from meltygui.state.draw_state import ZoomState
-from meltygui.rendering.core import render_func
+from meltygui.state.new_core_model import ZoomState
+from meltygui.rendering.core_render import render_func
 from meltygui.rendering.decorators.core_decoration import Core
 from meltygui.views.headers import draw_header
 

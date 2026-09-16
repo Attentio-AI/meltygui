@@ -1,4 +1,4 @@
-from meltygui.code.address import Address
+from meltygui.code.fileref import Address
 
 
 class _Unset:

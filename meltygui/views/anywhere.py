@@ -126,8 +126,8 @@ def _sources_for(draw_state, class_to_show=None):
     (a drag writing per-release, say) reuse the parsed hosts. class_to_show
     defaults to the value's runtime class, so the @defaults/class-var rows
     resolve the same way here as under the context menu."""
-    from meltygui.views.values import ContextMenuState
-    from meltygui.views.values import collect_input_sources
+    from meltygui.views.new_core_view import ContextMenuState
+    from meltygui.views.new_core_view import collect_input_sources
     if not draw_state._call_site_captured and not draw_state._call_site_requested:
         draw_state._call_site_requested = True
         draw_state.invalidate_up(max_depth=6)
@@ -625,7 +625,7 @@ def get_source_for(attr_name, draw_state, class_to_show=None):
 _FRAMEWORK_CALLER_DIRS = ("/meltygui/rendering/", "/meltygui/views/",
                           "/meltygui/code/", "/meltygui/state/", "/meltygui/utils/",
                           "/meltygui/editor/", "/meltygui_pro/editor/")
-_FRAMEWORK_CALLER_FILES = ("runtime.py", "app.py", "surface.py", "background.py")
+_FRAMEWORK_CALLER_FILES = ("melty.py", "app.py", "surface.py", "background.py")
 
 
 def _is_framework_caller(location):
@@ -1044,7 +1044,7 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
         # the old draw_state fallback for calls without a renderer source.
         _setting = _setting_source(srcs, attr_name)
         _kind = srcs["kinds"].get(_setting) if _setting is not None else None
-        from meltygui.rendering.core import _draw_state_reserved_names
+        from meltygui.rendering.core_render import _draw_state_reserved_names
         # None (DrawState not constructible yet) makes reserved set unknown;
         # keep the legacy pick for the call rather than throwing.
         _mirrored = attr_name not in (_draw_state_reserved_names() or ())
@@ -1238,7 +1238,7 @@ def clear_anywhere(attr_name, draw_state, source, class_to_show=None):
         if isinstance(_ap, dict) and attr_name in _ap:
             del _ap[attr_name]
             cleared = True
-        from meltygui.rendering.core import OBJ_ATTR_PARAMS
+        from meltygui.rendering.core_render import OBJ_ATTR_PARAMS
         if (attr_name in OBJ_ATTR_PARAMS
                 and getattr(draw_state, attr_name, None) is not None):
             setattr(draw_state, attr_name, None)
@@ -1383,8 +1383,8 @@ def _func_param_names(func):
         params = inspect.signature(inspect.unwrap(func)).parameters
     except (TypeError, ValueError):
         return []
-    from meltygui.rendering.core import _AUTO_PARAM_EXCLUDE
-    from meltygui.rendering.core import _is_event_param_name
+    from meltygui.rendering.core_render import _AUTO_PARAM_EXCLUDE
+    from meltygui.rendering.core_render import _is_event_param_name
     out = []
     for name, p in params.items():
         if name in _AUTO_PARAM_EXCLUDE or _is_event_param_name(name):

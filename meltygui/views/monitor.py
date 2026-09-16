@@ -3,7 +3,7 @@ import threading
 import time
 
 from meltygui.mcp_server import _LOG_RESULT_CAP
-from meltygui.rendering.registry import RenderFuncs
+from meltygui.rendering.render_funcs import RenderFuncs
 from meltygui.rendering.decorators.window_decoration import window
 
 _SENTINEL = object()

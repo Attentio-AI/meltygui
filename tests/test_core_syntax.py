@@ -733,8 +733,8 @@ class TestConsumers(unittest.TestCase):
         # The code host rewrites the held tree to Bubbling_<Base>; the live-view
         # overlay's def detection must see through that on BOTH parsers.
         from meltygui.code.bubbling import install_bubbling
-        from meltygui.editor.live_views import _is_funcdef_node
-        from meltygui.editor.live_views import _is_def_parse
+        from meltygui.editor.live_view_views import _is_funcdef_node
+        from meltygui.editor.live_view_views import _is_def_parse
         class Root:
             def _mark_changed(self):
                 pass
@@ -888,7 +888,7 @@ class TestScannerParity(unittest.TestCase):
         self.assertGreater(checked, 50)
 
     def test_worker_on_big_files(self):
-        for name in ("editor/text.py", "toggles.py", "views/values.py"):
+        for name in ("editor/text_editor.py", "toggles.py", "views/new_core_view.py"):
             path = SRC / name
             self._check(path.read_text(encoding="utf-8"), path, frontends=("worker",))
 
@@ -966,7 +966,7 @@ class TestIncremental(unittest.TestCase):
         self._check(SAMPLE, "sample")
 
     def test_src_files(self):
-        for name in ("toggles.py", "code/live_view.py", "editor/text.py",
+        for name in ("toggles.py", "code/live_view.py", "editor/text_editor.py",
                      "editor/pending_save.py", "rendering/shaped.py"):
             path = SRC / name
             self._check(path.read_text(encoding="utf-8"), name)

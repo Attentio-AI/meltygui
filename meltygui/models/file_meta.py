@@ -35,7 +35,7 @@ import threading
 import time
 from pathlib import Path
 
-from meltygui.state.object import DictConversion
+from meltygui.state.dict_conversion import DictConversion
 from meltygui.rendering.decorators.core_decoration import defaults
 from meltygui.rendering.decorators.core_decoration import no_save
 
@@ -409,7 +409,7 @@ class FileMetaProxy(dict):
 
     def _repaint(self):
         try:
-            from meltygui.runtime import Melty
+            from meltygui.melty import Melty
             cache = getattr(Melty, "cache", None)
             if cache is not None:
                 cache.invalidate_all()

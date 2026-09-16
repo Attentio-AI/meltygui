@@ -24,23 +24,23 @@ from pathlib import PosixPath, Path
 import meltygui_imgui as imgui
 import libcst as cst
 
-from meltygui.runtime import FileWatch
-from meltygui.runtime import Melty
+from meltygui.melty import FileWatch
+from meltygui.melty import Melty
 from meltygui.background import Background
-from meltygui.state.draw_state import Pin
-from meltygui.state.draw_state import Anchor
+from meltygui.state.new_core_model import Pin
+from meltygui.state.new_core_model import Anchor
 from meltygui.toggles import Toggles
 from meltygui.utils.glfw_utils import request_render
 from meltygui.utils.glfw_utils import print_stack_trace
 from meltygui.code.cache_tree import UNSET_VALUE
 from meltygui.code.path_finder import Pending
 from meltygui.code.path_finder import PendingState
-from meltygui.rendering.core import render_func
-from meltygui.code.address import Address
-from meltygui.code.address import to_address
-from meltygui.code.address import update_address_cache
-from meltygui.code.address import _evict_linecache
-from meltygui.code.address import shift_sibling_linenos
+from meltygui.rendering.core_render import render_func
+from meltygui.code.fileref import Address
+from meltygui.code.fileref import to_address
+from meltygui.code.fileref import update_address_cache
+from meltygui.code.fileref import _evict_linecache
+from meltygui.code.fileref import shift_sibling_linenos
 from meltygui.code.file_converters import _detect_newline
 from meltygui.code.file_converters import _split_lines
 from meltygui.code.file_converters import _recompile
@@ -57,7 +57,7 @@ from meltygui.code.libcst_conversion import NO_DEFAULT
 from meltygui.perf_trace import trace as _ptrace
 from meltygui.perf_trace import span as _pspan
 from meltygui.views.headers import draw_header
-from meltygui.editor.text import draw_text
+from meltygui.editor.text_editor import draw_text
 from meltygui.rendering.decorators.core_decoration import defaults
 
 
@@ -1092,7 +1092,7 @@ def run_button(input_value: any, with_kwargs=None, draw_state=None, clicked=Fals
     running = draw_state._running is input_value if run_in_background else False
 
     fa_run_arrow = ""
-    from meltygui.views.values import button
+    from meltygui.views.new_core_view import button
     if clicked or running or button(f"{fa_run_arrow} {input_value.__name__}##{draw_state.unique}",
                                     height=30, draw=True, value=0.4, saturation=1.5,
                                     name=f"{input_value.__name__}{draw_state.unique}_run")[0]:
@@ -1120,7 +1120,7 @@ def address_to_general_parse(input_value: Address, pending=False, unique=None, c
     if draw_state.frame_count < 2 and auto_load:
         load = True
 
-    from meltygui.views.values import button
+    from meltygui.views.new_core_view import button
     file_name = input_value.path.name if input_value.path is not None else "Unknown file"
     folder_icon = ""
     # if button(f"{folder_icon} {file_name}", height=30, value=0.4, saturation=1.5)[0]:
@@ -1315,8 +1315,8 @@ def focus(input_value, path=(), default=None, kind=None, draw_state=None, unique
     GeneralParse dict (code-comment / decoration tint), a draw_state, or a data
     class instance.
     """
-    from meltygui.views.values import draw_tuple
-    from meltygui.views.values import button
+    from meltygui.views.new_core_view import draw_tuple
+    from meltygui.views.new_core_view import button
 
     changed, new_value = False, input_value
     if not path:

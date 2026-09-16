@@ -14,9 +14,9 @@ from pathlib import Path
 
 from PIL import Image
 
-from meltygui.code.address import Address
-from meltygui.code.address import is_editable_source
-from meltygui.code.address import is_writable_file
+from meltygui.code.fileref import Address
+from meltygui.code.fileref import is_editable_source
+from meltygui.code.fileref import is_writable_file
 from meltygui.code.new_codecs import extension_to_codec
 from meltygui.code.new_codecs import codec_for_path
 from meltygui.code.new_codecs import ImageCodec
@@ -166,7 +166,7 @@ def test_codec_view_keeps_render_host_capture():
 
 def test_codec_view_routes_by_type():
     from meltygui.code.new_converters import _codec_view
-    from meltygui.views.values import draw_any
+    from meltygui.views.new_core_view import draw_any
 
     def text_view(**kw):
         return False, None

@@ -21,10 +21,10 @@ import json
 import threading
 import time
 
-from meltygui.completion.service import FimRequest
-from meltygui.completion.service import FimResult
-from meltygui.completion.service import FimSession
-from meltygui.completion.service import fim_provider
+from meltygui.completion.fim import FimRequest
+from meltygui.completion.fim import FimResult
+from meltygui.completion.fim import FimSession
+from meltygui.completion.fim import fim_provider
 
 
 class OllamaSession(FimSession):
@@ -34,7 +34,7 @@ class OllamaSession(FimSession):
 
     def __init__(self, account="default", host=None, timeout_s=30.0):
         import httpx
-        from meltygui.accounts.ui import account_field
+        from meltygui.accounts.internet_accounts import account_field
         self.account = account
         host = host or account_field("ollama", account, "host") or "http://localhost:11434"
         self.host = host.rstrip("/")
@@ -222,7 +222,7 @@ def ollama_fim(req: FimRequest, session: OllamaSession, model="qwen2.5-coder:7b"
     inlined through `annotated_prefix`. `device` / `keep_alive` default to
     the account's settings (Internet Accounts → Ollama)."""
     from meltygui.toggles import Toggles
-    from meltygui.accounts.ui import account_field
+    from meltygui.accounts.internet_accounts import account_field
     if device is None:
         device = account_field("ollama", session.account, "device", "auto")
     if keep_alive is None:

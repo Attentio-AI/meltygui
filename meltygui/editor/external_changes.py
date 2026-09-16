@@ -11,9 +11,9 @@ change, so Melty.read_code at render time is both fresh and cheap.
 import difflib
 from pathlib import Path
 
-from meltygui.rendering.registry import RenderFuncs
+from meltygui.rendering.render_funcs import RenderFuncs
 from meltygui.utils.glfw_utils import request_render
-from meltygui.rendering.core import render_func
+from meltygui.rendering.core_render import render_func
 from meltygui.rendering.decorators.window_decoration import window
 from meltygui.editor.pending_save import _diff_lines_with_numbers
 
@@ -50,8 +50,8 @@ class ExternalChanges:
         event, with the code_cache text as it was BEFORE the event popped it.
         old_text=None means the studio never read the file — nothing to
         baseline against, so it isn't tracked."""
-        from meltygui.runtime import FileWatch
-        from meltygui.runtime import Melty
+        from meltygui.melty import FileWatch
+        from meltygui.melty import Melty
         if FileWatch.is_self_write(src_path):
             return              # an in-process save, not an outside program
         # An external write obsoletes any cached NO-OP pending edits for this
@@ -158,8 +158,8 @@ for _n in ("meltygui.editor.external_changes",
 @window(disable_scroll=False, tint=(0.16296297311782837, 0.21243055828288198, 0.2611111), icon=None)
 @render_func()
 def draw_external_changes(draw_state=None):
-    from meltygui.runtime import Melty
-    from meltygui.runtime import FileWatch
+    from meltygui.melty import Melty
+    from meltygui.melty import FileWatch
     ExternalChanges._window_ds = draw_state
     RenderFuncs.draw_function(ExternalChanges.dismiss_all, tint=(0, 0, 0, 1), show_bg=False, shadow=False, icon=None)
 

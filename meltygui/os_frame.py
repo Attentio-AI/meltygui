@@ -104,7 +104,7 @@ def reset(reason="studio start"):
     _STATE outlives a studio restart inside the server process, and a new
     window met the old one's numbers as a giant foreign change — roots
     re-based against a stale origin, pushed, left outside (08-27)."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     _STATE["expected"] = [None, None]
     _STATE["inflight"] = [None, None]
     _STATE["size_expected"] = [None, None]
@@ -214,7 +214,7 @@ def _root_windows():
     uses its registered windows; GLFW surfaces keep their own live roots
     because the persisted registry also contains other surfaces' windows.
     Include parentless entries in the surface-local root_draw_states too."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     from meltygui.surface import Surface
     seen, roots = set(), []
     if Surface.active is not None:
@@ -400,7 +400,7 @@ def _all_windows():
     the nested windows (Melty.root_draw_states holds those under their
     parent's id) — parents before children (write-backs of a child are
     relative to its parent's motion). Deduped by identity."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     seen, windows = set(), []
     for ds in _root_windows():
         seen.add(id(ds))
@@ -469,7 +469,7 @@ def begin_frame():
     resizes land at frame start, a compositor's through the resize
     callback) and the observed position — and fold in what we did not
     request."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     # Surfaces saved before this code was hotswapped have no move history.
     _STATE.setdefault("move_requests", {"x": [], "y": []})
     _STATE["frame"] = Melty.frame_count
@@ -738,7 +738,7 @@ def attach(window, axis, has_pending=True, hand_move=False):
     Toggles.Melty.window_move_pushes_os_edges), none of the OS window's
     own drags, no OS edge moved since this window last saw it — so an
     idle frame touches nothing."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     from meltygui.toggles import Toggles
     if not _enabled() or _STATE["frame"] != Melty.frame_count:     # only in a frame begin_frame set up
         return None
@@ -837,7 +837,7 @@ def content_size(display):
     back to the old size for a frame and pushed out again the next — the
     dividers froze and jittered against it (Lukas 09-13). Foreign sizes
     are folded into the model at begin_frame, so this never hides one."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     if not _enabled() or _STATE["frame"] != Melty.frame_count:
         return display
     out = []
@@ -878,7 +878,7 @@ def expect_own_move(dx, dy):
     near edge and every root was re-based by it: a @glfw_window app came up
     with its content shoved right by the fit's distance (09-12). Before the
     feed's first sight the move is parked for begin_frame to fold in."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     for axis, i in _AXIS.items():
         d = float((dx, dy)[i])
         if not d:
@@ -1018,7 +1018,7 @@ def _root_of(ds):
 def _any_button_down():
     """A mouse button is held — a hand gesture is alive (the sticky replay's
     lifetime, here and in columns)."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     handler = getattr(Melty, "event_handler", None)
     if handler is None:
         return False
@@ -1132,7 +1132,7 @@ def solve():
     Pushed windows get position / size written back; their own pass packs
     their columns as a foreign size write. The OS near edge's motion is
     booked for apply_rebase like any other."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     from meltygui.views.columns import _cells_from_lists
     from meltygui.views.columns import _EdgeGraph
     from meltygui.views.columns import _solve_graph
@@ -1374,7 +1374,7 @@ def flush():
     start (titlebar.apply_pending_surface_size: size + attach-offset move
     in one commit). Returns the requested content size or None."""
     import meltygui.titlebar as titlebar
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     if not _enabled():
         return None
     window = titlebar._studio_window()

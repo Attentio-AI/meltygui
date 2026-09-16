@@ -12,7 +12,7 @@ from fractions import Fraction
 from enum import Enum
 from typing import Any
 
-from meltygui.runtime import Melty
+from meltygui.melty import Melty
 from meltygui.code.libcst_conversion import register
 from meltygui.code.path_finder import convert
 from meltygui.code.path_finder import explain_chain

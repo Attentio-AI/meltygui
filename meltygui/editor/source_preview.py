@@ -1,7 +1,7 @@
 """A single source preview for inspection and symbol navigation."""
 from pathlib import Path
-from meltygui.rendering.core import render_func
-from meltygui.state.object import DictConversion
+from meltygui.rendering.core_render import render_func
+from meltygui.state.dict_conversion import DictConversion
 
 _pending = globals().get('_pending')
 
@@ -23,8 +23,8 @@ class SourcePreviewState(DictConversion):
 
 @render_func
 def draw_source_preview(input_value=None, draw_state=None, preview: SourcePreviewState = None):
-    from meltygui.editor.text import draw_text
-    from meltygui.runtime import Melty
+    from meltygui.editor.text_editor import draw_text
+    from meltygui.melty import Melty
     from meltygui.code.new_converters import code_hosts_for
     if input_value is not None:
         preview.path, preview.line, preview.token = input_value
@@ -43,7 +43,7 @@ def draw_source_preview(input_value=None, draw_state=None, preview: SourcePrevie
               jump_to=_RowSpan(0, path), show_header=False, width=draw_state.width,
               height=draw_state.height, show_widgets=True)
     if preview.line is not None and pane is not None and text:
-        from meltygui.editor.text import fold_project_jump
+        from meltygui.editor.text_editor import fold_project_jump
         lines = text.split('\n')
         row = max(0, min(int(preview.line) - 1, len(lines) - 1))
         offset = sum(len(line) + 1 for line in lines[:row])

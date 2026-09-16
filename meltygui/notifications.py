@@ -600,7 +600,7 @@ def draw_notifications():
     display_size = io.display_size
     draw_list = imgui.get_overlay_draw_list()
 
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     font_handle = Melty.font_mgr.get(Font.JETBRAINS_MONO_14) if Melty.font_mgr else None
     if font_handle is not None:
         imgui.push_font(font_handle)

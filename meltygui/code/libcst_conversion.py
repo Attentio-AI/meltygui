@@ -24,17 +24,17 @@ import libcst as cst
 from libcst._nodes.internal import CodegenState as _CodegenState
 
 from meltygui.fonts import Font
-from meltygui.runtime import Melty
+from meltygui.melty import Melty
 from meltygui.modes import Modes
 from meltygui.modes import _LazyMode
 from meltygui.notifications import notify
 from meltygui.notifications import lag_traced
-from meltygui.rendering.registry import RenderFuncs
+from meltygui.rendering.render_funcs import RenderFuncs
 from meltygui.utils.glfw_utils import print_stack_trace
 from meltygui.code.path_finder import convert
 from meltygui.code.path_finder import PendingState
 from meltygui.code.path_finder import Pending
-from meltygui.rendering.core import render_func
+from meltygui.rendering.core_render import render_func
 from meltygui.rendering.decorators.core_decoration import defaults
 from meltygui.rendering.decorators.core_decoration import Core
 from meltygui.perf_trace import trace as _ptrace
@@ -1390,7 +1390,7 @@ def _src_mod_map() -> dict:
     now = _t.monotonic()
     if cached is not None and now - built_at < _SRC_MOD_MAP_TTL:
         return cached
-    from meltygui.code.address import is_editable_source
+    from meltygui.code.fileref import is_editable_source
     mod_map = {}
     for mod in list(sys.modules.values()):
         f = getattr(mod, "__file__", None)
@@ -8732,7 +8732,7 @@ def _build_src_scope():
     out of scope and intentionally left as raw source. Built once per analysis —
     its size is bounded by the project's symbol count, not the file size, and it
     replaces the per-usage sys.modules scans entirely."""
-    from meltygui.code.address import is_editable_source
+    from meltygui.code.fileref import is_editable_source
     src_mods = {}
     for modname, mod in list(sys.modules.items()):
         if mod is None:
@@ -9572,7 +9572,7 @@ def _register_index_watch():
     __name__, the recursive watch by a marker in _watched_dirs (fresh sets on
     a restart-in-place re-create both against the new Observer)."""
     try:
-        from meltygui.runtime import FileWatch
+        from meltygui.melty import FileWatch
         listeners = getattr(FileWatch, "global_listeners", None)
         if listeners is None:
             return  # older meltygui.py still running - reconcile pass covers us

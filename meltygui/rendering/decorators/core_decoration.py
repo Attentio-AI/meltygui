@@ -399,7 +399,7 @@ def hotkey(key):
         params = sig.parameters
 
         if isinstance(key, int):
-            from meltygui.state.draw_state import Hotkey
+            from meltygui.state.new_core_model import Hotkey
             the_hotkey = Hotkey(key=key)
         else:
             the_hotkey = key

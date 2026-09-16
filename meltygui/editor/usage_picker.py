@@ -22,18 +22,18 @@ from pathlib import Path
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
-from meltygui.runtime import Melty
+from meltygui.melty import Melty
 from meltygui.toggles import Tint
 from meltygui.toggles import Toggles
 from meltygui.fonts import Font
 from meltygui.code.libcst_conversion import UsageRef
 from meltygui.views.blit_offscreen import add_shadow
-from meltygui.editor.lines import CodeLineTints
-from meltygui.editor.lines import draw_code_line_fast
-from meltygui.editor.lines import pop_code_font
-from meltygui.editor.lines import push_code_font
-from meltygui.editor.lines import shift_spans
-from meltygui.rendering.core import render_func
+from meltygui.editor.code_line_fast import CodeLineTints
+from meltygui.editor.code_line_fast import draw_code_line_fast
+from meltygui.editor.code_line_fast import pop_code_font
+from meltygui.editor.code_line_fast import push_code_font
+from meltygui.editor.code_line_fast import shift_spans
+from meltygui.rendering.core_render import render_func
 
 # Row pitch shared with the scroll-into-view helper — the Code tab's 24 + 2.
 ROW_H = 24.0
@@ -171,7 +171,7 @@ def build_usage_rows(targets, names, tints=None, *, texts=None):
     keyed by path, so other code lists can share this tree and painter."""
     import meltygui.code.symbol_roster as roster
     from meltygui.editor.pending_save import PendingSave
-    from meltygui.editor.text import _uj_file_tint
+    from meltygui.editor.text_editor import _uj_file_tint
     tints = tints if tints is not None else CodeLineTints()
     files = {}   # normalized path -> (path_str, text, lines, table, root _Node)
     for ref in targets:
@@ -322,7 +322,7 @@ def picker_fit(menu_ds, model):
 def scroll_row_into_view(menu_ds, row_index):
     """Minimal scroll of the picker window so `row_index` is fully visible
     (the dd-menu helper at this module's row pitch)."""
-    from meltygui.views.values import _dd_scroll_cursor_into_view
+    from meltygui.views.new_core_view import _dd_scroll_cursor_into_view
     _dd_scroll_cursor_into_view(menu_ds, row_index, pitch=ROW_PITCH)
 
 
@@ -356,7 +356,7 @@ def paint_usage_rows(input_value, draw_state, *, width=None,
     embedded list uses its column's draw_state for events and clipping;
     the standalone picker supplies its own draw_state above.
     """
-    from meltygui.views.values import _dd_row_width
+    from meltygui.views.new_core_view import _dd_row_width
     # [tint=(0.9, 0.6, 0.2)] layout knobs — the Code tab's numbers
     ICON_COL = 22.0
     ICON_X = 4.0

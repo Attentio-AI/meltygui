@@ -2,7 +2,7 @@
 import io
 from pathlib import Path
 import meltygui
-from meltygui.state.serialization import LSDUnpickler
+from meltygui.state.load_save_v2 import LSDUnpickler
 from meltygui.state.module_names import canonical_name
 from meltygui.models.orchestration import Orchestration
 

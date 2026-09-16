@@ -191,7 +191,7 @@ def _collect(text, line_offset, view_path, window=None, line_open=None,
     # (and nested closures) are a symbol; it SHADOWS roster names; and its
     # tint is its own `# [tint=...]` or - with propagation on - a faded
     # blend of what its binding line reads (chained locals fade per hop).
-    from meltygui.editor.text import _scan_def_tint_lines
+    from meltygui.editor.text_editor import _scan_def_tint_lines
     fade = Toggles.TextEditor.def_propagation_fade
     mix_on = Toggles.TextEditor.def_tint_propagation
     win_file_lo, win_file_hi = win_lo + 1 + line_offset, win_hi + 1 + line_offset

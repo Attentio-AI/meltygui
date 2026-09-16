@@ -839,7 +839,7 @@ class InputHandler:
 
         # --- Regular events ---
         # Hoist import once (sys.modules lookup still has overhead in a loop)
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         from meltygui.utils.glfw_utils import request_render
         get_latest_mouse = Melty.get_latest_mouse
 

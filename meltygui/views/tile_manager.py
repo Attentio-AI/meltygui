@@ -37,7 +37,7 @@ import meltygui_imgui as imgui
 
 import meltygui.mouse_cursor as mouse_cursor
 from meltygui.hdr_color import pack_color
-from meltygui.state.object import DictConversion
+from meltygui.state.dict_conversion import DictConversion
 from meltygui.views.blit_offscreen import snap_int
 from meltygui.views.columns import ColumnLayout
 from meltygui.views.columns import RowLayout

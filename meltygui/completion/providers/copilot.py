@@ -23,10 +23,10 @@ import threading
 import time
 from pathlib import Path
 
-from meltygui.completion.service import FimRequest
-from meltygui.completion.service import FimResult
-from meltygui.completion.service import FimSession
-from meltygui.completion.service import fim_provider
+from meltygui.completion.fim import FimRequest
+from meltygui.completion.fim import FimResult
+from meltygui.completion.fim import FimSession
+from meltygui.completion.fim import fim_provider
 
 LS_ROOT = Path.home() / ".lsd" / "copilot-ls"
 LS_ENTRY = LS_ROOT / "node_modules" / "@github" / "copilot-language-server" / "dist" / "language-server.js"
@@ -277,7 +277,7 @@ class CopilotSession(FimSession):
     def __init__(self, account="default", config_dir=None, workspace=None, node=None):
         self.account = account
         if config_dir is None:
-            from meltygui.accounts.ui import account_field
+            from meltygui.accounts.internet_accounts import account_field
             config_dir = account_field("copilot", account, "config_dir")
         self.config_dir = os.path.expanduser(config_dir) if config_dir else None
         from meltygui.paths import application_root
@@ -568,7 +568,7 @@ def _utf16_to_index(s: str, units: int) -> int:
 def _notify_account_change():
     """Repaint whoever shows account status (the Internet Accounts window)."""
     try:
-        from meltygui.accounts.ui import accounts_changed
+        from meltygui.accounts.internet_accounts import accounts_changed
         accounts_changed()
     except Exception:
         pass

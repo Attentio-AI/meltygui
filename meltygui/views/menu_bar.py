@@ -27,21 +27,21 @@ from colorsys import rgb_to_hsv, hsv_to_rgb
 import meltygui.window_api as glfw
 import meltygui_imgui as imgui
 
-from meltygui.runtime import Melty
-from meltygui.state.draw_state import DropDownState
-from meltygui.state.draw_state import MenuBarState
+from meltygui.melty import Melty
+from meltygui.state.new_core_model import DropDownState
+from meltygui.state.new_core_model import MenuBarState
 from meltygui.utils.glfw_utils import request_render
-from meltygui.rendering.core import render_func
+from meltygui.rendering.core_render import render_func
 from meltygui.code.cache_tree import UNSET_VALUE
 from meltygui.views.headers import flat_button
-from meltygui.views.values import draw_dd_menu
-from meltygui.views.values import _dd_close
-from meltygui.views.values import _dd_handle_keys
-from meltygui.views.values import _dd_as_tuple
-from meltygui.views.values import _dd_walk
-from meltygui.views.values import _dd_menu_fit
-from meltygui.views.values import _DD_MENU_MIN_W
-from meltygui.views.values import _DD_MENU_MAX_H
+from meltygui.views.new_core_view import draw_dd_menu
+from meltygui.views.new_core_view import _dd_close
+from meltygui.views.new_core_view import _dd_handle_keys
+from meltygui.views.new_core_view import _dd_as_tuple
+from meltygui.views.new_core_view import _dd_walk
+from meltygui.views.new_core_view import _dd_menu_fit
+from meltygui.views.new_core_view import _DD_MENU_MIN_W
+from meltygui.views.new_core_view import _DD_MENU_MAX_H
 
 
 @render_func(use_cache=True, show_bg=False, shadow=False, selectable=False, is_tree=False,

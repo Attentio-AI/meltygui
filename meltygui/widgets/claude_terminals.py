@@ -33,14 +33,14 @@ from pathlib import Path
 import meltygui_imgui as imgui
 
 from meltygui.modes import Modes
-from meltygui.rendering.registry import RenderFuncs
+from meltygui.rendering.render_funcs import RenderFuncs
 from meltygui.utils.glfw_utils import request_render
 from meltygui.code.render_host import RenderHost
-from meltygui.rendering.core import render_func
+from meltygui.rendering.core_render import render_func
 from meltygui.rendering.decorators.core_decoration import Core
 from meltygui.rendering.decorators.window_decoration import window
-from meltygui.widgets.terminal import Terminal
-from meltygui.widgets.terminal import draw_terminal_screen
+from meltygui.widgets.terminal_playground import Terminal
+from meltygui.widgets.terminal_playground import draw_terminal_screen
 
 _SESSION_PREFIX = "claude-d-"
 
@@ -172,7 +172,7 @@ def launch_claude_session(prompt_text=None):
 def open_claude_terminals_window():
     """Open + front the studio's Claude Terminals window (render thread only —
     same open pattern as screenshot.process_captures)."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     from meltygui.screenshot import _find_window
     mw = _find_window("draw_claude_terminals")
     if mw is None:

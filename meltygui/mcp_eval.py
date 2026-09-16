@@ -21,7 +21,7 @@ _lock = threading.Lock()
 def _build_namespace(extra=None):
     ns = {"__builtins__": __builtins__}
     try:
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         ns["Melty"] = Melty
         # Conveniences reachable from Melty: the studio (vis) and the root
         # AppModel (vis.root). Everything here derives from Melty.

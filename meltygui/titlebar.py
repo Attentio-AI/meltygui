@@ -334,7 +334,7 @@ def _release_after_wayland_grab(window):
     synthesized X event; on Wayland GLFW's own state can't be poked, so the
     input handler is fed the release here and the polls read the button as
     up through wayland_move.button_masked until GLFW's next real event."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     backend = getattr(Melty, "backend", None)
     if backend is None or not hasattr(backend, "_on_button"):
         return
@@ -472,7 +472,7 @@ def _button_metrics():
     header's close button sizing (flat_button: glyph + px(15) wide, + px(8)
     tall — every kind its own glyph, like the header) inset by
     button_margin from the corner, button_gap apart."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     # [tint=(1.0, 0.55, 0.2)]
     button_margin = Melty.px(4.0)
     # [tint=(1.0, 0.55, 0.2)]
@@ -557,7 +557,7 @@ def draw_header_controls(draw_state=None, **kwargs):
     coordinates agree). The overlay path stands down for the frame
     (_hosted_frame)."""
     global _hosted_frame
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     imgui.dummy(chrome_insets()[1], 0)
     if draw_state is None or not titlebar_enabled():
         return
@@ -603,7 +603,7 @@ def _studio_window():
     pointer. Native windows are Python objects with a class-level marker.
     """
     import ctypes
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     window = Melty.glfw_window or getattr(Melty.vis, "window", None)
     return window if glfw.is_native_window(window) or isinstance(window, ctypes._Pointer) else None
 
@@ -615,7 +615,7 @@ def _main_window_ds():
     cached tile covers the corners, and an OWNERLESS mark never keeps a
     blit from copying over the buttons. None before the root's first
     frame."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     registry = getattr(Melty, "draw_state_registry", None) or {}
     main = next((d for d in registry.values() if getattr(d, "name", None) == "Main Window"), None)
     if main is not None:
@@ -640,7 +640,7 @@ def paint_window_controls(draw_list):
     under the corner from copying over them, and what gives them their
     depth for the shadow pass — the same mark a window gets."""
     global _pressed_button
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     from meltygui.toggles import shadow_depth_at
     if not titlebar_enabled() or _hosted_frame == Melty.frame_count:
         return      # off, or the root's header painted them this frame (draw_header_controls)
@@ -676,7 +676,7 @@ def _paint_buttons(dl, buttons, over_button):
     restored afterwards."""
     from meltygui.views.headers import flat_button
     from meltygui.views.blit_offscreen import add_shadow
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     from meltygui.toggles import Toggles
     # The header close button's colour (draw_header_end).
     # [tint=(0.9, 0.15, 0.15)]
@@ -768,7 +768,7 @@ def draw_titlebar(window):
         _rdrag = None
         return
 
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     from meltygui.toggles import Toggles
 
     io = imgui.get_io()
@@ -907,7 +907,7 @@ def poll_os_window_drag():
     THIS frame. Polled at the end of the frame (draw_titlebar runs after
     the meltygui windows and os_frame.flush) the drag landed a frame late."""
     global _rdrag
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     handler = getattr(Melty, "event_handler", None)
     if handler is None:
         return
@@ -1001,7 +1001,7 @@ def shadow_reach(fb_w, fb_h):
     pass off."""
     import math
     from meltygui.toggles import Toggles
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     if not Toggles.filters or fb_w <= 0 or fb_h <= 0:
         return 0
     total_layers = 100.0 / ((Melty.max_layer - 1.0) * (Melty.max_depth - 1.0))
@@ -1356,7 +1356,7 @@ def on_surface_resized(window, width, height):
         # Any backend, ours or the compositor's: stamp the gesture for
         # freeze_resize views (Melty.resize_gesture_live); the cache keeps
         # frames coming past the last configure until they settle.
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         from meltygui.utils.glfw_utils import request_render
         _last_stamped_size = size
         Melty.os_resize_time = time.monotonic()
@@ -1483,7 +1483,7 @@ def composite_window_frame(fb_w, fb_h):
     depth = gl.glIsEnabled(gl.GL_DEPTH_TEST)
     stencil = gl.glIsEnabled(gl.GL_STENCIL_TEST)
     try:
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, Melty.default_framebuffer())
         gl.glViewport(0, 0, int(fb_w), int(fb_h))
         gl.glDisable(gl.GL_SCISSOR_TEST)

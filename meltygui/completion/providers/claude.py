@@ -13,10 +13,10 @@ from __future__ import annotations
 import os
 import re
 
-from meltygui.completion.service import FimRequest
-from meltygui.completion.service import FimResult
-from meltygui.completion.service import FimSession
-from meltygui.completion.service import fim_provider
+from meltygui.completion.fim import FimRequest
+from meltygui.completion.fim import FimResult
+from meltygui.completion.fim import FimSession
+from meltygui.completion.fim import fim_provider
 
 SYSTEM = """You are a code completion engine inside an editor. The user message contains:
 1. optional context blocks (other definitions, observed runtime types, values from the last run)
@@ -41,8 +41,8 @@ def account_client_kwargs(account="default") -> dict:
     neither — the SDK's own env / active-profile chain then applies. No
     SDK import, no network."""
     try:
-        from meltygui.accounts.ui import KINDS
-        from meltygui.accounts.ui import account as account_entry
+        from meltygui.accounts.internet_accounts import KINDS
+        from meltygui.accounts.internet_accounts import account as account_entry
         entry = account_entry("anthropic", account)
     except Exception:
         return {}

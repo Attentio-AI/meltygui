@@ -9,7 +9,7 @@ To regenerate: python -m shader_manager.stub_generator
 
 from typing import Optional, Dict, Any, Tuple, List
 from contextlib import AbstractContextManager
-from .compiler import CompiledProgram
+from .shader_compiler import CompiledProgram
 from .registry import ShaderRegistry
 
 

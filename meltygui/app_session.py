@@ -30,7 +30,7 @@ import pathlib
 import sys
 import time
 
-from meltygui.state.object import DictConversion
+from meltygui.state.dict_conversion import DictConversion
 
 
 class AppSession(DictConversion):
@@ -75,7 +75,7 @@ def load(app_id):
     path = session_path(app_id)
     if not path.exists():
         return AppSession()
-    import meltygui.state.serialization as load_save_v2
+    import meltygui.state.load_save_v2 as load_save_v2
     try:
         session = load_save_v2.load(str(path), vis=None, run_on_load=True)
     except Exception as error:
@@ -99,7 +99,7 @@ def prune(session):
     """Drop registry slots that are not draw states: a draw_state whose
     countdown ran out pickles as None (see load_save_v2.persistent_id), and
     anything else is a foreign object. Returns the number removed."""
-    from meltygui.state.draw_state import DrawState
+    from meltygui.state.new_core_model import DrawState
     registry = session.draw_state_registry
     if not isinstance(registry, dict):
         session.draw_state_registry = {}
@@ -127,7 +127,7 @@ def save(session, app_id):
     """Write the session (atomic: load_save_v2.save). Returns the path, or
     None when the write failed (reported, never raised: it runs on the
     app's exit path)."""
-    import meltygui.state.serialization as load_save_v2
+    import meltygui.state.load_save_v2 as load_save_v2
     path = session_path(app_id)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

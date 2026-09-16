@@ -48,7 +48,7 @@ def demo_basic():
 
 def demo_json_backend():
     """Demo using JsonBackend for toolkit integration."""
-    from meltygui.events.event_backends import JsonBackend
+    from meltygui.events.pynput_backend import JsonBackend
     
     handler = InputHandler()
     backend = JsonBackend(handler)
@@ -75,7 +75,7 @@ def demo_json_backend():
 def demo_pynput():
     """Demo with real hardware (requires pynput)."""
     try:
-        from meltygui.events.event_backends import PynputBackend, HAS_PYNPUT
+        from meltygui.events.pynput_backend import PynputBackend, HAS_PYNPUT
         if not HAS_PYNPUT:
             raise ImportError()
     except ImportError:

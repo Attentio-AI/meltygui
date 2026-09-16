@@ -14,8 +14,8 @@ from meltygui.examples.scalar_policies import subtract
 from meltygui.examples.scalar_policies import size_curve
 from meltygui.examples.scalar_policies import weight_curve
 from meltygui.examples.scalar_policies import shadow_curve
-from meltygui.runtime import Melty
-from meltygui.rendering.core import render_func
+from meltygui.melty import Melty
+from meltygui.rendering.core_render import render_func
 from meltygui.views.headers import draw_header
 
 

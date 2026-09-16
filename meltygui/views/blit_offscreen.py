@@ -16,11 +16,11 @@ from OpenGL import GL as gl
 import meltygui_imgui as imgui
 from meltygui_imgui.core import _DrawList
 
-from meltygui.runtime import Melty
+from meltygui.melty import Melty
 from meltygui.notifications import notify
 from meltygui.notifications import capture_stack
 from meltygui.state.core_enums import OffscreenDebugMode
-from meltygui.state.draw_state import TileMode
+from meltygui.state.new_core_model import TileMode
 from meltygui.toggles import Toggles
 from meltygui.toggles import shadow_depth_at
 from meltygui.utils.glfw_utils import request_render
@@ -1743,7 +1743,7 @@ class TileCacheMasked:
             gl.glDisable(gl.GL_BLEND)
 
     def get_hash(self, draw_state):
-        from meltygui.state.object import DictConversion
+        from meltygui.state.dict_conversion import DictConversion
 
         if hasattr(draw_state._input_value, "hash") or isinstance(
                 draw_state._input_value,
@@ -3835,7 +3835,7 @@ class TileCacheMasked:
         if (not fb or not fb.get("show_bg")
                 or width is None or height is None or width <= 5 or height <= 5):
             return None
-        from meltygui.views.values import draw_bg
+        from meltygui.views.new_core_view import draw_bg
         style_manager = Melty.global_attrs['style_manager']
         if live:
             fb.update({
@@ -3901,10 +3901,10 @@ class TileCacheMasked:
         (scroll_bar_width / _brightness from the view's resolved kwargs)."""
         if not getattr(draw_state, "freeze_resize", False):
             return
-        from meltygui.rendering.core import draw_overlay_scrollbar
-        from meltygui.rendering.core import SCROLL_BAR_WIDTH_DEFAULT
-        from meltygui.rendering.core import SCROLL_BAR_BRIGHTNESS_DEFAULT
-        from meltygui.rendering.core import SCROLLBAR_SHADOW_GROUP
+        from meltygui.rendering.core_render import draw_overlay_scrollbar
+        from meltygui.rendering.core_render import SCROLL_BAR_WIDTH_DEFAULT
+        from meltygui.rendering.core_render import SCROLL_BAR_BRIGHTNESS_DEFAULT
+        from meltygui.rendering.core_render import SCROLLBAR_SHADOW_GROUP
         # Owner of the grab's retained depth mark on these views: shed the
         # group after the early returns, so a scrollbar hidden this frame
         # (content fits after a resize / edit, view closed) drops its

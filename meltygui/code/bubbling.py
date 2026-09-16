@@ -35,7 +35,7 @@ the root and recurses into any fresh subtrees.
 
 from collections import deque
 
-from meltygui.runtime import Melty
+from meltygui.melty import Melty
 
 
 # ── Lazy deep attribute traversal ──────────────────────────────────────────────

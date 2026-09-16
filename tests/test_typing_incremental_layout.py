@@ -1,12 +1,12 @@
 """Incremental edit paths must agree with a fresh layout/roster build."""
 import random
 
-from meltygui.editor.text import _fold_build
-from meltygui.editor.text import _fold_update_inline
-from meltygui.editor.text import _same_guide_shape
-from meltygui.editor.text import _scope_guide_segments
-from meltygui.editor.text import _update_line_widths
-from meltygui.editor.text import _FoldLineNumbers
+from meltygui.editor.text_editor import _fold_build
+from meltygui.editor.text_editor import _fold_update_inline
+from meltygui.editor.text_editor import _same_guide_shape
+from meltygui.editor.text_editor import _scope_guide_segments
+from meltygui.editor.text_editor import _update_line_widths
+from meltygui.editor.text_editor import _FoldLineNumbers
 import meltygui.code.symbol_roster as symbol_roster
 
 
@@ -113,7 +113,7 @@ def test_cached_import_scan_defers_discovery(monkeypatch):
 
 
 def test_line_offset_cache_eviction_keeps_other_buffers():
-    import meltygui.editor.text as text_editor
+    import meltygui.editor.text_editor as text_editor
     saved = dict(text_editor._LINE_STARTS_CACHE)
     try:
         text_editor._LINE_STARTS_CACHE.clear()

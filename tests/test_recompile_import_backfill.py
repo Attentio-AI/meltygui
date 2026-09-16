@@ -67,7 +67,7 @@ class _NullCache:
 
 
 def test_recompile_retries_after_backfill(tmp_path, monkeypatch):
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     if getattr(Melty, "cache", None) is None:
         monkeypatch.setattr(Melty, "cache", _NullCache(), raising=False)
     p, mod = _stale_module(tmp_path)

@@ -40,7 +40,7 @@ def _shot_dir():
 
 def list_window_names():
     """Names of currently-registered top-level windows (for error messages)."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     return [mw.name for mw in Melty.registered_windows.values()
             if getattr(mw, "name", None) and getattr(mw, "draw_state", None) is not None]
 
@@ -114,7 +114,7 @@ def process_captures(window):
         reqs = _pending[:]
         _pending.clear()
 
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     unfinished = []
     for req in reqs:
         try:
@@ -211,7 +211,7 @@ def request_region_capture(left, top, w, h, requested_frame, name="screenshot",
 def _process_region_captures(window):
     if not _region_pending:
         return
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     still = []
     for req in _region_pending:
         if Melty.frame_count - int(req["requested_frame"]) < _SETTLE_FRAMES:
@@ -246,7 +246,7 @@ def process_take_screenshot_flags(window):
     _process_region_captures(window)
     if not _view_pending:
         return
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     still = []
     for req in _view_pending:
         if Melty.frame_count - int(req["requested_frame"]) < _SETTLE_FRAMES:
@@ -290,7 +290,7 @@ def _reopen_context_menu_ds(menu_ds):
 
 
 def _find_window(name):
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     wins = [mw for mw in Melty.registered_windows.values()
             if getattr(mw, "name", None) and getattr(mw, "draw_state", None) is not None]
     # Prefer an exact name; fall back to case-insensitive substring. In both
@@ -340,7 +340,7 @@ def _capture_points(window, left, top, w, h, name):
     import OpenGL.GL as gl
     from PIL import Image
 
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
 
     fb_w, fb_h = glfw.get_framebuffer_size(window)
     win_w, win_h = glfw.get_window_size(window)
@@ -395,7 +395,7 @@ def _capture_tile(name):
     import numpy as np
     import OpenGL.GL as gl
     from PIL import Image
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
 
     mw = _find_window(name)
     if mw is None:

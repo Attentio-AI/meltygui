@@ -69,7 +69,7 @@ def generate_filter_stub(output_path: str = None) -> str:
         '',
         'from typing import Optional, Dict, Any, Tuple, List',
         'from contextlib import AbstractContextManager',
-        'from .compiler import CompiledProgram',
+        'from .shader_compiler import CompiledProgram',
         'from .registry import ShaderRegistry',
         '',
         '',

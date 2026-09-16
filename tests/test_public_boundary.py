@@ -29,8 +29,8 @@ from meltygui import draw_text, draw_any, draw_folder_files
 from meltygui.code import symbol_roster
 from meltygui.editor import pending_save, usage_picker, source_preview
 from meltygui.code.source_context import analysis_project
-from meltygui.state.undo import UndoManager
-from meltygui.widgets import file_tree, actions, crash_reports
+from meltygui.state.core_undo import UndoManager
+from meltygui.widgets import file_tree, actions_playground as actions, crash_reports
 from meltygui.views import stack_trace_view
 assert not hasattr(meltygui, 'draw_code_editor')
 assert not hasattr(meltygui, 'global_search')

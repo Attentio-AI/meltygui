@@ -338,7 +338,7 @@ def apply(window, early=False):
     if not early:
         _requested = None        # consumed; re-asserted per frame by its owner
     if not immediate:
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         shape = Melty.event_handler.cursor_shape
         if shape is None:
             shape = ARROW

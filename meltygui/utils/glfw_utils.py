@@ -726,7 +726,7 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
     # table; live objects can't be saved).
     # Gated like the Context menu's Code-tab capture: locals of any PROJECT
     # frame (tests included), never library code.
-    from meltygui.code.address import is_editable_source
+    from meltygui.code.fileref import is_editable_source
     report_frames = []
     for frame in frames or ():
         scope = None
@@ -1303,7 +1303,7 @@ def request_render(for_frames: int | None = None):
     # window FIRST, a pure-Python object-attr check (None until create_window), no glfw
     # call. Lazy import because Meltygui imports this module (circular at top level); meltygui
     # is fully loaded by the time any thread calls request_render at start.
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     if Melty.glfw_window is None:
         return
     # NOTE: no glfw.get_current_context() readiness check here - it returns the

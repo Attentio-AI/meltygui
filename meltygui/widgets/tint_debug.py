@@ -11,12 +11,12 @@ from pathlib import Path
 
 import meltygui_imgui as imgui
 
-from meltygui.runtime import Melty
-from meltygui.rendering.registry import RenderFuncs
+from meltygui.melty import Melty
+from meltygui.rendering.render_funcs import RenderFuncs
 from meltygui.utils.glfw_utils import request_render
-from meltygui.rendering.core import render_func
+from meltygui.rendering.core_render import render_func
 from meltygui.rendering.decorators.window_decoration import window
-from meltygui.editor.text import draw_text
+from meltygui.editor.text_editor import draw_text
 
 # Anchored at src/sample.py regardless of cwd (this file lives at
 # src/lsd/gl_gui/view/playground/) - inside the watched project tree, where

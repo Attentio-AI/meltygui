@@ -24,7 +24,7 @@ _PRIMITIVE = (int, float, bool, str, bytes, type(None))
 # Single source of truth: reuse v2's exact suppression set so the oracle can't
 # drift from what's actually serialized (v1). @exclude/__excluded_attrs__ is NOT
 # here (it only gates @live invalidation), so type/name/id is compared.
-from meltygui.state.serialization import _suppressed as _v2_suppressed
+from meltygui.state.load_save_v2 import _suppressed as _v2_suppressed
 
 
 def _public_keys(obj, excluded=()):

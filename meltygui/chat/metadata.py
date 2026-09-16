@@ -6,7 +6,7 @@ painted on its row (``entry["tint"]``, absent until then) — the file
 browser's rule, brush then picker.
 """
 
-from meltygui.state.object import DictConversion
+from meltygui.state.dict_conversion import DictConversion
 
 
 class ChatMetadata(DictConversion):
@@ -89,7 +89,7 @@ def shared_metadata():
     instance, persisted to a JSON file when the app asked for it with
     `persistent_metadata(path)`."""
     global _app_metadata
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     root = getattr(getattr(Melty, "vis", None), "root", None)
     if root is None:
         if _app_metadata is None:

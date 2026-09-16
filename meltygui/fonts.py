@@ -9,7 +9,7 @@ from typing import Optional, Tuple
 import meltygui_imgui as imgui
 import numpy as np
 
-from meltygui.state.enums import RelaxedEnum
+from meltygui.state.model_enums import RelaxedEnum
 
 _RESOURCES = Path(__file__).parent / "resources"
 _DEJAVU_SANS = str(_RESOURCES / "dejavu" / "DejaVuSans.ttf")
@@ -404,7 +404,7 @@ class FontManager:
         real handle arrives next frame and the flush invalidates every
         cached tile. A failed font sits in _handles as None and never
         re-queues."""
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         from meltygui.toggles import Toggles
         if (Toggles.dynamic_styles and Melty.font_style_stack
                 and isinstance(font, (Font, FontSpec))):

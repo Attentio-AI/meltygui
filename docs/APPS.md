@@ -6,8 +6,8 @@ requirement to launch from the framework checkout.
 
 ```python
 import meltygui
-from meltygui.rendering.core import render_func
-from meltygui.state.object import DictConversion
+from meltygui.rendering.core_render import render_func
+from meltygui.state.dict_conversion import DictConversion
 
 class EditorState(DictConversion):
     def __init__(self):
@@ -31,11 +31,11 @@ host a child in a native window; its lifecycle follows the same rules.
 
 ```python
 from meltygui import draw_text, draw_voxels, glfw_window, imgui
-from meltygui.rendering.core import render_func
+from meltygui.rendering.core_render import render_func
 from meltygui.rendering.decorators.core_decoration import defaults, no_save
-from meltygui.state.object import DictConversion
+from meltygui.state.dict_conversion import DictConversion
 from meltygui.code.render_host import RenderHost
-from meltygui.editor.live_views import draw_function_live
+from meltygui.editor.live_view_views import draw_function_live
 from meltygui.graphics import Filter
 from meltygui.chat import draw_chat_interface, register_chat_backend
 ```

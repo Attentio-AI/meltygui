@@ -164,7 +164,7 @@ class SplitOverlayRenderer(WindowRenderer):
         # carry the two numbers to the masks, tiles, etc.
         from meltygui.titlebar import window_inset
         from meltygui.titlebar import content_origin
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         inset = int(window_inset())
         ox, oy = (int(v) for v in content_origin())
         w, h = io.display_size
@@ -271,7 +271,7 @@ class SplitOverlayRenderer(WindowRenderer):
         from meltygui.toggles import Toggles
         if not Toggles.Fonts.freetype_hinting:
             return None
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         fm = getattr(Melty, "font_mgr", None)
         if fm is None or not fm._handles:
             return None
@@ -344,7 +344,7 @@ class SplitOverlayRenderer(WindowRenderer):
 
         # If Melty channel-split the foreground list, render each channel
         # with a per-layer stencil mask. Otherwise fall back to a regular draw.
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         ranges = getattr(Melty, "_overlay_channel_ranges", None)
         if ranges:
             self._render_overlay_channels(draw_data, lists[-1], ranges, Melty)
@@ -460,7 +460,7 @@ class SplitOverlayRenderer(WindowRenderer):
         """Framebuffer origin of imgui's display: (inset, inset) while the
         frameless window carries its shadow margin, else (0, 0). Viewports
         move by it, scissors add it."""
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         ox, oy = getattr(Melty, "frame_origin", None) or (0, 0)
         return int(ox), int(oy)
 
@@ -785,7 +785,7 @@ class SplitOverlayRenderer(WindowRenderer):
         import numpy as np
         from meltygui.gl_state import GLState
         from meltygui.gl_state import gl_limits
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         gen = Melty.background_gen
         if Melty.dynamic_style_gl is None or not Melty.backgrounds:
             self._style_context_gen = gen

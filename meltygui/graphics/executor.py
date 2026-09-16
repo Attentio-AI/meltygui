@@ -7,8 +7,8 @@ from typing import Dict, Any, Optional, Tuple
 import ctypes
 
 from meltygui.graphics.base import GLType
-from meltygui.graphics.compiler import ProgramCompiler
-from meltygui.graphics.compiler import CompiledProgram
+from meltygui.graphics.shader_compiler import ProgramCompiler
+from meltygui.graphics.shader_compiler import CompiledProgram
 
 
 def _get_gl():

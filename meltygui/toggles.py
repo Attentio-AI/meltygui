@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from meltygui.state.core_enums import ProfileMode
-from meltygui.rendering.registry import RenderFuncs
+from meltygui.rendering.render_funcs import RenderFuncs
 from meltygui.rendering.decorators.core_decoration import Core
 from meltygui.rendering.decorators.core_decoration import defaults
 from meltygui.rendering.decorators.window_decoration import window

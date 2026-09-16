@@ -37,18 +37,18 @@ import meltygui.window_api as glfw
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
-from meltygui.runtime import Melty
+from meltygui.melty import Melty
 from meltygui.toggles import Toggles
 from meltygui.utils.glfw_utils import request_render
 from meltygui.events.input_handler import set_input_tap
 from meltygui.notifications import notify
 from meltygui.views.blit_offscreen import add_shadow
-from meltygui.rendering.core import render_func
-from meltygui.state.object import DictConversion
-from meltygui.state.undo import UndoManager
-from meltygui.state.undo import NavUndo
-from meltygui.state.undo import WindowChange
-from meltygui.state.undo import WindowMoveChange
+from meltygui.rendering.core_render import render_func
+from meltygui.state.dict_conversion import DictConversion
+from meltygui.state.core_undo import UndoManager
+from meltygui.state.core_undo import NavUndo
+from meltygui.state.core_undo import WindowChange
+from meltygui.state.core_undo import WindowMoveChange
 from meltygui.rendering.decorators.window_decoration import window
 
 # input_id -> imgui io.mouse_down index (the buttons stamp_io overrides).
@@ -485,7 +485,7 @@ def _cue_anchor_window(change, press_window=None):
 def _key_label(key, mods=0):
     """Human name for a glfw key (+held modifiers): printable GLFW codes ARE
     ASCII, the rest come from the backend's name table."""
-    from meltygui.events.event_backends import ImGuiBackend
+    from meltygui.events.pynput_backend import ImGuiBackend
     if 32 <= key < 127:
         name = chr(key)
     else:

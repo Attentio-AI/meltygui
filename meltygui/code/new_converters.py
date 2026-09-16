@@ -87,23 +87,23 @@ import meltygui_imgui as imgui
 import libcst as cst
 
 import meltygui.toggles as toggles
-from meltygui.runtime import FileWatch
-from meltygui.runtime import Melty
+from meltygui.melty import FileWatch
+from meltygui.melty import Melty
 from meltygui.state.core_enums import ProfileMode
-from meltygui.state.draw_state import TabState
-from meltygui.state.draw_state import DrawState
-from meltygui.state.object import DictConversion
-from meltygui.state.enums import RelaxedEnum
+from meltygui.state.new_core_model import TabState
+from meltygui.state.new_core_model import DrawState
+from meltygui.state.dict_conversion import DictConversion
+from meltygui.state.model_enums import RelaxedEnum
 from meltygui.modes import Modes
 from meltygui.notifications import notify
-from meltygui.rendering.registry import RenderFuncs
+from meltygui.rendering.render_funcs import RenderFuncs
 from meltygui.toggles import Toggles
 from meltygui.utils.glfw_utils import request_render
 from meltygui.utils.glfw_utils import print_stack_trace
 from meltygui.utils.glfw_utils import get_exception_frames
 import meltygui.code.hotswap_guard as hotswap_guard
-from meltygui.code.address import Address
-from meltygui.code.address import _evict_linecache
+from meltygui.code.fileref import Address
+from meltygui.code.fileref import _evict_linecache
 from meltygui.code.chain_converters import record_compile
 from meltygui.code.chain_converters import _enclosing_function
 from meltygui.code.chain_converters import live_apply_edits
@@ -127,7 +127,7 @@ from meltygui.code.new_codecs import SaveConflict
 from meltygui.code.new_codecs import type_to_codec
 from meltygui.code.new_codecs import extension_to_codec
 from meltygui.code.new_codecs import codec_for_path
-from meltygui.rendering.core import render_func
+from meltygui.rendering.core_render import render_func
 from meltygui.rendering.decorators.core_decoration import no_save_exclude
 from meltygui.rendering.decorators.core_decoration import no_save
 from meltygui.rendering.decorators.window_decoration import window
@@ -994,7 +994,7 @@ def _region_compile_check(old, new, max_chars):
     a = old.split("\n")
     b = new.split("\n")
     na, nb = len(a), len(b)
-    from meltygui.editor.text import _text_splice
+    from meltygui.editor.text_editor import _text_splice
     edit = _text_splice(old, new)
     if edit is None:
         return "skip", None, None
@@ -2020,7 +2020,7 @@ def _codec_view(codec, value, caller_view):
         return codec.view_func
     if isinstance(value, str):
         return caller_view
-    from meltygui.views.values import draw_any
+    from meltygui.views.new_core_view import draw_any
     return draw_any
 
 
@@ -2083,7 +2083,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
 
         if address is None:
             # A refused file used to be a blank view; name the reason.
-            from meltygui.code.address import writable_file_refusal
+            from meltygui.code.fileref import writable_file_refusal
             why = None
             if isinstance(input_value, (Path, str)):
                 why = writable_file_refusal(input_value) or (
@@ -2541,7 +2541,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             frames = get_frames(e)
             setattr(code_state, "_resolve_stack", frames)
 
-        from meltygui.views.values import draw_any
+        from meltygui.views.new_core_view import draw_any
         call_stack = getattr(code_state, "_resolve_stack", [])
         RenderFuncs.draw_collection(call_stack, name=f"resolve_stack{unique}{id(call_stack)}",
                                     mode=Modes.WINDOW, tint=(0.9, 0.4, 0.1))
@@ -3222,7 +3222,7 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
                 # lays out fold-spliced display text. Expands any collapsed
                 # fold at the line, then shifts the selection start - the
                 # end rides the same line, so it shifts by the same delta.
-                from meltygui.editor.text import fold_project_jump
+                from meltygui.editor.text_editor import fold_project_jump
                 _sel_s, _ = fold_project_jump(
                     ds, buffer_text, _line_start + _indent, _li)
                 ds.text_selection_start = _sel_s

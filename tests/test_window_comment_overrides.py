@@ -1,10 +1,10 @@
 """Window gestures share the parameter override path; previews remain transient."""
 import libcst as cst
 import pytest
-from meltygui.state.draw_state import DrawState
+from meltygui.state.new_core_model import DrawState
 from meltygui.toggles import Toggles
 from meltygui.views import anywhere
-from meltygui.views.values import _LazyOverrideEntry
+from meltygui.views.new_core_view import _LazyOverrideEntry
 from meltygui.window_visibility import (
     adopt_window_position, marker_user_visibility, sync_marker_visibility,
     requested_window_closed, resolved_window_kwargs, user_window_position,
@@ -124,7 +124,7 @@ def test_removing_closed_override_restores_auto_open():
 
 
 def test_native_request_preserves_user_offset_and_adopts_source(monkeypatch):
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     monkeypatch.setattr(Melty, 'surface_windows', {})
     monkeypatch.setattr(Melty, 'surface_requests', [])
     ds = DrawState()
@@ -173,8 +173,8 @@ def test_generic_comment_position_is_movable_without_live_marker(comment_window)
 @pytest.fixture
 def parameter_panel_sources(monkeypatch):
     """Use real source discovery on a panel nested under a captured value."""
-    from meltygui.views import values
-    from meltygui.views.values import ContextMenuState
+    from meltygui.views import new_core_view as values
+    from meltygui.views.new_core_view import ContextMenuState
     from unittest.mock import MagicMock
     empty_host = MagicMock()
     monkeypatch.setattr(values, 'code_hosts_for',

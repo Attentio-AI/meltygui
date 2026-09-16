@@ -56,23 +56,23 @@ if TYPE_CHECKING:   # IDE and type checkers only; never executed
     from meltygui.chat.metadata import ChatMetadata
     from meltygui.chat.metadata import persistent_metadata
     from meltygui.chat.metadata import shared_metadata
-    from meltygui.chat.ui import draw_chat_interface
-    from meltygui.chat.ui import ChatInterfaceState
-    from meltygui.accounts.ui import accounts
-    from meltygui.accounts.ui import KINDS
-    from meltygui.accounts.ui import AccountKind
-    from meltygui.accounts.ui import account_kind
+    from meltygui.chat.chat_interface import draw_chat_interface
+    from meltygui.chat.chat_interface import ChatInterfaceState
+    from meltygui.accounts.internet_accounts import accounts
+    from meltygui.accounts.internet_accounts import KINDS
+    from meltygui.accounts.internet_accounts import AccountKind
+    from meltygui.accounts.internet_accounts import account_kind
 
 _LAZY = {
     'ChatMetadata': ('meltygui.chat.metadata', 'ChatMetadata'),
     'shared_metadata': ('meltygui.chat.metadata', 'shared_metadata'),
     'persistent_metadata': ('meltygui.chat.metadata', 'persistent_metadata'),
-    'draw_chat_interface': ('meltygui.chat.ui', 'draw_chat_interface'),
-    'ChatInterfaceState': ('meltygui.chat.ui', 'ChatInterfaceState'),
-    'accounts': ('meltygui.accounts.ui', 'accounts'),
-    'KINDS': ('meltygui.accounts.ui', 'KINDS'),
-    'AccountKind': ('meltygui.accounts.ui', 'AccountKind'),
-    'account_kind': ('meltygui.accounts.ui', 'account_kind'),
+    'draw_chat_interface': ('meltygui.chat.chat_interface', 'draw_chat_interface'),
+    'ChatInterfaceState': ('meltygui.chat.chat_interface', 'ChatInterfaceState'),
+    'accounts': ('meltygui.accounts.internet_accounts', 'accounts'),
+    'KINDS': ('meltygui.accounts.internet_accounts', 'KINDS'),
+    'AccountKind': ('meltygui.accounts.internet_accounts', 'AccountKind'),
+    'account_kind': ('meltygui.accounts.internet_accounts', 'account_kind'),
 }
 
 

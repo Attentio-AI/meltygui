@@ -1108,7 +1108,7 @@ def project_importables():
     with a module. Cached; rebuilt when the number of loaded src. modules
     changes (imports only ever add modules mid-session)."""
     global _project_importables_cache
-    from meltygui.code.address import is_editable_source
+    from meltygui.code.fileref import is_editable_source
     src_mods = {n: m for n, m in list(sys.modules.items())
                 if m is not None and getattr(m, "__file__", None)
                 and is_editable_source(m.__file__)}

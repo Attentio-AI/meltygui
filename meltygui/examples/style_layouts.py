@@ -7,9 +7,9 @@ from meltygui import glfw_window
 from meltygui import pressed
 from meltygui.hdr_color import pack_color
 from meltygui.fonts import Font
-from meltygui.runtime import Melty
+from meltygui.melty import Melty
 from meltygui.toggles import Toggles
-from meltygui.rendering.core import render_func
+from meltygui.rendering.core_render import render_func
 from meltygui.views.headers import draw_header
 
 

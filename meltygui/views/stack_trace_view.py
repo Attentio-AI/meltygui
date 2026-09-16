@@ -30,13 +30,13 @@ import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
 from meltygui.fonts import Font
-from meltygui.state.object import DictConversion
-from meltygui.rendering.registry import RenderFuncs
+from meltygui.state.dict_conversion import DictConversion
+from meltygui.rendering.render_funcs import RenderFuncs
 from meltygui.toggles import Tint
-from meltygui.code.address import Address
-from meltygui.code.address import _PROJECT_ROOT
+from meltygui.code.fileref import Address
+from meltygui.code.fileref import _PROJECT_ROOT
 from meltygui.code.project_code import project_code
-from meltygui.rendering.core import render_func
+from meltygui.rendering.core_render import render_func
 from meltygui.rendering.decorators.core_decoration import no_save
 
 
@@ -497,7 +497,7 @@ def _draw_file_header(pane, x, y, width, height, text_x=None, draw_state=None, i
     Text: the editor tabs' colour — the file's painted FileMeta tint (the
     tabs' default tint when unpainted) scaled by the active-tab knobs, so
     it is tinted toward the card, never grey."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     from meltygui.models.file_meta import FileMeta
     from meltygui.toggles import Toggles
     from meltygui.editor.source_ui import _file_meta_tint
@@ -618,7 +618,7 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
     Panes fully outside the view's clip skip their draw_text call entirely:
     the cursor advances by the pane's last measured height, so the scroll
     geometry holds while only visible panes pay a render."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     # [tint=(0.9, 0.35, 0.28)]
     project_prefix = str(_PROJECT_ROOT)
     # File header line: `File "path", line N, in func` - the path in the

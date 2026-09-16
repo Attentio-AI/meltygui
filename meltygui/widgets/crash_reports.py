@@ -30,18 +30,18 @@ from pathlib import Path
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
-from meltygui.runtime import Melty
-from meltygui.state.object import DictConversion
+from meltygui.melty import Melty
+from meltygui.state.dict_conversion import DictConversion
 from meltygui.toggles import Toggles
 from meltygui.utils.glfw_utils import crash_reports_dir
 from meltygui.utils.glfw_utils import request_render
 from meltygui.views.blit_offscreen import add_shadow
-from meltygui.rendering.core import render_func
+from meltygui.rendering.core_render import render_func
 from meltygui.rendering.decorators.window_decoration import window
 from meltygui.views.headers import _brightness_clamp_fn
 from meltygui.views.headers import flat_button
 from meltygui.editor.source_ui import _tab_text_color
-from meltygui.editor.text import COLORS
+from meltygui.editor.text_editor import COLORS
 from meltygui.editor.source_ui import _file_meta_tint
 from meltygui.views.stack_trace_view import SavedTrace
 from meltygui.views.stack_trace_view import draw_stack_trace

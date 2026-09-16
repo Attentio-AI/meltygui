@@ -224,7 +224,7 @@ def test_best_match_real_type_override():
 
 @pytest.fixture
 def meltygui():
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     saved = (dict(Melty.default_funcs_by_shape), dict(Melty.default_lenses_by_shape),
              dict(Melty.default_funcs_by_name), dict(Melty.default_funcs_by_type))
     yield Melty
@@ -280,10 +280,10 @@ def test_registered_app_defaults_route_the_two_use_cases():
     """The real registrations: draw_tuple for float 3/4-tuples, draw_line_graph
     for 1-D/2-D tensors, draw_voxels for 3-D+ (importing the views registers
     them)."""
-    from meltygui.runtime import Melty
-    import meltygui.views.values as new_core_view
-    import meltygui.views.line_graph as line_graph_playground
-    import meltygui.tensor.voxels as voxel_playground
+    from meltygui.melty import Melty
+    import meltygui.views.new_core_view as new_core_view
+    import meltygui.views.line_graph_playground as line_graph_playground
+    import meltygui.tensor.voxel_playground as voxel_playground
 
     look = lambda v, key="value": Melty.get_default_view_function(real_type=type(v), attrib_key=key, value=v)
     assert look((0.2, 0.5, 1.0)) is new_core_view.draw_tuple

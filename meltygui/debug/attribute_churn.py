@@ -28,7 +28,7 @@ class AttributeChurnMonitor:
 
         from meltygui.toggles import Toggles
         if Toggles.attrib_churn_log:
-            from meltygui.runtime import Melty
+            from meltygui.melty import Melty
             top = sorted(cls.attribute_change_count.items(), key=lambda kv: -kv[1])[:10]
             line = ", ".join(f"{c}.{a}={n}" for (c, a), n in top)
             print(f"[churn f{Melty.frame_count}] {line}")

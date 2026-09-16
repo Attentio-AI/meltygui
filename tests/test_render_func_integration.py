@@ -26,7 +26,7 @@ from conftest import _ensure_gl_context, begin_frame, end_frame
 
 def _init_melty():
     """Set up the minimum Melty class state for render_func to run."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     from meltygui.views.blit_offscreen import TileCacheMasked
 
     if Melty.cache is None:

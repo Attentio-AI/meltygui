@@ -143,7 +143,7 @@ def convert(value: Any, target: type[T] = None, *, registry, path: list | None =
             return value  # type: ignore[return-value]
 
     if cache_id is None:
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         cache_id = Melty.unique_stack[-1] if Melty.unique_stack else None
 
     if path is not None:

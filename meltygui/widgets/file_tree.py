@@ -18,20 +18,20 @@ from pathlib import Path
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 from meltygui.hdr_color import with_alpha
-from meltygui.runtime import Melty
-from meltygui.state.object import DictConversion
+from meltygui.melty import Melty
+from meltygui.state.dict_conversion import DictConversion
 from meltygui.modes import Modes
 from meltygui.utils.glfw_utils import request_render
-from meltygui.rendering.core import render_func
+from meltygui.rendering.core_render import render_func
 from meltygui.views.headers import draw_header
 from meltygui.views.headers import flat_button
 from meltygui.views.headers import _brightness_clamp_fn
 import meltygui.widgets.file_graph as file_graph
 from meltygui.widgets.file_graph import start_build
 from meltygui.toggles import Toggles
-from meltygui.files.folder import folder_proxy
-from meltygui.files.folder import watch_folder
-from meltygui.files.folder import _file_meta
+from meltygui.files.folder_files import folder_proxy
+from meltygui.files.folder_files import watch_folder
+from meltygui.files.folder_files import _file_meta
 from meltygui.views.drag_drop import DragDrop
 from meltygui.views.blit_offscreen import add_shadow
 from meltygui.rendering.decorators.window_decoration import window
@@ -522,7 +522,7 @@ def _apply_row_drop(meta, dragged, visible, insert_index, position):
 # # @window(input_value=files_host, tint=(0.42, 0.36, 0.54), disable_scroll=False, mode=Modes.WINDOW)
 # @render_func(show_bg=True, use_cache=False, shadow=True, selectable=False)
 # def render_file_tree_melty(input_value=None, draw_state=None, **kwargs):
-#     from meltygui.rendering.registry import RenderFuncs
+#     from meltygui.rendering.render_funcs import RenderFuncs
 #     watch_folder(ROOT, draw_state)
 #     # Same shape as draw_folder_files: the host holds the tree one level down
 #     # under "value"; a simple top-level draw_collection, and the names-only

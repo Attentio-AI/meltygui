@@ -198,7 +198,7 @@ def _scan_tint(lines, line_no, name):
     """Explicit tint of the definition at 1-based line_no, or None. Uses the
     editor's resolver in-app; standalone (tests) falls back to None."""
     try:
-        from meltygui.editor.text import _scan_def_tint_lines
+        from meltygui.editor.text_editor import _scan_def_tint_lines
     except ImportError:
         return None
     try:

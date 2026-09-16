@@ -8,9 +8,9 @@ from typing import Any
 
 import meltygui_imgui as imgui
 
-from meltygui.rendering.registry import RenderFuncs
+from meltygui.rendering.render_funcs import RenderFuncs
 from meltygui.utils.glfw_utils import print_stack_trace
-from meltygui.rendering.core import render_func
+from meltygui.rendering.core_render import render_func
 from meltygui.rendering.decorators.window_decoration import window
 from meltygui.rendering.decorators.core_decoration import defaults
 
@@ -330,8 +330,8 @@ class PendingSave:
     def _wake_file_watchers(cls, path):
         if path is None:
             return
-        from meltygui.runtime import FileWatch
-        from meltygui.runtime import Melty
+        from meltygui.melty import FileWatch
+        from meltygui.melty import Melty
         from meltygui.debug.invalidation_tracker import Note
         try:
             resolved = str(path.resolve())
@@ -372,7 +372,7 @@ class PendingSave:
         it. Newline-normalized to '\\n' (callers here only need line/col, which is
         newline-agnostic). A queued whole-file edit (start is None) IS the text.
         Returns None if the file can't be read."""
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         from pathlib import Path as _P
         disk = Melty.read_code(path)
         if disk is None:
@@ -476,7 +476,7 @@ class PendingSave:
                 for addr, (codec, kwargs) in list(cls.pending_saves.items()))
             if not has_real_span:
                 return None
-            from meltygui.runtime import Melty
+            from meltygui.melty import Melty
             from meltygui.editor.external_changes import ExternalChanges
             key_path = str(address.path)
             base = ExternalChanges.synced.get(
@@ -575,7 +575,7 @@ class PendingSave:
         disk would hide the incoming side. Newline-normalized to '\\n'.
         Returns None when no text is available at all."""
         from pathlib import Path as _P
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         from meltygui.editor.external_changes import ExternalChanges
         _norm = cls._norm_text
         key = str(path)
@@ -641,7 +641,7 @@ class PendingSave:
         drift has NOT been merged into pending yet: normalized sync-frame text
         differs from current disk. Comparison is memoized by object identity —
         never a per-call content pass over unchanged texts."""
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         from meltygui.editor.external_changes import ExternalChanges
         _norm = cls._norm_text
         out = []
@@ -745,7 +745,7 @@ class PendingSave:
         computed against, so the next drift diffs from HERE, not from the
         display baseline."""
         from pathlib import Path as _P
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         from meltygui.editor.external_changes import ExternalChanges
         from meltygui.mcp_hotswap import _resolve_module
 
@@ -829,7 +829,7 @@ class PendingSave:
         from meltygui.code.new_codecs import ModuleCodec
         from meltygui.code.new_codecs import TextFileCodec
         from meltygui.code.new_codecs import _span_fingerprint
-        from meltygui.code.address import Address
+        from meltygui.code.fileref import Address
 
         _norm = cls._norm_text
         whole = [d for a, c, k, d in absorbed if a.start is None]
@@ -906,10 +906,10 @@ class PendingSave:
         NOTHING mutated — then commit: shift live linenos, rebase/merge/adopt
         entries, exec new imports/defs, advance the sync frame."""
         import ast
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         from meltygui.editor.external_changes import ExternalChanges
-        from meltygui.code.address import Address
-        from meltygui.code.address import _evict_linecache
+        from meltygui.code.fileref import Address
+        from meltygui.code.fileref import _evict_linecache
         from meltygui.code.new_codecs import TypeCodec
         from meltygui.code.new_codecs import FunctionCodec
         from meltygui.code.new_codecs import _span_fingerprint
@@ -1161,7 +1161,7 @@ class PendingSave:
         entries + merge results; the external window gained absorbed markers —
         its _external_change flag is the established cache bypass)."""
         try:
-            from meltygui.runtime import Melty
+            from meltygui.melty import Melty
             from meltygui.utils.glfw_utils import request_render
             from meltygui.editor.external_changes import ExternalChanges
             win = Melty.find_window("draw_pending_saves")
@@ -1198,7 +1198,7 @@ class PendingSave:
         # uncached files are read) so their NEXT pending edit is tracked -
         # this runs on the recompile worker, never the render thread.
         try:
-            from meltygui.runtime import FileWatch
+            from meltygui.melty import FileWatch
             FileWatch.watch_project_files()
         except Exception:
             pass
@@ -1276,11 +1276,11 @@ class PendingSave:
         worst case the summary is only the returned string. Single-flight via
         the button's own _run_busy latch."""
         import time
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         from meltygui.utils.glfw_utils import request_render
-        from meltygui.views.values import is_run_busy
-        from meltygui.views.values import run_busy_begin
-        from meltygui.views.values import run_busy_end
+        from meltygui.views.new_core_view import is_run_busy
+        from meltygui.views.new_core_view import run_busy_begin
+        from meltygui.views.new_core_view import run_busy_end
 
         def _find_runner():
             try:
@@ -1296,7 +1296,7 @@ class PendingSave:
 
         def _reveal():
             try:
-                from meltygui.views.values import Core
+                from meltygui.views.new_core_view import Core
                 Core.melty.open_window("draw_pending_saves")
             except Exception:
                 pass
@@ -1351,7 +1351,7 @@ class PendingSave:
 @render_func()
 def draw_pending_saves():
     pass
-    from meltygui.views.values import draw_any
+    from meltygui.views.new_core_view import draw_any
     RenderFuncs.draw_function(PendingSave.apply_all_saves, icon="", tint=(0,0,0,1), show_bg=False)
     # name= keeps its draw_state distinct from apply_all_saves' (both calls
     # would otherwise derive the same file-name identity); run_in_thread so
@@ -1435,7 +1435,7 @@ def draw_pending_saves():
             # edit as its own "original" reclassifies the entry as a no-op
             # (dropped on the next disk write, invisible in this diff) and
             # poisons the merge base. source_text pins the load to disk.
-            from meltygui.runtime import Melty
+            from meltygui.melty import Melty
             disk_text = Melty.read_code(address.path) if address.path is not None else None
             PendingSave.originals[address] = codec.load(
                 address=address, **{**kwargs, "source_text": disk_text})

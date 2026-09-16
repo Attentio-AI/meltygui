@@ -16,8 +16,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from meltygui.rendering.registry import RenderFuncs
-from meltygui.rendering.core import render_func
+from meltygui.rendering.render_funcs import RenderFuncs
+from meltygui.rendering.core_render import render_func
 from meltygui.rendering.decorators.window_decoration import window
 
 
@@ -42,8 +42,8 @@ def _symbol_index_view():
 @window(disable_scroll=False, tint=(0.16296297311782837, 0.2611111, 0.24118687212467194))
 @render_func()
 def file_watch_debug(draw_state=None):
-    from meltygui.runtime import Melty
-    from meltygui.runtime import FileWatch
+    from meltygui.melty import Melty
+    from meltygui.melty import FileWatch
     from meltygui.editor.external_changes import ExternalChanges
 
     RenderFuncs.draw_function(FileWatch.watch_project_files, icon="",

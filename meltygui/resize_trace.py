@@ -14,7 +14,7 @@ import traceback
 
 def record(stage, window, event=None, error=False, **details):
     try:
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         logger = logging.getLogger(f"meltygui.resize.{os.getpid()}")
         if not logger.handlers:
             from meltygui.paths import cache_root

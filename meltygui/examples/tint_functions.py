@@ -8,7 +8,7 @@ from meltygui import glfw_window
 from meltygui import pressed
 from meltygui.examples.style_layouts import panel
 from meltygui.examples.style_layouts import terraces
-from meltygui.rendering.core import render_func
+from meltygui.rendering.core_render import render_func
 from meltygui.views.headers import draw_header
 
 

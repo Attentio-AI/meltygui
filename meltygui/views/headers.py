@@ -13,17 +13,17 @@ from meltygui_imgui.core import _DrawList
 
 import meltygui.mouse_cursor as mouse_cursor
 from meltygui.global_style import GlobalStyle
-from meltygui.runtime import Melty
-from meltygui.runtime import add_to_collection
+from meltygui.melty import Melty
+from meltygui.melty import add_to_collection
 from meltygui.state.core_enums import ProfileMode
-from meltygui.state.draw_state import TileMode
-from meltygui.rendering.registry import RenderFuncs
+from meltygui.state.new_core_model import TileMode
+from meltygui.rendering.render_funcs import RenderFuncs
 from meltygui.toggles import Toggles
 from meltygui.toggles import Tint
-from meltygui.utils.custom_views import push_style_var
-from meltygui.utils.custom_views import push_style_color
-from meltygui.utils.custom_views import pop_style_color
-from meltygui.utils.custom_views import pop_style_var
+from meltygui.utils.render_utils import push_style_var
+from meltygui.utils.render_utils import push_style_color
+from meltygui.utils.render_utils import pop_style_color
+from meltygui.utils.render_utils import pop_style_var
 from meltygui.utils.glfw_utils import request_render
 from meltygui.utils.glfw_utils import print_stack_trace
 from meltygui.code.bubbling import _BubblingDict
@@ -79,7 +79,7 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
     tab become untypeable once focus clears.
     """
 
-    from meltygui.editor.text import draw_text
+    from meltygui.editor.text_editor import draw_text
     # Grab focus on first open, and re-grab whenever nothing holds text focus.
     # Window focus management (move-to-front / window activation) clears
     # text_focused_ds when a window comes forward that doesn't contain the
@@ -147,7 +147,7 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
     # arrows step the active match and ask the body to scroll it into view.
 
     imgui.same_line()
-    from meltygui.views.values import button
+    from meltygui.views.new_core_view import button
     fa_x_icon = ""
 
     imgui.set_cursor_screen_pos((draw_state.abs_left + width-25, imgui.get_cursor_screen_pos()[1]))
@@ -211,7 +211,7 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
                     # window, focus an input, …). Queued + the tile invalidated so
                     # it re-renders and reads the click next frame (the find UI
                     # renders too late to inject for this frame).
-                    from meltygui.views.values import search_activate_target
+                    from meltygui.views.new_core_view import search_activate_target
                     from meltygui.events.input_handler import InputEvent
                     _target = search_activate_target(Melty.search_current_node)
                     if _target is not None and _target.width and _target.height:
@@ -263,9 +263,9 @@ def _brightness_clamp_fn():
     """new_core_view._brightness_clamp through sys.modules (that module
     imports this one, so the import stays lazy; a dict lookup per call
     instead of an import statement, and a hotswapped body is still seen)."""
-    module = sys.modules.get("meltygui.views.values")
+    module = sys.modules.get("meltygui.views.new_core_view")
     if module is None:
-        import meltygui.views.values as module
+        import meltygui.views.new_core_view as module
     return module._brightness_clamp
 
 
@@ -646,7 +646,7 @@ def draw_header(input_value=None, name="", key=None, meltygui=None, parent_show_
         # header paid a full wrapper call per frame for this 17 px chip
         # (~0.19 ms each, use_cache=False). The chip claims its own 17×17
         # footprint here since the fast path draws without layout.
-        from meltygui.views.values import draw_tuple_fast
+        from meltygui.views.new_core_view import draw_tuple_fast
         _aw_x, _aw_y = imgui.get_cursor_screen_pos()
         _aw_ch, _aw_val = draw_tuple_fast(
             _aw_tint, draw_state, view_id="aw_tint", x=_aw_x, y=_aw_y,
@@ -809,7 +809,7 @@ def draw_header(input_value=None, name="", key=None, meltygui=None, parent_show_
     # ── Profiler ───────────────────────────────────────────────
     is_profiling = Toggles.profile_mode == ProfileMode.ON
     if is_profiling:
-        from meltygui.views.values import render_profiler_time
+        from meltygui.views.new_core_view import render_profiler_time
         render_profiler_time(
             input_value=draw_state.render_time, brief=True,
             style_manager=style_manager,
@@ -848,7 +848,7 @@ def draw_footer(input_value=None, name="", key=None, meltygui=None, parent_show_
     # for key, pending in draw_state._all_pending.items():
     #     if pending is not None:
     #         if pending.state == PendingState.ERROR:
-    #             from meltygui.views.values import draw_pending
+    #             from meltygui.views.new_core_view import draw_pending
     #             draw_pending(pending, name=f"{key}", tint=(1, 0, 0))
 
     imgui.dummy(1,1)
@@ -893,7 +893,7 @@ def draw_header_end(input_value=None, name="", show_close=True, key=None, meltyg
                 _was_closed = draw_state.closed
                 from meltygui.window_visibility import native_user_window_closed
                 native_user_window_closed(draw_state, not draw_state.closed)
-                from meltygui.state.undo import NavUndo
+                from meltygui.state.core_undo import NavUndo
                 from meltygui.window_visibility import window_edit_is_local
                 if window_edit_is_local(draw_state, 'closed'):
                     NavUndo.record_window(draw_state, _was_closed, draw_state.closed)

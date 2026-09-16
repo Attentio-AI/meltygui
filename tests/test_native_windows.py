@@ -155,7 +155,7 @@ def test_native_handle_identifies_its_gl_context(backend):
 def test_native_frame_is_available_to_chrome_and_collision_flush(backend, monkeypatch):
     import meltygui.titlebar as titlebar
     import meltygui.os_frame as os_frame
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     from meltygui.toggles import Toggles
     window = NativeWindow(backend, 800, 600, 'native', {glfw.TRANSPARENT_FRAMEBUFFER: True})
     monkeypatch.setattr(Melty, 'glfw_window', window)
@@ -184,7 +184,7 @@ def test_native_frame_is_available_to_chrome_and_collision_flush(backend, monkey
 def test_mock_window_is_not_a_native_handle(monkeypatch):
     from unittest.mock import MagicMock
     import meltygui.titlebar as titlebar
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     window = MagicMock()
     monkeypatch.setattr(Melty, 'glfw_window', window)
     assert not window_api.is_native_window(window)

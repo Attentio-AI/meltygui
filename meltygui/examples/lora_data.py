@@ -1,7 +1,7 @@
 """Representative editable data for the studio's actual LoRA collection view."""
 from meltygui import Style
-from meltygui.examples.lora_models import Lora
-from meltygui.examples.lora_models import LoraCollection
+from meltygui.examples.lora import Lora
+from meltygui.examples.lora import LoraCollection
 
 
 def lora_preview():

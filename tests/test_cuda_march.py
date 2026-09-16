@@ -11,10 +11,10 @@ torch = pytest.importorskip("torch")
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 
-import meltygui.tensor.kernels as cm
-from meltygui.tensor.voxels import TensorDim
-from meltygui.tensor.voxels import slice_volume
-from meltygui.tensor.voxels import slice_volume_view
+import meltygui.tensor.cuda_march as cm
+from meltygui.tensor.voxel_playground import TensorDim
+from meltygui.tensor.voxel_playground import slice_volume
+from meltygui.tensor.voxel_playground import slice_volume_view
 
 DEV = "cuda:0"
 
@@ -114,11 +114,11 @@ def st(gl_context):
 
 def test_cuda_image_matches_gl_voxel_pass(st):
     import OpenGL.GL as gl
-    from meltygui.tensor.voxels import CudaVolumeView
-    from meltygui.tensor.voxels import LUTS
-    from meltygui.tensor.voxels import _cuda_render
-    from meltygui.tensor.voxels import image_blit_pass
-    from meltygui.tensor.voxels import voxel_pass
+    from meltygui.tensor.voxel_playground import CudaVolumeView
+    from meltygui.tensor.voxel_playground import LUTS
+    from meltygui.tensor.voxel_playground import _cuda_render
+    from meltygui.tensor.voxel_playground import image_blit_pass
+    from meltygui.tensor.voxel_playground import voxel_pass
     torch.manual_seed(2)
     vol = (torch.rand(24, 32, 40, device=DEV) > 0.93).float() * 0.9
     W, H = 128, 96
@@ -369,7 +369,7 @@ def test_hdr_lut_rides_through_linear_output():
     import math
     from meltygui.hdr_color import linear_to_oklab
     from meltygui.hdr_color import srgb_to_linear
-    from meltygui.tensor.voxels import LUTS
+    from meltygui.tensor.voxel_playground import LUTS
     assert max(LUTS["hot"]) <= 1.0 and min(LUTS["hot"]) >= 0.0
     hot_hdr = LUTS["hot_hdr"]
     assert max(hot_hdr) > 2.0 and min(hot_hdr) < 0.0     # HDR peak + P3 negatives
@@ -407,8 +407,8 @@ def test_gl_voxel_pass_hdr_lut_reaches_fp16_target(st):
     above 1.0 and finite negatives (the mirrored decode), and stays within
     [0, 1] for the SDR table."""
     import OpenGL.GL as gl
-    from meltygui.tensor.voxels import LUTS
-    from meltygui.tensor.voxels import voxel_pass
+    from meltygui.tensor.voxel_playground import LUTS
+    from meltygui.tensor.voxel_playground import voxel_pass
     z, y, x = torch.meshgrid(torch.linspace(-1, 1, 24), torch.linspace(-1, 1, 32),
                              torch.linspace(-1, 1, 40), indexing="ij")
     vol = torch.exp(-(x * x + y * y + z * z) * 3.0)

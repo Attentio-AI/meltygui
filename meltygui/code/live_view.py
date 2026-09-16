@@ -779,7 +779,7 @@ def _notify_watchers(store_obj, key_path, first):
             win = getattr(ds, "_lv_window_ds", None)
             if win is not None and not getattr(win, "closed", False):
                 try:
-                    from meltygui.runtime import Melty
+                    from meltygui.melty import Melty
                     Melty.cache.invalidate_up(win._tile_id, force=True,
                                               max_depth=8)
                     notified = True
@@ -1384,7 +1384,7 @@ def _release_key_watchers(store_obj, key_path):
     store. The per-run peak-VRAM guard (see _publish); same release as a
     prune, minus the prune. Any thread."""
     try:
-        from meltygui.editor.live_views import release_live_value
+        from meltygui.editor.live_view_views import release_live_value
     except Exception:
         return
     for attr in ("__live_watchers__", "__live_first_watchers__"):
@@ -1450,7 +1450,7 @@ def _retained_markers(store_obj, store, removed):
             surviving_ds.update(id(d) for d in t)
             old_gen.append(k)
     try:
-        from meltygui.editor.live_views import _stable_key_names
+        from meltygui.editor.live_view_views import _stable_key_names
         old_names = _stable_key_names(old_gen)
         new_names = set(_stable_key_names(survivors).values())
     except Exception:
@@ -1540,7 +1540,7 @@ def _prune_keys(store_obj, removed):
                 # value they hold (and the window's GPU texture), or every
                 # pruned key leaves a generation of tensors for the session.
                 try:
-                    from meltygui.editor.live_views import release_live_value
+                    from meltygui.editor.live_view_views import release_live_value
                     release_live_value(ds, gl=False)
                     if win is not None:
                         release_live_value(win)
@@ -1958,7 +1958,7 @@ def _publish_stack_locals_sync(frames, extra_snapshots=None):
     hiccup must never break the batch."""
     from meltygui.code.chain_converters import _is_dispatch_frame
     from meltygui.code.chain_converters import _enclosing_function
-    from meltygui.code.address import is_editable_source
+    from meltygui.code.fileref import is_editable_source
     from meltygui.func_metadata import FuncsMetadata
     with _snapshot_lock:
         for entry in frames or ():

@@ -33,9 +33,9 @@ import sys
 import threading
 import time
 
-from meltygui.runtime import Melty
+from meltygui.melty import Melty
 from meltygui.notifications import notify
-from meltygui.rendering.registry import RenderFuncs
+from meltygui.rendering.render_funcs import RenderFuncs
 from meltygui.utils.glfw_utils import request_render
 from meltygui.utils.glfw_utils import print_stack_trace
 from meltygui.perf_trace import trace as _ptrace
@@ -43,7 +43,7 @@ from meltygui.perf_trace import trace_rl as _ptrace_rl
 from meltygui.code.bubbling import install_bubbling
 from meltygui.code.bubbling import _reinstall_children
 from meltygui.code.bubbling import _DeepAttrMixin
-from meltygui.rendering.core import render_func
+from meltygui.rendering.core_render import render_func
 from meltygui.rendering.decorators.core_decoration import defaults
 from meltygui.rendering.decorators.core_decoration import Core
 from meltygui.debug.invalidation_tracker import Note
@@ -1029,7 +1029,7 @@ def render_host_view(input_value, external_change=False, draw=False, draw_state=
 
     # data-bag (no wrapper): just render the dict itself.
     if host.io_function is None:
-        from meltygui.views.values import draw_collection
+        from meltygui.views.new_core_view import draw_collection
         return draw_collection(host, name=host.name)
 
     # external_change for the wrapper: the framework's, OR the input-changed flag that

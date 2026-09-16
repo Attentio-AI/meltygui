@@ -596,7 +596,7 @@ def _serving_ready():
     if _draining.is_set():
         return False
     try:
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         return Melty.init_complete()
     except Exception:
         return True

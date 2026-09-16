@@ -40,7 +40,7 @@ class SourceContext:
 
 
 def owning_root(path):
-    from meltygui.code.address import project_root_of
+    from meltygui.code.fileref import project_root_of
     target = Path(path).expanduser().resolve()
     return str(project_root_of(target) or (target if target.is_dir() else target.parent))
 

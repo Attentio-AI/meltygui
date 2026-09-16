@@ -47,7 +47,7 @@ def hotswap_file(path, source=None):
     # Imported lazily: this module is loaded by the MCP server, which must not
     # drag in the (imgui-heavy) editor stack unless a hotswap is actually asked for.
     from meltygui.code.file_converters import _recompile_module
-    from meltygui.code.address import is_editable_source
+    from meltygui.code.fileref import is_editable_source
     from meltygui.code.libcst_conversion import invalidate_usage_cache
 
     p = Path(path).resolve()

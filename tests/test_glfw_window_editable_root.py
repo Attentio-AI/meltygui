@@ -17,13 +17,13 @@ import time
 
 import pytest
 
-import meltygui.code.address as address  # noqa: E402
+import meltygui.code.fileref as address  # noqa: E402
 import meltygui.app as app  # noqa: E402
 
 
 APP_SOURCE = textwrap.dedent('''
     from meltygui import glfw_window
-    from meltygui.rendering.core import render_func
+    from meltygui.rendering.core_render import render_func
 
     SEEN = {}
 
@@ -174,7 +174,7 @@ def test_outside_app_decorator_is_the_tint_source(tmp_path, no_boot, fresh_roots
     import profile_render_wrapper as H
     _ensure_gl_context()
     H._init_melty()
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     from meltygui.views.anywhere import get_source_for
     from meltygui.views.anywhere import _sources_for
 

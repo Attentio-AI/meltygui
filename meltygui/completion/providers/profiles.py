@@ -11,7 +11,7 @@ provider function's per-request params.
 Pick a profile per editor with `draw_text(..., fim="claude-fast")` or
 globally with `Toggles.Fim.profile`.
 """
-from meltygui.completion.service import fim_profile
+from meltygui.completion.fim import fim_profile
 from meltygui.completion.providers.claude import claude_fim
 from meltygui.completion.providers.copilot import copilot_fim
 from meltygui.completion.providers.ollama import ollama_fim

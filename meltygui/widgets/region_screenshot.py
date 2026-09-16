@@ -29,7 +29,7 @@ import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
 import meltygui.mouse_cursor as mouse_cursor
-from meltygui.runtime import Melty
+from meltygui.melty import Melty
 from meltygui.utils.glfw_utils import request_render
 from meltygui.rendering.decorators.core_decoration import Core
 

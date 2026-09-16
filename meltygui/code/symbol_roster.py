@@ -193,7 +193,7 @@ def _scan_tint(lines, line_no, name, tint_lines=None, lookback=40):
         elif tint_lines[k - 1] < i - lookback:
             return None
     try:
-        from meltygui.editor.text import _scan_def_tint_lines
+        from meltygui.editor.text_editor import _scan_def_tint_lines
     except ImportError:
         return None
     try:
@@ -600,7 +600,7 @@ def _notify_consumers():
     if not targets:
         return
     try:
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         from meltygui.utils.glfw_utils import request_render
         from meltygui.debug.invalidation_tracker import Note
     except Exception:
@@ -666,13 +666,13 @@ def _file_key(path):
     """Content-free identity of a file's CURRENT text: (identity of the
     FileWatch-cached disk string, pending generation). Never hashes."""
     try:
-        from meltygui.runtime import Melty
+        from meltygui.melty import Melty
         disk = Melty.read_code(path)
         did = id(disk) if disk is not None else None
     except Exception:
         did = None
     try:
-        from meltygui.editor.text import _pending_gen_of
+        from meltygui.editor.text_editor import _pending_gen_of
         gen = _pending_gen_of(path)
     except Exception:
         gen = 0
@@ -1581,7 +1581,7 @@ def _project_file_changed(path):
 
 
 def _watch_project(project):
-    from meltygui.runtime import FileWatch
+    from meltygui.melty import FileWatch
     FileWatch.global_listeners[:] = [listener for listener in FileWatch.global_listeners
                                     if getattr(listener, "__name__", "") != "_project_file_changed"]
     FileWatch.global_listeners.append(_project_file_changed)

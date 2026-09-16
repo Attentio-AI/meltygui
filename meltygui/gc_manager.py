@@ -651,7 +651,7 @@ def _boot_collect_and_freeze(label, trigger=""):
 def tick():
     """Once per frame from Melty.end_frame (render thread). Cheap when there
     is nothing to do: two attribute reads and a couple of comparisons."""
-    from meltygui.runtime import Melty
+    from meltygui.melty import Melty
     from meltygui.toggles import Toggles
     if not Toggles.GC.manage:
         if _state["applied"]:
