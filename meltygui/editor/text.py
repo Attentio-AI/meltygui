@@ -2962,7 +2962,7 @@ def _fnrun_start(editor_ds, file_path, def_line, def_name,
             ok, error = result
             statuses[skey] = (('ok', Melty.frame_count, mode) if ok
                               else ('err', error, mode))
-            if instrumented and not python:
+            if instrumented:
                 _fnrun_after_live_run(editor_ds)
             editor_ds.invalidate()
             request_render()
@@ -3754,14 +3754,18 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
     if _params_node is not None and (
             _pp_want or (_pw is not None and not _pw.closed)):
         from meltygui.debug.mode import Mode
-        # imgui.set_cursor_screen_pos((x, y))
-        # window_pos only on FIRST spawn - passing it every call re-pins the
-        # panel under the button and eats the user's drags (the live-value
-        # windows follow the same set-once rule). No width: the window
-        # wraps/resizes normally. swoosh=False - no connector ribbon.
-        _pp_kwargs = {}
-        # if _pw is None:
-        #     _pp_kwargs["window_pos"] = (0, height + 6)
+        # Seed geometry through `initial`, never a per-frame window_pos:
+        # the panel starts at the parent's right edge and keeps user drags
+        # and resizing on subsequent frames. The default position is (0, 0),
+        # so force the initial seed only while no panel instance exists.
+        _panel_width = 400
+        _left, _top, _right, _bottom = editor_ds.abs_clip_rect
+        _panel_initial = {
+            "width": _panel_width,
+            "window_pos": (
+                max(_left + 16, _right - _panel_width - 16) - editor_ds.abs_left,
+                _top + 16 - editor_ds.abs_top),
+        }
         # DISPLAYED node latch: the background reparse (small-file average
         # ~119ms) rebuilds the tree MID-TYPING, so restamping the fresh
         # `_params_node` per run showed half-typed defaults in the panel
@@ -3788,10 +3792,15 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
             _seen = _seen_map[skey] = {
                 _pk: _fnrun_param_src(_pv) for _pk, _pv in _shown.items()
                 if isinstance(_pk, str) and not _pk.startswith('__')}
+        # Mode.WINDOW replaces caller `initial` with its own defaults.
+        # Apply its chrome as kwargs so this panel can supply its own seed.
+        _panel_kwargs = dict(Mode.WINDOW.get_config_for(_shown).kwargs)
+        _panel_kwargs["initial"] = _panel_initial
         _pch, _pnv, _pw = draw_fnrun_params_panel(
             _shown, name=f"{def_name} params##fnpp::{def_name}",
-            mode=Mode.WINDOW, closed=not _pp_want,
+            **_panel_kwargs, closed=not _pp_want,
             parent_window=editor_ds, return_extras=True, swoosh=False,
+            force_initial=_pw is None,
             fnrun_file=file_path, fnrun_line=def_line, fnrun_name=def_name,
             editor_ds=editor_ds,
             auto_execute=bool(editor_state.params_auto_execute.get(def_name))
@@ -12484,11 +12493,6 @@ def draw_text(input_value: str, height=None,
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
                 request_render()
-            elif any(line == _caret_ln for line, message in _err_markers):
-                ds._err_open_line = _caret_ln - 1
-                _fired.discard(glfw.KEY_ENTER)
-                _fired.discard(glfw.KEY_KP_ENTER)
-                request_render()
         # --- Typed characters --- drained in order, using each key event's own
         # modifiers so fast shift-typing across a slow frame stays shifted.
         typed_dot_this_frame = False
@@ -16358,16 +16362,7 @@ def draw_text(input_value: str, height=None,
     # The error popover owns its hit region, including below a one-line file.
     # Background work keeps polling after it closes; completion uses the shared
     # import statement path and the original file's selected environment.
-    # Hovering the affected source line reveals the same fix as its gutter.
-    mouse_x, mouse_y = imgui.get_mouse_pos()
-    for error_line, error_message in _err_markers:
-        error_index = error_line - 1
-        if 0 <= error_index < len(_line_starts(text)):
-            width = min(visible_width, max(char_w, len(_diagnostic_line_text(text, error_index)) * char_w))
-            if (origin_x <= mouse_x <= origin_x + width
-                    and origin_y + error_index * line_px <= mouse_y < origin_y + (error_index + 1) * line_px):
-                ds._err_open_line = error_index
-                break
+    # Only the gutter error button opens or closes the diagnostic popup.
     _err_open_line = getattr(ds, '_err_open_line', None)
     _err_open_msg = (dict((l - 1, m) for l, m in _err_markers).get(_err_open_line)
                      if _err_markers and _err_open_line is not None else None)

@@ -1,13 +1,9 @@
 """draw_line_graph — draw_voxels' 2-D sibling: tensor → line graph.
 
-Same structure, same pipeline, same ownership rules as draw_voxels
-(voxel_playground.py): the view owns every mapping and render decision, the
-source tensor is sliced + uploaded HERE (re-keyed by gl_state deps on source
-identity/_version/mapping), CUDA tensors go device-to-device through
-cuda_interop into a GL texture, and a @shader_func renders into a gl_state
-FBO that imgui.image shows. EVERYTHING adjustable is a parameter on the
-signature (auto draw_state params: gestures and the controls panel write
-draw_state.<name>, only diverged values persist/serialize).
+The view owns mapping and rendering. CUDA inputs are sampled directly from
+strided storage by line_kernels; only per-line range metadata and the final
+RGBA image are allocated. CPU inputs retain the packed-texture/GL path.
+Adjustable settings are parameters on the signature (auto draw_state params).
 
 Mapping: `x_dim` is the SAMPLE axis (the graph's horizontal), `line_dim` the
 SERIES axis — one polyline per index along it (a 2-D (samples, lines) input
@@ -16,14 +12,14 @@ x = second-to-last, lines = last; a 1-D tensor is one line. Every other dim
 is pinned by `slices` (one slider per extra dim along the bottom, exactly
 draw_voxels' scrubbers) or averaged via `mean_dims`.
 
-Storage: the (lines, samples) matrix is packed into a 3-D texture
+CPU storage: the (lines, samples) matrix is packed into a 3-D texture
 (depth = line, height = row, width = W) so a sample axis longer than
 GL_MAX_3D_TEXTURE_SIZE wraps across rows — the vertex shader fetches sample
 i of line k at (i % W, i / W, k). That keeps the upload on the EXACT
 voxel path (cuda_interop.tensor_to_texture / GLState.texture3d, pre-flight
 via texture3d_fit) with no second interop implementation.
 
-Rendering: one instanced draw — instance = line, 6 vertices per segment —
+CPU rendering: one instanced draw — instance = line, 6 vertices per segment —
 where the vertex shader pulls both segment endpoints from the texture, maps
 data → pixels with the zoom/pan camera, and extrudes an anti-aliased quad of
 `line_width` pixels. Zoom/pan live in the shader (the camera is four
@@ -197,14 +193,15 @@ def _resolve_line_axes(shape, dim_names, x_dim, line_dim):
 
 
 def slice_lines(t, dim_names=(), x_dim=None, line_dim=None, slices=(),
-                mean_dims=(), normalize=False):
+                mean_dims=(), normalize=False, materialize=True):
     """tensor → (lines, samples) 2-D display matrix, PURE (every choice is an
     argument, nothing stored). Unmapped dims pin to their `slices` index
     (missing → 0) or average when in mean_dims; `normalize` min-max scales
     EACH LINE to [0, 1] (compare shapes, not magnitudes). Stays on t's
     device. Returns (lines2d, (x_dim, line_dim|None), shape)."""
     import torch
-    t = to_display_dtype(t.detach())
+    from meltygui.tensor.voxels import _display_view_dtype
+    t = (to_display_dtype if materialize else _display_view_dtype)(t.detach())
     if t.numel() == 0:
         raise ValueError(f"empty tensor (shape {tuple(t.shape)}) — nothing to plot")
     if t.dim() == 0:
@@ -233,8 +230,9 @@ def slice_lines(t, dim_names=(), x_dim=None, line_dim=None, slices=(),
         lines = sub.reshape(1, -1)
     else:
         lines = sub.transpose(0, 1) if ld > xd else sub   # → (line, sample)
-    lines = lines.contiguous()
-    if normalize:
+    if materialize:
+        lines = lines.contiguous()
+    if normalize and materialize:
         lo = lines.amin(dim=1, keepdim=True)
         hi = lines.amax(dim=1, keepdim=True)
         lines = (lines - lo) / (hi - lo + 1e-12)
@@ -370,7 +368,8 @@ def _draw_axes_overlay(draw_list, img_pos, width, height, n_samples, y_range,
     # Shape-routed: 1-D and 2-D tensors come here, 3-D+ go to draw_voxels
     # (via `Shaped("Tensor", (None, None, None, None))`). The plain "Tensor"
     # name entry on draw_voxels stays as fallback for anything unshaped.
-    is_default_for=(Shaped("Tensor", (None,)), Shaped("Tensor", (None, None))),
+    is_default_for=(Shaped("Tensor", (None,)), Shaped("Tensor", (None, None)),
+                    Shaped("ndarray", (None,)), Shaped("ndarray", (None, None))),
     show_bg=True, selectable=True, auto_resize=False, min_width=269,
     with_header=draw_header, bg_offset=0, min_height=293,
     disable_scroll=True, use_cache=True)
@@ -400,12 +399,13 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
                     left_mouse_double_clicked=None, slash_pressed=None,
                     kp_divide_pressed=None, kp_decimal_pressed=None, **kwargs):
     """The line-graph renderer — draw_voxels' sibling (see the module doc).
-    Input is a tensor/ndarray (sliced + uploaded HERE) or an already-packed
-    series GLTexture (rendered as-is; needs n_samples/tex_w/y_range stamped
+    CUDA tensors are sampled in place; CPU tensors/ndarrays are uploaded.
+    Input can also be an already-packed series GLTexture (rendered as-is; needs n_samples/tex_w/y_range stamped
     on it)."""
     import torch
     
     src = input_value
+    cuda_lines = None
     img_origin = imgui.get_cursor_screen_pos()   # the image draws here below
     dim_names = tuple(_clean_dim_name(x, i) for i, x in enumerate(dim_names or ()))
     slices = tuple(int(v) for v in (slices or ()))
@@ -438,11 +438,41 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
         vol_key = (source_identity(src), dim_names,
                    str(x_dim), str(line_dim), slices, mean_dims,
                    bool(normalize), int(max_lines))
-        tex = _cached_volume_texture(gl_state, vol_key, keys=("series_cuda", "series"))
-        if tex is not None:
-            mapping, source_shape = tex.mapping, tex.source_shape
-            n_samples, tex_w, y_range = tex.n_samples, tex.tex_w, tex.y_range
-            n_lines, clamp_note = int(tex.shape[0]), tex.clamp_note
+        if t.is_cuda:
+            from types import SimpleNamespace
+            from meltygui.tensor import kernels, line_kernels
+            if not kernels.available():
+                _draw_voxel_error(draw_state, "CUDA line rendering requires meltygui[tensor]; "
+                                  "the tensor was not copied to the CPU.", who="draw_line_graph")
+                return False, None
+            try:
+                cuda_lines, mapping, source_shape = slice_lines(
+                    t, dim_names, x_dim, line_dim, slices, mean_dims, False, materialize=False)
+                cuda_lines = cuda_lines[:max(1, int(max_lines))]
+                n_lines, n_samples = map(int, cuda_lines.shape)
+                stats = gl_state.get('line_ranges', lambda: line_kernels.ranges(cuda_lines), deps=vol_key)
+                if normalize:
+                    y_range = (0., 1.)
+                else:
+                    lo, hi = float(stats[:, 0].min()), float(stats[:, 1].max())
+                    if not math.isfinite(lo) or not math.isfinite(hi):
+                        lo, hi = 0., 1.
+                    if hi - lo < 1e-12:
+                        pad = abs(lo) * .5 or .5
+                        lo, hi = lo - pad, hi + pad
+                    y_range = (lo, hi)
+                tex_w, clamp_note = 0, None
+                tex = SimpleNamespace(clamp_note=None)
+                gl_state.drop('series'); gl_state.drop('series_cuda')
+            except (ValueError, TypeError, RuntimeError) as error:
+                _draw_voxel_error(draw_state, str(error), who="draw_line_graph")
+                return False, None
+        else:
+            tex = _cached_volume_texture(gl_state, vol_key, keys=("series_cuda", "series"))
+            if tex is not None:
+                mapping, source_shape = tex.mapping, tex.source_shape
+                n_samples, tex_w, y_range = tex.n_samples, tex.tex_w, tex.y_range
+                n_lines, clamp_note = int(tex.shape[0]), tex.clamp_note
     if not isinstance(src, GLTexture) and tex is None:
         try:
             lines, mapping, source_shape = slice_lines(
@@ -618,16 +648,32 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
         gl.glBlendEquation(gl.GL_FUNC_ADD)
         gl.glBlendFuncSeparate(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA,
                                gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
-        line_pass(gl_state, series=tex, lut=lut_tex,
-                  n_samples=int(n_samples), tex_w=int(tex_w), n_lines=int(n_lines),
-                  zoom_x=float(zoom_x), zoom_y=float(zoom_y),
-                  pan_x=float(pan_x), pan_y=float(pan_y),
-                  y_min=float(y_range[0]), y_max=float(y_range[1]),
-                  margin=float(margin), viewport=(float(width), float(height)),
-                  unit_px=(float(unit[0]), float(unit[1])),
-                  line_width=max(0.5, float(line_width)),
-                  line_opacity=max(0.0, min(1.0, float(line_opacity))),
-                  single_color=tuple(float(c) for c in single_color)[:3])
+        if cuda_lines is not None:
+            from meltygui.tensor.voxels import _upload_cuda_image, image_blit_pass
+            from meltygui.tensor import line_kernels
+            out = gl_state.get('cuda_line_image',
+                lambda: torch.empty((height, width, 4), device=cuda_lines.device, dtype=torch.float16),
+                deps=(height, width, str(cuda_lines.device)))
+            colors = LUTS.get(lut, LUTS['jet'])
+            cuda_lut = gl_state.get('cuda_line_lut',
+                lambda: torch.tensor(colors, device=cuda_lines.device, dtype=torch.float32).reshape(-1, 3),
+                deps=(str(lut), str(cuda_lines.device)))
+            line_kernels.render(cuda_lines, stats, out, cuda_lut, normalize=normalize,
+                zoom_x=zoom_x, zoom_y=zoom_y, pan_x=pan_x, pan_y=pan_y,
+                y_range=y_range, margin=margin, unit=unit, line_width=max(.5, float(line_width)),
+                line_opacity=max(0., min(1., float(line_opacity))), single_color=single_color)
+            image_blit_pass(gl_state, image=_upload_cuda_image(gl_state, out))
+        else:
+            line_pass(gl_state, series=tex, lut=lut_tex,
+                      n_samples=int(n_samples), tex_w=int(tex_w), n_lines=int(n_lines),
+                      zoom_x=float(zoom_x), zoom_y=float(zoom_y),
+                      pan_x=float(pan_x), pan_y=float(pan_y),
+                      y_min=float(y_range[0]), y_max=float(y_range[1]),
+                      margin=float(margin), viewport=(float(width), float(height)),
+                      unit_px=(float(unit[0]), float(unit[1])),
+                      line_width=max(0.5, float(line_width)),
+                      line_opacity=max(0.0, min(1.0, float(line_opacity))),
+                      single_color=tuple(float(c) for c in single_color)[:3])
         if not _blend_was:
             gl.glDisable(gl.GL_BLEND)
     if depth_was_on:

@@ -891,9 +891,12 @@ def draw_header_end(input_value=None, name="", show_close=True, key=None, meltyg
                            view_id=f"hdr_close{unique}",
                            color=(9, 1, 1)):
                 _was_closed = draw_state.closed
-                draw_state.closed = not draw_state.closed
+                from meltygui.window_visibility import native_user_window_closed
+                native_user_window_closed(draw_state, not draw_state.closed)
                 from meltygui.state.undo import NavUndo
-                NavUndo.record_window(draw_state, _was_closed, draw_state.closed)
+                from meltygui.window_visibility import window_edit_is_local
+                if window_edit_is_local(draw_state, 'closed'):
+                    NavUndo.record_window(draw_state, _was_closed, draw_state.closed)
                 Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
     
                 # draw_state._parent.invalidate_up()

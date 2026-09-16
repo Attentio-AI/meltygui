@@ -945,16 +945,6 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
         pane.last_height = advance + header_height + card_pad_bottom
         if file_headers:
             imgui.set_cursor_screen_pos((base_x, cursor_y + advance + card_pad_bottom))
-        # The raising pane shows its message box from the start - the
-        # marker's open state (`_err_open_line`, the 0-based buffer row)
-        # is stamped once on first sight; the user can close it from there.
-        if marks_error and not pane.error_opened and pane_ds is not None:
-            from meltygui.editor.diff import _diff_disp_span
-            pane.error_opened = True
-            # Markers live in DISPLAY rows (fold-mapped by draw_text); the
-            # pane's fold map is stamped by the body that just ran.
-            pane_ds._err_open_line = _diff_disp_span(pane_ds, call_row, call_row + 1)[0]
-            pane_ds.invalidate()
         if file_headers and pane.ds is None and pane_ds is not None:
             # First sight: the card (drawn from pane.ds's captured bg
             # recipe) could not paint this frame - repaint next frame.

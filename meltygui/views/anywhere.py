@@ -623,7 +623,8 @@ def get_source_for(attr_name, draw_state, class_to_show=None):
 # skipped by default_write_source's pick - they stay visible and manually
 # pickable in the info tab's dropdown.
 _FRAMEWORK_CALLER_DIRS = ("/meltygui/rendering/", "/meltygui/views/",
-                          "/meltygui/code/", "/meltygui/state/", "/meltygui/utils/")
+                          "/meltygui/code/", "/meltygui/state/", "/meltygui/utils/",
+                          "/meltygui/editor/", "/meltygui_pro/editor/")
 _FRAMEWORK_CALLER_FILES = ("runtime.py", "app.py", "surface.py", "background.py")
 
 
@@ -633,9 +634,39 @@ def _is_framework_caller(location):
     if not location or not location[0]:
         return True
     p = str(location[0]).replace("\\", "/")
+    if "/meltygui/" in p or "/meltygui_pro/" in p:
+        return True
     if any(d in p for d in _FRAMEWORK_CALLER_DIRS):
         return True
-    return p.rsplit("/", 1)[-1] in _FRAMEWORK_CALLER_FILES
+    return ("/meltygui/" in p
+            and p.rsplit("/", 1)[-1] in _FRAMEWORK_CALLER_FILES)
+
+
+def window_source_writable(srcs, target):
+    """Automatic window gestures may always edit comments/local state.
+
+    Source-code changes require the GUI-editor toggle; framework dispatch
+    call sites are never an automatic target, even with that toggle enabled.
+    """
+    from meltygui.toggles import Toggles
+    kind = srcs['kinds'].get(target)
+    if kind in ('code comment', 'draw state'):
+        return True
+    if not Toggles.dangerous_edit_mode:
+        return False
+    if isinstance(kind, str) and kind.startswith('caller'):
+        return not _is_framework_caller(srcs['locations'].get(target))
+    return target is not None
+
+
+def window_position_movable(draw_state, kwargs):
+    if kwargs.get('window_pos') is None:
+        return True
+    # Live windows nominate their comment even before it has an entry.
+    if kwargs.get('preferred_source') == 'code comment':
+        return True
+    srcs = _sources_for(draw_state)
+    return window_source_writable(srcs, _setting_source(srcs, 'window_pos'))
 
 
 def default_write_source(attr_name, draw_state, class_to_show=None, srcs=None):
@@ -723,7 +754,7 @@ def from_anywhere(attr_name, draw_state, class_to_show=None, default=None):
 SET_ANYWHERE_PARAMS = ("tint", "view_func")
 
 
-def anywhere_value(attr_name, draw_state, default=None):
+def anywhere_value(attr_name, draw_state, default=None, live_kwargs=None):
     """The value a set-anywhere editor should DISPLAY for `attr_name`:
     draw_state._kwargs — the framework-resolved truth — except while a
     set_anywhere round trip is in flight, when it's the pending UI value
@@ -736,7 +767,8 @@ def anywhere_value(attr_name, draw_state, default=None):
     to anything (our set landing, or someone else's edit) clears the entry
     and live reads resume."""
     _anywhere_recompile_tick(draw_state)
-    live = (draw_state._kwargs or {}).get(attr_name)
+    live = (draw_state._kwargs if live_kwargs is None else live_kwargs) or {}
+    live = live.get(attr_name)
     if attr_name == "view_func":
         live = getattr(draw_state, "_wrapper", None) or draw_state._view_func
     if _unset_value(live):
@@ -1046,6 +1078,22 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
     if attr_name == "view_func" and srcs["kinds"].get(target) == "signature" and attr_name not in sources[target]:
         notify("Choose a caller, defaults, comment, or draw-state source for the renderer", tag="set_anywhere")
         return None
+
+    if source is None and ds_fallback and attr_name in ('closed', 'window_pos'):
+        # Parameter panels inherit their inspected window's comment for
+        # parameter edits, but their own geometry/visibility belongs to the
+        # panel. Never close or move the ancestor through that inherited row.
+        owner = srcs.get('comment_owners', {}).get(target, draw_state)
+        if owner is not draw_state:
+            setattr(draw_state, attr_name, value)
+            last = getattr(draw_state, '_sa_last_source', None)
+            if last is None:
+                last = {}
+                draw_state._sa_last_source = last
+            last[attr_name] = 'draw state'
+            return 'draw state'
+        if not window_source_writable(srcs, target):
+            return None
 
     # Last-written source, by attr - lazily maintained (stamped here on every
     # set, and by the popover's lazy resolve on first open): cheap provenance

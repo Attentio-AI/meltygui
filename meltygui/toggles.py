@@ -484,6 +484,10 @@ class Swoosh:
 @window(tint=(0.27, 0.19, 0.14))
 class Toggles:
 
+    # Allow window gestures to edit caller/default source code as a GUI editor.
+    # Comment overrides and local window state do not require this flag.
+    dangerous_edit_mode = False
+
     @defaults(tint=(0.103, 0.341, 0.617))
     class windows:
         # Native EGL/Wayland for app windows; GLFW on other display systems.

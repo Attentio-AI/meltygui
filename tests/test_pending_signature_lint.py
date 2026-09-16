@@ -337,3 +337,36 @@ def test_pending_spec_for_unwraps_and_answers_from_pending(module_file,
     handled, pspec = code_checks._pending_spec_for(mod.helper)
     assert handled and pspec is not None
     assert pspec.required == {"a", "b", "c"}
+
+
+@pytest.mark.parametrize("name", ["rand", "randn", "zeros", "ones", "empty"])
+def test_native_variadic_doc_does_not_reject_size_keyword(name):
+    # No Torch installation needed for the documented overload notation.
+    doc = f"{name}(*size, *, out=None, dtype=None, device=None) -> Tensor"
+    assert code_checks._spec_from_doc(name, doc) is None
+
+
+def test_real_python_varargs_still_reject_unknown_keyword():
+    import ast
+    def sample(*size, dtype=None):
+        pass
+    spec = code_checks._live_spec(sample, "sample")
+    call = ast.parse("sample(size=(10, 10, 10))").body[0].value
+    assert code_checks._match_spec("sample", spec, call) == (
+        "sample() got an unexpected keyword argument 'size'")
+
+
+def test_torch_rand_size_keyword_matches_runtime(tmp_path, monkeypatch):
+    import types
+    torch = pytest.importorskip("torch")
+    (tmp_path / ".venv").symlink_to(sys.prefix, target_is_directory=True)
+    path = tmp_path / "torch_example.py"
+    source = "import torch\ndef myfunc2():\n    return torch.rand(size=(10,10,10))\n"
+    path.write_text(source)
+    module = types.ModuleType("torch_keyword_regression")
+    module.__file__ = str(path)
+    exec(source, module.__dict__)
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    assert tuple(module.myfunc2().shape) == (10, 10, 10)
+    assert code_checks.check_source(source, path=str(path)) == []
+    assert _span_lint("def myfunc2():\n    return torch.rand(size=(10,10,10))\n", path) == []

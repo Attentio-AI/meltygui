@@ -295,3 +295,9 @@ def test_registered_app_defaults_route_the_two_use_cases():
     assert look(torch.zeros(4, 4, 4)) is voxel_playground.draw_voxels
     assert look(torch.zeros(2, 4, 4, 4)) is voxel_playground.draw_voxels
     assert look(torch.tensor(1.0)) is voxel_playground.draw_voxels      # "Tensor" fallback
+    # Project-process captures arrive as NumPy arrays, including 3-D volumes.
+    import numpy as np
+    assert look(np.zeros(16)) is line_graph_playground.draw_line_graph
+    assert look(np.zeros((16, 4))) is line_graph_playground.draw_line_graph
+    assert look(np.zeros((4, 4, 4))) is voxel_playground.draw_voxels
+    assert look(np.zeros((2, 4, 4, 4))) is voxel_playground.draw_voxels

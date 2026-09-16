@@ -664,9 +664,11 @@ def _spec_from_doc(fname, doc):
             spec.has_var_kw = True
             continue
         if piece.startswith("*"):
-            spec.has_var_pos = True
-            kwonly = True
-            continue
+            # Native docstrings use variadic notation for overload families,
+            # not necessarily Python binding rules: torch.rand(*size) also
+            # accepts size=(...). Without a real signature we cannot safely
+            # reject keywords or infer collisions/required arguments.
+            return None
         name_part = piece.split("=", 1)[0].strip()
         tokens = name_part.split()
         pname = tokens[-1] if tokens else ""

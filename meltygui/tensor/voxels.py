@@ -448,6 +448,44 @@ def _cuda_march_ready():
         return False
 
 
+def _upload_cuda_image(gl_state, out):
+    """Transfer only the finished 2-D pixels; never the source tensor."""
+    import torch
+    H, W = int(out.shape[0]), int(out.shape[1])
+    host = gl_state.get("cuda_host",
+                        lambda: torch.empty(H, W, 4, dtype=torch.float16).pin_memory(),
+                        deps=(W, H))
+    # D2H on torch's (legacy default) stream orders after the kernel on
+    # the same device's null stream — no explicit synchronize.
+    host.copy_(out)
+
+    def create():
+        tex_id = _scalar_int(gl.glGenTextures(1))
+        gl.glBindTexture(gl.GL_TEXTURE_2D, tex_id)
+        # cuda_march writes linear premultiplied fp16 — the same light
+        # the GL pass writes — so the image rides into the fp16 scene
+        # (hdr_color.py) unclamped: no encode, no 8-bit ceiling.
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA16F, W, H, 0,
+                        gl.GL_RGBA, gl.GL_HALF_FLOAT, None)
+        for pn, pv in ((gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST),
+                       (gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST),
+                       (gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE),
+                       (gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)):
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, pn, pv)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        return GLTexture(tex_id, gl.GL_TEXTURE_2D, (H, W), gl.GL_RGBA16F)
+
+    img = gl_state.get("cuda_image", create,
+                       lambda tx: gl.glDeleteTextures([tx.texture_id]),
+                       deps=(W, H))
+    gl.glBindTexture(gl.GL_TEXTURE_2D, img.texture_id)
+    with tight_unpack():
+        gl.glTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, W, H, gl.GL_RGBA,
+                           gl.GL_HALF_FLOAT, host.numpy())
+    gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+    return img
+
+
 def _cuda_render(gl_state, cv, width, height, lut="jet", shade=None, **cam):
     """Run the CUDA raymarcher over `cv` (CudaVolumeView) at width×height
     and return a display-GPU RGBA16F GLTexture holding the premultiplied
@@ -471,9 +509,6 @@ def _cuda_render(gl_state, cv, width, height, lut="jet", shade=None, **cam):
                              lambda: torch.tensor(lut_list, dtype=torch.float32,
                                                   device=dev).reshape(-1, 3).contiguous(),
                              deps=(str(lut), len(lut_list), str(dev)))
-        host = gl_state.get("cuda_host",
-                            lambda: torch.empty(H, W, 4, dtype=torch.float16).pin_memory(),
-                            deps=(W, H))
         # shading params ride one small device array, re-uploaded only when
         # a value changes (deps = the values themselves)
         shade_list = list(shade) if shade is not None else cuda_march.shade_params()
@@ -523,34 +558,7 @@ def _cuda_render(gl_state, cv, width, height, lut="jet", shade=None, **cam):
         cuda_march.march(cv.view, out, lut_t, display_shape=cv.shape, nf=cv.nf,
                          norm=cv.norm, aspect=W / H, shade=shade_t, mip=mip,
                          floor_map=floor_map, floor_extent=floor_R, **cam)
-        # D2H on torch's (legacy default) stream orders after the kernel on
-        # the same device's null stream - no explicit synchronize.
-        host.copy_(out)
-
-        def create():
-            tex_id = _scalar_int(gl.glGenTextures(1))
-            gl.glBindTexture(gl.GL_TEXTURE_2D, tex_id)
-            # cuda_march writes linear premultiplied fp16 - the same light
-            # the screen pass writes - so the image rides into the fp16 pipeline
-            # (hdr_color.py) unclamped, no encode, no 8-bit textures.
-            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA16F, W, H, 0,
-                            gl.GL_RGBA, gl.GL_HALF_FLOAT, None)
-            for pn, pv in ((gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST),
-                           (gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST),
-                           (gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE),
-                           (gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)):
-                gl.glTexParameteri(gl.GL_TEXTURE_2D, pn, pv)
-            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
-            return GLTexture(tex_id, gl.GL_TEXTURE_2D, (H, W), gl.GL_RGBA16F)
-
-        img = gl_state.get("cuda_image", create,
-                           lambda tx: gl.glDeleteTextures([tx.texture_id]),
-                           deps=(W, H))
-        gl.glBindTexture(gl.GL_TEXTURE_2D, img.texture_id)
-        with tight_unpack():
-            gl.glTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, W, H, gl.GL_RGBA,
-                               gl.GL_HALF_FLOAT, host.numpy())
-        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        img = _upload_cuda_image(gl_state, out)
         _CUDA_LAST_ERROR = None
         return img
     except Exception as e:
@@ -1299,11 +1307,13 @@ def to_display_dtype(t):
 
 
 def _display_view_dtype(t):
-    """The cuda_march sibling of to_display_dtype: only what the kernel's
-    load switch can't decode gets materialized (quantized → dequantized,
-    sparse → dense, complex → magnitude); bf16/ints/bool/f64 stay as they
-    are and decode in the kernel — no f32 copy."""
+    """Keep supported CUDA dtypes/layouts intact; reject implicit conversions.
+    CPU reference paths can still materialize sparse/complex/quantized inputs.
+    bf16/ints/bool/f64 decode in the CUDA kernel without an f32 copy."""
     import torch
+    if t.is_cuda and (t.is_quantized or t.layout != torch.strided or t.is_complex()):
+        raise ValueError("Direct CUDA rendering requires a dense real-valued tensor; "
+                         "convert explicitly in user code to visualize this value.")
     if t.is_quantized:
         t = t.dequantize()
     if t.layout != torch.strided:
@@ -2188,7 +2198,8 @@ def _voxels_cleanup(draw_state):
                              # as the fallback for 0-D / anything unmatched
                              # (the error card is the right place for those).
                              Shaped("Tensor", (None, None, None, ...)),
-                             "Tensor"),
+                             Shaped("ndarray", (None, None, None, ...)),
+                             "Tensor", "ndarray"),
              show_bg=True, selectable=True,
              auto_resize=False, min_width=269, with_header=draw_header,
              bg_offset=0, min_height=293, disable_scroll=True, use_cache=True,
@@ -2349,7 +2360,13 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         nf_pad = False
         # The CUDA path needs pycuda + a CUDA tensor; anything else (CPU
         # tensors, no pycuda) silently takes the GL path.
-        use_cuda = bool(cuda_march) and bool(getattr(t, "is_cuda", False)) and _cuda_march_ready()
+        # A CUDA input must stay in its allocation. Never silently switch to
+        # the texture-upload path (which copies/reformats the whole tensor).
+        use_cuda = bool(getattr(t, "is_cuda", False))
+        if use_cuda and not _cuda_march_ready():
+            _draw_voxel_error(draw_state, "CUDA tensor rendering requires meltygui[tensor]; "
+                              "the tensor was not copied to the CPU.")
+            return False, None
         if not nf_on:
             _cap = int(Toggles.Voxels.auto_flow_extent)
             if use_cuda:

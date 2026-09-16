@@ -1384,6 +1384,8 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     # reparse, not once per frame.
     object.__setattr__(ds, "_lv_locator", _locator)
 
+    from meltygui.window_visibility import sync_marker_visibility
+    sync_marker_visibility(ds, comment_args)
     auto_open = comment_args.get("auto_open", auto_open)
 
     # ── INLINE VALUE: a simple builtin (int/float/str/bool/shortlist/enum)
@@ -1607,9 +1609,11 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     if hovered and inline_text is None and imgui.is_mouse_double_clicked(0):
         open_now = not open_now
         ds._lv_open = open_now
+        from meltygui.window_visibility import marker_user_visibility
+        marker_user_visibility(ds, not open_now)
         if open_now:
             _auto_run_on_user_open(editor_ds, store_obj)
-        if open_now and win_ds is not None:
+        if open_now and win_ds is not None and "window_pos" not in comment_args:
             # Reopening: snap the window back to the LEFT of the editor
             # window (it may have been dragged onto the code). The window's
             # real size is known here, so the display clamps are exact.
@@ -1642,6 +1646,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
             name=f"{'/'.join(map(_display_key, key_path))}"
                  f"##lv::{ds.name}",
             mode=Modes.LIVE_WINDOW, closed=not (open_now or preview_show),
+            open_requested=bool(preview_show),
             with_header=draw_header, disable_scroll=True, return_extras=True,
             # Anchor like a context menu: pinned to the marker, so the window
             # tracks it live and takes the pinned base's clamp - it rides the
@@ -1665,13 +1670,13 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # window_pos persists on the spawned window's draw_state
         # (parent-relative, so it tracks the editor window) - set once; user
         # drags it preserved after.
-        if win_ds is None:
+        if win_ds is None and "window_pos" not in comment_args:
             pos = _left_of_window_pos(
                 editor_ds.abs_left if editor_ds is not None else None,
                 x, marker_y=y)
             if pos is not None:
                 win_kwargs["window_pos"] = pos
-        else:
+        elif win_ds is not None:
             # REUSE the tracked window draw_state: draw_any routes by VALUE
             # type and folds the render func into the unique, so a value
             # whose type changed between runs (None→tensor, int→str...) would
@@ -1714,6 +1719,11 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # replaced since; they resolve through the host's held tree (memo
         # keyed by host identity, so it self-refreshes on every reparse).
         object.__setattr__(win_ds, "_lv_locator", _locator)
+        from meltygui.window_visibility import override_state, user_window_closed
+        _window_state = override_state(ds)
+        if _window_state.pending_marker_closed is not None:
+            user_window_closed(win_ds, _window_state.pending_marker_closed)
+            _window_state.pending_marker_closed = None
         # The window's dispatch (Melty.draw, root_draw_states) re-reads
         # the CURRENT value for this key from the store, so a publish while
         # this marker is culled off-viewport still swaps the window's tensor
@@ -1921,11 +1931,14 @@ def set_marker_open(marker_ds, open_):
     if bool(getattr(marker_ds, "_lv_open", False)) == open_:
         return
     marker_ds._lv_open = open_
+    from meltygui.window_visibility import marker_user_visibility
+    marker_user_visibility(marker_ds, not open_)
     win_ds = getattr(marker_ds, "_lv_window_ds", None)
     if open_:
         _auto_run_on_user_open(getattr(marker_ds, "_lv_editor_ds", None),
                                (getattr(marker_ds, "_kwargs", None) or {}).get("store_obj"))
-    if open_ and win_ds is not None:
+    if (open_ and win_ds is not None
+            and "window_pos" not in (win_ds._kwargs or {})):
         # Clear the window's stale closed flag NOW: this latch is set from
         # OUTSIDE the marker body (the gutter runs after a close left
         # closed=True), and the body's own "closed via the header X" check

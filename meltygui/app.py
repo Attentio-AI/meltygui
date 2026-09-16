@@ -598,7 +598,7 @@ def _close_stale_children():
             child.stale = True
 
 
-def _note_closed(surface):
+def _note_closed(surface, *, user_closed=True):
     """A surface on its way out. An OS close of a child (the title bar's
     X, the compositor) leaves its request CLOSED: the parent's calls
     return (False, None) from then on, as a closed meltygui window's do. A
@@ -607,11 +607,15 @@ def _note_closed(surface):
     if req is not None:
         req.surface = None
         if not getattr(surface, 'stale', False):
+            was_closed = req.closed
             req.closed = True
             if req.draw_state is not None:
+                from meltygui.window_visibility import native_user_window_closed
+                if user_closed and not was_closed:
+                    native_user_window_closed(req.draw_state, True)
                 req.draw_state.closed = True
     for child in list(surface.children):
-        _note_closed(child)
+        _note_closed(child, user_closed=False)
 
 
 ACK_TIMEOUT_S = 0.5
@@ -664,6 +668,8 @@ def _present_children(parent):
         if (child_moved and not parent_moved and not req.pinned and not child.await_ack
                 and child.last_sent_rect is not None):
             req.window_pos = (crect[0] - prect[0], crect[1] - prect[1])
+            from meltygui.window_visibility import native_user_window_position
+            native_user_window_position(req.draw_state, req.window_pos)
             _debug(f'child {child.title!r} dragged: offset now {req.window_pos}')
         pos = req.window_pos
         width, height = glfw.get_window_size(child.window)

@@ -873,9 +873,9 @@ class Melty:
         CHILD OS WINDOW of the active surface. The wrapper returns the
         deferred result; app.py creates the Surface, whose body is
         draw_surface_root, and closes it when a tick goes by without this
-        call — immediate mode, like a closable window. window_pos= pins
-        the parent-relative position (else the user moves it and the
-        offset is adopted); window_size= sets the size. open_requested is
+        call — immediate mode, like a closable window. window_pos= supplies
+        the parent-relative position; comment overrides remain draggable,
+        while callsite positions require dangerous_edit_mode. window_size= sets the size. open_requested is
         a one-frame open/reopen trigger (when supplied, start closed until
         True); closed= explicitly controls visibility."""
         from types import SimpleNamespace
@@ -889,6 +889,8 @@ class Melty:
             draw_state.closed = req.closed
         req.input_value, req.kwargs, req.draw_state = input_value, kwargs, draw_state
         req.tick = cls.app_tick
+        from meltygui.window_visibility import override_state
+        override_state(draw_state).native_kwargs = kwargs
         req.closed = requested_window_closed(req.closed, kwargs, first_request=first_request)
         draw_state.closed = req.closed
         if req.closed:
@@ -897,12 +899,16 @@ class Melty:
             if req.surface is not None:
                 req.surface.closed = True
             return req
-        req.pinned = 'window_pos' in kwargs
+        from meltygui.views.anywhere import window_position_movable
+        req.pinned = not window_position_movable(draw_state, kwargs)
         # The parent-relative geometry lives on the request; the pare
         # draw_state rendering INLINE in the child surface, and the inline
         # path stamps window_pos itself.
-        if req.pinned:
-            req.window_pos = tuple(int(v) for v in kwargs['window_pos'])
+        position = kwargs.get('window_pos')
+        state = override_state(draw_state)
+        if position is not None and state.position != tuple(position):
+            state.position = tuple(position)
+            req.window_pos = tuple(int(v) for v in position)
         elif getattr(req, 'window_pos', None) is None:
             req.window_pos = (48, 48)
         if 'window_size' in kwargs:
@@ -3615,6 +3621,8 @@ class Melty:
             _ca = _lr.get("__overrides__", {}).get(f"__{_lk}__")
             if isinstance(_ca, dict):
                 for _ck, _cv in _ca.items():
+                    if _ck == "closed":
+                        continue  # Marker owns visibility, including transient previews.
                     if not (isinstance(_ck, str) and _ck.startswith("__")):
                         if _ck == "dim_names":
                             # A loop site's accumulated value carries auto

@@ -2442,3 +2442,49 @@ def _last_target(stmt):
             if name is not None:
                 last = name
     return last
+
+
+def publish_external_values(filename, source, name, values):
+    """Attach project-process snapshots to the same owner the inline UI reads.
+
+    Only a no-op function is compiled locally: project imports, decorators,
+    defaults and user code belong exclusively to the project interpreter.
+    Values are (source line, variable name, decoded value) triples.
+    """
+    import hashlib
+    from meltygui.code import chain_converters as cc
+    from meltygui.code.live_instrument import _delta_above
+
+    path = Path(filename).resolve()
+    node = next(n for n in ast.parse(source).body
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
+    start = min([node.lineno] + [d.lineno for d in node.decorator_list])
+    delta = _delta_above(str(path), start)
+    delta = _delta_above(str(path), max(1, start - delta))
+    disk_start = max(1, node.lineno - delta)
+    modules = cc._modules_for_file(path)
+    if modules:
+        module = modules[0]
+    else:
+        module_name = '_melty_fnrun_' + hashlib.sha256(str(path).encode()).hexdigest()
+        module = types.ModuleType(module_name)
+        module.__file__ = str(path)
+        sys.modules[module_name] = module
+    slot = f'_fnrun_live_{name}'
+    previous = vars(module).get(slot)
+    namespace = {'__name__': module.__name__}
+    exec(compile('\n' * (disk_start - 1) + f'def {name}():\n    pass\n',
+                 str(path), 'exec'), namespace)
+    owner = namespace[name]
+    owner.__fnrun_exec__ = True
+    adopt_live_store(previous, owner)
+    vars(module)[slot] = owner
+    for key in list(cc._ENCLOSING_FN_CACHE):
+        if key[0] == str(path):
+            del cc._ENCLOSING_FN_CACHE[key]
+    with run_capture(owner):
+        for line, label, value in values:
+            disk_line = line - delta
+            site = _Site((f'line:{disk_line}#{label}',), None, None, owner, disk_line)
+            _publish(site, value, label, bare=False)
+    return owner

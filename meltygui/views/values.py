@@ -6024,6 +6024,8 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
       locations  {source_name: (file, line)} for jump buttons
       kinds      {source_name: kind caption} ("signature" / "caller +N" / ...)
       writable   source names whose dict is a REAL parse node (writes save)
+      comment_owners {source_name: draw_state} separates inherited parameter
+                     sources from the target window’s own lifecycle overrides
     """
     # Per-frame memo: the input tab plus the tint tab's get_sources_for /
     # from_anywhere / set_anywhere all this for the same target within one
@@ -6131,9 +6133,10 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
     source_tints = {}
     source_locations = {}
     source_kinds = {}
+    comment_owners = {}
     writable_sources = []
 
-    def _add_source(sname, sdict, codec, location=None, kind=None):
+    def _add_source(sname, sdict, codec, location=None, kind=None, owner=None):
         # Register even when the source sets nothing or hasn't parsed yet -
         # the per-param screen draws EVERY source row, absent ones as "not
         # set". The placeholder is a fresh empty dict, never written to;
@@ -6147,6 +6150,8 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
         source_tints[sname] = _codec_tint(codec)
         if kind:
             source_kinds[sname] = kind
+        if kind == "code comment":
+            comment_owners[sname] = input_value if owner is None else owner
         if location is not None and location[0] is not None:
             source_locations[sname] = location
 
@@ -6497,7 +6502,7 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
                 _lspan = (getattr(_lroot, "_child_spans", None) or {}).get(_lkey)
                 _add_source(f"# [{_lkey}]", _lov, TypeCodec,
                             location=_root_file_loc(_pds, _lspan),
-                            kind="code comment")
+                            kind="code comment", owner=_pds)
             break
         if _pds._parent is _pds:
             break
@@ -6545,6 +6550,7 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
     cm_state._collect_cache = {
         "sources": sources, "tints": source_tints,
         "locations": source_locations, "kinds": source_kinds,
+        "comment_owners": comment_owners,
         "writable": tuple(writable_sources), "view_func": input_value._wrapper or input_value._view_func}
     cm_state._collect_key = _memo_key
     return cm_state._collect_cache
