@@ -21,13 +21,13 @@ from meltygui.code.chain_converters import _ensure_import_lines
 from meltygui.code.chain_converters import _resolve_call_address
 from meltygui.code.chain_converters import _split_span_at_call
 from meltygui.code.chain_converters import DiskSpanText
-from meltygui.code.bubbling import base_of_bubbling
+from meltygui.core.bubbling import base_of_bubbling
 from meltygui.code.file_converters import _detect_newline
-from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.core.core_decoration import Core
 
-from meltygui.melty import Melty
-from meltygui.melty import FileWatch
-from meltygui.perf_trace import trace_rl as _ptrace_rl
+from meltygui.core.melty import Melty
+from meltygui.core.melty import FileWatch
+from meltygui.core.perf_trace import trace_rl as _ptrace_rl
 from meltygui.graphics.texture_manager import PIL_TO_GL_FORMAT
 from meltygui.graphics.texture_manager import PendingTexture
 

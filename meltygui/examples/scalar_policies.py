@@ -6,8 +6,8 @@ from meltygui import default_scalar_accumulation
 from meltygui import glfw_window
 from meltygui import pressed
 from meltygui.examples.style_layouts import panel
-from meltygui.fonts import Font
-from meltygui.rendering.core_render import render_func
+from meltygui.core.fonts import Font
+from meltygui.core.core_render import render_func
 from meltygui.core.header_runtime import draw_header
 
 

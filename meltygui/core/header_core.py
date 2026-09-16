@@ -19,5 +19,5 @@ def _jump_to_view_source(draw_state):
         return
     if not fn_file:
         return
-    from meltygui.extensions import jump_to_symbol as _jump_to_symbol_def
+    from meltygui.core.extensions import jump_to_symbol as _jump_to_symbol_def
     _jump_to_symbol_def(view_fn, Path(fn_file))

@@ -37,7 +37,7 @@ def test_strided_cuda_lines_are_read_in_place(dtype, monkeypatch):
 
 @pytest.mark.parametrize('dtype', [torch.float32, torch.bfloat16, torch.int64])
 def test_volume_mapping_keeps_original_cuda_storage(dtype, monkeypatch):
-    from meltygui.tensor.voxel_playground import slice_volume_view
+    from meltygui.model.tensor_model import slice_volume_view
     source = torch.arange(240, device='cuda').to(dtype).reshape(4, 5, 12)[:, :, 1::2]
     def forbid(*args, **kwargs):
         raise AssertionError('source tensor was copied')
@@ -51,7 +51,7 @@ def test_volume_mapping_keeps_original_cuda_storage(dtype, monkeypatch):
 
 
 def test_cuda_complex_is_not_silently_materialized():
-    from meltygui.tensor.voxel_playground import slice_volume_view
+    from meltygui.model.tensor_model import slice_volume_view
     source = torch.ones((2, 3, 4), dtype=torch.complex64, device='cuda')
     with pytest.raises(ValueError, match='convert explicitly'):
         slice_volume_view(source)

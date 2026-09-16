@@ -1,5 +1,5 @@
 """Injected state for code views."""
-from meltygui.state.dict_conversion import DictConversion
+from meltygui.core.dict_conversion import DictConversion
 
 
 class SourcePreviewState(DictConversion):

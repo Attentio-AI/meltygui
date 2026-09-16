@@ -140,7 +140,7 @@ def open_in_intellij(file_path, line_number=None):
         print(f"File not found: {file_path}")
         return
 
-    from meltygui.paths import application_root
+    from meltygui.core.paths import application_root
     project_root = str(application_root())
 
     if line_number:

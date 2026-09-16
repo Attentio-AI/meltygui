@@ -15,13 +15,13 @@ import numpy as np
 import pytest
 torch = pytest.importorskip("torch")
 
-from meltygui.rendering.shaped import Shaped
-from meltygui.rendering.shaped import best_match
-from meltygui.rendering.shaped import mro_distance
-from meltygui.rendering.shaped import shape_matches
-from meltygui.rendering.shaped import value_dtype
-from meltygui.rendering.shaped import value_shape
-from meltygui.rendering.shaped import SEQ_DTYPE_SCAN_CAP
+from meltygui.core.shaped import Shaped
+from meltygui.core.shaped import best_match
+from meltygui.core.shaped import mro_distance
+from meltygui.core.shaped import shape_matches
+from meltygui.core.shaped import value_dtype
+from meltygui.core.shaped import value_shape
+from meltygui.core.shaped import SEQ_DTYPE_SCAN_CAP
 
 
 # ---------------------------------------------------------------- grammar --
@@ -224,7 +224,7 @@ def test_best_match_real_type_override():
 
 @pytest.fixture
 def meltygui():
-    from meltygui.melty import Melty
+    from meltygui.core.melty import Melty
     saved = (dict(Melty.default_funcs_by_shape), dict(Melty.default_lenses_by_shape),
              dict(Melty.default_funcs_by_name), dict(Melty.default_funcs_by_type))
     yield Melty
@@ -280,7 +280,7 @@ def test_registered_app_defaults_route_the_two_use_cases():
     """The real registrations: draw_tuple for float 3/4-tuples, draw_line_graph
     for 1-D/2-D tensors, draw_voxels for 3-D+ (importing the views registers
     them)."""
-    from meltygui.melty import Melty
+    from meltygui.core.melty import Melty
     import meltygui.core.render_dispatch as new_core_view
     import meltygui.core.graph_core as line_graph_playground
     import meltygui.tensor.voxel_playground as voxel_playground

@@ -32,7 +32,7 @@ from pathlib import Path
 
 
 from meltygui.text_index import _SKIP_DIRS
-from meltygui.utils.glfw_utils import request_render
+from meltygui.core.glfw_utils import request_render
 from meltygui.code.melty_scan import Import
 from meltygui.code.melty_scan import ImportFrom
 from meltygui.code.melty_scan import ScanError

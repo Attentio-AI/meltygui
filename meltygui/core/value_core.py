@@ -51,10 +51,10 @@ harnesses that drive frames themselves.
 import threading
 import time
 
-import meltygui.window_api as glfw
+import meltygui.core.window_api as glfw
 
-from meltygui.melty import Melty
-from meltygui.toggles import Toggles
+from meltygui.core.melty import Melty
+from meltygui.core.toggles import Toggles
 from meltygui.state.core_undo import UndoManager
 from meltygui.core.orchestration_core import Orchestrator
 from meltygui.core.orchestration_core import cue_get

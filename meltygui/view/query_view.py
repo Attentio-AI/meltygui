@@ -1,6 +1,6 @@
 """Query view functions and supporting definitions."""
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.render_funcs import RenderFuncs
+from meltygui.core.core_render import render_func
+from meltygui.core.render_funcs import RenderFuncs
 from meltygui.state.query_state import MCPQueryState
 import meltygui_imgui as imgui
 

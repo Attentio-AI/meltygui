@@ -67,7 +67,7 @@ displays no error, so the highlight clears as soon as a fresh background parse
 succeeds. Recompile (hotswap, no disk write) is a separate concern: it just
 hotswaps the live object and flashes a checkmark.
 """
-from meltygui.extensions import get as get_service
+from meltygui.core.extensions import get as get_service
 
 import inspect
 import linecache
@@ -86,21 +86,21 @@ from pathlib import Path
 import meltygui_imgui as imgui
 import libcst as cst
 
-import meltygui.toggles as toggles
-from meltygui.melty import FileWatch
-from meltygui.melty import Melty
+import meltygui.core.toggles as toggles
+from meltygui.core.melty import FileWatch
+from meltygui.core.melty import Melty
 from meltygui.state.core_enums import ProfileMode
 from meltygui.state.new_core_model import TabState
 from meltygui.state.new_core_model import DrawState
-from meltygui.state.dict_conversion import DictConversion
+from meltygui.core.dict_conversion import DictConversion
 from meltygui.state.model_enums import RelaxedEnum
-from meltygui.modes import Modes
-from meltygui.notifications import notify
-from meltygui.rendering.render_funcs import RenderFuncs
-from meltygui.toggles import Toggles
-from meltygui.utils.glfw_utils import request_render
-from meltygui.utils.glfw_utils import print_stack_trace
-from meltygui.utils.glfw_utils import get_exception_frames
+from meltygui.core.modes import Modes
+from meltygui.core.notifications import notify
+from meltygui.core.render_funcs import RenderFuncs
+from meltygui.core.toggles import Toggles
+from meltygui.core.glfw_utils import request_render
+from meltygui.core.glfw_utils import print_stack_trace
+from meltygui.core.glfw_utils import get_exception_frames
 import meltygui.code.hotswap_guard as hotswap_guard
 from meltygui.code.fileref import Address
 from meltygui.code.fileref import _evict_linecache
@@ -127,18 +127,18 @@ from meltygui.code.new_codecs import SaveConflict
 from meltygui.code.new_codecs import type_to_codec
 from meltygui.code.new_codecs import extension_to_codec
 from meltygui.code.new_codecs import codec_for_path
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.core_decoration import no_save_exclude
-from meltygui.rendering.decorators.core_decoration import no_save
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.core_render import render_func
+from meltygui.core.core_decoration import no_save_exclude
+from meltygui.core.core_decoration import no_save
+from meltygui.core.window_decoration import window
 from meltygui.core.header_runtime import draw_header
 from meltygui.editor.pending_save import PendingSave
-from meltygui.debug.invalidation_tracker import Note
-from meltygui.rendering.decorators.core_decoration import defaults
-from meltygui.perf_trace import trace as _ptrace
-from meltygui.perf_trace import trace_rl as _ptrace_rl
-from meltygui.perf_trace import span as _pspan
-from meltygui.perf_trace import once as _ponce
+from meltygui.core.invalidation_tracker import Note
+from meltygui.core.core_decoration import defaults
+from meltygui.core.perf_trace import trace as _ptrace
+from meltygui.core.perf_trace import trace_rl as _ptrace_rl
+from meltygui.core.perf_trace import span as _pspan
+from meltygui.core.perf_trace import once as _ponce
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -1167,7 +1167,7 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
             and getattr(_tail, "__name__", "") == "cst_module_to_dict"):
         _prev_gp = _last_good_routed.get(_out_name)
         if _prev_gp is not None:
-            from meltygui.notifications import lag_span
+            from meltygui.core.notifications import lag_span
             _prev_melty = _prev_gp.get("__origin__") is not None
             if _prev_melty and Toggles.TextEditor.melty_syntax:
                 # Increment incremental parse: re-parse only the top-level statements
@@ -1926,7 +1926,7 @@ def _codec_view(codec, value, caller_view):
       3. A str renders in whatever text view the caller wired (the mode-
          pinned draw_text_from_code_cache, RenderFuncs.draw_text, …).
       4. Anything else routes by type through draw_any (is_default_for)."""
-    from meltygui.code.render_host import RenderHost
+    from meltygui.core.render_host import RenderHost
     if isinstance(getattr(caller_view, "__self__", None), RenderHost):
         return caller_view
     if getattr(codec, "view_func", None) is not None:
@@ -2164,7 +2164,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 imgui.same_line(spacing=4)
                 if get_service("conflicts_open") and RenderFuncs.button("Merge…", width=100, height=top_line_height,
                                       name=f"openmerge{unique}")[0]:
-                    from meltygui.extensions import call
+                    from meltygui.core.extensions import call
                     call('conflicts_open', address.path)
                 imgui.same_line()
                 if RenderFuncs.button("Load", width=100, height=top_line_height, name=f"reload{unique}")[0]:
@@ -2187,7 +2187,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             imgui.same_line(spacing=4)
             if get_service("conflicts_open") and RenderFuncs.button("Merge…", width=100, height=top_line_height,
                                   name=f"openmerge{unique}")[0]:
-                from meltygui.extensions import call
+                from meltygui.core.extensions import call
                 call('conflicts_open', address.path)
             imgui.same_line()
             if RenderFuncs.button("Load theirs", width=110, height=top_line_height, name=f"reload{unique}")[0]:
@@ -2532,7 +2532,7 @@ def code_hosts_for(ref):
         # patched object instead of a stale pre-swap wrapper.
         pair[0].input_value = ref
     if pair is None:
-        from meltygui.code.render_host import RenderHost
+        from meltygui.core.render_host import RenderHost
         label = getattr(ref, "__name__", None) or type(ref).__name__
         # Unique disambiguator: resolve_host_view resolves a host BY NAME, so two live
         # hosts must not collide. Every cached ref is held alive as a dict key, so

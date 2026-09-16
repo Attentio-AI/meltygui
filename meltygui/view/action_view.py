@@ -1,7 +1,7 @@
 """Action view functions and supporting definitions."""
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.window_decoration import window
-from meltygui.toggles import Actions
+from meltygui.core.core_render import render_func
+from meltygui.core.window_decoration import window
+from meltygui.core.toggles import Actions
 import meltygui_imgui as imgui
 
 

@@ -1,5 +1,5 @@
 """Tensor core functions and supporting definitions."""
-from meltygui.rendering.core_render import release_input_refs
+from meltygui.core.core_render import release_input_refs
 
 
 def _voxels_cleanup(draw_state):
@@ -17,7 +17,7 @@ def _voxels_cleanup(draw_state):
         field can't silently pin a volume.
     The draw_state itself survives (registry entries persist across a restart-
     in-place); a re-render refills everything."""
-    from meltygui.tensor.voxel_playground import _is_tensorish
+    from meltygui.model.tensor_model import _is_tensorish
 
     misc = getattr(draw_state, "misc", None)
     if isinstance(misc, dict):

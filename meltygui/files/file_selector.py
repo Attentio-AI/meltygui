@@ -3,10 +3,10 @@ from pathlib import Path
 
 import meltygui_imgui as imgui
 
-from meltygui.app import pressed
+from meltygui.core.app import pressed
 
-from meltygui.state.dict_conversion import DictConversion
-from meltygui.rendering.core_render import render_func
+from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.core_render import render_func
 
 
 from meltygui.state.file_state import FileSelectorState

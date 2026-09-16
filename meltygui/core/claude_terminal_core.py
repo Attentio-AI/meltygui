@@ -26,19 +26,19 @@ import shutil
 import subprocess
 import threading
 
-from meltygui.lifecycle import module_is_live
+from meltygui.core.lifecycle import module_is_live
 import time
 from pathlib import Path
 
 import meltygui_imgui as imgui
 
-from meltygui.modes import Modes
-from meltygui.rendering.render_funcs import RenderFuncs
-from meltygui.utils.glfw_utils import request_render
-from meltygui.code.render_host import RenderHost
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.core_decoration import Core
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.modes import Modes
+from meltygui.core.render_funcs import RenderFuncs
+from meltygui.core.glfw_utils import request_render
+from meltygui.core.render_host import RenderHost
+from meltygui.core.core_render import render_func
+from meltygui.core.core_decoration import Core
+from meltygui.core.window_decoration import window
 from meltygui.core.terminal_core import Terminal
 from meltygui.core.terminal_core import draw_terminal_screen
 
@@ -98,7 +98,7 @@ def _kill_session(session):
     threading.Thread(target=go, daemon=True).start()
 
 
-from meltygui.paths import application_root
+from meltygui.core.paths import application_root
 _REPO_ROOT = application_root()
 _studio_session_counter = itertools.count(1)
 
@@ -172,8 +172,8 @@ def launch_claude_session(prompt_text=None):
 def open_claude_terminals_window():
     """Open + front the studio's Claude Terminals window (render thread only —
     same open pattern as screenshot.process_captures)."""
-    from meltygui.melty import Melty
-    from meltygui.screenshot import _find_window
+    from meltygui.core.melty import Melty
+    from meltygui.core.screenshot import _find_window
     mw = _find_window("draw_claude_terminals")
     if mw is None:
         return

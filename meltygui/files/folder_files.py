@@ -5,10 +5,10 @@ core/file_core.py. Keep registered window and lifecycle identities here so
 existing applications and saved sessions retain their entry points.
 """
 from meltygui.core import file_core
-from meltygui.melty import Melty
-from meltygui.modes import Modes
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.melty import Melty
+from meltygui.core.modes import Modes
+from meltygui.core.core_render import render_func
+from meltygui.core.window_decoration import window
 
 from meltygui.core.file_core import ROOT
 from meltygui.core.file_core import TEST_FOLDER

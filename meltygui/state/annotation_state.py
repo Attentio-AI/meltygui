@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any
 
-from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.core.core_decoration import Core
 
 
 class AnnotationOverride:

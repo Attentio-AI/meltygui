@@ -1,5 +1,5 @@
 from typing import Dict
-from meltygui.state.dict_conversion import DictConversion
+from meltygui.core.dict_conversion import DictConversion
 
 class Orchestration(DictConversion):
     """One recorded input take: a stream of raw input events plus the

@@ -1,5 +1,10 @@
 # Development
 
+Start with [Contributing](../CONTRIBUTING.md) for the framework design, feature
+boundaries and render-function contract. This page covers the environment and
+verification workflow. [Architecture gaps](ARCHITECTURE_DEBT.md) records the
+remaining migration work and deliberate deferrals.
+
 ## Setup
 
 The first release target is Linux x86-64, Python 3.12, with a working OpenGL 4.3
@@ -62,12 +67,20 @@ See [Publishing](PUBLISHING.md) for account setup and release verification.
 
 ## Project structure
 
-- `meltygui/rendering`, `state`, `windows`, `widgets`, `views`: UI toolkit and state.
-- `meltygui/tensor`, `graphics`: tensor rendering and shaders.
-- `meltygui/files`: file browsing and selection.
-- `meltygui/editor`: text editing, source preview and live inspection.
-- `meltygui/code`: source parsing, hotswap, symbol definitions and usage.
-- `meltygui/extensions.py`: optional application service callbacks.
+- `meltygui/core`: rendering/injection, Melty, modes, shared conversion and
+  persistence, events, caches, window lifecycle and backend integration.
+- `meltygui/view/<feature>_view.py`: reusable plain render functions.
+- `meltygui/model/<feature>_model.py`: value adapters and feature operations.
+- `meltygui/state/<feature>_state.py`: explicit feature/view state and helpers.
+- `meltygui/examples` and top-level `examples`: sample data, composition and apps.
+- `meltygui/core/extensions.py`: optional application service callbacks.
+
+`views`, `widgets`, `rendering` and `windows` are compatibility namespaces.
+Remaining `tensor`, `graphics`, `files`, `models`, `chat`, `completion`, `code`,
+`editor` and helper modules are a mixture of feature implementations and adapters
+still being classified. Their existing locations are not the template for new
+contributions. The text-editor refactor is deferred; see the architecture inventory
+before including adjacent work.
 
 Project management, venvs, dependency tools, Git, open-file tabs and the full
 code-editor window are maintained in the separate private package. They are

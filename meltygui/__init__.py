@@ -15,17 +15,17 @@ from meltygui.core.module_compatibility import install_module_aliases
 install_module_aliases()
 
 from typing import TYPE_CHECKING
-from meltygui.style import Style
-from meltygui.style import default_tint_accumulation
-from meltygui.style import default_scalar_accumulation
+from meltygui.core.style import Style
+from meltygui.core.style import default_tint_accumulation
+from meltygui.core.style import default_scalar_accumulation
 
-from meltygui.app import boot
-from meltygui.app import glfw_window
-from meltygui.app import run
-from meltygui.app import pressed
-from meltygui.app import content_size
-from meltygui.app import mark
-from meltygui.app import persisted
+from meltygui.core.app import boot
+from meltygui.core.app import glfw_window
+from meltygui.core.app import run
+from meltygui.core.app import pressed
+from meltygui.core.app import content_size
+from meltygui.core.app import mark
+from meltygui.core.app import persisted
 
 if TYPE_CHECKING:   # IDE / type checkers only; never executed
     from meltygui.view.text_view import draw_text
@@ -53,7 +53,7 @@ _NCV = 'meltygui.core.render_dispatch'
 _VIEWS = {
     'draw_voxels': ('meltygui.view.tensor_view', 'draw_voxels'),
     'draw_line_graph': ('meltygui.view.graph_view', 'draw_line_graph'),
-    'render_func': ('meltygui.rendering.core_render', 'render_func'),
+    'render_func': ('meltygui.core.core_render', 'render_func'),
     'draw_text': ('meltygui.view.text_view', 'draw_text'),
     'draw_texture': ('meltygui.view.texture_view', 'draw_texture'),
     'draw_any': (_NCV, 'draw_any'),
@@ -82,16 +82,16 @@ def __getattr__(name):
         import meltygui_imgui
         return meltygui_imgui
     if name == 'toggles':
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         return Toggles
     if name == 'window_api':
-        import meltygui.window_api as window_api
+        import meltygui.core.window_api as window_api
         return window_api
     spec = _VIEWS.get(name)
     if spec is None:
         raise AttributeError(name)
     import importlib
-    from meltygui.app import _wait_imports
+    from meltygui.core.app import _wait_imports
     _wait_imports()
     value = getattr(importlib.import_module(spec[0]), spec[1])
     globals()[name] = value

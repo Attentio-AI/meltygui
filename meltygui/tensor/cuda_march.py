@@ -943,19 +943,4 @@ def build_mip(view, *, display_shape, nf=(-1, -1, 0), norm=(0.0, 1.0, 0),
     return mip
 
 
-def nf_display_shape(src_shape, chop_axis, along_axis, chunk, pad=True):
-    """Displayed (z, y, x) extents after neural flow of a (z, y, x) source
-    view — the cat(split) layout: chop axis → chunk, along axis →
-    along * ceil(size/chunk) (the ragged last block zero-padded in the
-    sampler). Axes are 0=z 1=y 2=x; chop -1 = off. Mirrors
-    neural_flow_volume: a chunk that doesn't divide the axis is a no-op
-    unless `pad`."""
-    shape = list(int(s) for s in src_shape)
-    if chop_axis < 0 or chop_axis == along_axis or chunk <= 0 or shape[chop_axis] <= chunk:
-        return tuple(shape), (-1, -1, 0)
-    if shape[chop_axis] % chunk != 0 and not pad:
-        return tuple(shape), (-1, -1, 0)
-    blocks = -(-shape[chop_axis] // chunk)
-    shape[along_axis] *= blocks
-    shape[chop_axis] = chunk
-    return tuple(shape), (chop_axis, along_axis, chunk)
+from meltygui.model.tensor_model import nf_display_shape

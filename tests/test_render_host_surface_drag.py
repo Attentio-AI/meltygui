@@ -4,10 +4,10 @@ from types import SimpleNamespace
 import pytest
 import meltygui_imgui as imgui
 
-from meltygui.code.render_host import RenderHost
-from meltygui.melty import Melty
-from meltygui.surface import Surface
-import meltygui.window_api as glfw
+from meltygui.core.render_host import RenderHost
+from meltygui.core.melty import Melty
+from meltygui.core.surface import Surface
+import meltygui.core.window_api as glfw
 
 
 @pytest.fixture

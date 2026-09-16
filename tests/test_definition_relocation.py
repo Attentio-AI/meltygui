@@ -9,11 +9,11 @@ import pytest
 
 from meltygui.code.file_converters import _recompile, _recompile_module, stamp_module_baseline
 from meltygui.core.definition_hotswap import patch_function
-from meltygui.melty import Melty
+from meltygui.core.melty import Melty
 
 
-SOURCE = '''from meltygui.rendering.core_render import render_func
-from meltygui.state.dict_conversion import DictConversion
+SOURCE = '''from meltygui.core.core_render import render_func
+from meltygui.core.dict_conversion import DictConversion
 VALUE = "initial"
 class FeatureState(DictConversion):
     setting = 3
@@ -133,7 +133,7 @@ def test_relocation_refreshes_existing_imports_and_injection_closure(load_module
     original = load_modules('relocation_source')
     destination = load_modules('relocation_target')
     consumer = load_modules('relocation_consumer', '''from relocation_target import FeatureState, draw_relocation_test
-from meltygui.rendering.core_render import render_func
+from meltygui.core.core_render import render_func
 @render_func(tint=(0.1, 0.2, 0.3))
 def consumer_view(input_value: str, state: FeatureState = None):
     return False, state

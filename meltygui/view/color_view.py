@@ -1,22 +1,22 @@
 """Color view functions and supporting definitions."""
-from meltygui.gl_state import GLState
-from meltygui.rendering.core_render import render_func
+from meltygui.core.gl_state import GLState
+from meltygui.core.core_render import render_func
 from meltygui.state.new_core_model import ColorPickerState
 from meltygui.state.new_core_model import DrawState
 from meltygui.state.new_core_model import TabState
-from meltygui.toggles import Toggles
+from meltygui.core.toggles import Toggles
 import meltygui_imgui as imgui
 import types
 from meltygui.hdr_color import pack_color
-from meltygui.toggles import Tint
+from meltygui.core.toggles import Tint
 
 
 def draw_style_policy_fast(owner, draw_state):
     """One shared code-host editor, only for the selected effective policy."""
     from meltygui.code.new_converters import code_hosts_for
     from meltygui.code.new_converters import host_code_state
-    from meltygui.fonts import Font
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.fonts import Font
+    from meltygui.core.glfw_utils import request_render
     from meltygui.view.text_view import draw_text
     from meltygui.core.color_core import _add_style_policy
     from meltygui.core.color_core import _style_policy_source
@@ -66,9 +66,9 @@ def draw_style_policy_fast(owner, draw_state):
 
 def draw_style_residuals_fast(owner, draw_state=None):
     """Popover-only controls; locate reads/writes the source driving the view."""
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
 
-    from meltygui.style import Style
+    from meltygui.core.style import Style
     from meltygui.state.core_undo import UndoManager
 
     value = owner.locate_style
@@ -139,7 +139,7 @@ def draw_view_offsets_fast(owner, draw_state=None):
     comment) and falls back to the owner's own draw_state. Every change is
     a SetterChange on the undo stack (like the colour chip's) and invalidates
     the owner; the wrapper reads both offsets on its next run."""
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
 
     from meltygui.state.core_undo import UndoManager
     # [tint=(0.85, 0.75, 0.05)]
@@ -177,7 +177,7 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None,
     (`_draw_extended_picker`). All take and return extended-sRGB tuples
     (hdr_color.py), so a colour picked on one tab reads back on the others
     (an out-of-sRGB value shows clipped on the sRGB tab)."""
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
 
     # The tab strip: draw-list flat_buttons (no wrapper per tab), neutral
     # grey like draw_tabs' untinted strip — the active tab gets the filled
@@ -285,7 +285,7 @@ def _draw_wide_picker(input_value, draw_state, gl_state, info):
     edits back like the sRGB tab's `_cp_precise`."""
     from meltygui.model.color_model import _wide_marker
     from meltygui.model.color_model import _wide_pick
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.view.control_view import button
 
     import meltygui.hdr_color as hdr_color
@@ -428,8 +428,8 @@ def _wide_square_texture(gl_state, hue, size, top_fraction, max_stops):
         return None
     import meltygui.hdr_color as hdr_color
     import OpenGL.GL as gl
-    from meltygui.gl_state import GLTexture
-    from meltygui.gl_state import _scalar
+    from meltygui.core.gl_state import GLTexture
+    from meltygui.core.gl_state import _scalar
 
     def create():
         data = hdr_color.wide_square_linear(hue, size, top_fraction, max_stops)
@@ -466,7 +466,7 @@ def _draw_extended_picker(input_value, draw_state, gl_state, info):
     (a bisection, not a per-frame cost)."""
     from meltygui.model.color_model import _srgb_plus_marker
     from meltygui.model.color_model import _srgb_plus_pick
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.view.control_view import button
 
     import meltygui.hdr_color as hdr_color
@@ -617,8 +617,8 @@ def _srgb_plus_texture(gl_state, hue, square, ext, band, max_stops):
         return None
     import meltygui.hdr_color as hdr_color
     import OpenGL.GL as gl
-    from meltygui.gl_state import GLTexture
-    from meltygui.gl_state import _scalar
+    from meltygui.core.gl_state import GLTexture
+    from meltygui.core.gl_state import _scalar
     cols, rows = int(square + ext), int(band + square)
 
     def create():
@@ -648,7 +648,7 @@ def _draw_srgb_picker(input_value, draw_state, info):
     and a driven value can echo back quantized (save/parse round trip, %.3f
     drag rounding) — so when the incoming value is just an echo of our own
     edit, we resume from the cache instead of re-deriving."""
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.view.control_view import button
 
     imgui.dummy(0, 3)

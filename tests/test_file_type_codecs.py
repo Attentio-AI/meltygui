@@ -152,7 +152,7 @@ def test_codec_view_keeps_render_host_capture():
     # skipped materialization - an image host stuck on "Loading..." forever.
     from meltygui.code.new_converters import _codec_view
     from meltygui.code.new_converters import code_file_io
-    from meltygui.code.render_host import RenderHost
+    from meltygui.core.render_host import RenderHost
     host = RenderHost(io_function=code_file_io, input_value=Path("/tmp/x.png"),
                       name="##test_codec_view_host", evictable=True)
     try:

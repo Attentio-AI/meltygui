@@ -2,22 +2,22 @@ from collections import defaultdict
 
 from enum import Enum
 
-import meltygui.window_api as glfw
+import meltygui.core.window_api as glfw
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
-from meltygui.state.dict_conversion import DictConversion
-from meltygui.toggles import shadow_depth_at
-from meltygui.toggles import Toggles
-from meltygui.utils.glfw_utils import print_stack_trace
-from meltygui.code.cache_tree import CacheTree
-from meltygui.code.cache_tree import UNSET_VALUE
-from meltygui.rendering.decorators.core_decoration import no_save
-from meltygui.rendering.decorators.core_decoration import exclude
-from meltygui.rendering.decorators.core_decoration import deep_refresh
-from meltygui.rendering.decorators.core_decoration import no_save_exclude
-from meltygui.rendering.decorators.core_decoration import Core
-from meltygui.rendering.decorators.core_decoration import defaults
+from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.toggles import shadow_depth_at
+from meltygui.core.toggles import Toggles
+from meltygui.core.glfw_utils import print_stack_trace
+from meltygui.core.cache_tree import CacheTree
+from meltygui.core.cache_tree import UNSET_VALUE
+from meltygui.core.core_decoration import no_save
+from meltygui.core.core_decoration import exclude
+from meltygui.core.core_decoration import deep_refresh
+from meltygui.core.core_decoration import no_save_exclude
+from meltygui.core.core_decoration import Core
+from meltygui.core.core_decoration import defaults
 
 
 class SynthColors(DictConversion):

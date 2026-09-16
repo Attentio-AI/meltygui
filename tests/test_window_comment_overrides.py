@@ -2,10 +2,10 @@
 import libcst as cst
 import pytest
 from meltygui.state.new_core_model import DrawState
-from meltygui.toggles import Toggles
+from meltygui.core.toggles import Toggles
 from meltygui.views import anywhere
 from meltygui.core.render_dispatch import _LazyOverrideEntry
-from meltygui.window_visibility import (
+from meltygui.core.window_visibility import (
     adopt_window_position, marker_user_visibility, sync_marker_visibility,
     requested_window_closed, resolved_window_kwargs, user_window_position,
     user_window_closed, native_user_window_position, override_state,
@@ -124,7 +124,7 @@ def test_removing_closed_override_restores_auto_open():
 
 
 def test_native_request_preserves_user_offset_and_adopts_source(monkeypatch):
-    from meltygui.melty import Melty
+    from meltygui.core.melty import Melty
     monkeypatch.setattr(Melty, 'surface_windows', {})
     monkeypatch.setattr(Melty, 'surface_requests', [])
     ds = DrawState()
@@ -142,7 +142,7 @@ def test_native_request_preserves_user_offset_and_adopts_source(monkeypatch):
 
 
 def test_comment_edit_uses_source_undo_only(comment_window):
-    from meltygui.window_visibility import window_edit_is_local
+    from meltygui.core.window_visibility import window_edit_is_local
     ds, tree, entry = comment_window
     user_window_closed(ds, True)
     user_window_position(ds, (30, 40))
@@ -152,7 +152,7 @@ def test_comment_edit_uses_source_undo_only(comment_window):
 
 def test_native_close_persists_only_user_action(comment_window):
     from types import SimpleNamespace
-    from meltygui.app import _note_closed
+    from meltygui.core.app import _note_closed
     ds, tree, entry = comment_window
     req = SimpleNamespace(closed=False, draw_state=ds, surface=None)
     surface = SimpleNamespace(request=req, children=[], stale=False)
@@ -198,7 +198,7 @@ def parameter_panel_sources(monkeypatch):
 
 @pytest.mark.parametrize('native', [False, True])
 def test_parameter_window_close_does_not_close_inspected_window(parameter_panel_sources, native):
-    from meltygui.window_visibility import native_user_window_closed, window_edit_is_local
+    from meltygui.core.window_visibility import native_user_window_closed, window_edit_is_local
     parent, panel, srcs = parameter_panel_sources
     assert srcs['comment_owners']['# [tensor]'] is parent
     close = native_user_window_closed if native else user_window_closed

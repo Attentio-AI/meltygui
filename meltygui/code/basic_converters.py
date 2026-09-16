@@ -12,13 +12,13 @@ from fractions import Fraction
 from enum import Enum
 from typing import Any
 
-from meltygui.melty import Melty
+from meltygui.core.melty import Melty
 from meltygui.code.libcst_conversion import register
-from meltygui.code.path_finder import convert
-from meltygui.code.path_finder import explain_chain
-from meltygui.code.path_finder import all_paths
-from meltygui.code.path_finder import all_reachable_from
-from meltygui.code.path_finder import T
+from meltygui.core.path_finder import convert
+from meltygui.core.path_finder import explain_chain
+from meltygui.core.path_finder import all_paths
+from meltygui.core.path_finder import all_reachable_from
+from meltygui.core.path_finder import T
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗

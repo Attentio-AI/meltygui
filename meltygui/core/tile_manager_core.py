@@ -35,9 +35,9 @@ source or leaving the neighbour cancels the join.
 """
 import meltygui_imgui as imgui
 
-import meltygui.mouse_cursor as mouse_cursor
+import meltygui.core.mouse_cursor as mouse_cursor
 from meltygui.hdr_color import pack_color
-from meltygui.state.dict_conversion import DictConversion
+from meltygui.core.dict_conversion import DictConversion
 from meltygui.core.tile_cache import snap_int
 from meltygui.core.column_core import ColumnLayout
 from meltygui.core.column_core import RowLayout
@@ -51,9 +51,9 @@ from meltygui.core.column_core import _bands
 from meltygui.core.column_core import frame_edges
 from meltygui.core.column_core import layout_window
 from meltygui.core.column_core import _drag_inc
-from meltygui.rendering.decorators.core_decoration import Core
-from meltygui.rendering.decorators.core_decoration import no_save
-from meltygui.debug.invalidation_tracker import Note
+from meltygui.core.core_decoration import Core
+from meltygui.core.core_decoration import no_save
+from meltygui.core.invalidation_tracker import Note
 
 _NOTE = dict(name="draw_tiles", tint=(0.55, 0.85, 0.45))
 

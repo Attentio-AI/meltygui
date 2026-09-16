@@ -33,23 +33,23 @@ import collections
 import time
 import types
 
-import meltygui.window_api as glfw
+import meltygui.core.window_api as glfw
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
-from meltygui.melty import Melty
-from meltygui.toggles import Toggles
-from meltygui.utils.glfw_utils import request_render
-from meltygui.events.input_handler import set_input_tap
-from meltygui.notifications import notify
+from meltygui.core.melty import Melty
+from meltygui.core.toggles import Toggles
+from meltygui.core.glfw_utils import request_render
+from meltygui.core.input_handler import set_input_tap
+from meltygui.core.notifications import notify
 from meltygui.core.tile_cache import add_shadow
-from meltygui.rendering.core_render import render_func
-from meltygui.state.dict_conversion import DictConversion
+from meltygui.core.core_render import render_func
+from meltygui.core.dict_conversion import DictConversion
 from meltygui.state.core_undo import UndoManager
 from meltygui.state.core_undo import NavUndo
 from meltygui.state.core_undo import WindowChange
 from meltygui.state.core_undo import WindowMoveChange
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.window_decoration import window
 
 # input_id -> imgui io.mouse_down index (the buttons stamp_io overrides).
 _IMGUI_BUTTON = {"left_mouse": 0, "right_mouse": 1, "middle_mouse": 2}
@@ -485,7 +485,7 @@ def _cue_anchor_window(change, press_window=None):
 def _key_label(key, mods=0):
     """Human name for a glfw key (+held modifiers): printable GLFW codes ARE
     ASCII, the rest come from the backend's name table."""
-    from meltygui.events.pynput_backend import ImGuiBackend
+    from meltygui.core.pynput_backend import ImGuiBackend
     if 32 <= key < 127:
         name = chr(key)
     else:
@@ -2211,7 +2211,7 @@ class Orchestrator:
         button probe, so a lost release can't wedge the engine."""
         if not cls._real_down:
             return False
-        from meltygui.events.input_handler import _BUTTON_PROBE
+        from meltygui.core.input_handler import _BUTTON_PROBE
         probe = _BUTTON_PROBE.get("fn")
         for button in list(cls._real_down):
             if probe is not None and probe(button) is False:

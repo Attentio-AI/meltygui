@@ -22,17 +22,17 @@ import struct
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
-from meltygui.melty import Melty
-from meltygui.toggles import Toggles
-from meltygui.toggles import WindowManager
-from meltygui.utils.glfw_utils import request_render
-from meltygui.fonts import Font
+from meltygui.core.melty import Melty
+from meltygui.core.toggles import Toggles
+from meltygui.core.toggles import WindowManager
+from meltygui.core.glfw_utils import request_render
+from meltygui.core.fonts import Font
 from meltygui.core.tile_cache import add_glow
 from meltygui.core.tile_cache import add_shadow
 from meltygui.core.tile_cache import clear_glows
-from meltygui.rendering.core_render import render_func
+from meltygui.core.core_render import render_func
 from meltygui.state.core_undo import NavUndo
-from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.core.core_decoration import Core
 
 _last_signature = None
 

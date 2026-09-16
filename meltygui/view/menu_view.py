@@ -1,11 +1,11 @@
 """Menu view functions and supporting definitions."""
 from meltygui.core.dropdown_core import _close_menu
 from meltygui.state.menu_state import _menu_state
-from meltygui.toggles import Toggles
+from meltygui.core.toggles import Toggles
 from colorsys import hsv_to_rgb
 from colorsys import rgb_to_hsv
-from meltygui.melty import Melty
-from meltygui.rendering.core_render import render_func
+from meltygui.core.melty import Melty
+from meltygui.core.core_render import render_func
 from meltygui.state.new_core_model import MenuBarState
 import meltygui_imgui as imgui
 import traceback
@@ -19,8 +19,8 @@ def draw_menu_bar(input_value: dict, draw_state, name, unique, menu_bar_state: M
     draws (dict / list, callables or values at the leaves). Returns
     ``(True, picked_value)`` on the frame a leaf is picked (a callable leaf
     has been called by then), else ``(False, input_value)``."""
-    from meltygui.code.cache_tree import UNSET_VALUE
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.cache_tree import UNSET_VALUE
+    from meltygui.core.glfw_utils import request_render
     from meltygui.view.dropdown_view import draw_dd_menu
     from meltygui.view.header_view import flat_button
     from meltygui.core.dropdown_core import _close_menu
@@ -30,7 +30,7 @@ def draw_menu_bar(input_value: dict, draw_state, name, unique, menu_bar_state: M
     from meltygui.core.dropdown_core import _dd_handle_keys
     from meltygui.view.dropdown_view import _dd_menu_fit
     from meltygui.model.dropdown_model import _dd_walk
-    import meltygui.window_api as glfw
+    import meltygui.core.window_api as glfw
 
     # [tint=(0.94, 0.45, 0.25)]
     open_title_alpha = 1.0      # the open title's button background

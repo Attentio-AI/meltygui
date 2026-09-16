@@ -21,9 +21,9 @@ reflows; the plain row edits this file instead.
 """
 import meltygui_imgui as imgui
 
-from meltygui.modes import Modes
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.modes import Modes
+from meltygui.core.core_render import render_func
+from meltygui.core.window_decoration import window
 from meltygui.core.render_dispatch import draw_any
 
 # Module level so hotswap-re-exec reuses it - edits made in the window survive

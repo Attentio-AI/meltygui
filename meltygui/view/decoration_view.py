@@ -1,10 +1,10 @@
 """Decoration view functions and supporting definitions."""
 from math import sqrt
 from meltygui.hdr_color import pack_color
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.core_decoration import Core
-from meltygui.rendering.decorators.window_decoration import window
-from meltygui.toggles import mix
+from meltygui.core.core_render import render_func
+from meltygui.core.core_decoration import Core
+from meltygui.core.window_decoration import window
+from meltygui.core.toggles import mix
 import meltygui_imgui as imgui
 
 
@@ -12,7 +12,7 @@ import meltygui_imgui as imgui
 def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                           collection, key, meltygui, y_offset, enable_flow, min_width,
                           unique, tag, style_manager, offset=0, indent_size=10):
-    from meltygui.global_style import GlobalStyle
+    from meltygui.core.global_style import GlobalStyle
 
     if Core.melty.active_layer == Core.melty.drag_layer:
         return False, 0.0

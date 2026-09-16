@@ -8,7 +8,7 @@ from watchdog.observers.api import BaseObserver, EventEmitter
 from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
 
-from meltygui.melty import FileWatch
+from meltygui.core.melty import FileWatch
 
 
 class LimitedEmitter(EventEmitter):

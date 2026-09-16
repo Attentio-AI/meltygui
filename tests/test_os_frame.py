@@ -26,9 +26,9 @@ import sys
 import pytest
 
 
-from meltygui import os_frame, titlebar as tb
-from meltygui.melty import Melty
-from meltygui.toggles import Toggles
+from meltygui.core import os_frame, titlebar as tb
+from meltygui.core.melty import Melty
+from meltygui.core.toggles import Toggles
 from test_column_edge_solve import FakeWindow, C
 
 
@@ -1612,7 +1612,7 @@ def _classify_frame_pinned(window, kwargs):
     """Run the wrapper's actual classification without a GL rendering context."""
     import ast
     from pathlib import Path
-    import meltygui.rendering.core_render as core_render
+    import meltygui.core.core_render as core_render
     path = Path(core_render.__file__)
     tree = ast.parse(path.read_text())
     assignment = next(node for node in ast.walk(tree) if isinstance(node, ast.Assign)
@@ -1624,7 +1624,7 @@ def _classify_frame_pinned(window, kwargs):
 
 
 def test_fixed_picker_keeps_size_during_parent_resize(studio, monkeypatch):
-    from meltygui.surface import root_view_kwargs
+    from meltygui.core.surface import root_view_kwargs
     parent = app_root(studio)
     app_frame(studio, parent)
     picker = nested(studio, parent, x=100, width=280, name='color_picker')

@@ -6,7 +6,7 @@ The default has no project settings, environment selection, or package installs.
 import os
 import sys
 from pathlib import Path
-from meltygui.extensions import get
+from meltygui.core.extensions import get
 
 
 class SourceContext:
@@ -55,7 +55,7 @@ def analysis_project(project=None, path=None):
     if hasattr(project, 'refresh'):
         return project.refresh()
     if project is None:
-        from meltygui.paths import application_root
+        from meltygui.core.paths import application_root
         project = owning_root(path) if path is not None else application_root()
     root = str(Path(project).expanduser().resolve())
     if root not in _contexts:

@@ -31,9 +31,9 @@ _io.display_size = (1920, 1080)
 _io.delta_time = 1.0 / 60.0
 _io.fonts.get_tex_data_as_rgba32()
 
-from meltygui.melty import Melty
-import meltygui.rendering.core_render as core_render
-from meltygui.rendering.core_render import render_func
+from meltygui.core.melty import Melty
+import meltygui.core.core_render as core_render
+from meltygui.core.core_render import render_func
 from meltygui.core.tile_cache import TileCacheMasked
 from meltygui.state.new_core_model import DrawState
 

@@ -100,7 +100,7 @@ del TEXT, PREFIXES, error
 
 def check_isolated(text, prefixes):
     current = threading.current_thread()
-    gl_state = sys.modules.get('meltygui.gl_state')
+    gl_state = sys.modules.get('meltygui.core.gl_state')
     if current is threading.main_thread() or current is getattr(gl_state, '_gl_thread', None):
         from meltygui.code.syntax_check import check_syntax
         return check_syntax(text, prefixes)

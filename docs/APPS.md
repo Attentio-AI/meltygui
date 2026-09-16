@@ -4,10 +4,13 @@ Install the framework into the same environment that runs the app. Both the
 package name and import name are `meltygui`. There is no `src` package and no
 requirement to launch from the framework checkout.
 
+When contributing reusable features to the library, also follow the
+[ownership and render-function contracts](../CONTRIBUTING.md).
+
 ```python
 import meltygui
-from meltygui.rendering.core_render import render_func
-from meltygui.state.dict_conversion import DictConversion
+from meltygui.core.core_render import render_func
+from meltygui.core.dict_conversion import DictConversion
 
 class EditorState(DictConversion):
     def __init__(self):
@@ -31,10 +34,10 @@ host a child in a native window; its lifecycle follows the same rules.
 
 ```python
 from meltygui import draw_text, draw_voxels, glfw_window, imgui
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.core_decoration import defaults, no_save
-from meltygui.state.dict_conversion import DictConversion
-from meltygui.code.render_host import RenderHost
+from meltygui.core.core_render import render_func
+from meltygui.core.core_decoration import defaults, no_save
+from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.render_host import RenderHost
 from meltygui.editor.live_view_views import draw_function_live
 from meltygui.graphics import Filter
 from meltygui.chat import draw_chat_interface, register_chat_backend

@@ -314,7 +314,7 @@ class LoginFlow:
                  console_url: str | None = None, base_url: str | None = None,
                  organization_id: str | None = None, workspace_id: str | None = None,
                  open_browser: bool = True, timeout_s: float | None = None, on_change=None):
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         self.profile = profile
         self.client_id = client_id or Toggles.InternetAccounts.anthropic_oauth_client_id
         self.scope = scope or Toggles.InternetAccounts.anthropic_oauth_scope

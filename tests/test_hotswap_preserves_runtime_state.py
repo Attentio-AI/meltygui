@@ -26,7 +26,7 @@ from pathlib import Path
 
 _root = os.path.join(os.path.dirname(__file__), '..')
 
-from meltygui.melty import Melty
+from meltygui.core.melty import Melty
 from meltygui.code.file_converters import _recompile_module
 from meltygui.code.file_converters import _recompile_class
 from meltygui.code.file_converters import stamp_module_baseline
@@ -182,8 +182,8 @@ class HotswapPreservesRuntimeState(unittest.TestCase):
         self.assertEqual(Single().describe(), "span")
 
     def test_real_melty_module_swap(self):
-        import meltygui.melty as melty_mod
-        from meltygui.rendering.decorators.core_decoration import Core
+        import meltygui.core.melty as melty_mod
+        from meltygui.core.core_decoration import Core
         path = Path(melty_mod.__file__)
         source = path.read_text(encoding="utf-8")
         stamp_module_baseline(melty_mod, source)

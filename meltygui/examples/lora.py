@@ -5,10 +5,10 @@ needs neither model weights nor the studio's ML imports.
 """
 from typing import Any, Dict
 
-from meltygui.state.dict_conversion import DictConversion
+from meltygui.core.dict_conversion import DictConversion
 from meltygui.state.core_enums import generate_id
-from meltygui.rendering.decorators.core_decoration import defaults
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.core_decoration import defaults
+from meltygui.core.window_decoration import window
 
 
 ###### Legacy context windows

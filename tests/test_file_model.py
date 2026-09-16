@@ -3,7 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from meltygui.model import file_model
-from meltygui.toggles import Toggles
+from meltygui.core.toggles import Toggles
 
 
 def test_move_between_folders_and_undo_preserves_contents(tmp_path, monkeypatch):

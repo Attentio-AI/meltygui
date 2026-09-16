@@ -24,19 +24,19 @@ appeared/vanished with no edit to invalidate it).
 import sys
 import threading
 
-from meltygui.lifecycle import module_is_live
+from meltygui.core.lifecycle import module_is_live
 import time
 from pathlib import Path
 
 import meltygui_imgui as imgui
-from meltygui.melty import Melty
-from meltygui.modes import Modes
+from meltygui.core.melty import Melty
+from meltygui.core.modes import Modes
 from meltygui.view.file_view import draw_file_tree
 from meltygui.view.file_view import draw_file_metadata
-from meltygui.utils.glfw_utils import request_render
-from meltygui.code.render_host import RenderHost
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.core.glfw_utils import request_render
+from meltygui.core.render_host import RenderHost
+from meltygui.core.core_render import render_func
+from meltygui.core.core_decoration import Core
 
 from meltygui.model.file_model import _scan
 from meltygui.model.file_model import _create
@@ -49,7 +49,7 @@ from meltygui.model.file_model import _collect_meta
 
 # Keep the original default folder when the implementation moves packages.
 ROOT = Path(__file__).resolve().parents[1] / "files"
-from meltygui.paths import application_root
+from meltygui.core.paths import application_root
 TEST_FOLDER = application_root()
 
 

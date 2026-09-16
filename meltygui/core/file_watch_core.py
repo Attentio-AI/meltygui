@@ -16,9 +16,9 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from meltygui.rendering.render_funcs import RenderFuncs
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.render_funcs import RenderFuncs
+from meltygui.core.core_render import render_func
+from meltygui.core.window_decoration import window
 
 
 def _symbol_index_view():

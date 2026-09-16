@@ -12,9 +12,9 @@ torch = pytest.importorskip("torch")
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 
 import meltygui.tensor.cuda_march as cm
-from meltygui.tensor.voxel_playground import TensorDim
-from meltygui.tensor.voxel_playground import slice_volume
-from meltygui.tensor.voxel_playground import slice_volume_view
+from meltygui.model.tensor_model import TensorDim
+from meltygui.model.tensor_model import slice_volume
+from meltygui.model.tensor_model import slice_volume_view
 
 DEV = "cuda:0"
 
@@ -105,7 +105,7 @@ def test_nf_display_shape():
 
 @pytest.fixture
 def st(gl_context):
-    from meltygui.gl_state import GLState
+    from meltygui.core.gl_state import GLState
     state = GLState()
     yield state
     state.release()
@@ -114,7 +114,7 @@ def st(gl_context):
 
 def test_cuda_image_matches_gl_voxel_pass(st):
     import OpenGL.GL as gl
-    from meltygui.tensor.voxel_playground import CudaVolumeView
+    from meltygui.model.tensor_model import CudaVolumeView
     from meltygui.tensor.voxel_playground import LUTS
     from meltygui.tensor.voxel_playground import _cuda_render
     from meltygui.tensor.voxel_playground import image_blit_pass

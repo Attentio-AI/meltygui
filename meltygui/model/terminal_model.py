@@ -1,5 +1,5 @@
 """Terminal model functions and supporting definitions."""
-from meltygui.rendering.decorators.core_decoration import defaults
+from meltygui.core.core_decoration import defaults
 import os
 import select
 import threading
@@ -135,7 +135,7 @@ class Terminal:
         return hash((rows, sc.cursor.x, sc.cursor.y, sc.cursor.hidden, len(sc.history.top)))
 
     def _read_loop(self):
-        from meltygui.utils.glfw_utils import request_render
+        from meltygui.core.glfw_utils import request_render
 
         fd = self.master_fd
         # Force a first paint. Guarded: this runs BEFORE the try below, so a None _ds

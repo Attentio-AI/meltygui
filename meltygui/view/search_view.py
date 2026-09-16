@@ -1,8 +1,8 @@
 """Search view functions and supporting definitions."""
 from meltygui.hdr_color import pack_color
-from meltygui.melty import Melty
-from meltygui.rendering.core_render import render_func
-from meltygui.toggles import Toggles
+from meltygui.core.melty import Melty
+from meltygui.core.core_render import render_func
+from meltygui.core.toggles import Toggles
 import meltygui_imgui as imgui
 import math
 
@@ -16,8 +16,8 @@ def draw_search(input_value=None, draw_state=None, unique=0):
     the close button. Up / Down, Enter / Shift+Enter step the matches (the
     row has no arrow buttons), Esc closes. State — search_text, count,
     current index — lives on the owning view's draw_state (search_owner)."""
-    from meltygui.utils.glfw_utils import request_render
-    import meltygui.window_api as glfw
+    from meltygui.core.glfw_utils import request_render
+    import meltygui.core.window_api as glfw
 
     owner = input_value
     # draw_search(owner, unique=owner._tile_id, draw_state=draw_state)
@@ -154,7 +154,7 @@ def draw_search(input_value=None, draw_state=None, unique=0):
                     # it re-renders and reads the click next frame (the find UI
                     # renders too late to inject for this frame).
                     from meltygui.core.search_core import search_activate_target
-                    from meltygui.events.input_handler import InputEvent
+                    from meltygui.core.input_handler import InputEvent
                     _target = search_activate_target(Melty.search_current_node)
                     if _target is not None and _target.width and _target.height:
                         _cx = _target.abs_left + _target.width / 2.0

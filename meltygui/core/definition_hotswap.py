@@ -3,7 +3,7 @@ import inspect
 import sys
 import types
 
-from meltygui.melty import Melty
+from meltygui.core.melty import Melty
 
 
 def patch_function(live, replacement, *, force=False):
@@ -55,7 +55,7 @@ def patch_function(live, replacement, *, force=False):
             f'def make_entry({", ".join(captures)}):\n'
             '    def entry(*args, **kwargs):\n'
             + capture_line
-            + '        from meltygui.melty import Melty\n'
+            + '        from meltygui.core.melty import Melty\n'
             + f'        return Melty.relocated_functions[{id(live)}](*args, **kwargs)\n'
             + '    return entry\n')
         namespace = {}

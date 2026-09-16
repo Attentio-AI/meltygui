@@ -2,7 +2,7 @@
 import inspect
 import sys
 
-from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.core.core_decoration import Core
 
 
 def resolve_view_func(value):
@@ -16,7 +16,7 @@ def resolve_view_func(value):
         registered = Core.melty.render_funcs_by_name.get(name)
         if registered is not None and inspect.unwrap(registered) is inspect.unwrap(value):
             return registered
-        from meltygui.rendering.render_funcs import _LazyRenderFunc
+        from meltygui.core.render_funcs import _LazyRenderFunc
         if isinstance(value, _LazyRenderFunc):
             return value._resolve()
         if hasattr(value, "__render_func__"):
@@ -24,7 +24,7 @@ def resolve_view_func(value):
         raise ValueError(f"Not a registered render function: {name or value!r}")
     if isinstance(value, str):
         reference = str(value)
-        prefix = "__import__('meltygui.rendering.render_funcs', fromlist=['RenderFuncs']).RenderFuncs."
+        prefix = "__import__('meltygui.core.render_funcs', fromlist=['RenderFuncs']).RenderFuncs."
         if reference.startswith(prefix):
             reference = reference[len(prefix):]
         parts = reference.split(".")
@@ -48,7 +48,7 @@ def view_reference_code(value, filename=None):
     function = resolve_view_func(value)
     if function is None:
         return None
-    from meltygui.rendering.render_funcs import RenderFuncs
+    from meltygui.core.render_funcs import RenderFuncs
     for module in tuple(sys.modules.values()):
         if module is None or not filename or getattr(module, "__file__", None) != str(filename):
             continue
@@ -60,7 +60,7 @@ def view_reference_code(value, filename=None):
         for name, binding in tuple(vars(module).items()):
             if name.isidentifier() and binding is RenderFuncs:
                 return CodeLine(f"{name}.{function.__name__}")
-    return CodeLine("__import__('meltygui.rendering.render_funcs', "
+    return CodeLine("__import__('meltygui.core.render_funcs', "
                     f"fromlist=['RenderFuncs']).RenderFuncs.{function.__name__}")
 
 
@@ -84,7 +84,7 @@ def comment_view_func(input_value, kwargs):
 def configured_view_func(input_value, kwargs, decoration=None, state_view=None):
     """Resolve selection before entering a wrapper's layout/cache scopes."""
     defaults = Core.melty.default_kwargs_by_type[kwargs.get("real_type", type(input_value))]
-    from meltygui.rendering.core_render import _codec_render_kwargs
+    from meltygui.core.core_render import _codec_render_kwargs
     selected = _codec_render_kwargs(type(input_value)).get("view_func")
     if not isinstance(input_value, (dict, type)):
         selected = getattr(input_value, "view_func", selected)
@@ -132,7 +132,7 @@ class CallerViewSource(dict):
             if value is None:
                 raise ValueError("A direct call needs a render function")
             self.parsed["__callee__"] = view_reference_code(value, self.filename)
-            from meltygui.code.bubbling import _notify
+            from meltygui.core.bubbling import _notify
             _notify(self.parsed)
         else:
             self.parsed[key] = value

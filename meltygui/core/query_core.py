@@ -27,12 +27,12 @@ import traceback
 
 import meltygui_imgui as imgui
 
-import meltygui.mcp_query as mcp_query
-from meltygui.melty import Melty
-from meltygui.state.dict_conversion import DictConversion
-from meltygui.rendering.render_funcs import RenderFuncs
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.window_decoration import window
+import meltygui.core.mcp_query as mcp_query
+from meltygui.core.melty import Melty
+from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.render_funcs import RenderFuncs
+from meltygui.core.core_render import render_func
+from meltygui.core.window_decoration import window
 
 # Tool name -> its arguments and their defaults, in the order the real tool
 # declares them. This table IS the API: an argument dict is rendered by

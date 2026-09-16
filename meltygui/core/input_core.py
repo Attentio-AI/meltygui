@@ -32,9 +32,9 @@ import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 import numpy as np
 
-import meltygui.events.space_mouse as space_mouse
-from meltygui.gl_state import GLState
-from meltygui.melty import Melty
+import meltygui.core.space_mouse as space_mouse
+from meltygui.core.gl_state import GLState
+from meltygui.core.melty import Melty
 from meltygui.pbr import begin_scene
 from meltygui.pbr import end_scene
 from meltygui.pbr import draw_cylinder
@@ -47,12 +47,12 @@ from meltygui.pbr import orbit_camera
 from meltygui.pbr import Light
 from meltygui.pbr import model_matrix
 from meltygui.pbr import rotation_matrix
-from meltygui.toggles import Toggles
+from meltygui.core.toggles import Toggles
 from meltygui.code.new_converters import code_hosts_for
 from meltygui.core.column_core import ColumnLayout
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.window_decoration import window
-from meltygui.tensor.voxel_playground import _view_size
+from meltygui.core.core_render import render_func
+from meltygui.core.window_decoration import window
+from meltygui.view.tensor_view import _view_size
 
 
 def _lathe_profile(fn, y0, y1, steps, r_end=None):

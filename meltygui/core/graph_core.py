@@ -40,17 +40,17 @@ import numpy
 import numpy as np
 import OpenGL.GL as gl
 
-from meltygui.gl_state import GLState
-from meltygui.gl_state import GLTexture
-from meltygui.gl_state import gl_limits
-from meltygui.gl_state import texture3d_fit
-from meltygui.modes import Modes
-from meltygui.shader_func import shader_func
-from meltygui.rendering.shaped import Shaped
-from meltygui.toggles import SwooshMode
-from meltygui.utils.glfw_utils import request_render
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.gl_state import GLState
+from meltygui.core.gl_state import GLTexture
+from meltygui.core.gl_state import gl_limits
+from meltygui.core.gl_state import texture3d_fit
+from meltygui.core.modes import Modes
+from meltygui.core.shader_func import shader_func
+from meltygui.core.shaped import Shaped
+from meltygui.core.toggles import SwooshMode
+from meltygui.core.glfw_utils import request_render
+from meltygui.core.core_render import render_func
+from meltygui.core.window_decoration import window
 from meltygui.core.render_dispatch import draw_any
 # Shared with draw_voxels on purpose: the same typed params (TensorDim /
 # TensorDims / Lut route to the same pickers), the same dtype coercion, the
@@ -58,17 +58,17 @@ from meltygui.core.render_dispatch import draw_any
 from meltygui.tensor.voxel_playground import source_identity
 from meltygui.tensor.voxel_playground import LUTS
 from meltygui.tensor.voxel_playground import _LUT_TEXTURES
-from meltygui.tensor.voxel_playground import _clean_dim_name
-from meltygui.tensor.voxel_playground import _describe_tensor
-from meltygui.tensor.voxel_playground import _draw_image_notice
+from meltygui.model.tensor_model import _clean_dim_name
+from meltygui.view.tensor_view import _describe_tensor
+from meltygui.view.tensor_view import _draw_image_notice
 from meltygui.tensor.voxel_playground import _draw_voxel_error
 from meltygui.tensor.voxel_playground import _ensure_host
-from meltygui.tensor.voxel_playground import _resolve_dim
-from meltygui.tensor.voxel_playground import _tick_values
-from meltygui.tensor.voxel_playground import _view_size
+from meltygui.model.tensor_model import _resolve_dim
+from meltygui.view.tensor_view import _tick_values
+from meltygui.view.tensor_view import _view_size
 from meltygui.tensor.voxel_playground import demo_4d
 from meltygui.tensor.voxel_playground import demo_5d
-from meltygui.tensor.voxel_playground import to_display_dtype
+from meltygui.model.tensor_model import to_display_dtype
 from meltygui.tensor.voxel_playground import voxel_io
 from meltygui.tensor.voxel_playground import _cached_volume_texture
 
@@ -196,7 +196,7 @@ def slice_lines(t, dim_names=(), x_dim=None, line_dim=None, slices=(),
     EACH LINE to [0, 1] (compare shapes, not magnitudes). Stays on t's
     device. Returns (lines2d, (x_dim, line_dim|None), shape)."""
     import torch
-    from meltygui.tensor.voxel_playground import _display_view_dtype
+    from meltygui.model.tensor_model import _display_view_dtype
     t = (to_display_dtype if materialize else _display_view_dtype)(t.detach())
     if t.numel() == 0:
         raise ValueError(f"empty tensor (shape {tuple(t.shape)}) — nothing to plot")

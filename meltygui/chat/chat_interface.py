@@ -12,9 +12,9 @@ import uuid
 import meltygui_imgui as imgui
 import numpy as np
 from meltygui.hdr_color import pack_color
-import meltygui.window_api as glfw
+import meltygui.core.window_api as glfw
 
-from meltygui.melty import Melty
+from meltygui.core.melty import Melty
 from meltygui.chat.messages import Message
 from meltygui.chat.messages import AssistantMessage
 from meltygui.chat.messages import UserMessage
@@ -34,16 +34,16 @@ import meltygui.chat.images as chat_images
 from meltygui.models.file_meta import FileMeta
 from meltygui.models.file_meta import file_meta_store
 from meltygui.files.fast_file_explorer import set_row_tint
-from meltygui.toggles import Tint
-from meltygui.toggles import Toggles
-from meltygui.fonts import Font
-from meltygui.state.dict_conversion import DictConversion
+from meltygui.core.toggles import Tint
+from meltygui.core.toggles import Toggles
+from meltygui.core.fonts import Font
+from meltygui.core.dict_conversion import DictConversion
 from meltygui.core.column_core import ColumnLayout
 from meltygui.core.column_core import RowLayout
 from meltygui.core.drag_drop_core import DragDrop
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.core_decoration import no_save
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.core_render import render_func
+from meltygui.core.core_decoration import no_save
+from meltygui.core.window_decoration import window
 from meltygui.core.render_dispatch import draw_tuple_fast
 from meltygui.core.render_dispatch import draw_bg
 from meltygui.core.header_runtime import flat_button
@@ -61,7 +61,7 @@ def image_cache():
     """The transcript's pictures, decoded once per process (chat/images.py)."""
     cache = getattr(Melty, "chat_image_cache", None)
     if cache is None:
-        from meltygui.utils.glfw_utils import request_render
+        from meltygui.core.glfw_utils import request_render
         cache = Melty.chat_image_cache = chat_images.ImageCache(wake=request_render)
     return cache
 

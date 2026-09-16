@@ -1,13 +1,13 @@
 """Dropdown core functions and supporting definitions."""
-from meltygui.toggles import Toggles
-from meltygui.melty import Melty
-from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.core.toggles import Toggles
+from meltygui.core.melty import Melty
+from meltygui.core.core_decoration import Core
 
 
 def _close_menu(draw_state, state):
     """Close whatever menu is showing: release the popover slot, collapse
     that menu's paths, hand text focus back to whoever had it."""
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
 
     if state.open_title is not None:
         menu_state = state.menus.get(state.open_title)
@@ -72,7 +72,7 @@ def _dd_invalidate_rows(root_state, menu_ds=None):
     scrolling it back in would revive its stale-open submenu). Submenu windows
     are tile ROOTS (not tile children of their spawner rows), so this reaches
     rows, not window interiors — which is all closing needs."""
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
 
     if menu_ds is None and root_state is not None:
         box_tile = getattr(root_state, "_search_box_tile", None)
@@ -81,7 +81,7 @@ def _dd_invalidate_rows(root_state, menu_ds=None):
             menu_ds = getattr(box_ds, "parent_window", None) if box_ds is not None else None
     if menu_ds is None or getattr(menu_ds, "_tile_id", None) is None:
         return
-    from meltygui.debug.invalidation_tracker import Note
+    from meltygui.core.invalidation_tracker import Note
     Melty.cache.invalidate_up(menu_ds._tile_id, force=True, bypass_clip=True,
                               note=Note(name="dd open_path change", tint=(1, 0.6, 0.2)))
     request_render()
@@ -94,7 +94,7 @@ def _dd_scroll_cursor_into_view(menu_ds, row_index, row0_offset=0.0, pitch=None)
     a level that draws chrome above its rows. Stateless — pure geometry from
     the live draw_state, clamped to the wrapper-published _max_scroll_y so this
     writer never fights core_render's own clamp."""
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
 
     if menu_ds is None or row_index is None or row_index < 0:
         return
@@ -121,7 +121,7 @@ def _dd_scroll_cursor_into_view(menu_ds, row_index, row0_offset=0.0, pitch=None)
         # value-identical). Change-edge-gated by `new_sy != sy` above, never
         # per-frame. bypass_clip: the popup can protrude outside its parent.
         if menu_ds._tile_id is not None:
-            from meltygui.debug.invalidation_tracker import Note
+            from meltygui.core.invalidation_tracker import Note
             Melty.cache.invalidate_up(menu_ds._tile_id, force=True, bypass_clip=True,
                                       note=Note(name="dd scroll-into-view", tint=(1, 0.6, 0.2)))
         request_render()
@@ -134,7 +134,7 @@ def _dd_pick(root_state, path):
     has already drawn. A one-frame return value cannot reliably cross that
     boundary; the shared dropdown state owns the pending selection.
     """
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
 
     root_state._picked_path = tuple(path)
     root_state._pending_pick = tuple(path)
@@ -180,11 +180,11 @@ def _dd_handle_keys(collection, root_state, search="", text_focused=False):
     parent, Enter on a leaf picks it. Returns the picked leaf value, or
     UNSET_VALUE when nothing was chosen this frame. Reads the GLFW-callback key
     queue so it works without the menu being hovered."""
-    from meltygui.code.cache_tree import UNSET_VALUE
+    from meltygui.core.cache_tree import UNSET_VALUE
     from meltygui.model.dropdown_model import _dd_as_tuple
     from meltygui.model.dropdown_model import _dd_rows_at
-    from meltygui.utils.glfw_utils import request_render
-    import meltygui.window_api as glfw
+    from meltygui.core.glfw_utils import request_render
+    import meltygui.core.window_api as glfw
 
     if root_state is None:
         return UNSET_VALUE
@@ -262,7 +262,7 @@ def _dd_handle_keys(collection, root_state, search="", text_focused=False):
 
 
 def _dd_update_menu_size(state, menu_ds, min_width=None, max_height=None):
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.view.dropdown_view import _dd_menu_fit
 
     current = (menu_ds.width, menu_ds.height)

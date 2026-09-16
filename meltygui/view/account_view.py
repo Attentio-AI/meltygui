@@ -1,8 +1,8 @@
 """Account view functions and supporting definitions."""
 from meltygui.core.account_core import _cleanup_accounts
-from meltygui.melty import Melty
+from meltygui.core.melty import Melty
 from meltygui.model.account_model import AccountStore
-from meltygui.rendering.core_render import render_func
+from meltygui.core.core_render import render_func
 from meltygui.state.account_state import AccountsPanelState
 import meltygui_imgui as imgui
 
@@ -29,7 +29,7 @@ def draw_internet_accounts(
     from meltygui.accounts.internet_accounts import _refresh_stale
     from meltygui.accounts.internet_accounts import _wrap_usage_label
     from meltygui.accounts.internet_accounts import is_default
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.core.tile_cache import add_shadow
     import meltygui.accounts.internet_accounts
 

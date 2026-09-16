@@ -7,7 +7,7 @@ This demonstrates:
 3. Filter chaining
 4. Custom shader types
 """
-from meltygui.melty import Melty
+from meltygui.core.melty import Melty
 from meltygui.graphics.base import GLType
 from meltygui.graphics.filter import Filter
 from meltygui.graphics.registry import register_shader

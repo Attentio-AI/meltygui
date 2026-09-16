@@ -10,9 +10,6 @@ import sys
 import types
 
 
-LEGACY_MODULES = json.loads(Path(__file__).with_name('legacy_modules.json').read_text())
-
-
 def _relocate_namespace(module, old_name, spec, aliases):
     """Rehome an unchanged module without rerunning its initialization.
 
@@ -146,7 +143,10 @@ class _LegacyModuleFinder(importlib.abc.MetaPathFinder):
 
 def install_module_aliases(aliases=None):
     """Install lazy aliases and adopt any already-loaded legacy modules."""
-    aliases = LEGACY_MODULES if aliases is None else aliases
+    if aliases is None:
+        # Reinstalling after a source move must see the updated manifest even
+        # when this module has been loaded for the whole session.
+        aliases = json.loads(Path(__file__).with_name('legacy_modules.json').read_text())
     for finder in sys.meta_path:
         if isinstance(finder, _LegacyModuleFinder) and finder.aliases == aliases:
             return finder
@@ -160,4 +160,12 @@ def install_module_aliases(aliases=None):
         parent, _, child = old_name.rpartition('.')
         if parent in sys.modules:
             setattr(sys.modules[parent], child, canonical)
+    # A running session may already hold the old saved-name map. Update it in
+    # place so historical identifiers and source navigation also follow moves.
+    for name in ('meltygui.core.module_names', 'meltygui.state.module_names'):
+        module_names = sys.modules.get(name)
+        if module_names is not None:
+            names = vars(module_names)['_MODULES']
+            module_names.register_names({old: aliases.get(new, new) for old, new in names.items()} | aliases)
+            break
     return finder

@@ -1,8 +1,8 @@
 """Input view functions and supporting definitions."""
-from meltygui.gl_state import GLState
-from meltygui.melty import Melty
-from meltygui.rendering.core_render import render_func
-from meltygui.toggles import Toggles
+from meltygui.core.gl_state import GLState
+from meltygui.core.melty import Melty
+from meltygui.core.core_render import render_func
+from meltygui.core.toggles import Toggles
 from meltygui.view.header_view import draw_header
 import math
 import numpy as np
@@ -150,12 +150,12 @@ def draw_space_mouse(input_value=None, gl_state: GLState = None, draw_state=None
                      middle_mouse_drag=None, scroll_y_changed=None, **kwargs):
     """A 3-D SpaceMouse that mirrors the real one, with its live reading."""
     from meltygui.code.new_converters import code_hosts_for
-    from meltygui.tensor.voxel_playground import _view_size
+    from meltygui.view.tensor_view import _view_size
     from meltygui.view.collection_view import draw_collection
     from meltygui.core.column_core import ColumnLayout
     from meltygui.core.input_core import _draw_puck
     from meltygui.core.input_core import _draw_readout
-    import meltygui.events.space_mouse as space_mouse
+    import meltygui.core.space_mouse as space_mouse
 
     # [tint=(0.9, 0.6, 0.2)]
     bar_width = 120

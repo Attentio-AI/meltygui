@@ -1,7 +1,7 @@
 """Window view functions and supporting definitions."""
-from meltygui.melty import ManagedWindow
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.core.melty import ManagedWindow
+from meltygui.core.core_render import render_func
+from meltygui.core.core_decoration import Core
 from meltygui.view.header_view import draw_header
 import meltygui_imgui as imgui
 

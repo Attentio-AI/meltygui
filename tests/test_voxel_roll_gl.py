@@ -12,9 +12,9 @@ import numpy as np
 import pytest
 import OpenGL.GL as gl
 
-from meltygui.gl_state import GLState
+from meltygui.core.gl_state import GLState
 from meltygui.tensor.voxel_playground import voxel_pass
-from meltygui.tensor.voxel_playground import _axis_edges
+from meltygui.view.tensor_view import _axis_edges
 
 
 @pytest.fixture

@@ -1,7 +1,7 @@
 """Orchestration view functions and supporting definitions."""
 from meltygui.hdr_color import pack_color
-from meltygui.melty import Melty
-from meltygui.rendering.core_render import render_func
+from meltygui.core.melty import Melty
+from meltygui.core.core_render import render_func
 from meltygui.state.orchestration_state import OrchestratorPanelState
 import meltygui_imgui as imgui
 import time
@@ -17,7 +17,7 @@ def draw_orchestrator(input_value=None, draw_state=None, style_manager=None,
     # to the SAME (input_id, DOWN) key as left_mouse_down (DOWN has no double
     # promotion) but the per-frame name cache keeps one name per key - it
     # silently drops every plain press. DOUBLE_CLICKED is its own key.
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.core.tile_cache import add_shadow
     from meltygui.core.orchestration_core import Orchestrator
     from meltygui.core.orchestration_core import _format_value

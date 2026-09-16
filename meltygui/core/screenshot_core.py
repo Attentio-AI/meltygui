@@ -24,14 +24,14 @@ it — top-left `x, y` and `w × h` in window points — so the tool doubles as
 a measure tool (drag over a thing, read its rect off the label, Esc).
 """
 
-import meltygui.window_api as glfw
+import meltygui.core.window_api as glfw
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
-import meltygui.mouse_cursor as mouse_cursor
-from meltygui.melty import Melty
-from meltygui.utils.glfw_utils import request_render
-from meltygui.rendering.decorators.core_decoration import Core
+import meltygui.core.mouse_cursor as mouse_cursor
+from meltygui.core.melty import Melty
+from meltygui.core.glfw_utils import request_render
+from meltygui.core.core_decoration import Core
 
 # Above every window / blocker (the live lab's blocking handlers use 1024).
 _PRIORITY_DELTA = 4096
@@ -54,7 +54,7 @@ def _build_cursor_image():
     with the FA camera glyph below-right — the same glyph Actions.screenshot
     wears. Returns (PIL image, hotspot)."""
     from PIL import Image, ImageDraw, ImageFont
-    from meltygui.fonts import _RESOURCES
+    from meltygui.core.fonts import _RESOURCES
     size, hot, arm, gap = _CURSOR_SIZE, _CURSOR_HOT, _CURSOR_ARM, _CURSOR_GAP
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -117,7 +117,7 @@ def _open_captured(path):
     the new tab shows. The saved file's PATH also goes on the clipboard
     (text, via GLFW's clipboard — the studio is the focused Wayland client,
     so this is the one clipboard write that always lands)."""
-    from meltygui.extensions import source_window as editor_window_draw_state
+    from meltygui.core.extensions import source_window as editor_window_draw_state
 
     def _land():
         open_files = getattr(getattr(Melty.vis, "root", None), "open_files", None)
@@ -137,7 +137,7 @@ def _open_captured(path):
 def _finish(x0, y0, x1, y1):
     """Release: queue the framebuffer read of the box (settled a couple of
     frames so this frame's overlay — crosshair, box — has cleared)."""
-    from meltygui.screenshot import request_region_capture
+    from meltygui.core.screenshot import request_region_capture
     RegionScreenshot.armed = False
     RegionScreenshot.start = None
     left, top = min(x0, x1), min(y0, y1)

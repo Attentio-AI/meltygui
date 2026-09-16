@@ -1,18 +1,18 @@
 """Reusable file presentation; values and view state are supplied by callers."""
 from pathlib import Path
-from meltygui.modes import Modes
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.render_funcs import RenderFuncs
+from meltygui.core.modes import Modes
+from meltygui.core.core_render import render_func
+from meltygui.core.render_funcs import RenderFuncs
 from collections import defaultdict
 from meltygui.hdr_color import pack_color
 from meltygui.hdr_color import with_alpha
-from meltygui.melty import Melty
+from meltygui.core.melty import Melty
 from meltygui.state.file_state import FileExplorerState
 from meltygui.state.file_state import FileSelectorState
 from meltygui.state.file_state import FileTreeState
 from meltygui.state.file_state import ShortcutState
-from meltygui.toggles import Tint
-from meltygui.toggles import Toggles
+from meltygui.core.toggles import Tint
+from meltygui.core.toggles import Toggles
 from meltygui.state.file_state import ROOT
 import colorsys
 import difflib
@@ -47,8 +47,8 @@ def draw_external_changes(draw_state=None):
     from meltygui.editor.external_changes import ExternalChanges
     from meltygui.editor.pending_save import _diff_lines_with_numbers
 
-    from meltygui.melty import Melty
-    from meltygui.melty import FileWatch
+    from meltygui.core.melty import Melty
+    from meltygui.core.melty import FileWatch
     ExternalChanges._window_ds = draw_state
     RenderFuncs.draw_function(ExternalChanges.dismiss_all, tint=(0, 0, 0, 1), show_bg=False, shadow=False, icon=None)
 
@@ -307,7 +307,7 @@ def draw_pending_saves():
             # edit as its own "original" reclassifies the entry as a no-op
             # (dropped on the next disk write, invisible in this diff) and
             # poisons the merge base. source_text pins the load to disk.
-            from meltygui.melty import Melty
+            from meltygui.core.melty import Melty
             disk_text = Melty.read_code(address.path) if address.path is not None else None
             PendingSave.originals[address] = codec.load(
                 address=address, **{**kwargs, "source_text": disk_text})
@@ -366,7 +366,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     from meltygui.files.fast_file_explorer import watch_directory
     from meltygui.models.file_meta import FileMeta
     from meltygui.models.file_meta import file_meta_store
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.core.tile_cache import add_shadow
     from meltygui.core.tile_cache import clear_glows
     from meltygui.core.drag_drop_core import DragDrop
@@ -772,7 +772,7 @@ def draw_shortcuts(input_value: str, draw_state, left_mouse_clicked=False,
     The explorer draws this in its first cell; the code editor draws it as
     a leading column (`show_shortcuts=True`), a pick selecting the project
     in its injected `EditorProjectState`."""
-    from meltygui.extensions import source_folders as project_roots
+    from meltygui.core.extensions import source_folders as project_roots
     from meltygui.files.fast_file_explorer import chip_swatch
     from meltygui.files.fast_file_explorer import row_tint_bg
     from meltygui.files.fast_file_explorer import shortcut_directories
@@ -780,7 +780,7 @@ def draw_shortcuts(input_value: str, draw_state, left_mouse_clicked=False,
     from meltygui.files.fast_file_explorer import tinted_text
     from meltygui.models.file_meta import FileMeta
     from meltygui.models.file_meta import file_meta_store
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.core.tile_cache import add_shadow
     from meltygui.core.tile_cache import clear_glows
     from meltygui.core.drag_drop_core import DragDrop
@@ -941,7 +941,7 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
     persisted order."""
     from meltygui.files.fast_file_explorer import row_tint_bg
     from meltygui.models.file_meta import file_meta_store
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.core.tile_cache import clear_glows
     from meltygui.core.column_core import ColumnLayout
 
@@ -1051,7 +1051,7 @@ def draw_file_selector(input_value: str | None = None, draw_state=None,
     ``browse`` = a directory to navigate to — a path or ``(path, token)``
     — applied once per distinct value; keep passing it.
     """
-    from meltygui.app import pressed
+    from meltygui.core.app import pressed
     from meltygui.view.control_view import draw_button
     from meltygui.view.file_view import draw_fast_file_explorer
 
@@ -1106,8 +1106,8 @@ def draw_file_selector(input_value: str | None = None, draw_state=None,
 def file_watch_debug(draw_state=None):
     from meltygui.core.file_watch_core import _symbol_index_view
 
-    from meltygui.melty import Melty
-    from meltygui.melty import FileWatch
+    from meltygui.core.melty import Melty
+    from meltygui.core.melty import FileWatch
     from meltygui.editor.external_changes import ExternalChanges
 
     RenderFuncs.draw_function(FileWatch.watch_project_files, icon="",
@@ -1218,7 +1218,7 @@ def render_file_tree(input_value=None, draw_state=None,
                      escape_key_pressed=False, **kwargs):
     # Geometry authored at ui_scale 1.0 — scaled through Melty.px per frame.
     # [tint=(0.55, 0.72, 0.95)]
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.view.header_view import flat_button
     from meltygui.core.tile_cache import add_shadow
     from meltygui.core.drag_drop_core import DragDrop

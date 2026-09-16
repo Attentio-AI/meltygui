@@ -5,11 +5,11 @@ import types
 from pathlib import Path
 from unittest.mock import Mock
 
-from meltygui.melty import Melty
+from meltygui.core.melty import Melty
 from meltygui.code.file_converters import _recompile_module, stamp_module_baseline
 
-source = '''from meltygui.rendering.core_render import render_func
-from meltygui.state.dict_conversion import DictConversion
+source = '''from meltygui.core.core_render import render_func
+from meltygui.core.dict_conversion import DictConversion
 class FeatureState(DictConversion):
     def __init__(self):
         super().__init__()

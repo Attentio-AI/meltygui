@@ -81,7 +81,7 @@ def __getattr__(name):
     if spec is None:
         raise AttributeError(name)
     import importlib
-    from meltygui.app import _wait_imports
+    from meltygui.core.app import _wait_imports
     _wait_imports()
     value = getattr(importlib.import_module(spec[0]), spec[1])
     globals()[name] = value

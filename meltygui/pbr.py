@@ -57,16 +57,16 @@ import struct
 import numpy as np
 import OpenGL.GL as gl
 
-from meltygui.gl_state import GLState
-from meltygui.gl_state import GLTexture
-from meltygui.gl_state import _scalar
-from meltygui.shader_func import shader_func
+from meltygui.core.gl_state import GLState
+from meltygui.core.gl_state import GLTexture
+from meltygui.core.gl_state import _scalar
+from meltygui.core.shader_func import shader_func
 
 
 
 def _frame_framebuffer():
     """The frame's render target (the fp16 scene while a frame is open)."""
-    from meltygui.melty import Melty
+    from meltygui.core.melty import Melty
     return Melty.default_framebuffer()
 
 

@@ -5,31 +5,31 @@ import types
 from types import NoneType
 from typing import MutableMapping
 
-import meltygui.window_api as glfw
+import meltygui.core.window_api as glfw
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
-from meltygui.style import Style
+from meltygui.core.style import Style
 from meltygui_imgui.core import _DrawList
 
-import meltygui.mouse_cursor as mouse_cursor
-from meltygui.global_style import GlobalStyle
-from meltygui.melty import Melty
-from meltygui.melty import add_to_collection
+import meltygui.core.mouse_cursor as mouse_cursor
+from meltygui.core.global_style import GlobalStyle
+from meltygui.core.melty import Melty
+from meltygui.core.melty import add_to_collection
 from meltygui.state.core_enums import ProfileMode
 from meltygui.state.new_core_model import TileMode
-from meltygui.rendering.render_funcs import RenderFuncs
-from meltygui.toggles import Toggles
-from meltygui.toggles import Tint
+from meltygui.core.render_funcs import RenderFuncs
+from meltygui.core.toggles import Toggles
+from meltygui.core.toggles import Tint
 from meltygui.utils.render_utils import push_style_var
 from meltygui.utils.render_utils import push_style_color
 from meltygui.utils.render_utils import pop_style_color
 from meltygui.utils.render_utils import pop_style_var
-from meltygui.utils.glfw_utils import request_render
-from meltygui.utils.glfw_utils import print_stack_trace
-from meltygui.code.bubbling import _BubblingDict
+from meltygui.core.glfw_utils import request_render
+from meltygui.core.glfw_utils import print_stack_trace
+from meltygui.core.bubbling import _BubblingDict
 from meltygui.core.cursor_core import same_line
 from meltygui.core.tile_cache import add_shadow
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.window_decoration import window
 
 
 def open_file(path, app=None):

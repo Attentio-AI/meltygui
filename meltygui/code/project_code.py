@@ -228,7 +228,7 @@ class FileCode:
         the editor-keystroke shape). Records the disk baseline on the first
         queue (no-op detection + merge base) and arms the flush-time conflict
         fingerprint, both exactly as a load through code_file_io would."""
-        from meltygui.melty import Melty
+        from meltygui.core.melty import Melty
         from meltygui.code.fileref import is_writable_file
         from meltygui.code.new_codecs import codec_for_path
         from meltygui.code.new_codecs import _span_fingerprint

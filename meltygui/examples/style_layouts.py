@@ -6,10 +6,10 @@ from meltygui import Style
 from meltygui import glfw_window
 from meltygui import pressed
 from meltygui.hdr_color import pack_color
-from meltygui.fonts import Font
-from meltygui.melty import Melty
-from meltygui.toggles import Toggles
-from meltygui.rendering.core_render import render_func
+from meltygui.core.fonts import Font
+from meltygui.core.melty import Melty
+from meltygui.core.toggles import Toggles
+from meltygui.core.core_render import render_func
 from meltygui.core.header_runtime import draw_header
 
 

@@ -6,11 +6,11 @@ from enum import Enum
 import meltygui_imgui as imgui
 
 from meltygui.state.model_enums import RelaxedEnum
-from meltygui.modes import Modes
-from meltygui.rendering.render_funcs import RenderFuncs
-from meltygui.utils.glfw_utils import request_render
-from meltygui.rendering.decorators.core_decoration import Core
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.modes import Modes
+from meltygui.core.render_funcs import RenderFuncs
+from meltygui.core.glfw_utils import request_render
+from meltygui.core.core_decoration import Core
+from meltygui.core.window_decoration import window
 from meltygui.view.header_view import draw_header
 
 
@@ -92,7 +92,7 @@ class SetterChange(Change):
         try:
             self.setter(self.old if undo else self.new)
         finally:
-            from meltygui.utils.glfw_utils import request_render
+            from meltygui.core.glfw_utils import request_render
             cache = getattr(Core.melty, "cache", None)
             if cache is not None and getattr(self.draw_state, "_tile_id", None) is not None:
                 cache.invalidate_up(self.draw_state._tile_id, force=True)
@@ -468,7 +468,7 @@ class UndoManager:
             pos, typed = last.edit_end, edit.text
         else:
             return None                                     # edited elsewhere
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         if Toggles.CodeEditor.undo_word_steps and _word_starts(last.edge_char + typed):
             return None
         return pos
@@ -621,7 +621,7 @@ class NavUndo:
 
     @classmethod
     def _recordable(cls):
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         return (Toggles.CodeEditor.undo_navigation and not cls._restoring
                 and Core.melty.frame_count >= UndoManager.settle_for)
 
@@ -660,7 +660,7 @@ class NavUndo:
     @classmethod
     def record_compare(cls, instance, old_token, new_token, repo_root=None):
         """Push a Compare-With selection step (editor dropdown / clear ×)."""
-        from meltygui.extensions import call
+        from meltygui.core.extensions import call
         call('compare_history', instance, old_token, new_token, repo_root=repo_root)
 
     @classmethod
@@ -715,7 +715,7 @@ class NavUndo:
         cls._last_caret = current
         if last is None or not cls._recordable():
             return
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         if not Toggles.CodeEditor.undo_navigation_caret:
             return
         frame = Core.melty.frame_count
@@ -735,7 +735,7 @@ class NavUndo:
         string; line None = coalesce on time alone."""
         pos = draw_state.text_cursor_pos
         path, instance, text = None, 0, None
-        from meltygui.extensions import source_views
+        from meltygui.core.extensions import source_views
         _active_editors = source_views()
         for editor_instance, (editor_path, pane, held_text) in _active_editors.items():
             if pane is draw_state:
@@ -781,7 +781,7 @@ class NavUndo:
         diverged redo alive)."""
         if old_loc == new_loc:
             return
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         now = time.time()
         frame = Core.melty.frame_count
         top = cls.stack.history[-1] if cls.stack.history else None
@@ -808,9 +808,9 @@ class NavUndo:
         draw_state = location.draw_state()
         if draw_state is None:
             return
-        from meltygui.extensions import source_views
+        from meltygui.core.extensions import source_views
         _active_editors = source_views()
-        from meltygui.extensions import source_window as editor_window_draw_state
+        from meltygui.core.extensions import source_window as editor_window_draw_state
         if location.path:
             active = _active_editors.get(location.instance)
             if active is None or active[0] != location.path:
@@ -858,7 +858,7 @@ class NavUndo:
 
     @classmethod
     def _apply_location(cls, loc):
-        from meltygui.extensions import get, open_source
+        from meltygui.core.extensions import get, open_source
         provider = get('source_location')
         if provider is not None:
             return provider(loc)
@@ -954,7 +954,7 @@ def _typing_edit(old, new):
     it. Everything else is its own undo step, like the separate editor
     commands they come from in IntelliJ: Enter (+ auto-indent), Tab, a
     paste, a completion, a comment toggle, a selection typed over or cut."""
-    from meltygui.toggles import Toggles
+    from meltygui.core.toggles import Toggles
     pos, removed, inserted = _diff_span(old, new)
     if removed and inserted:
         return None

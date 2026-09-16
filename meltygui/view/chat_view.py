@@ -1,10 +1,10 @@
 """Chat view functions and supporting definitions."""
 from bisect import bisect_right
 from meltygui.core.chat_core import _cleanup_chat
-from meltygui.melty import Melty
-from meltygui.rendering.core_render import render_func
+from meltygui.core.melty import Melty
+from meltygui.core.core_render import render_func
 from meltygui.state.chat_state import ChatInterfaceState
-from meltygui.toggles import Toggles
+from meltygui.core.toggles import Toggles
 from pathlib import Path
 import meltygui_imgui as imgui
 import time
@@ -48,7 +48,7 @@ def draw_chat_sidebar(sources, draw_state, state, width, height, cutoff=None, ne
     from meltygui.chat.chat_interface import sidebar_visible
     from meltygui.files.fast_file_explorer import set_row_tint
     from meltygui.view.text_view import draw_text
-    import meltygui.window_api as glfw
+    import meltygui.core.window_api as glfw
 
     from meltygui.chat.chat_proxy import ChatProxy
     if isinstance(sources, ChatProxy):
@@ -292,7 +292,7 @@ def draw_chat_sidebar(sources, draw_state, state, width, height, cutoff=None, ne
              with_footer=None, shadow=False, imgui_padding=False, disable_scroll=True)
 def draw_chat_terminal(input_value, draw_state=None):
     from meltygui.chat.chat_interface import _color
-    from meltygui.fonts import Font
+    from meltygui.core.fonts import Font
 
     from meltygui.core.terminal_core import _resolve
     grid, char_width, line_height = input_value
@@ -419,7 +419,7 @@ def draw_messages(messages, draw_state, state, key, width, height,
     from meltygui.chat.messages import ToolOutput
     from meltygui.chat.messages import UserMessage
     from meltygui.view.text_view import draw_text
-    import meltygui.window_api as glfw
+    import meltygui.core.window_api as glfw
 
     if not hasattr(state, "message_expanded"):
         state.message_expanded = {}
@@ -917,7 +917,7 @@ def draw_conversation_title(chat, draw_state, state, selected, x, y, width, heig
     from meltygui.chat.chat_interface import _text_tint
     from meltygui.chat.chat_interface import _title
     from meltygui.view.text_view import draw_text
-    import meltygui.window_api as glfw
+    import meltygui.core.window_api as glfw
 
     changed = False
     renaming = state.rename
@@ -1133,7 +1133,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
     from meltygui.view.text_view import draw_text
     from meltygui.core.column_core import ColumnLayout
     import meltygui.accounts.internet_accounts as internet_accounts
-    import meltygui.window_api as glfw
+    import meltygui.core.window_api as glfw
 
     # Ephemeral layout state also adopts already-open windows on hotswap.
     if not hasattr(state, "viewports"):
@@ -1168,7 +1168,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
 
     def wake():
         # Like Fast Dock's external-change edge: the worker has queued new data.
-        from meltygui.utils.glfw_utils import request_render
+        from meltygui.core.glfw_utils import request_render
         if Melty.cache is not None:
             Melty.cache.invalidate_up_by_obj(state, force=True)
             if getattr(draw_state, "_tile_id", None) is not None:
@@ -1236,7 +1236,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
                 changed = True
                 # The sessions for this frame were opened above with the old
                 # set: the next frame (asked for now) draws the new one.
-                from meltygui.utils.glfw_utils import request_render
+                from meltygui.core.glfw_utils import request_render
                 request_render()
             tab_x += tab_width + Melty.px(4)
         y += tab_height + Melty.px(Toggles.Chat.header_margin)
@@ -1247,7 +1247,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
             """A fresh conversation in that source: in `project` (a heading's +),
             else `new_project` when the app was started for one, else its
             selected conversation's project, else `default_project`."""
-            from meltygui.paths import application_root
+            from meltygui.core.paths import application_root
             key = str(uuid.uuid4())
             current = chats.get(state.selected.get(account_id))
             project = (project or new_project or (current["project"] if current else None)
@@ -1535,7 +1535,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
         state.revision += 1
         # A click's effect (a row expanded, a filter picked) lays out on the
         # NEXT frame; ask for it now instead of waiting for the next input.
-        from meltygui.utils.glfw_utils import request_render
+        from meltygui.core.glfw_utils import request_render
         request_render()
     return changed, input_value
     if changed:

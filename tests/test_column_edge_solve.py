@@ -16,7 +16,7 @@ import sys
 
 
 from meltygui.views import columns as C
-from meltygui.melty import Melty
+from meltygui.core.melty import Melty
 
 
 class FakeWindow:

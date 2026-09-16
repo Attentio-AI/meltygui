@@ -16,19 +16,19 @@ from types import NoneType
 from typing import Any
 
 import OpenGL.GL as gl
-import meltygui.window_api as glfw
+import meltygui.core.window_api as glfw
 import math
 import numpy
 from meltygui_imgui.core import _DrawList
 
-from meltygui.fonts import Font
-from meltygui.global_style import GlobalStyle
-from meltygui.melty import Melty
-from meltygui.melty import CollectionAction
-from meltygui.melty import ManagedWindow
-from meltygui.melty import SearchTerm
-from meltygui.code.render_host import RenderHost
-from meltygui.rendering.shaped import Shaped
+from meltygui.core.fonts import Font
+from meltygui.core.global_style import GlobalStyle
+from meltygui.core.melty import Melty
+from meltygui.core.melty import CollectionAction
+from meltygui.core.melty import ManagedWindow
+from meltygui.core.melty import SearchTerm
+from meltygui.core.render_host import RenderHost
+from meltygui.core.shaped import Shaped
 from meltygui.state.new_core_model import ZoomState
 from meltygui.state.new_core_model import TileMode
 from meltygui.state.new_core_model import DrawState
@@ -37,26 +37,26 @@ from meltygui.state.new_core_model import DropDownState
 from meltygui.state.new_core_model import ColorPickerState
 from meltygui.state.new_core_model import ExpandMode
 from meltygui.state.new_core_model import ContextMenuWindowState
-from meltygui.state.dict_conversion import DictConversion
-from meltygui.modes import Modes
-from meltygui.notifications import display
-from meltygui.rendering.render_funcs import RenderFuncs
-from meltygui.toggles import Toggles
-from meltygui.toggles import Tint
-from meltygui.toggles import mix
-from meltygui.toggles import rgb_to_hsv
-from meltygui.toggles import hsv_to_rgb
-from meltygui.gl_state import GLState
+from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.modes import Modes
+from meltygui.core.notifications import display
+from meltygui.core.render_funcs import RenderFuncs
+from meltygui.core.toggles import Toggles
+from meltygui.core.toggles import Tint
+from meltygui.core.toggles import mix
+from meltygui.core.toggles import rgb_to_hsv
+from meltygui.core.toggles import hsv_to_rgb
+from meltygui.core.gl_state import GLState
 from meltygui.utils.render_utils import print_colored_traceback
 from meltygui.utils.render_utils import push_style_var
 from meltygui.utils.render_utils import pop_style_var
 from meltygui.utils.render_utils import end
 from meltygui.utils.render_utils import begin
-from meltygui.utils.glfw_utils import print_stack_trace
-from meltygui.utils.glfw_utils import request_render
-from meltygui.code.bubbling import _BubblingDict
-from meltygui.code.bubbling import _DeepPath
-from meltygui.code.cache_tree import UNSET_VALUE
+from meltygui.core.glfw_utils import print_stack_trace
+from meltygui.core.glfw_utils import request_render
+from meltygui.core.bubbling import _BubblingDict
+from meltygui.core.bubbling import _DeepPath
+from meltygui.core.cache_tree import UNSET_VALUE
 from meltygui.code.libcst_conversion import Comment
 from meltygui.code.libcst_conversion import GeneralParse
 from meltygui.code.libcst_conversion import UsageRef
@@ -77,14 +77,14 @@ from meltygui.code.new_converters import host_code_state
 from meltygui.code.new_converters import recompile_button
 from meltygui.code.new_converters import recompile_status
 from meltygui.code.new_converters import run_recompile
-from meltygui.code.path_finder import Pending
+from meltygui.core.path_finder import Pending
 from meltygui.core.cursor_core import same_line
 from meltygui.core.tile_cache import snap_int
 from meltygui.core.tile_cache import add_shadow
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.core_render import render_func_kwarg_names
-from meltygui.rendering.core_render import SCROLL_BAR_WIDTH_DEFAULT
-from meltygui.rendering.core_render import SCROLLBAR_MARGIN
+from meltygui.core.core_render import render_func
+from meltygui.core.core_render import render_func_kwarg_names
+from meltygui.core.core_render import SCROLL_BAR_WIDTH_DEFAULT
+from meltygui.core.core_render import SCROLLBAR_MARGIN
 from meltygui.core.parameter_core import SourcePriority
 from meltygui.core.parameter_core import _source_priority
 from meltygui.core.parameter_core import _sources_for
@@ -103,16 +103,16 @@ from meltygui.state.core_undo import UndoManager
 # Module import (not "from ... import DragDrop`) so hotswaps rebind cleanly.
 import meltygui.core.drag_drop_core as _drag_drop
 from meltygui.model.code_proxy_model import *
-from meltygui.rendering.decorators.core_decoration import hotkey
-from meltygui.rendering.decorators.core_decoration import Core
-from meltygui.rendering.decorators.invalidation_decoration import live
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.core_decoration import hotkey
+from meltygui.core.core_decoration import Core
+from meltygui.core.invalidation_decoration import live
+from meltygui.core.window_decoration import window
 from meltygui.core.header_runtime import draw_header
 from meltygui.core.inspection_core import set_fn_defaults
 from meltygui.editor.text_editor import draw_text
 from meltygui.editor.text_editor import _scroll_into_view
 from meltygui.graphics.texture_manager import PendingTexture
-from meltygui.rendering.decorators.core_decoration import defaults
+from meltygui.core.core_decoration import defaults
 from meltygui.code.symbol_roster import pass_scope
 
 
@@ -958,8 +958,8 @@ def _release_run_results():
 
 def _respond_to_cuda_oom(exc, where):
     try:
-        from meltygui.gc_manager import respond_to_cuda_oom
-        from meltygui.gc_manager import OOM_RELEASE_HOOKS
+        from meltygui.core.gc_manager import respond_to_cuda_oom
+        from meltygui.core.gc_manager import OOM_RELEASE_HOOKS
         if not any(getattr(h, "__name__", None) == "_release_run_results"
                    for h in OOM_RELEASE_HOOKS):
             OOM_RELEASE_HOOKS.append(_release_run_results)
@@ -1013,7 +1013,7 @@ def eval_input_scope(draw_state):
     from meltygui.core.parameter_core import header_param_names
     from meltygui.core.parameter_core import signature_default_for
     from meltygui.core.parameter_core import view_param_names
-    from meltygui.rendering.core_render import render_func_kwarg_names
+    from meltygui.core.core_render import render_func_kwarg_names
     names = []
     seen = set()
     for group in (view_param_names(draw_state), header_param_names(draw_state),
@@ -1050,7 +1050,7 @@ def run_scoped_eval(code, view_func, draw_state, local_vars):
     the module globals, so assignments in the snippet don't leak back into the
     module.
     """
-    from meltygui.mcp_eval import _run_code
+    from meltygui.core.mcp_eval import _run_code
     ns = {}
     if view_func is not None:
         # Same free names the function body resolves.
@@ -1075,7 +1075,7 @@ def run_scoped_eval(code, view_func, draw_state, local_vars):
     # recorded -- they're resolved live from the function's __globals__ at
     # completion time. Best-effort; a hiccup here must never fail the eval.
     try:
-        from meltygui.func_metadata import FuncsMetadata
+        from meltygui.core.func_metadata import FuncsMetadata
         cache_key = getattr(draw_state, "_view_func", None) or view_func
         scope = eval_input_scope(draw_state)
         scope.update(local_vars or {})
@@ -1140,7 +1140,7 @@ from meltygui.view.inspection_view import draw_func_tab
 from meltygui.view.inspection_view import draw_eval_tab
 
 
-from meltygui.code.render_host import RenderHost
+from meltygui.core.render_host import RenderHost
 
 
 from meltygui.state.inspection_state import ContextMenuState
@@ -1157,7 +1157,7 @@ class _InstanceAttrSource(dict):
     render, which is also what clears the anywhere in-flight cache)."""
 
     def __init__(self, obj, target_ds=None):
-        from meltygui.rendering.core_render import OBJ_ATTR_PARAMS
+        from meltygui.core.core_render import OBJ_ATTR_PARAMS
         super().__init__({p: getattr(obj, p) for p in OBJ_ATTR_PARAMS
                           if getattr(obj, p, None) is not None
                           and (p != "view_func" or p in getattr(obj, "__dict__", {}))})
@@ -1248,7 +1248,7 @@ class _DrawStateAttrSource(dict):
     instance adapter does."""
 
     def __init__(self, target_ds):
-        from meltygui.rendering.core_render import OBJ_ATTR_PARAMS
+        from meltygui.core.core_render import OBJ_ATTR_PARAMS
         super().__init__({p: getattr(target_ds, p) for p in OBJ_ATTR_PARAMS
                           if getattr(target_ds, p, None) is not None})
         self._target_ds = target_ds
@@ -1289,7 +1289,7 @@ class _LazyOverrideEntry(dict):
         self._entry_key = entry_key
 
     def __setitem__(self, k, v):
-        from meltygui.code.bubbling import install_bubbling
+        from meltygui.core.bubbling import install_bubbling
         root_node = self._root
         ovs = root_node.get("__overrides__")
         if not isinstance(ovs, dict):
@@ -2213,7 +2213,7 @@ def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=No
     try:
         selected = configured_view_func(input_value, kwargs)
     except ValueError as error:
-        from meltygui.notifications import notify
+        from meltygui.core.notifications import notify
         notify(str(error), tag="view_func")
         selected = None
     if selected is not None and view_func is not draw_single and view_func is not run_chain:

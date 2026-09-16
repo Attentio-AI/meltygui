@@ -1,16 +1,16 @@
 """Graph view functions and supporting definitions."""
-from meltygui.gl_state import GLState
+from meltygui.core.gl_state import GLState
 from meltygui.hdr_color import pack_color
-from meltygui.melty import Melty
+from meltygui.core.melty import Melty
 from meltygui.model.tensor_model import Lut
 from meltygui.model.tensor_model import TensorDim
 from meltygui.model.tensor_model import TensorDims
-from meltygui.modes import Modes
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.shaped import Shaped
+from meltygui.core.modes import Modes
+from meltygui.core.core_render import render_func
+from meltygui.core.shaped import Shaped
 from meltygui.state.graph_state import GraphViewState
-from meltygui.toggles import SwooshMode
-from meltygui.toggles import Toggles
+from meltygui.core.toggles import SwooshMode
+from meltygui.core.toggles import Toggles
 from meltygui.view.header_view import draw_header
 from meltygui.state.file_state import ROOT
 from pathlib import Path
@@ -59,19 +59,19 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
     CUDA tensors are sampled in place; CPU tensors/ndarrays are uploaded.
     Input can also be an already-packed series GLTexture (rendered as-is; needs n_samples/tex_w/y_range stamped
     on it)."""
-    from meltygui.gl_state import GLTexture
-    from meltygui.gl_state import gl_limits
-    from meltygui.gl_state import texture3d_fit
+    from meltygui.core.gl_state import GLTexture
+    from meltygui.core.gl_state import gl_limits
+    from meltygui.core.gl_state import texture3d_fit
     from meltygui.tensor.voxel_playground import LUTS
     from meltygui.tensor.voxel_playground import _LUT_TEXTURES
     from meltygui.tensor.voxel_playground import _cached_volume_texture
-    from meltygui.tensor.voxel_playground import _clean_dim_name
-    from meltygui.tensor.voxel_playground import _describe_tensor
-    from meltygui.tensor.voxel_playground import _draw_image_notice
+    from meltygui.model.tensor_model import _clean_dim_name
+    from meltygui.view.tensor_view import _describe_tensor
+    from meltygui.view.tensor_view import _draw_image_notice
     from meltygui.tensor.voxel_playground import _draw_voxel_error
-    from meltygui.tensor.voxel_playground import _view_size
+    from meltygui.view.tensor_view import _view_size
     from meltygui.tensor.voxel_playground import source_identity
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.core.graph_core import _draw_axes_overlay
     from meltygui.core.graph_core import _finite_range
     from meltygui.core.graph_core import _unit_px
@@ -295,7 +295,7 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
             zoom_y = nz
             draw_state.locate_zoom_y = zoom_y
             draw_state.locate_pan_y = pan_y
-    from meltygui.melty import Melty
+    from meltygui.core.melty import Melty
     if Melty.text_focused_ds is None and (slash_pressed is not None
                                           or kp_divide_pressed is not None
                                           or kp_decimal_pressed is not None):
@@ -446,7 +446,7 @@ def render_import_graph(input_value=None, draw_state=None,
     # scale grows with usage (the file's importer count on the graph's log
     # scale, 0..1), so a hub's box is bigger.
     # [tint=(0.65, 0.55, 0.95)]
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.view.header_view import flat_button
     from meltygui.core.header_runtime import _brightness_clamp_fn
     from meltygui.model.import_graph_model import start_build

@@ -1,6 +1,7 @@
 """Module moves keep running state and make both import paths canonical."""
 import importlib
 import inspect
+import json
 from pathlib import Path
 import sys
 from unittest.mock import Mock
@@ -9,7 +10,7 @@ import pytest
 
 from meltygui.core.module_compatibility import install_module_aliases
 from meltygui.code.file_converters import _recompile_module, stamp_module_baseline
-from meltygui.melty import Melty
+from meltygui.core.melty import Melty
 from meltygui.code.fileref import to_address
 
 
@@ -32,6 +33,8 @@ callback = make_callback()
 
 @pytest.fixture
 def package(tmp_path, monkeypatch):
+    from meltygui.core import module_names
+    monkeypatch.setattr(module_names, '_MODULES', module_names._MODULES.copy())
     path = tmp_path / 'module_move_fixture'
     path.mkdir()
     (path / '__init__.py').write_text('starts = []\n')
@@ -42,6 +45,37 @@ def package(tmp_path, monkeypatch):
     for name in tuple(sys.modules):
         if name == 'module_move_fixture' or name.startswith('module_move_fixture.'):
             del sys.modules[name]
+
+
+def test_install_updates_live_saved_names_without_replacing_the_map(package, monkeypatch):
+    from meltygui.core import module_names
+
+    names = {'historical.fixture': 'module_move_fixture.old'}
+    monkeypatch.setattr(module_names, '_MODULES', names)
+    install_module_aliases({'module_move_fixture.old': 'module_move_fixture.new'})
+    assert module_names._MODULES is names
+    assert module_names.canonical_name('historical.fixture.Settings') == 'module_move_fixture.new.Settings'
+    assert module_names.canonical_name('module_move_fixture.old.Settings') == 'module_move_fixture.new.Settings'
+
+
+def test_reinstall_reads_the_updated_manifest_in_a_running_session(package, monkeypatch):
+    from meltygui.core import module_compatibility
+
+    monkeypatch.setattr(module_compatibility, '__file__', str(package / 'compatibility.py'))
+    manifest = package / 'legacy_modules.json'
+    manifest.write_text('{}')
+    install_module_aliases()
+    source = 'state = {"count": 1}\ndef read():\n    return state["count"]\n'
+    (package / 'old.py').write_text(source)
+    original = importlib.import_module('module_move_fixture.old')
+    original.state['count'] = 42
+    (package / 'old.py').rename(package / 'new.py')
+    manifest.write_text(json.dumps({'module_move_fixture.old': 'module_move_fixture.new'}))
+    install_module_aliases()
+    current = importlib.import_module('module_move_fixture.new')
+    assert current is original
+    assert current.read() == 42
+    assert Path(current.__file__) == package / 'new.py'
 
 
 @pytest.mark.parametrize('legacy_first', [False, True])

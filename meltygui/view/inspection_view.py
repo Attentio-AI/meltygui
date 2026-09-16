@@ -1,20 +1,20 @@
 """Inspection view functions and supporting definitions."""
 from enum import Enum
-from meltygui.melty import Melty
-from meltygui.melty import SearchTerm
-from meltygui.modes import Modes
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.core_decoration import Core
-from meltygui.rendering.decorators.window_decoration import window
-from meltygui.rendering.render_funcs import RenderFuncs
+from meltygui.core.melty import Melty
+from meltygui.core.melty import SearchTerm
+from meltygui.core.modes import Modes
+from meltygui.core.core_render import render_func
+from meltygui.core.core_decoration import Core
+from meltygui.core.window_decoration import window
+from meltygui.core.render_funcs import RenderFuncs
 from meltygui.state.inspection_state import ContextMenuState
 from meltygui.state.inspection_state import _InfoRow
 from meltygui.state.new_core_model import ContextMenuWindowState
 from meltygui.state.new_core_model import TabState
-from meltygui.toggles import Tint
-from meltygui.toggles import Toggles
-from meltygui.toggles import hsv_to_rgb
-from meltygui.toggles import rgb_to_hsv
+from meltygui.core.toggles import Tint
+from meltygui.core.toggles import Toggles
+from meltygui.core.toggles import hsv_to_rgb
+from meltygui.core.toggles import rgb_to_hsv
 import inspect
 import meltygui_imgui as imgui
 import threading
@@ -114,9 +114,9 @@ def draw_param_matrix(input_value, wrap=True, search_text="", draw_state=None, s
     dirty and its normal chain_out/save path persists the change. Only
     `writable_sources` (real parse dicts, not the absent-source placeholders)
     get the buttons."""
-    from meltygui.code.cache_tree import UNSET_VALUE
-    from meltygui.fonts import Font
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.cache_tree import UNSET_VALUE
+    from meltygui.core.fonts import Font
+    from meltygui.core.glfw_utils import request_render
     from meltygui.view.control_view import button
     from meltygui.view.dropdown_view import draw_dropdown
     from meltygui.view.text_view import draw_text
@@ -343,7 +343,7 @@ def draw_info_param(input_value, **kwargs):
     yet, read-only text otherwise. Shared per-render state (source registry,
     active map, dropdown option cache) arrives via _InfoRow.ctx; selection
     lives on the TAB's draw_state (misc) — pure view state."""
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.view.control_view import draw_button
     from meltygui.view.control_view import text
     from meltygui.view.dropdown_view import draw_dropdown
@@ -540,7 +540,7 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
     switches to the dropdown rows. The header group starts collapsed in
     both modes."""
     from meltygui.state.inspection_state import _InfoRow
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.view.collection_view import draw_collection
     from meltygui.view.control_view import draw_button
     from meltygui.core.parameter_core import _source_priority
@@ -901,11 +901,11 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
     (core_render), right before it calls the view func -- so the snippet sees the
     view function's real call-time locals. We read the result back off the same
     draw_state."""
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.view.control_view import button
     from meltygui.view.text_view import draw_text
     from meltygui.core.render_dispatch import eval_input_scope
-    import meltygui.window_api as glfw
+    import meltygui.core.window_api as glfw
 
     target = input_value  # (possibly walked-up) target's draw_state
     eval_view_func = target._view_func
@@ -915,8 +915,8 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
     # suggestions BEFORE the first eval, pre-record an initial scope from what
     # the target draw_state already exposes -- input_value/value, draw_state/ds,
     # and every explicit kwarg. core_scoped_eval refines this to exact on first eval.
-    from meltygui.func_metadata import FuncsMetadata
-    from meltygui.func_metadata import eval_completion_source
+    from meltygui.core.func_metadata import FuncsMetadata
+    from meltygui.core.func_metadata import eval_completion_source
     _scope = eval_input_scope(target)
     if isinstance(target._kwargs, dict):
         _scope.update(target._kwargs)
@@ -1133,7 +1133,7 @@ def draw_class_tab(input_value, class_to_show=None, class_is_parent=False, class
     from meltygui.view.control_view import text
     from meltygui.core.render_dispatch import draw_any
 
-    from meltygui.debug.mode import Mode
+    from meltygui.core.mode import Mode
     if class_is_parent:
         text(f"Parent type of {class_name}", name="Source",
              editable=False, tint=(1.0, 0.64, 0.113))
@@ -1172,7 +1172,7 @@ def draw_context_menu_items(draw_state, items, right_click, name, unique):
     A picked row runs its callable here and closes the menu; the Inspect row
     at the bottom reports INSPECT so the wrapper opens the inspector in the
     menu's place. Returns INSPECT, the picked label, or None."""
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.view.dropdown_view import draw_dd_menu
     from meltygui.core.render_dispatch import INSPECT
     from meltygui.model.dropdown_model import _dd_as_tuple
@@ -1180,7 +1180,7 @@ def draw_context_menu_items(draw_state, items, right_click, name, unique):
     from meltygui.model.dropdown_model import _dd_label_for_path
     from meltygui.core.dropdown_core import _dd_update_menu_size
     from meltygui.core.dropdown_core import _ds_in_subtree
-    import meltygui.window_api as glfw
+    import meltygui.core.window_api as glfw
 
     from meltygui.state.new_core_model import ContextMenuItemsState
     # [tint=(0.85, 0.75, 0.05)]
@@ -1310,8 +1310,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                       search_active=False,
                       enter_key_down=None, tab_state: TabState = None,
                       menu_state: ContextMenuWindowState = None, **kwargs):
-    from meltygui.code.cache_tree import UNSET_VALUE
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.cache_tree import UNSET_VALUE
+    from meltygui.core.glfw_utils import request_render
     from meltygui.view.color_view import draw_tint_context
     from meltygui.view.header_view import flat_button
     from meltygui.view.tab_view import draw_tab_bar
@@ -1380,7 +1380,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # it afterward), then let screenshot.process_take_screenshot_flags grab the
     # view's shot a few frames later, open the shot in nemo, and reopen the menu.
     if _menu_button(f" ", f"screenshot_window##{unique}", height=30, tint=(0, 0, 0, 1.0)):
-        from meltygui.screenshot import request_view_capture
+        from meltygui.core.screenshot import request_view_capture
 
         def _open_in_nemo(shot_path):
             # Full path + close_fds=False => posix_spawn, not fork (forking this
@@ -1404,7 +1404,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # the view's render function (the same function the Input tab edits), and
     # open the Claude Terminals window so the new session's terminal comes up.
     if _menu_button(f" claude", f"claude_session##{unique}", height=30, tint=(0, 0, 0, 1.0)):
-        from meltygui.screenshot import request_view_capture
+        from meltygui.core.screenshot import request_view_capture
         view_ds = input_value
         # Resolve the menu's offset-walked target so the shot + function match
         # what the tabs will show (the walk proper happens above the buttons).
@@ -1532,7 +1532,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # A bubbling tree node's type is a runtime-generated `Bubbling_<Base>` with no source
     # — resolve its real base (e.g. GeneralParse) so the Class/Decorations tabs resolve
     # rather than erroring.
-    from meltygui.code.bubbling import base_of_bubbling
+    from meltygui.core.bubbling import base_of_bubbling
     # Use exact-type matching, not isinstance: a subclass of a primitive
     # (e.g. CodeLine(str)) DOES have its own source, so it should show its
     # own class tab rather than being treated as a bare primitive.

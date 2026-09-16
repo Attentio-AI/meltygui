@@ -49,7 +49,7 @@ assert general_parse_to_str(results[0]) == source
 interpreters.run_string(_worker._interp, """
 import sys
 assert 'meltygui' not in sys.modules
-assert 'meltygui.app' not in sys.modules
+assert 'meltygui.core.app' not in sys.modules
 """)
 # Let normal process finalization destroy the interpreter, after the
 # background thread that first used it has gone away.

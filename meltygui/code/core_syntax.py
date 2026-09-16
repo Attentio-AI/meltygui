@@ -209,7 +209,7 @@ REAL_TYPES = Types(
 
 
 def _default_frontend(n_chars):
-    from meltygui.toggles import Toggles      # lazy: avoid an import cycle
+    from meltygui.core.toggles import Toggles      # lazy: avoid an import cycle
     if not Toggles.TextEditor.melty_scanner:
         return "ast"
     if n_chars >= Toggles.TextEditor.melty_async_min_chars and _worker.available():
@@ -573,7 +573,7 @@ def _parse_kind(obj):
     # Generated `Bubbling_<Base>` reclasses AND the static `_BubblingDict` /
     # `_BubblingList` copies that replace plain container containers.
     if t.__module__.endswith(".bubbling") or t.__name__.startswith("Bubbling_"):
-        from meltygui.code.bubbling import base_of_bubbling
+        from meltygui.core.bubbling import base_of_bubbling
         return base_of_bubbling(t)
     return t
 
@@ -1190,7 +1190,7 @@ def reparse_incremental(gp, new_text) -> GeneralParse:
     dl = region_new.count("\n") - region_old.count("\n")
 
     # ── 2. parse the region on its own (column 0, statement boundaries) ──
-    from meltygui.toggles import Toggles
+    from meltygui.core.toggles import Toggles
     frontend = "scan" if Toggles.TextEditor.melty_scanner else "ast"
     first_line = origin.src.linecol(rs)[0]
     try:

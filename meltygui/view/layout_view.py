@@ -1,13 +1,13 @@
 """Layout view functions and supporting definitions."""
 from meltygui.core.layout_core import dock_header
-from meltygui.melty import Melty
+from meltygui.core.melty import Melty
 from meltygui.model.layout_model import Columns
 from meltygui.model.layout_model import Rows
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.core.core_render import render_func
+from meltygui.core.core_decoration import Core
 from meltygui.state.core_undo import NavUndo
-from meltygui.toggles import Toggles
-from meltygui.toggles import WindowManager
+from meltygui.core.toggles import Toggles
+from meltygui.core.toggles import WindowManager
 import meltygui_imgui as imgui
 
 
@@ -160,8 +160,8 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
                    dock_tab="all", left_mouse_down=False, search_text="", **kwargs):
     # input_value is Melty.registered_windows - a plain defaultdict - so there
     # is no is_default_for registration: the root calls this view explicitly.
-    from meltygui.fonts import Font
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.fonts import Font
+    from meltygui.core.glfw_utils import request_render
     from meltygui.view.search_view import draw_search_highlight
     from meltygui.core.tile_cache import add_glow
     from meltygui.core.tile_cache import add_shadow
@@ -353,7 +353,7 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     # - rows here aren't draw_states, so this view is its own single matcher
     # node claiming one slot per matching row name, in the same ordinal order
     # the row loop draws them, keeping count and current-index aligned.
-    from meltygui.melty import SearchTerm
+    from meltygui.core.melty import SearchTerm
     from meltygui.model.search_model import _fuzzy_key_match
     from meltygui.editor.text_editor import _scroll_into_view
 

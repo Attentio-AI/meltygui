@@ -8,9 +8,9 @@ from meltygui import pressed
 from meltygui.hdr_color import pack_color
 from meltygui.hdr_color import white
 from meltygui.hdr_color import p3
-from meltygui.melty import Melty
-from meltygui.toggles import Toggles
-from meltygui.rendering.core_render import render_func
+from meltygui.core.melty import Melty
+from meltygui.core.toggles import Toggles
+from meltygui.core.core_render import render_func
 from meltygui.core.header_runtime import draw_header
 
 

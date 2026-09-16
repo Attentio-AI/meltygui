@@ -91,10 +91,10 @@ from dataclasses import dataclass
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
-from meltygui.toggles import Toggles
-from meltygui.utils.glfw_utils import request_render
-from meltygui.rendering.decorators.core_decoration import Core
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.toggles import Toggles
+from meltygui.core.glfw_utils import request_render
+from meltygui.core.core_decoration import Core
+from meltygui.core.window_decoration import window
 
 # Slots farther than this from the cursor are neither drawn nor droppable.
 DROP_RADIUS = 260.0

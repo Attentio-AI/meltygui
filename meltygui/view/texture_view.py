@@ -1,8 +1,8 @@
 """Texture view functions and supporting definitions."""
 from meltygui.graphics.texture_manager import PendingTexture
 from meltygui.hdr_color import pack_color
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.core.core_render import render_func
+from meltygui.core.core_decoration import Core
 from meltygui.state.new_core_model import ZoomState
 from meltygui.view.header_view import draw_header
 from meltygui_imgui.core import _DrawList
@@ -52,7 +52,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
                  zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
                  max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
                  draw_state=None, jet=False, nearest=False, dim_outside=None, dim_alpha=0.55, show_info=True, flip_y=False, **kwargs):
-    import meltygui.window_api as glfw
+    import meltygui.core.window_api as glfw
 
     original_id = input_value
     texture_id = input_value

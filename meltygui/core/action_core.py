@@ -12,18 +12,18 @@ from pathlib import Path
 
 import meltygui_imgui as imgui
 
-from meltygui.melty import Melty
-from meltygui.modes import Modes
-from meltygui.notifications import notify
-from meltygui.toggles import Actions
-from meltygui.utils.glfw_utils import request_render
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.core_decoration import Core
-from meltygui.rendering.decorators.core_decoration import defaults
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.melty import Melty
+from meltygui.core.modes import Modes
+from meltygui.core.notifications import notify
+from meltygui.core.toggles import Actions
+from meltygui.core.glfw_utils import request_render
+from meltygui.core.core_render import render_func
+from meltygui.core.core_decoration import Core
+from meltygui.core.core_decoration import defaults
+from meltygui.core.window_decoration import window
 from meltygui.editor.source_ui import SearchHit
 from meltygui.editor.source_ui import _category_tint
-from meltygui.extensions import jump_to_symbol as _jump_to_symbol_def
+from meltygui.core.extensions import jump_to_symbol as _jump_to_symbol_def
 from meltygui.core.render_dispatch import draw_any
 
 

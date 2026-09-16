@@ -26,16 +26,16 @@ import time
 import meltygui_imgui as imgui
 import numpy as np
 
-from meltygui.utils.glfw_utils import request_render
+from meltygui.core.glfw_utils import request_render
 from meltygui.code.live_view import live_view
 from meltygui.code.live_view import live_values_for
 from meltygui.code.live_view import label_for
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.core_render import render_func
+from meltygui.core.window_decoration import window
 from meltygui.core.render_dispatch import draw_any
 from meltygui.core.render_dispatch import draw_collection
-from meltygui.debug.mode import Mode
-from meltygui.rendering.decorators.core_decoration import defaults
+from meltygui.core.mode import Mode
+from meltygui.core.core_decoration import defaults
 import json
 from pathlib import Path
 

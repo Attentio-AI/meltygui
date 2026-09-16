@@ -1,7 +1,7 @@
 """Tab view functions and supporting definitions."""
-from meltygui.melty import Melty
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.core.melty import Melty
+from meltygui.core.core_render import render_func
+from meltygui.core.core_decoration import Core
 from meltygui.state.new_core_model import TabState
 from meltygui.view.header_view import draw_header
 import meltygui_imgui as imgui

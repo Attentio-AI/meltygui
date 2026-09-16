@@ -25,20 +25,20 @@ import threading
 import time
 import uuid
 
-import meltygui.window_api as glfw
+import meltygui.core.window_api as glfw
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
-from meltygui.fonts import Font
-from meltygui.melty import Melty
-from meltygui.toggles import Toggles
-from meltygui.utils.glfw_utils import request_render
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.fonts import Font
+from meltygui.core.melty import Melty
+from meltygui.core.toggles import Toggles
+from meltygui.core.glfw_utils import request_render
+from meltygui.core.core_render import render_func
+from meltygui.core.window_decoration import window
 # Reuse the editor's GLFW-key -> character map (covers letters, digits, punctuation
 # with shift pairs) to turn key events into the bytes the shell expects.
 from meltygui.editor.text_editor import _KEY_CHAR_MAP
-from meltygui.rendering.decorators.core_decoration import defaults
+from meltygui.core.core_decoration import defaults
 
 
 _COL_ERR = (1.0, 0.45, 0.40)
@@ -375,7 +375,7 @@ def _mouse_seq(modes, btn, col0, row0):
 
 
 # --- clickable file:line links (jump to IDE, like draw_text's jump-to button) ---
-from meltygui.paths import application_root
+from meltygui.core.paths import application_root
 _PROJECT_ROOT = str(application_root())
 # Python traceback `File "path", line N`, or an absolute/~/./relative `path.ext:line`.
 _LINK_RE = re.compile(

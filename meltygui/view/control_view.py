@@ -1,11 +1,11 @@
 """Control view functions and supporting definitions."""
 from enum import Enum
 from meltygui.hdr_color import pack_color
-from meltygui.melty import Melty
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.core.melty import Melty
+from meltygui.core.core_render import render_func
+from meltygui.core.core_decoration import Core
 from meltygui.state.new_core_model import TileMode
-from meltygui.toggles import Tint
+from meltygui.core.toggles import Tint
 from meltygui.view.header_view import draw_header
 from meltygui_imgui.core import _DrawList
 from types import NoneType
@@ -33,7 +33,7 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left
            search_match=False, search_current=False, tint=None, rounding=None, corner_radius=6.0, text_pad=15,
            max_bg_brightness=0.25):
     from meltygui.model.color_model import _brightness_clamp
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
     from meltygui.view.search_view import draw_search_highlight
 
     if color is not None:

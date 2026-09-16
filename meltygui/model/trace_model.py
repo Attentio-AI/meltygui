@@ -47,7 +47,7 @@ class CrashReportStore(dict):
         self._texts = {}                          # path → (signature, lines, SavedTrace)
 
     def directory(self) -> Path:
-        from meltygui.utils.glfw_utils import crash_reports_dir
+        from meltygui.core.glfw_utils import crash_reports_dir
 
         return crash_reports_dir()
 

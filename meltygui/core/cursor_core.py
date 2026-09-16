@@ -4,14 +4,14 @@ import sys
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
-from meltygui.state.dict_conversion import DictConversion
-from meltygui.toggles import Toggles
+from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.toggles import Toggles
 from meltygui.utils.render_utils import LSDView
 from meltygui.utils.render_utils import print_stack_trace
 from meltygui.utils.render_utils import push_style_color
 from meltygui.utils.render_utils import pop_style_color
 from meltygui.utils.render_utils import print_colored_traceback
-from meltygui.melty import Melty
+from meltygui.core.melty import Melty
 
 
 def set_cursor_pos_y(pos_y):

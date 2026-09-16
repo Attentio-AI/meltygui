@@ -35,9 +35,9 @@ import threading
 import time
 from pathlib import Path
 
-from meltygui.state.dict_conversion import DictConversion
-from meltygui.rendering.decorators.core_decoration import defaults
-from meltygui.rendering.decorators.core_decoration import no_save
+from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.core_decoration import defaults
+from meltygui.core.core_decoration import no_save
 
 SAVE_DELAY_S = 0.4
 POLL_S = 0.5
@@ -409,7 +409,7 @@ class FileMetaProxy(dict):
 
     def _repaint(self):
         try:
-            from meltygui.melty import Melty
+            from meltygui.core.melty import Melty
             cache = getattr(Melty, "cache", None)
             if cache is not None:
                 cache.invalidate_all()
@@ -513,7 +513,7 @@ class FileMetaProxy(dict):
 
 def _request_render():
     try:
-        from meltygui.utils.glfw_utils import request_render
+        from meltygui.core.glfw_utils import request_render
         request_render()
     except Exception:
         pass

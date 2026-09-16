@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import Any, Callable
 import inspect
 
-from meltygui.code.path_finder import Pending
-from meltygui.rendering.decorators.core_decoration import defaults
+from meltygui.core.path_finder import Pending
+from meltygui.core.core_decoration import defaults
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -42,7 +42,7 @@ from meltygui.rendering.decorators.core_decoration import defaults
 
 # Project root: this file is .../src/lsd/gl_gui/view/core_conversion/address.py
 # → parents[5] is the repo root (the dir that contains `src/`).
-from meltygui.paths import PACKAGE_ROOT
+from meltygui.core.paths import PACKAGE_ROOT
 _PROJECT_ROOT = PACKAGE_ROOT.parent
 
 # Every tree whose code the editor may resolve, edit and hotswap: this

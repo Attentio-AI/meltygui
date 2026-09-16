@@ -1,6 +1,6 @@
 """Layout core functions and supporting definitions."""
-from meltygui.melty import Melty
-from meltygui.toggles import Toggles
+from meltygui.core.melty import Melty
+from meltygui.core.toggles import Toggles
 import meltygui_imgui as imgui
 
 

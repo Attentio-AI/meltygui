@@ -6,7 +6,7 @@ from meltygui import glfw_window
 from meltygui.core.column_core import draw_rows
 from meltygui.core.column_core import Columns
 from meltygui.core.column_core import Rows
-from meltygui.rendering.core_render import render_func
+from meltygui.core.core_render import render_func
 
 columns_demo = Columns({
     "settings": {"alpha": 0.5, "steps": 12, "label": "left pane", "enabled": True},

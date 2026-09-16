@@ -1,8 +1,8 @@
 """Diagnostic view functions and supporting definitions."""
-from meltygui.code.path_finder import Pending
+from meltygui.core.path_finder import Pending
 from meltygui.hdr_color import pack_color
-from meltygui.modes import Modes
-from meltygui.rendering.core_render import render_func
+from meltygui.core.modes import Modes
+from meltygui.core.core_render import render_func
 from meltygui.state.core_enums import PendingAction
 from meltygui.state.core_undo import NavUndo
 from meltygui.state.new_core_model import DrawState
@@ -19,7 +19,7 @@ import types
              shadow=True, selectable=False, wrap=False, with_header=draw_header,
              indent_size=5, searchable=True, shaodw=False, bg_offset=3)
 def draw_frame(input_value: types.FrameType, draw_state, **kwargs):
-    from meltygui.fonts import Font
+    from meltygui.core.fonts import Font
     from meltygui.view.control_view import button
     from meltygui.view.text_view import draw_text
     from meltygui.core.render_dispatch import draw_any
@@ -60,7 +60,7 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None):
     """
     Renders the time taken for a specific operation in the profiler.
     """
-    from meltygui.global_style import GlobalStyle
+    from meltygui.core.global_style import GlobalStyle
 
     in_ms = input_value * 1000.0
     if brief:

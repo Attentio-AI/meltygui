@@ -16,21 +16,21 @@ from OpenGL import GL as gl
 import meltygui_imgui as imgui
 from meltygui_imgui.core import _DrawList
 
-from meltygui.melty import Melty
-from meltygui.notifications import notify
-from meltygui.notifications import capture_stack
+from meltygui.core.melty import Melty
+from meltygui.core.notifications import notify
+from meltygui.core.notifications import capture_stack
 from meltygui.state.core_enums import OffscreenDebugMode
 from meltygui.state.new_core_model import TileMode
-from meltygui.toggles import Toggles
-from meltygui.toggles import shadow_depth_at
-from meltygui.utils.glfw_utils import request_render
-from meltygui.utils.glfw_utils import print_stack_trace
-from meltygui.utils.glfw_utils import get_live_frames
-from meltygui.code.cache_tree import UNSET_VALUE
-from meltygui.rendering.decorators.core_decoration import Core
-from meltygui.rendering.decorators.window_decoration import window
-from meltygui.debug.invalidation_tracker import InvalidateTracker
-from meltygui.debug.invalidation_tracker import Note
+from meltygui.core.toggles import Toggles
+from meltygui.core.toggles import shadow_depth_at
+from meltygui.core.glfw_utils import request_render
+from meltygui.core.glfw_utils import print_stack_trace
+from meltygui.core.glfw_utils import get_live_frames
+from meltygui.core.cache_tree import UNSET_VALUE
+from meltygui.core.core_decoration import Core
+from meltygui.core.window_decoration import window
+from meltygui.core.invalidation_tracker import InvalidateTracker
+from meltygui.core.invalidation_tracker import Note
 
 """
 Per-view tile caching with a post-frame mask.
@@ -97,7 +97,7 @@ def _bump_note(t, site):
     try:
         ds = getattr(t, "draw_state", None)
         if ds is not None and getattr(ds, "_bump_trace_armed", False):
-            from meltygui.perf_trace import trace_rl
+            from meltygui.core.perf_trace import trace_rl
             trace_rl(("bump", id(t), site), f"BUMP {site} name={getattr(ds, 'name', None)!r}",
                      min_interval=0.2)
     except Exception:
@@ -282,7 +282,7 @@ def _display_max_size() -> Tuple[int, int]:
     reallocate. (0, 0) on any failure — the grow-only path then just rounds
     up from the current framebuffer size instead."""
     try:
-        import meltygui.window_api as glfw
+        import meltygui.core.window_api as glfw
         w = h = 0
         for m in glfw.get_monitors():
             mode = glfw.get_video_mode(m)
@@ -403,7 +403,7 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         # if a view's size wiggles 1px every frame this is a silent
         # self-sustaining dirty loop (+ request_render forever). Name it.
         try:
-            from meltygui.perf_trace import trace_rl as _ib_trace
+            from meltygui.core.perf_trace import trace_rl as _ib_trace
             _ib_trace(("inbucket", id(existing)),
                       f"in-bucket resize {existing.size} -> {(w, h)} "
                       f"name={getattr(draw_state, 'name', None)!r} "
@@ -441,7 +441,7 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         return existing
 
     try:
-        from meltygui.perf_trace import trace as _tile_trace
+        from meltygui.core.perf_trace import trace as _tile_trace
         _tile_trace("tile create", name=getattr(draw_state, "name", None), size=(aw, ah),
                     logical=(w, h), previous=existing.size if existing else None)
     except Exception:
@@ -1743,7 +1743,7 @@ class TileCacheMasked:
             gl.glDisable(gl.GL_BLEND)
 
     def get_hash(self, draw_state):
-        from meltygui.state.dict_conversion import DictConversion
+        from meltygui.core.dict_conversion import DictConversion
 
         if hasattr(draw_state._input_value, "hash") or isinstance(
                 draw_state._input_value,
@@ -3187,7 +3187,7 @@ class TileCacheMasked:
         z-composited by PASS 5). Leaves scissor disabled and blend restored
         to FUNC_ADD/off."""
         if _batched is None:
-            from meltygui.toggles import Toggles
+            from meltygui.core.toggles import Toggles
             _batched = bool(Toggles.Melty.batch_shadow_stamps)
         if _batched:
             self._stamp_shadow_marks_batched(shadows, dp_x, dp_y, s_x, s_y, fb_h,
@@ -3901,10 +3901,10 @@ class TileCacheMasked:
         (scroll_bar_width / _brightness from the view's resolved kwargs)."""
         if not getattr(draw_state, "freeze_resize", False):
             return
-        from meltygui.rendering.core_render import draw_overlay_scrollbar
-        from meltygui.rendering.core_render import SCROLL_BAR_WIDTH_DEFAULT
-        from meltygui.rendering.core_render import SCROLL_BAR_BRIGHTNESS_DEFAULT
-        from meltygui.rendering.core_render import SCROLLBAR_SHADOW_GROUP
+        from meltygui.core.core_render import draw_overlay_scrollbar
+        from meltygui.core.core_render import SCROLL_BAR_WIDTH_DEFAULT
+        from meltygui.core.core_render import SCROLL_BAR_BRIGHTNESS_DEFAULT
+        from meltygui.core.core_render import SCROLLBAR_SHADOW_GROUP
         # Owner of the grab's retained depth mark on these views: shed the
         # group after the early returns, so a scrollbar hidden this frame
         # (content fits after a resize / edit, view closed) drops its
@@ -4481,7 +4481,7 @@ class TileCacheMasked:
                     # so an every-frame flip names the offending involved.
                     if old_size is not None:
                         try:
-                            from meltygui.perf_trace import trace_rl as _nt_trace
+                            from meltygui.core.perf_trace import trace_rl as _nt_trace
                             _ds = ctx.draw_state
                             _nt_trace(("newtile", ctx.key),
                                       f"NEW-TILE {reason} name={getattr(_ds, 'name', None)!r} "
@@ -5823,7 +5823,7 @@ class TileCacheMasked:
             _cp_tot = (_cp() - _cp_t0) * 1000.0
             if _cp_tot >= 30.0:
                 try:
-                    from meltygui.perf_trace import trace as _cptr
+                    from meltygui.core.perf_trace import trace as _cptr
                     _cptr("capture pass split",
                           total_ms=round(_cp_tot, 1),
                           p1_blit=round((_cp_t1 - _cp_t0) * 1000.0, 1),
@@ -5874,7 +5874,7 @@ class TileCacheMasked:
             _fc_marks.append(("pass6_glow+tail", time.perf_counter()))
             _fc_total = (_fc_marks[-1][1] - _fc_t0) * 1000.0
             if _fc_total >= _FC_TRACE_MS:
-                from meltygui.perf_trace import trace as _fc_trace
+                from meltygui.core.perf_trace import trace as _fc_trace
                 _fc_prev, _fc_parts = _fc_t0, []
                 for _fc_lbl, _fc_t in _fc_marks:
                     _fc_parts.append(f"{_fc_lbl}={(_fc_t - _fc_prev) * 1000.0:.2f}")

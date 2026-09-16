@@ -1,9 +1,9 @@
 """Terminal view functions and supporting definitions."""
-from meltygui.melty import Melty
+from meltygui.core.melty import Melty
 from meltygui.model.terminal_model import Terminal
-from meltygui.rendering.core_render import render_func
+from meltygui.core.core_render import render_func
 from meltygui.state.terminal_state import TerminalScreenState
-from meltygui.toggles import Toggles
+from meltygui.core.toggles import Toggles
 import meltygui_imgui as imgui
 import threading
 

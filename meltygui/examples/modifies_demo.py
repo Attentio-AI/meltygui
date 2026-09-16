@@ -4,24 +4,24 @@ from pathlib import Path
 
 import meltygui_imgui as imgui
 
-from meltygui.modes import Modes
-from meltygui.rendering.render_funcs import RenderFuncs
-from meltygui.toggles import Toggles
+from meltygui.core.modes import Modes
+from meltygui.core.render_funcs import RenderFuncs
+from meltygui.core.toggles import Toggles
 from meltygui.code.new_converters import code_file_io
 from meltygui.code.new_converters import convert_in_and_out_value
 from meltygui.code.new_converters import string_to_cst_module
 from meltygui.code.new_converters import cst_module_to_string
 from meltygui.code.new_converters import cst_module_to_dict
 from meltygui.code.new_converters import dict_to_cst_module
-from meltygui.code.render_host import RenderHost
+from meltygui.core.render_host import RenderHost
 from meltygui.core.column_core import draw_columns
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.core_render import render_func
+from meltygui.core.window_decoration import window
 from meltygui.core.render_dispatch import draw_any
 from meltygui.core.render_dispatch import draw_collection
 from meltygui.editor.text_editor import draw_text
-from meltygui.debug.invalidation_tracker import Note
-from meltygui.debug.mode import Mode
+from meltygui.core.invalidation_tracker import Note
+from meltygui.core.mode import Mode
 
 class ModifiesPlayground:
 

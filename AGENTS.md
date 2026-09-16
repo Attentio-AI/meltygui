@@ -1,29 +1,63 @@
-# MeltyGUI
+# MeltyGUI: contribution essentials
 
-Standalone framework extracted from latent-descent. All runtime imports use
-`meltygui`; do not add `src`, `lsd`, `melty`, or checkout paths to sys.path.
-The original latent-descent tree is a reference, not a runtime dependency.
+**Models expose stateful systems as Python values; plain views render them;
+core_render injects reusable plumbing; Melty owns shared/global runtime state.**
+These rules reduce boilerplate and maximize reuse of views and models.
+Full design: [CONTRIBUTING.md](CONTRIBUTING.md). Existing code is not always the
+intended pattern; see [known gaps](docs/ARCHITECTURE_DEBT.md).
 
-## Style
+## Ownership
 
-- Render functions return `(changed, value)`; mutate mutable values in place.
-- View-local state is an injected `DictConversion`; initialize its fields in
-  `__init__`. Do not add fields to DrawState without Lukas's confirmation.
-- Use the draw list, `flat_button`, and `draw_dropdown`, not raw imgui widgets.
-- Call nested and native windows every frame with `open_requested`; do not gate
-  their lifecycle on click events. Both backends must behave identically.
-- Consume background results before drawing; dispatch requested work afterwards.
-- Never hash file contents to detect staleness. Use mtime, generation, or identity.
-- Keep constants near the top of the function; shared settings live in Toggles.
-  Access Toggles with fully spelled attribute chains. Icons are literal f-strings.
-- Changes must preserve hotswap and live runtime state. If a framework/hotswap
-  failure occurs, report it; do not hide it with a restart workaround.
-- Subprocesses use full-path executables, `close_fds=False`, no `cwd`, `preexec_fn`,
-  or `start_new_session`; the live subinterpreter makes fork unsafe.
-- ShaderRegistry is not thread safe. GL work happens on the render thread.
+- `view/<feature>_view.py`: local, plain render functions, never view classes or
+  hidden global host/cache/focus lookups. Parent/sibling coordination over a
+  repeatable local data shape is allowed, such as noncolliding dimension pickers.
+  Walking to an app/root model couples the view to that app's schema. Judge reuse
+  and caller boilerplate, not traversal syntax alone.
+- `model/<feature>_model.py`: adapters and operations that hide stateful I/O behind
+  dictionaries, primitives or renderable types. Reuse `RenderHost` for
+  immutable/external data.
+- `state/<feature>_state.py`: explicit state and helpers. Inject per-view
+  `DictConversion` instances; initialize fields in `__init__`.
+- `core/`: shared injection, dispatch, conversion, caches, events, windowing and
+  resource/lifecycle coordination. Complexity or GPU use alone does not make code core.
 
-## Checks
+Features need only relevant files; reuse across features. Demos belong in examples,
+never library dependencies. Fix ownership, not just filenames; avoid catch-all modules.
 
-`uv pip install --python .venv/bin/python --find-links dist/release -e . --group dev`, then `.venv/bin/pytest`.
-Build and test a noneditable wheel outside the checkout before release.
-For UI verification, follow /home/lukas/AGENTS.md and reserve an agent desktop.
+## Render contract
+
+- First parameter: typed `input_value`. Return accurate `(changed, value)`; mutate
+  mutable input in place, preserving identity and specialized types. Layout/style
+  belongs in signatures or decorators.
+- Inject events; never poll imgui input inside cached render functions. Use
+  automatic invalidation. No ad-hoc `DrawState` fields; framework-wide additions
+  require Lukas's confirmation. Share model data, keep view-local state independent.
+- Use Melty windows/controls, draw-list primitives and `draw_state` geometry.
+  Tint renderers; keep local constants near the top. Shared settings use full
+  `Toggles` chains, no namespace aliases or `getattr` fallbacks. Use `Tint` on dynamic
+  backgrounds, literal f-string icons, descriptive names and how-to-change comments.
+  These style rules also cover overlays.
+
+## Runtime and changes
+
+- Consume background results before drawing; dispatch work afterwards. Call window
+  lifecycles every frame with `open_requested`; both backends must behave alike.
+- Make resource ownership/cleanup explicit. GL stays on the render thread;
+  `ShaderRegistry` is not thread safe. Detect staleness via mtime, generations or
+  identity, never whole-file hashes/comparisons.
+- Subprocesses: full-path executable, `close_fds=False`, no `cwd`, `preexec_fn` or
+  `start_new_session`; follow existing `posix_spawn` patterns, never fork the app.
+- Hotswap every definition in place, preserving identities, callbacks and runtime
+  state while applying source edits. Reuse relocation support; preserve old imports,
+  saved identifiers and source navigation. New imports use canonical paths.
+- Report and fix framework gaps instead of hiding them with global lookups,
+  disabled caches, per-frame invalidation or restart requirements.
+
+## Verification
+
+Preserve unrelated work/sessions; the editor refactor is deferred. Run focused
+`.venv/bin/pytest` checks, broadening for shared changes. Verify UI on a reserved
+agent desktop with separate session/save paths; follow `/home/lukas/AGENTS.md`.
+Report GPU/backend coverage and remaining coupling. Test a noneditable wheel outside
+the checkout before release. Import through `meltygui`, without sys.path hacks or
+latent-descent dependencies. [Setup/checks](docs/DEVELOPMENT.md).

@@ -18,30 +18,30 @@ from pathlib import Path
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 from meltygui.hdr_color import with_alpha
-from meltygui.melty import Melty
-from meltygui.state.dict_conversion import DictConversion
-from meltygui.modes import Modes
-from meltygui.utils.glfw_utils import request_render
-from meltygui.rendering.core_render import render_func
+from meltygui.core.melty import Melty
+from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.modes import Modes
+from meltygui.core.glfw_utils import request_render
+from meltygui.core.core_render import render_func
 from meltygui.core.header_runtime import _brightness_clamp_fn
 import meltygui.model.import_graph_model as file_graph
 from meltygui.model.import_graph_model import start_build
-from meltygui.toggles import Toggles
+from meltygui.core.toggles import Toggles
 from meltygui.files.folder_files import folder_proxy
 from meltygui.files.folder_files import watch_folder
 from meltygui.files.folder_files import _file_meta
 from meltygui.core.drag_drop_core import DragDrop
 from meltygui.core.tile_cache import add_shadow
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.window_decoration import window
 
-from meltygui.paths import application_root
+from meltygui.core.paths import application_root
 from meltygui.state.file_state import ROOT     # .../src
 
 
 
 def open_file(path):
     """Route `path` into the code editor (summons the editor window)."""
-    from meltygui.extensions import open_source as open_in_editor
+    from meltygui.core.extensions import open_source as open_in_editor
     open_in_editor(str(path))
 
 
@@ -189,7 +189,7 @@ def _apply_row_drop(meta, dragged, visible, insert_index, position):
 # # @window(input_value=files_host, tint=(0.42, 0.36, 0.54), disable_scroll=False, mode=Modes.WINDOW)
 # @render_func(show_bg=True, use_cache=False, shadow=True, selectable=False)
 # def render_file_tree_melty(input_value=None, draw_state=None, **kwargs):
-#     from meltygui.rendering.render_funcs import RenderFuncs
+#     from meltygui.core.render_funcs import RenderFuncs
 #     watch_folder(ROOT, draw_state)
 #     # Same shape as draw_folder_files: the host holds the tree one level down
 #     # under "value"; a simple top-level draw_collection, and the names-only

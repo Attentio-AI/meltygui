@@ -16,12 +16,12 @@ from __future__ import absolute_import
 
 import ctypes
 
-from meltygui.style import adjust_text_color
+from meltygui.core.style import adjust_text_color
 
 import OpenGL.GL as gl
 import meltygui_imgui as imgui
-import meltygui.window_api as glfw
-from meltygui.windows.backends.imgui_renderer import WindowRenderer
+import meltygui.core.window_api as glfw
+from meltygui.core.backends.imgui_renderer import WindowRenderer
 from meltygui_imgui.integrations.opengl import get_common_gl_state, restore_common_gl_state
 from meltygui.hdr_color import GLSL_DECODE as _GLSL_DECODE
 from meltygui.hdr_color import GLSL_UNPREMULTIPLY as _GLSL_UNPREMULTIPLY
@@ -162,9 +162,9 @@ class SplitOverlayRenderer(WindowRenderer):
         # side; the render methods paint into that inset viewport and the
         # pointer shifts back by it. Melty.frame_inset / framebuffer_size
         # carry the two numbers to the masks, tiles, etc.
-        from meltygui.titlebar import window_inset
-        from meltygui.titlebar import content_origin
-        from meltygui.melty import Melty
+        from meltygui.core.titlebar import window_inset
+        from meltygui.core.titlebar import content_origin
+        from meltygui.core.melty import Melty
         inset = int(window_inset())
         ox, oy = (int(v) for v in content_origin())
         w, h = io.display_size
@@ -180,7 +180,7 @@ class SplitOverlayRenderer(WindowRenderer):
         # A compositor move/resize grab (gl_gui/wayland_move.py) swallowed a
         # button release, so GLFW's level state - what the stock poll above
         # copies into io.mouse_down - stays PRESS until its next real event.
-        import meltygui.wayland_move as wayland_move
+        import meltygui.core.wayland_move as wayland_move
         masked = wayland_move.masked_buttons()
         if masked:
             io = imgui.get_io()
@@ -268,10 +268,10 @@ class SplitOverlayRenderer(WindowRenderer):
         upload stb's. Only a FontManager with live handles (it baked the
         current atlas) may probe it. NB: pyimgui returns a fresh wrapper
         from every get_io(), so io identity can't be compared."""
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         if not Toggles.Fonts.freetype_hinting:
             return None
-        from meltygui.melty import Melty
+        from meltygui.core.melty import Melty
         fm = getattr(Melty, "font_mgr", None)
         if fm is None or not fm._handles:
             return None
@@ -299,7 +299,7 @@ class SplitOverlayRenderer(WindowRenderer):
             gl.glBlendFuncSeparate(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA,
                                    gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
             return -1
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         gl.glBlendFuncSeparate(gl.GL_SRC1_COLOR, gl.GL_ONE_MINUS_SRC1_COLOR,
                                gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
         # The shared atlas can be resized by another surface's lazy font load.
@@ -344,7 +344,7 @@ class SplitOverlayRenderer(WindowRenderer):
 
         # If Melty channel-split the foreground list, render each channel
         # with a per-layer stencil mask. Otherwise fall back to a regular draw.
-        from meltygui.melty import Melty
+        from meltygui.core.melty import Melty
         ranges = getattr(Melty, "_overlay_channel_ranges", None)
         if ranges:
             self._render_overlay_channels(draw_data, lists[-1], ranges, Melty)
@@ -375,7 +375,7 @@ class SplitOverlayRenderer(WindowRenderer):
         the relative-pointer (screen-space) travel since the press; below
         SLIDE_DEADBAND it is rounding, not a slide. Resets on release, so
         hover after a gesture reads the true pointer again."""
-        import meltygui.wayland_move as wayland_move
+        import meltygui.core.wayland_move as wayland_move
         down = any(io.mouse_down[i] for i in range(3))
         if not down or not wayland_move.relative_motion_available():
             self._slide_base = None
@@ -400,7 +400,7 @@ class SplitOverlayRenderer(WindowRenderer):
                 # turns the window's own translation into another phantom slide.
                 io.mouse_pos = sample[1]
                 return
-            import meltygui.geometry_feed as geometry_feed
+            import meltygui.core.geometry_feed as geometry_feed
             rect = geometry_feed.frame_rect()
             if rect is None:
                 self._slide_screen_origin = None
@@ -460,7 +460,7 @@ class SplitOverlayRenderer(WindowRenderer):
         """Framebuffer origin of imgui's display: (inset, inset) while the
         frameless window carries its shadow margin, else (0, 0). Viewports
         move by it, scissors add it."""
-        from meltygui.melty import Melty
+        from meltygui.core.melty import Melty
         ox, oy = getattr(Melty, "frame_origin", None) or (0, 0)
         return int(ox), int(oy)
 
@@ -505,7 +505,7 @@ class SplitOverlayRenderer(WindowRenderer):
             -1.0,                 1.0,                   0.0, 1.0,
         )
 
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         style_context = 0
         if self._lcd_ok and Toggles.dynamic_styles:
             style_context = self._ensure_style_context(fb_width, fb_height, fb_scale_x, fb_scale_y, ox, oy)
@@ -711,7 +711,7 @@ class SplitOverlayRenderer(WindowRenderer):
 
     def _refresh_style_shader(self):
         """A hotswapped text policy replaces the program, retaining the atlas."""
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         initialized = hasattr(self, '_text_style_source')
         if not self._lcd_ok or (initialized and not Toggles.dynamic_styles):
             return
@@ -783,9 +783,9 @@ class SplitOverlayRenderer(WindowRenderer):
         text: 20 ms on a LoRA tree, 09-13). Returns the texture id, 0 when
         there is nothing to read."""
         import numpy as np
-        from meltygui.gl_state import GLState
-        from meltygui.gl_state import gl_limits
-        from meltygui.melty import Melty
+        from meltygui.core.gl_state import GLState
+        from meltygui.core.gl_state import gl_limits
+        from meltygui.core.melty import Melty
         gen = Melty.background_gen
         if Melty.dynamic_style_gl is None or not Melty.backgrounds:
             self._style_context_gen = gen
@@ -925,7 +925,7 @@ class SplitOverlayRenderer(WindowRenderer):
             -1.0,                 1.0,                   0.0, 1.0,
         )
 
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         style_context = 0
         if self._lcd_ok and Toggles.dynamic_styles:
             style_context = self._ensure_style_context(fb_width, fb_height, fb_scale_x, fb_scale_y, ox, oy)

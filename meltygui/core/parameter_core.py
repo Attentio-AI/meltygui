@@ -12,7 +12,7 @@ free of an import cycle with the view code that calls it.
 
 from enum import Enum
 
-from meltygui.rendering.decorators.core_decoration import Core
+from meltygui.core.core_decoration import Core
 
 # We want to use the order of the tab elements as a way of determining the
 # source of the input. From the function's perspective it just has parameters
@@ -376,7 +376,7 @@ def _apply_glfw_window_decoration(attr_name, value, draw_state, class_to_show):
     """`app._ROOTS[i] = (fn, config)`: the root body reads
     `config['view_kwargs']` every frame (app._root_body), and a re-run
     decorator updates that same dict in place."""
-    import meltygui.app as app
+    import meltygui.core.app as app
     view_func = (draw_state._kwargs or {}).get("_view_func_origin", getattr(draw_state, "_view_func", None))
     owners = {id(o) for o in (view_func, _raw_of(view_func)) if o is not None}
     hit = False
@@ -474,7 +474,7 @@ def live_apply(attr_name, value, draw_state, kind, class_to_show=None):
         print(f"[live_apply] {kind} {attr_name}: {e}")
         return False
     if hit:
-        from meltygui.utils.glfw_utils import request_render
+        from meltygui.core.glfw_utils import request_render
         request_render()
     return hit
 
@@ -504,7 +504,7 @@ def flush_deferred_writes():
         # Rendering is event-driven: after the last scroll tick no further
         # input arrives, so keep frames flowing until the quiet window expires
         # and the deferred writes actually flush.
-        from meltygui.utils.glfw_utils import request_render
+        from meltygui.core.glfw_utils import request_render
         request_render()
         return
     for ds in list(_DEFERRED_DS):
@@ -648,7 +648,7 @@ def window_source_writable(srcs, target):
     Source-code changes require the GUI-editor toggle; framework dispatch
     call sites are never an automatic target, even with that toggle enabled.
     """
-    from meltygui.toggles import Toggles
+    from meltygui.core.toggles import Toggles
     kind = srcs['kinds'].get(target)
     if kind in ('code comment', 'draw state'):
         return True
@@ -843,7 +843,7 @@ def _anywhere_verify_tick(attr_name, draw_state, live):
         return
     del verify[attr_name]
     if not _anywhere_agrees(live, set_value):
-        from meltygui.notifications import notify
+        from meltygui.core.notifications import notify
         notify(f"set_anywhere: '{attr_name}' settled at {live!r}, not the "
                f"{set_value!r} that was set — SourcePriority may not match "
                f"meltygui's routing for this view", tag="set_anywhere")
@@ -971,7 +971,7 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
     also CREATE the entry at that source (a new caller kwarg, a new class
     var), which is how the picker's + affordance stamps a param nothing
     sets yet."""
-    from meltygui.notifications import notify
+    from meltygui.core.notifications import notify
     if not allow_any and attr_name not in SET_ANYWHERE_PARAMS:
         notify(f"set_anywhere: '{attr_name}' not in SET_ANYWHERE_PARAMS",
                tag="set_anywhere")
@@ -1044,7 +1044,7 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
         # the old draw_state fallback for calls without a renderer source.
         _setting = _setting_source(srcs, attr_name)
         _kind = srcs["kinds"].get(_setting) if _setting is not None else None
-        from meltygui.rendering.core_render import _draw_state_reserved_names
+        from meltygui.core.core_render import _draw_state_reserved_names
         # None (DrawState not constructible yet) makes reserved set unknown;
         # keep the legacy pick for the call rather than throwing.
         _mirrored = attr_name not in (_draw_state_reserved_names() or ())
@@ -1189,7 +1189,7 @@ def _arm_recompile(draw_state, sources, target, kind):
         # upstream render host's input is the real source object. Stamp the
         # deferred hotswap against exactly that; without it the trip never
         # lands and the pending cache shows the un-landed value forever.
-        from meltygui.code.render_host import RenderHost
+        from meltygui.core.render_host import RenderHost
         _row = sources.get(target)
         _broot = (getattr(_row, "_bubble_root", None)
                   or getattr(getattr(_row, "_dp", None), "_bubble_root", None))
@@ -1224,7 +1224,7 @@ def clear_anywhere(attr_name, draw_state, source, class_to_show=None):
     auto_param (and nulls a whitelisted ds attr), so lower-priority layers
     resume driving. Returns the source cleared, or None when it held
     nothing."""
-    from meltygui.notifications import notify
+    from meltygui.core.notifications import notify
     srcs = _sources_for(draw_state, class_to_show)
     # In-flight caches for this attr are stale either way a clear goes.
     for _slot in ("_sa_pending", "_sa_precise", "_sa_deferred"):
@@ -1238,7 +1238,7 @@ def clear_anywhere(attr_name, draw_state, source, class_to_show=None):
         if isinstance(_ap, dict) and attr_name in _ap:
             del _ap[attr_name]
             cleared = True
-        from meltygui.rendering.core_render import OBJ_ATTR_PARAMS
+        from meltygui.core.core_render import OBJ_ATTR_PARAMS
         if (attr_name in OBJ_ATTR_PARAMS
                 and getattr(draw_state, attr_name, None) is not None):
             setattr(draw_state, attr_name, None)
@@ -1313,7 +1313,7 @@ def reorder_anywhere(keys, draw_state, class_to_show=None):
     derives from. Only parse-node dicts qualify: the adapter rows (instance
     attr, draw_state, codec) are snapshots over live objects with no
     persisted order. Returns the source names written, in priority order."""
-    from meltygui.code.bubbling import _BubblingDictMixin
+    from meltygui.core.bubbling import _BubblingDictMixin
     srcs = _sources_for(draw_state, class_to_show)
     order = {k: i for i, k in enumerate(keys)}
     writable = set(srcs["writable"])
@@ -1383,8 +1383,8 @@ def _func_param_names(func):
         params = inspect.signature(inspect.unwrap(func)).parameters
     except (TypeError, ValueError):
         return []
-    from meltygui.rendering.core_render import _AUTO_PARAM_EXCLUDE
-    from meltygui.rendering.core_render import _is_event_param_name
+    from meltygui.core.core_render import _AUTO_PARAM_EXCLUDE
+    from meltygui.core.core_render import _is_event_param_name
     out = []
     for name, p in params.items():
         if name in _AUTO_PARAM_EXCLUDE or _is_event_param_name(name):

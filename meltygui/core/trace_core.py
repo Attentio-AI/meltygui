@@ -29,15 +29,15 @@ from pathlib import Path
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
-from meltygui.fonts import Font
-from meltygui.state.dict_conversion import DictConversion
-from meltygui.rendering.render_funcs import RenderFuncs
-from meltygui.toggles import Tint
+from meltygui.core.fonts import Font
+from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.render_funcs import RenderFuncs
+from meltygui.core.toggles import Tint
 from meltygui.code.fileref import Address
 from meltygui.code.fileref import _PROJECT_ROOT
 from meltygui.code.project_code import project_code
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.core_decoration import no_save
+from meltygui.core.core_render import render_func
+from meltygui.core.core_decoration import no_save
 
 
 from meltygui.model.trace_model import SavedTrace
@@ -231,7 +231,7 @@ def _span_parse(text):
     same converter the code hosts run. None when it doesn't parse — the pane
     then renders without live-value anchors until the next clean text."""
     try:
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         from meltygui.code.libcst_conversion import cst_module_to_dict
         if Toggles.TextEditor.melty_syntax:
             return cst_module_to_dict(text)

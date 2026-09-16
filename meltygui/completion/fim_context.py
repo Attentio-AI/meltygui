@@ -297,7 +297,7 @@ def definition_source(view: EditorView):
         return
     if tbl is None:
         return
-    from meltygui.toggles import Toggles
+    from meltygui.core.toggles import Toggles
     text = view.text
     caret_line = view.caret_line
     own_lo = view.span_start + 1
@@ -370,14 +370,14 @@ def runtime_types_source(view: EditorView):
     if view.fn is None:
         return
     try:
-        from meltygui.func_metadata import FuncsMetadata
-        from meltygui.func_metadata import _meta_key
+        from meltygui.core.func_metadata import FuncsMetadata
+        from meltygui.core.func_metadata import _meta_key
         slot = FuncsMetadata.metadata.get(_meta_key(view.fn))
     except Exception:
         return
     if not slot:
         return
-    from meltygui.toggles import Toggles
+    from meltygui.core.toggles import Toggles
     ws, we, _ = _window(view, Toggles.Fim.scan_lines)
     words = _word_set(view.text[ws:we])
     rows = []
@@ -434,7 +434,7 @@ def live_values_source(view: EditorView):
     inline. Values are summarized on the spot and never retained."""
     if view.fn is None:
         return
-    from meltygui.toggles import Toggles
+    from meltygui.core.toggles import Toggles
     try:
         from meltygui.code.live_view import live_values_for
         store = live_values_for(view.fn)

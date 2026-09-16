@@ -399,6 +399,8 @@ def module_to_path(dotted, project=None):
     """Resolve a module against this project's ordered source/venv paths."""
     if not dotted:
         return None
+    from meltygui.core.module_names import canonical_name
+    dotted = canonical_name(dotted)
     project = analysis_project(project)
     key = (project.key, dotted)
     hit = _mod_path_cache.get(key)
@@ -600,9 +602,9 @@ def _notify_consumers():
     if not targets:
         return
     try:
-        from meltygui.melty import Melty
-        from meltygui.utils.glfw_utils import request_render
-        from meltygui.debug.invalidation_tracker import Note
+        from meltygui.core.melty import Melty
+        from meltygui.core.glfw_utils import request_render
+        from meltygui.core.invalidation_tracker import Note
     except Exception:
         return
     for ds, _g in targets:
@@ -666,7 +668,7 @@ def _file_key(path):
     """Content-free identity of a file's CURRENT text: (identity of the
     FileWatch-cached disk string, pending generation). Never hashes."""
     try:
-        from meltygui.melty import Melty
+        from meltygui.core.melty import Melty
         disk = Melty.read_code(path)
         did = id(disk) if disk is not None else None
     except Exception:
@@ -1581,7 +1583,7 @@ def _project_file_changed(path):
 
 
 def _watch_project(project):
-    from meltygui.melty import FileWatch
+    from meltygui.core.melty import FileWatch
     FileWatch.global_listeners[:] = [listener for listener in FileWatch.global_listeners
                                     if getattr(listener, "__name__", "") != "_project_file_changed"]
     FileWatch.global_listeners.append(_project_file_changed)

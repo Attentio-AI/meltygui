@@ -4,8 +4,8 @@
 
 def _style_policy_source(owner, field):
     """Match style inheritance, including policy-only (nonpainting) parents."""
-    from meltygui.style import default_tint_accumulation
-    from meltygui.style import default_scalar_accumulation
+    from meltygui.core.style import default_tint_accumulation
+    from meltygui.core.style import default_scalar_accumulation
     seen = set()
     current = owner
     while current is not None and id(current) not in seen:
@@ -22,9 +22,9 @@ def _style_policy_source(owner, field):
 
 def _add_style_policy(owner, field):
     """Stamp the effective policy through locate, like Inputs' + value seed."""
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.glfw_utils import request_render
 
-    from meltygui.style import Style
+    from meltygui.core.style import Style
     from meltygui.state.core_undo import UndoManager
     original = owner.locate_style
     attr = "locate_style" if original is not None else "locate_tint"

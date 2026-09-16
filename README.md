@@ -58,8 +58,10 @@ Use the bundled UI framework to add controls, editors, and additional windows.
 [Building an app](docs/APPS.md) covers persistent view state, render functions,
 and window lifecycle.
 
-For contributor setup, checks, and packaging details, see
-[Development](docs/DEVELOPMENT.md).
+For framework design, feature ownership and render-function patterns, see
+[Contributing](CONTRIBUTING.md). [Development](docs/DEVELOPMENT.md) covers setup,
+checks and packaging; [Architecture gaps](docs/ARCHITECTURE_DEBT.md) tracks the
+remaining migration work.
 
 ## License
 

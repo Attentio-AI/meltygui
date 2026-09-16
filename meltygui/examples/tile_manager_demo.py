@@ -6,8 +6,8 @@ edges inside each column — is a shared edge object in the window's
 collision solve, so dragging any of them pushes and pulls the rest and
 out through the window frame, exactly like the columns playground.
 """
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.core_render import render_func
+from meltygui.core.window_decoration import window
 from meltygui.core.tile_manager_core import Split
 from meltygui.core.tile_manager_core import Tile
 from meltygui.core.tile_manager_core import TileManagerState

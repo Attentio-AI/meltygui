@@ -11,7 +11,7 @@ are used as save_data parameters on reverse converters.
 """
 import ast
 import builtins
-from meltygui.notifications import lag_traced
+from meltygui.core.notifications import lag_traced
 
 import dis
 import inspect
@@ -24,13 +24,13 @@ from enum import EnumMeta
 from importlib import reload
 
 from pathlib import Path
-from meltygui.melty import Melty
+from meltygui.core.melty import Melty
 from meltygui.core.definition_hotswap import patch_function
 from meltygui.core.definition_hotswap import canonicalize_definitions
 
 import libcst as cst
 
-from meltygui.utils.glfw_utils import print_stack_trace
+from meltygui.core.glfw_utils import print_stack_trace
 import meltygui.code.hotswap_guard as _hotswap_guard
 from meltygui.code.fileref import Address
 from meltygui.code.fileref import invalidate_address_cache
@@ -172,7 +172,7 @@ def load_span_text(ref: Address) -> str:
 # ║  @render_func converters                                                     ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-from meltygui.rendering.core_render import render_func
+from meltygui.core.core_render import render_func
 
 
 # --- Basic type converters ---
@@ -292,8 +292,8 @@ def fn_to_cst(input_value, data=None) -> cst.Module:
 @render_func()
 def recompile_fn(input_value, ref=None, function_ref=None):
     """Save handler: hotswap function + write source to disk."""
-    from meltygui.code.path_finder import Pending
-    from meltygui.code.path_finder import PendingState
+    from meltygui.core.path_finder import Pending
+    from meltygui.core.path_finder import PendingState
     if not is_editable_source(ref.path):
         print(f"[recompile_fn] refusing to write library source: {ref.path}")
         return None, ref
@@ -355,8 +355,8 @@ def mod_to_cst(input_value, data=None) -> cst.Module:
 @render_func()
 def recompile_mod_fn(input_value, ref=None, module_ref=None):
     """Save handler: hotswap module + write source to disk."""
-    from meltygui.code.path_finder import Pending
-    from meltygui.code.path_finder import PendingState
+    from meltygui.core.path_finder import Pending
+    from meltygui.core.path_finder import PendingState
     if not is_editable_source(ref.path):
         print(f"[recompile_mod_fn] refusing to write library source: {ref.path}")
         return None, ref
@@ -393,8 +393,8 @@ def cls_to_cst(input_value, data=None) -> cst.Module:
 def recompile_cls_fn(input_value, ref=None, class_ref=None,
                      hotswap_instances=True):
     """Save handler: hotswap class + write source to disk."""
-    from meltygui.code.path_finder import Pending
-    from meltygui.code.path_finder import PendingState
+    from meltygui.core.path_finder import Pending
+    from meltygui.core.path_finder import PendingState
     if not is_editable_source(ref.path):
         print(f"[recompile_cls_fn] refusing to write library source: {ref.path}")
         return None, ref
@@ -1167,7 +1167,7 @@ def stamp_hotswap_baselines(delay: float = 0.0) -> int:
     _segment)."""
     import sys as _sys
     from meltygui.code.fileref import is_editable_source
-    from meltygui.perf_trace import span as _pt_span
+    from meltygui.core.perf_trace import span as _pt_span
     if delay:
         time.sleep(delay)
     by_file = {}

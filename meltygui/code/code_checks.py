@@ -63,7 +63,7 @@ import sys
 import time
 import types
 
-from meltygui.notifications import lag_traced
+from meltygui.core.notifications import lag_traced
 
 # Names every module/frame sees without a visible binding.
 _BUILTIN_NAMES = frozenset(dir(builtins)) | {
@@ -801,7 +801,7 @@ def _literal_type_mismatch(fname, spec, call):
     if not spec.types:
         return None
     try:
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         if not Toggles.TextEditor.lint_literal_types:
             return None
     except Exception:
@@ -1087,7 +1087,7 @@ def _suggest_import_for_path(name, path, cached_only=False):
     key = (str(path), name)
     if cached_only:
         return _project_import_suggestion_cache.get(key)
-    from meltygui.extensions import get
+    from meltygui.core.extensions import get
     provider = get('source_imports')
     statements = provider(name, path) if provider else _suggest_import(name)
     _project_import_suggestion_cache[key] = statements[:_MAX_IMPORT_CANDIDATES]
@@ -2090,7 +2090,7 @@ def check_source(text, path=None, max_reports=40, only_missing_imports=False):
             reports.append((line, msg))
 
     if path:
-        from meltygui.extensions import call
+        from meltygui.core.extensions import call
         for line, message in call('source_diagnostics', text, path) or ():
             report(line, message)
 
@@ -2135,7 +2135,7 @@ def check_source(text, path=None, max_reports=40, only_missing_imports=False):
         # module file's PENDING text instead of the live namespace (which needs
         # import-bound names the span never sees) - see _check_call_span.
         try:
-            from meltygui.toggles import Toggles
+            from meltygui.core.toggles import Toggles
             _span_calls = Toggles.TextEditor.lint_span_calls
         except Exception:
             _span_calls = True
@@ -2157,7 +2157,7 @@ def check_source(text, path=None, max_reports=40, only_missing_imports=False):
     # Same toggle as the span pass - the pending-table fallback below is the
     # same feature surfaced in whole-file/region mode.
     try:
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         _table_calls = Toggles.TextEditor.lint_span_calls
     except Exception:
         _table_calls = True

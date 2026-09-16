@@ -603,7 +603,7 @@ class TestReparseReusing(unittest.TestCase):
         self.assertEqual(node._child_spans["a"].start_line, 4)
 
     def test_bubbling_tree_is_never_mutated(self):
-        from meltygui.code.bubbling import install_bubbling
+        from meltygui.core.bubbling import install_bubbling
         class Root:
             marks = 0
             def _mark_changed(self):
@@ -632,12 +632,12 @@ class TestToggleIntegration(unittest.TestCase):
     """Toggles.TextEditor.melty_syntax routes the chain nodes through core_syntax."""
 
     def setUp(self):
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         self._prev = Toggles.TextEditor.melty_syntax
         Toggles.TextEditor.melty_syntax = True
 
     def tearDown(self):
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         Toggles.TextEditor.melty_syntax = self._prev
 
     def test_chain_nodes_round_trip(self):
@@ -732,7 +732,7 @@ class TestConsumers(unittest.TestCase):
     def test_snapshot_overlay_recognises_bubbling_defs(self):
         # The code host rewrites the held tree to Bubbling_<Base>; the live-view
         # overlay's def detection must see through that on BOTH parsers.
-        from meltygui.code.bubbling import install_bubbling
+        from meltygui.core.bubbling import install_bubbling
         from meltygui.editor.live_view_views import _is_funcdef_node
         from meltygui.editor.live_view_views import _is_def_parse
         class Root:
@@ -888,7 +888,7 @@ class TestScannerParity(unittest.TestCase):
         self.assertGreater(checked, 50)
 
     def test_worker_on_big_files(self):
-        for name in ("editor/text_editor.py", "toggles.py", "core/render_dispatch.py"):
+        for name in ("editor/text_editor.py", "core/toggles.py", "core/render_dispatch.py"):
             path = SRC / name
             self._check(path.read_text(encoding="utf-8"), path, frontends=("worker",))
 
@@ -903,7 +903,7 @@ class TestScannerParity(unittest.TestCase):
                 parse_to_dict(bad, frontend="scan")
 
     def test_default_frontend_by_size(self):
-        from meltygui.toggles import Toggles
+        from meltygui.core.toggles import Toggles
         import meltygui.code.core_syntax as cs
         prev = (Toggles.TextEditor.melty_scanner, Toggles.TextEditor.melty_async_min_chars)
         try:
@@ -966,8 +966,8 @@ class TestIncremental(unittest.TestCase):
         self._check(SAMPLE, "sample")
 
     def test_src_files(self):
-        for name in ("toggles.py", "code/live_view.py", "editor/text_editor.py",
-                     "editor/pending_save.py", "rendering/shaped.py"):
+        for name in ("core/toggles.py", "code/live_view.py", "editor/text_editor.py",
+                     "editor/pending_save.py", "core/shaped.py"):
             path = SRC / name
             self._check(path.read_text(encoding="utf-8"), name)
 
@@ -982,7 +982,7 @@ class TestIncremental(unittest.TestCase):
         self.assertEqual(inc["my_func"]["locals"]["local_one"], 55)
 
     def test_never_mutates_the_previous_tree(self):
-        from meltygui.code.bubbling import install_bubbling
+        from meltygui.core.bubbling import install_bubbling
         from meltygui.code.core_syntax import reparse_incremental
         class Root:
             marks = 0
