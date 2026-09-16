@@ -1,49 +1,100 @@
 """Tensor view functions and supporting definitions."""
-from meltygui.core.tensor_core import _voxels_cleanup
+from meltygui.core.graphics.tensor_core import _voxels_cleanup
 from meltygui.hdr_color import pack_color
-from meltygui.core.gl_state import GLState
-from meltygui.model.tensor_model import Lut
+from meltygui.core.graphics.gl_state import GLState
+from meltygui.state.tensor_state import TensorErrorState
+from meltygui.model.lut_model import Lut, LutPalette
 from meltygui.model.tensor_model import TensorDim
 from meltygui.model.tensor_model import TensorDims
-from meltygui.core.modes import Modes
+from meltygui.core.rendering.modes import Modes
 from meltygui.core.core_render import render_func
-from meltygui.core.render_funcs import RenderFuncs
-from meltygui.core.shaped import Shaped
-from meltygui.core.toggles import SwooshMode
-from meltygui.core.toggles import Toggles
+from meltygui.core.rendering.render_funcs import RenderFuncs
+from meltygui.core.rendering.shaped import Shaped
+from meltygui.core.runtime.toggles import SwooshMode
+from meltygui.core.runtime.toggles import Toggles
 from meltygui.view.header_view import draw_header
 import OpenGL.GL as gl
 import math
 import meltygui_imgui as imgui
 import numpy as np
 import ctypes
-from meltygui.core.fonts import Font
-from meltygui.core.header_runtime import flat_button
-from meltygui.core.render_dispatch import draw_bg
-from meltygui.core.text_texture import bake_texts
+from meltygui.core.styling.fonts import Font
+from meltygui.core.layout.header_runtime import flat_button
+from meltygui.core.rendering.render_dispatch import draw_bg
+from meltygui.core.graphics.text_texture import bake_texts
 from meltygui.model.camera_model import basis as _cam_basis
 
 
-@render_func(is_default_for="Lut", show_bg=False, is_tree=False,
-             header_same_line=True, with_header=draw_header)
-def draw_lut(input_value=None, draw_state=None, unique=0, **kwargs):
-    """THE lut picker — a dropdown of the LUT names the lut host knows about
-    (live host dict when it's up, baked LUTS otherwise), shared by every
-    lut-typed param. Returns Lut(...) so the value keeps routing here."""
-    from meltygui.model.tensor_model import Lut
-    from meltygui.tensor.voxel_playground import LUTS
-    from meltygui.view.dropdown_view import draw_dropdown
+from meltygui.view.lut_view import draw_lut
 
-    host_val = getattr(globals().get("lut_host"), "input_value", None)
-    luts = host_val if isinstance(host_val, dict) and host_val else LUTS
-    names = [str(k) for k in luts]
-    current = str(input_value) if input_value else "jet"
-    changed, picked = draw_dropdown(
-        current, collection={n: n for n in names},
-        name=f"lut##{unique}", show_header=False, width=140)
-    if changed and picked:
-        return True, Lut(picked)
+
+@render_func(tint=(0.23, 0.49, 0.62), use_cache=True, show_bg=False,
+             with_header=None, show_header=False, shadow=False, auto_resize=True, wrap=False)
+def draw_tensor_slices(input_value: tuple, slider_dims=(), dim_names=(),
+                       source_shape=(), draw_state=None):
+    """Edit unmapped tensor dimensions through ordinary integer controls."""
+    from meltygui.view.control_view import draw_int_slider
+    values = list(input_value) + [0] * max(0, len(source_shape) - len(input_value))
+    changed = False
+    for dimension in slider_dims:
+        label = dim_names[dimension] if dimension < len(dim_names) else f"dim{dimension}"
+        upper_bound = max(0, source_shape[dimension] - 1)
+        current = max(0, min(int(values[dimension]), upper_bound))
+        edited, value = draw_int_slider(current, name=f"{label}##slice{dimension}",
+                                         min_value=0, max_value=upper_bound,
+                                         width=draw_state.content_width, height=22)
+        if edited and value != current:
+            values[dimension] = value
+            changed = True
+    return changed, tuple(values) if changed else input_value
+
+
+def _draw_slice_sliders(draw_state, slider_dims, dim_names, slices, source_shape, width):
+    changed, value = draw_tensor_slices(slices, slider_dims=slider_dims,
+                                        dim_names=dim_names, source_shape=source_shape,
+                                        name="Slice positions", width=width)
+    if changed:
+        draw_state.locate_slices = value
+    return changed, value
+
+
+@render_func(tint=(0.68, 0.22, 0.20), use_cache=True, show_bg=False,
+             with_header=None, show_header=False, shadow=False, auto_resize=False)
+def draw_tensor_error(input_value: str, draw_state=None,
+                       error_state: TensorErrorState = None, who="draw_voxels"):
+    """An error card with the same footprint as a tensor or graph view."""
+    import textwrap
+    left, top, right, bottom = draw_state.get_content_rect()
+    width, height = right - left, bottom - top
+    padding = 12.0
+    draw_list = imgui.get_window_draw_list()
+    draw_list.add_rect_filled(left, top, left + width, top + height,
+                              pack_color(0.09, 0.05, 0.05, 1.0), 6.0)
+    draw_list.add_rect(left, top, left + width, top + height,
+                       pack_color(0.75, 0.25, 0.25, 0.9), 6.0, thickness=1.5)
+    draw_list.add_text(left + padding, top + padding,
+                       pack_color(1.0, 0.55, 0.55, 1.0),
+                       f"{who} can't display this tensor")
+    line_height = imgui.get_font_size() + 2
+    line_top = top + padding + line_height + 4
+    columns = max(1, int((width - padding * 2) / max(1, imgui.calc_text_size("M")[0])))
+    draw_list.push_clip_rect(left + padding, top + padding, right - padding, bottom - padding)
+    for paragraph in input_value.splitlines():
+        for line in textwrap.wrap(paragraph, width=columns) or ['']:
+            draw_list.add_text(left + padding, line_top, pack_color(1.0, 0.85, 0.85, 1.0), line)
+            line_top += line_height
+    draw_list.pop_clip_rect()
+    imgui.dummy(width, height)
+    if error_state.last_error != input_value:
+        error_state.last_error = input_value
+        print(f"[{who}] {draw_state.name}: {input_value}")
     return False, input_value
+
+
+def _draw_voxel_error(draw_state, message, who="draw_voxels"):
+    width, height = _view_size(draw_state)
+    return draw_tensor_error(message, name=f"{who} error", who=who,
+                              width=width, height=height)
 
 
 @render_func(is_default_for=("TensorDim", "TensorDims"), show_bg=False, is_tree=False,
@@ -175,7 +226,8 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 left_mouse_double_clicked=None,
                 kp_7_pressed=None, kp_1_pressed=None, kp_3_pressed=None,
                 kp_5_pressed=None, slash_pressed=None, kp_divide_pressed=None,
-                kp_decimal_pressed=None, font_manager=None, **kwargs):
+                kp_decimal_pressed=None, font_manager=None,
+                luts: LutPalette = None, **kwargs):
     """The voxel renderer — owner of every render and mapping decision.
     Input is a tensor/ndarray (sliced + uploaded HERE, re-keyed by gl_state
     deps on source identity/_version/mapping) or an already-uploaded
@@ -183,22 +235,18 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     rides the uploaded buffer; EVERYTHING else is a parameter on this
     signature (auto draw_state params: gestures and the controls panel
     write draw_state.<name>, only diverged values persist/serialize)."""
-    from meltygui.core.gl_state import GLTexture
-    from meltygui.core.gl_state import gl_limits
-    from meltygui.core.gl_state import texture3d_fit
+    from meltygui.core.graphics.gl_state import GLTexture
+    from meltygui.core.graphics.gl_state import gl_limits
+    from meltygui.core.graphics.gl_state import texture3d_fit
     from meltygui.model.camera_model import apply_space_mouse
     from meltygui.model.tensor_model import CudaVolumeView
     from meltygui.tensor.voxel_playground import HALF_PI
-    from meltygui.tensor.voxel_playground import LUTS
     from meltygui.model.tensor_model import _AXIS_POS
     from meltygui.tensor.voxel_playground import _CUDA_LAST_ERROR
-    from meltygui.tensor.voxel_playground import _LUT_TEXTURES
     from meltygui.tensor.voxel_playground import _cached_volume_texture
     from meltygui.model.tensor_model import _clean_dim_name
     from meltygui.tensor.voxel_playground import _cuda_march_ready
     from meltygui.tensor.voxel_playground import _cuda_render
-    from meltygui.tensor.voxel_playground import _draw_slice_sliders
-    from meltygui.tensor.voxel_playground import _draw_voxel_error
     from meltygui.model.tensor_model import _resolve_dim
     from meltygui.model.tensor_model import _volume_scale
     from meltygui.model.tensor_model import auto_neural_flow
@@ -207,8 +255,8 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     from meltygui.model.tensor_model import slice_volume_view
     from meltygui.tensor.voxel_playground import source_identity
     from meltygui.tensor.voxel_playground import voxel_pass
-    from meltygui.core.glfw_utils import request_render
-    from meltygui.core.render_dispatch import draw_any
+    from meltygui.core.windowing.glfw_utils import request_render
+    from meltygui.core.rendering.render_dispatch import draw_any
     import meltygui.tensor.voxel_playground
 
     src = input_value
@@ -668,13 +716,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
 
     volume_scale = _volume_scale(tex.shape)
 
-    # ── LUT: prefer the shared 1-D texture the LUT host materialized; fall
-    # back to a direct upload of the named lut until the host has time ────
-    lut_tex = _LUT_TEXTURES.get(lut)
-    if lut_tex is None:
-        lut_list = LUTS.get(lut, LUTS["jet"])
-        lut_tex = gl_state.texture1d("lut_fallback", lut_list,
-                                     version=(lut, len(lut_list)))
+    lut_tex = luts.texture(lut)
 
     # ── axis coordinate positions: visible silhouette spans via the Python
     # mirror of the shader camera, computed BEFORE the GL pass - the label
@@ -745,6 +787,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             import meltygui.tensor.cuda_march as _cm
             img_tex = _cuda_render(
                 gl_state, tex, width, height, lut=lut, tilt=tilt, spin=spin,
+                lut_texture=lut_tex,
                 roll=roll, zoom=cam_zoom, pan=(pan_x, pan_y, pan_z), ortho=bool(ortho),
                 volume_scale=volume_scale, step_size=float(step_size),
                 max_steps=int(max_steps), density=float(density),

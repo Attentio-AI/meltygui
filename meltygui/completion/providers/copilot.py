@@ -280,7 +280,7 @@ class CopilotSession(FimSession):
             from meltygui.accounts.internet_accounts import account_field
             config_dir = account_field("copilot", account, "config_dir")
         self.config_dir = os.path.expanduser(config_dir) if config_dir else None
-        from meltygui.core.paths import application_root
+        from meltygui.core.runtime.paths import application_root
         self.workspace = workspace or str(application_root())
         self.node = node or find_node()
         self._lock = threading.RLock()

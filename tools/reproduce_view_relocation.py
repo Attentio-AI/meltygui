@@ -9,7 +9,7 @@ from meltygui.core.melty import Melty
 from meltygui.code.file_converters import _recompile_module, stamp_module_baseline
 
 source = '''from meltygui.core.core_render import render_func
-from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.conversion.dict_conversion import DictConversion
 class FeatureState(DictConversion):
     def __init__(self):
         super().__init__()

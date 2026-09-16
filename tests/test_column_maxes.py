@@ -250,7 +250,7 @@ def test_cell_rect_is_the_box_cell_clips_to():
                           round(row.inner_width(1)))
         assert y == round(row.top + 4) and h == 400 - 8
         # And a cell's clip is exactly that box.
-        from meltygui.core.core_decoration import Core
+        from meltygui.core.rendering.core_decoration import Core
         with row.cell(1, height=400):
             clip = Core.melty.get_clip_rect()
         assert tuple(round(v) for v in clip) == (x, y, x + w, y + h)

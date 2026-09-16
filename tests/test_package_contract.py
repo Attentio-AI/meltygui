@@ -2,7 +2,7 @@
 import io
 from pathlib import Path
 import meltygui
-from meltygui.core.load_save_v2 import LSDUnpickler
+from meltygui.core.conversion.load_save_v2 import LSDUnpickler
 from meltygui.core.module_names import canonical_name
 from meltygui.models.orchestration import Orchestration
 
@@ -18,13 +18,13 @@ def test_packaged_runtime_assets():
                  'resources/dejavu/LICENSE.txt', 'resources/JetBrainsMono-Regular.ttf',
                  'resources/fontawesome-webfont.ttf', 'core/legacy_modules.json',
                  'core/module_map.json',
-                 'core/backends/protocols/xdg-shell.xml',
-                 'core/backends/protocols/xdg-decoration-unstable-v1.xml',
-                 'core/backends/PYIMGUI_LICENSE'):
+                 'core/windowing/backends/protocols/xdg-shell.xml',
+                 'core/windowing/backends/protocols/xdg-decoration-unstable-v1.xml',
+                 'core/windowing/backends/PYIMGUI_LICENSE'):
         assert (root / path).is_file(), path
 
-    from meltygui.core.paths import PACKAGE_ROOT
-    from meltygui.core.fonts import _DEJAVU_SANS
+    from meltygui.core.runtime.paths import PACKAGE_ROOT
+    from meltygui.core.styling.fonts import _DEJAVU_SANS
     assert PACKAGE_ROOT == root
     assert Path(_DEJAVU_SANS).is_file()
 

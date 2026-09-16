@@ -11,10 +11,11 @@ import types
 
 
 def _relocate_namespace(module, old_name, spec, aliases):
-    """Rehome an unchanged module without rerunning its initialization.
+    """Rehome a module without rerunning its initialization.
 
     Whole-file relocations preserve line layout. Rebase code filenames so source
-    inspection and subsequent definition hotswaps use the new file. Functions,
+    inspection and subsequent definition hotswaps use the new file. Adopt matching
+    destination code to update imports and relative resource paths. Functions,
     classes, dictionaries, worker closures and the module itself keep identity.
     """
     namespace = vars(module)
@@ -22,17 +23,34 @@ def _relocate_namespace(module, old_name, spec, aliases):
     namespace.update(__name__=spec.name, __package__=spec.parent,
                      __file__=spec.origin, __spec__=spec, __loader__=spec.loader,
                      __cached__=spec.cached)
+    if spec.submodule_search_locations is not None:
+        namespace['__path__'] = list(spec.submodule_search_locations)
     address_module = sys.modules.get("meltygui.code.fileref")
     invalidate_address = vars(address_module).get("invalidate_address_cache") if address_module is not None else None
     if invalidate_address is not None:
         invalidate_address(module)
     code_cache = {}
     visited = set()
+    destination_code = {}
+
+    def index_code(code):
+        destination_code[code.co_qualname, code.co_firstlineno] = code
+        for value in code.co_consts:
+            if isinstance(value, types.CodeType):
+                index_code(value)
+
+    index_code(compile(Path(spec.origin).read_text(), spec.origin, 'exec'))
 
     def code_at_destination(code):
         if code.co_filename != old_file:
             return code
         if code not in code_cache:
+            replacement = destination_code.get((code.co_qualname, code.co_firstlineno))
+            contract = ('co_argcount', 'co_posonlyargcount', 'co_kwonlyargcount', 'co_freevars')
+            if replacement is not None and all(getattr(code, key) == getattr(replacement, key)
+                                                for key in contract):
+                code_cache[code] = replacement
+                return replacement
             constants = tuple(code_at_destination(value) if isinstance(value, types.CodeType) else value
                               for value in code.co_consts)
             code_cache[code] = code.replace(co_filename=spec.origin, co_consts=constants)
@@ -122,22 +140,44 @@ class _RelocationLoader(importlib.abc.Loader):
         _relocate_namespace(module, self.old_name, self.canonical_spec, self.aliases)
 
 
+class _LegacyNamespaceLoader(importlib.abc.Loader):
+    """Historical parent packages need no placeholder directories on disk."""
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        module.__path__ = []
+
+
 class _LegacyModuleFinder(importlib.abc.MetaPathFinder):
     def __init__(self, aliases):
         self.aliases = aliases
-        self.old_names = {new: old for old, new in aliases.items()}
+        self.old_names = {}
+        self.namespaces = set()
+        for old, new in aliases.items():
+            self.old_names.setdefault(new, []).append(old)
+            parent = old.rpartition('.')[0]
+            while parent:
+                self.namespaces.add(parent)
+                parent = parent.rpartition('.')[0]
 
     def find_spec(self, fullname, path=None, target=None):
         canonical = self.aliases.get(fullname)
         if canonical is not None:
             return importlib.util.spec_from_loader(fullname, _AliasLoader(canonical))
-        old_name = self.old_names.get(fullname)
-        if old_name is None or old_name not in sys.modules or target is not None:
+        old_name = next((name for name in self.old_names.get(fullname, ())
+                         if name in sys.modules), None)
+        if old_name is None or target is not None:
+            if (fullname in self.namespaces
+                    and importlib.machinery.PathFinder.find_spec(fullname, path) is None):
+                return importlib.util.spec_from_loader(fullname, _LegacyNamespaceLoader(), is_package=True)
             return None
         spec = importlib.machinery.PathFinder.find_spec(fullname, path)
         if spec is None:
             return None
-        loader = _RelocationLoader(sys.modules[old_name], old_name, spec, self.aliases)
+        module = sys.modules[old_name]
+        loader = _RelocationLoader(module, module.__name__, spec, self.aliases)
         return importlib.util.spec_from_file_location(fullname, spec.origin, loader=loader)
 
 

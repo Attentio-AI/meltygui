@@ -9,36 +9,36 @@ from copy import copy
 from enum import Enum
 from typing import MutableMapping, Optional
 
-import meltygui.core.window_api as glfw
+import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
 import meltygui.hdr_color as hdr_color
 from meltygui.hdr_color import pack_color
 from meltygui_imgui.core import _DrawList
 
-from meltygui.core.notifications import draw_notifications
-from meltygui.core.notifications import notify
-from meltygui.core.render_funcs import RenderFuncs
-from meltygui.core.shaped import best_match
-from meltygui.core.mode_defaults import register_defaults
-import meltygui.core.glfw_utils as glfw_utils
-from meltygui.core.attribute_churn import AttributeChurnMonitor
-from meltygui.core.core_decoration import Core
-from meltygui.core.invalidation_tracker import InvalidateTracker
-from meltygui.core.invalidation_tracker import Note
+from meltygui.core.diagnostics.notifications import draw_notifications
+from meltygui.core.diagnostics.notifications import notify
+from meltygui.core.rendering.render_funcs import RenderFuncs
+from meltygui.core.rendering.shaped import best_match
+from meltygui.core.rendering.mode_defaults import register_defaults
+import meltygui.core.windowing.glfw_utils as glfw_utils
+from meltygui.core.diagnostics.attribute_churn import AttributeChurnMonitor
+from meltygui.core.rendering.core_decoration import Core
+from meltygui.core.cache.invalidation_tracker import InvalidateTracker
+from meltygui.core.cache.invalidation_tracker import Note
 
-from meltygui.core.background import Background
-from meltygui.core.collection_action import CollectionAction
-from meltygui.core.collision import Collisions
-from meltygui.core.toggles import Toggles
-from meltygui.core.toggles import Counters
-from meltygui.core.toggles import Tint
-from meltygui.core.toggles import Swoosh
-from meltygui.core.toggles import SwooshMode
-from meltygui.core.fonts import Font
-from meltygui.core.fonts import detect_auto_scale
-from meltygui.core.window_decoration import set_window_registrar
-from meltygui.core.monitor_core import Monitor
-from meltygui.core.style_core import ImGuiStyleManager
+from meltygui.core.runtime.background import Background
+from meltygui.core.automation.collection_action import CollectionAction
+from meltygui.core.input.collision import Collisions
+from meltygui.core.runtime.toggles import Toggles
+from meltygui.core.runtime.toggles import Counters
+from meltygui.core.runtime.toggles import Tint
+from meltygui.core.runtime.toggles import Swoosh
+from meltygui.core.runtime.toggles import SwooshMode
+from meltygui.core.styling.fonts import Font
+from meltygui.core.styling.fonts import detect_auto_scale
+from meltygui.core.rendering.window_decoration import set_window_registrar
+from meltygui.core.diagnostics.monitor_core import Monitor
+from meltygui.core.styling.style_core import ImGuiStyleManager
 from meltygui.graphics.texture_manager import TextureManager
 from meltygui.graphics.filter import Filter
 # Importing shaders.py is what registers every built-in @register_shader class
@@ -46,22 +46,22 @@ from meltygui.graphics.filter import Filter
 # else in src/ imports it - our launcher force-executed it as a main module - so a
 # vanilla `python latent_descent.py` came up with an EMPTY registry (09-04).
 import meltygui.graphics.shaders  # noqa: F401
-from meltygui.core.input_handler import InputHandler
-from meltygui.core.input_handler import InputEvent
-from meltygui.core.input_handler import EventAction
-from meltygui.core.pynput_backend import ImGuiBackend
-from meltygui.core.pynput_backend import GlfwQueueBackend
-import meltygui.core.space_mouse as space_mouse
+from meltygui.core.input.input_handler import InputHandler
+from meltygui.core.input.input_handler import InputEvent
+from meltygui.core.input.input_handler import EventAction
+from meltygui.core.input.pynput_backend import ImGuiBackend
+from meltygui.core.input.pynput_backend import GlfwQueueBackend
+import meltygui.core.input.space_mouse as space_mouse
 from meltygui.state.core_enums import generate_id
-from meltygui.core.glfw_utils import request_render
-from meltygui.core.glfw_utils import print_stack_trace
-from meltygui.core.glfw_utils import clamp_ui_scale
-from meltygui.core.perf_trace import trace as _ptrace
+from meltygui.core.windowing.glfw_utils import request_render
+from meltygui.core.windowing.glfw_utils import print_stack_trace
+from meltygui.core.windowing.glfw_utils import clamp_ui_scale
+from meltygui.core.diagnostics.perf_trace import trace as _ptrace
 
 import OpenGL.GL as gl
-from meltygui.core.core_decoration import defaults
-from meltygui.core.core_decoration import no_save
-from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.rendering.core_decoration import defaults
+from meltygui.core.rendering.core_decoration import no_save
+from meltygui.core.conversion.dict_conversion import DictConversion
 
 _MOUSE_INPUTS = frozenset({'left_mouse', 'right_mouse', 'middle_mouse',
                            'cursor', 'scroll_y', 'scroll_x'})
@@ -715,7 +715,7 @@ class Melty:
         """The framebuffer a frame's draws go to: the fp16 scene target
         (scene_target.py) while a frame is open, else the window's 0. Every
         'bind 0' inside a frame must go through here."""
-        import meltygui.core.scene_target as scene_target
+        import meltygui.core.graphics.scene_target as scene_target
         return scene_target.framebuffer()
 
     seen_values = []
@@ -913,7 +913,7 @@ class Melty:
         a one-frame open/reopen trigger (when supplied, start closed until
         True); closed= explicitly controls visibility."""
         from types import SimpleNamespace
-        from meltygui.core.window_visibility import requested_window_closed
+        from meltygui.core.windowing.window_visibility import requested_window_closed
         req = cls.surface_windows.get(tile_id)
         first_request = req is None
         if req is None:
@@ -923,7 +923,7 @@ class Melty:
             draw_state.closed = req.closed
         req.input_value, req.kwargs, req.draw_state = input_value, kwargs, draw_state
         req.tick = cls.app_tick
-        from meltygui.core.window_visibility import override_state
+        from meltygui.core.windowing.window_visibility import override_state
         override_state(draw_state).native_kwargs = kwargs
         req.closed = requested_window_closed(req.closed, kwargs, first_request=first_request)
         draw_state.closed = req.closed
@@ -933,7 +933,7 @@ class Melty:
             if req.surface is not None:
                 req.surface.closed = True
             return req
-        from meltygui.core.parameter_core import window_position_movable
+        from meltygui.core.rendering.parameter_core import window_position_movable
         req.pinned = not window_position_movable(draw_state, kwargs)
         # The parent-relative geometry lives on the request; the pare
         # draw_state rendering INLINE in the child surface, and the inline
@@ -951,7 +951,7 @@ class Melty:
             req.window_size = tuple(int(v) for v in (draw_state.window_size
                                                      or draw_state._initial_window_size or (600, 400)))
         if req.surface is None and not req.closed and req not in cls.surface_requests:
-            from meltygui.core.surface import Surface
+            from meltygui.core.windowing.surface import Surface
             req.parent_surface = Surface.active
             cls.surface_requests.append(req)
         return req
@@ -963,7 +963,7 @@ class Melty:
         the OS window, its meltygui header in the chrome row when the call
         passed with_header=), on the same draw_state as the parent-side
         call, its result threaded back through pending_return_values."""
-        from meltygui.core.surface import root_view_kwargs
+        from meltygui.core.windowing.surface import root_view_kwargs
         kwargs = {k: v for k, v in req.kwargs.items()
                   if k not in ('glfw_window', 'window_pos', 'window_size', 'closable',
                                'layer_unique', 'draw_state', 'return_extras', 'closed', 'open_requested')}
@@ -982,13 +982,14 @@ class Melty:
         if result is not None:
             cls.pending_return_values[req.tile_id] = tuple(result)[:2]
             if result[0]:
-                from meltygui.core.glfw_utils import request_render
+                from meltygui.core.windowing.glfw_utils import request_render
                 request_render()
         if req.draw_state.closed:
             req.closed = surface.closed = True
     # Self-registering RenderHost objects (id -> host). draw_main renders each one
     # in its own thread every frame; see view/core_conversion/render_host.py.
     render_hosts = {}
+    luts = None  # shared editable palette values, created lazily
     render_hosts_tick = -1   # app_tick Surface.frame last pumped the hosts in (meltygui main)
     scroll_stack = []
     tile_id_stack = []
@@ -2244,8 +2245,8 @@ class Melty:
         """
         if not Toggles.dynamic_styles:
             return
-        from meltygui.core.gl_state import GLState
-        from meltygui.core.gl_state import gl_limits
+        from meltygui.core.graphics.gl_state import GLState
+        from meltygui.core.graphics.gl_state import gl_limits
         if not cls.draw_state_stack and rect is None:
             return  # Outside a view there is no surface to paint.
         draw_state = cls.draw_state_stack[-1] if cls.draw_state_stack else None
@@ -2277,9 +2278,9 @@ class Melty:
         width, height = draw_state.width or 0, draw_state.height or 0
         # Shadow metadata uses the same enclosing background contexts as colour.
         # Submit over the existing shadow pass while its clip/layer are live.
-        from meltygui.core.style import resolve_shadow_offset
-        from meltygui.core.style import default_scalar_accumulation
-        from meltygui.core.tile_cache import add_shadow
+        from meltygui.core.styling.style import resolve_shadow_offset
+        from meltygui.core.styling.style import default_scalar_accumulation
+        from meltygui.core.cache.tile_cache import add_shadow
         if index == 0:
             cls.background_shadow_offsets.clear()
         # Walk up to the nearest ancestor resolved THIS frame, else one whose
@@ -2349,9 +2350,9 @@ class Melty:
         if not Toggles.dynamic_styles or not cls.backgrounds:
             return
         import numpy as np
-        from meltygui.core.style import draw_background
-        from meltygui.core.style import default_tint_accumulation
-        from meltygui.core.gl_state import gl_limits
+        from meltygui.core.styling.style import draw_background
+        from meltygui.core.styling.style import default_tint_accumulation
+        from meltygui.core.graphics.gl_state import gl_limits
         root = tuple(hdr_color.srgb_to_linear(c) for c in Toggles.dynamic_style_root) + (1.0,)
         resolved = {}
         colors = []
@@ -2545,7 +2546,7 @@ class Melty:
         if (focused is None and not want_text
                 and any(k == glfw.KEY_E and not (m & (glfw.MOD_CONTROL | glfw.MOD_ALT | glfw.MOD_SUPER))
                         for k, m in cls.frame_key_events)):
-            from meltygui.core.settings import toggle_setting
+            from meltygui.core.runtime.settings import toggle_setting
             new_value = toggle_setting("InvalidateTracker.enable")
             notify(f"InvalidateTracker {'on' if new_value else 'off'}",
                    tint=(1, 1, 0.4), tag="InvalidateTracker")
@@ -2658,7 +2659,7 @@ class Melty:
         # draw pass; the render tail pushes again against imgui's immediate
         # shapes. See mouse_cursor.apply.
         if cls.glfw_window is not None:
-            import meltygui.core.mouse_cursor as mouse_cursor
+            import meltygui.core.input.mouse_cursor as mouse_cursor
             mouse_cursor.apply(cls.glfw_window, early=True)
 
         # Apply a Ctrl+Enter "click the selected search result" injection queued
@@ -2802,7 +2803,7 @@ class Melty:
         cls._overlay_channels_active = True
         cls._overlay_channel_ranges = []
 
-        from meltygui.core.core_render_helpers import clear_floating_text_cache
+        from meltygui.core.rendering.core_render_helpers import clear_floating_text_cache
         clear_floating_text_cache()
 
     @staticmethod
@@ -3597,7 +3598,7 @@ class Melty:
 
         original_bg_stack = copy(Melty.bg_stack)
         if draw_state._bg_stack is not None:
-            from meltygui.core.drag_drop_core import DragDrop
+            from meltygui.core.input.drag_drop_core import DragDrop
             if DragDrop.active and draw_state is DragDrop.item_ds:
                 # A dragged item is the one window that flips inline ->
                 # window mid-life. Its contents lay out with
@@ -3630,7 +3631,7 @@ class Melty:
         # auto_params, events from this frame's Melty.events (if any). Genuine
         # static caller overrides never diverge into auto_params and are never
         # InputEvents, so they stay put.
-        from meltygui.core.input_handler import InputEvent as _InputEvent
+        from meltygui.core.input.input_handler import InputEvent as _InputEvent
         _ap = draw_state.__dict__.get('auto_params')
         for _k in list(kwargs):
             if (_ap and _k in _ap) or isinstance(kwargs[_k], _InputEvent):
@@ -3747,7 +3748,7 @@ class Melty:
         # process-lifetime thread; its per-frame pump runs beside the
         # backend's below. A view subscribes with `space_mouse_changed=None`.
         try:
-            from meltygui.core.space_mouse import start as start_space_mouse
+            from meltygui.core.input.space_mouse import start as start_space_mouse
             start_space_mouse()
         except Exception as e:
             print(f"Space mouse unavailable: {e}")
@@ -3756,7 +3757,7 @@ class Melty:
         # (reports 1-2 flickering contacts for 3 pressed fingers in most
         # sessions); re-enable by uncommenting when that's resolved.
         # try:
-        #     from meltygui.core.touchpad_backend import start_three_finger_drag
+        #     from meltygui.core.input.touchpad_backend import start_three_finger_drag
         #     start_three_finger_drag()
         # except Exception as e:
         #     print(f"Touchpad 3-finger drag unavailable: {e}")
@@ -3843,7 +3844,7 @@ class Melty:
         except Exception:
             pass
         try:
-            from meltygui.core.gl_state import GLState
+            from meltygui.core.graphics.gl_state import GLState
             GLState.on_window_deleted(ds)
         except Exception:
             pass
@@ -3909,7 +3910,7 @@ class Melty:
         # The floating DnD window rides the cursor and must survive its
         # source view auto-scrolling out from under the drag.
         try:
-            from meltygui.core.drag_drop_core import DragDrop
+            from meltygui.core.input.drag_drop_core import DragDrop
             if DragDrop.is_dragged_item(ds):
                 return False
         except Exception:
@@ -3954,7 +3955,7 @@ class Melty:
         # Drain GL resources queued for deletion (released GLStates, shader
         # programs invalidated by an edit) - must run on the render thread with
         # the context current, which is exactly here.
-        from meltygui.core.gl_state import GLState
+        from meltygui.core.graphics.gl_state import GLState
         GLState.flush_deletes()
 
         # Drain callables posted from worker threads (post_to_render) - work
@@ -3968,12 +3969,12 @@ class Melty:
         # draw_main stops drawing/parsing them every frame. Toggle-gated
         # (Toggles.HostLifecycle): the host + its parse stay in the code-host
         # cache and re-register on reopen.
-        from meltygui.core.render_host import RenderHost
+        from meltygui.core.conversion.render_host import RenderHost
         RenderHost.sweep()
 
         # Deliberate GC scheduling - deferred gen2 + freeze + idle collects
         # (see gc_manager module docstring). Toggles.GC-gated inside.
-        import meltygui.core.gc_manager as gc_manager
+        import meltygui.core.runtime.gc_manager as gc_manager
         gc_manager.tick()
 
         cls.apply_refresh_nested_windows()
@@ -3986,8 +3987,8 @@ class Melty:
 
         Melty.mode_stack = []
 
-        from meltygui.core.modes import Modes
-        from meltygui.core.render_dispatch import draw_with_modes
+        from meltygui.core.rendering.modes import Modes
+        from meltygui.core.rendering.render_dispatch import draw_with_modes
         # draw_with_modes(Counters, name="counters", modes=(Modes.CODE_UI, Modes.CODE_PLAIN_TEXT), mode=Modes.WINDOW)
 
         if Toggles.debug_z_depth:
@@ -4059,7 +4060,7 @@ class Melty:
         # (see view/core_views/drag_drop.py). No per-frame invalidation:
         # the drag rides the closable-window blit fastpath.
         try:
-            from meltygui.core.drag_drop_core import DragDrop
+            from meltygui.core.input.drag_drop_core import DragDrop
             DragDrop.frame_update()
         except Exception as dnd_e:
             print(f"DragDrop.frame_update failed: {dnd_e}")
@@ -4656,7 +4657,7 @@ class Melty:
         _ef_mark("tail")   # TEMP perf: end of section split
         _ef_total = (_ef_marks[-1][1] - _ef_marks[0][1]) * 1000.0
         if _ef_total >= _ef_trace_ms:
-            from meltygui.core.perf_trace import trace as _ef_trace
+            from meltygui.core.diagnostics.perf_trace import trace as _ef_trace
             _ef_trace("end_frame perf", total_ms=round(_ef_total, 2),
                       breakdown=" ".join(f"{_l1}={(_t1 - _t0) * 1000.0:.2f}"
                                          for (_l0, _t0), (_l1, _t1) in zip(_ef_marks, _ef_marks[1:])))
@@ -4706,8 +4707,8 @@ class Melty:
         # spent the stall executing - a swap that blocks for 500ms with all
         # CPU segments cheap is pure backpressure, and only the GPU split
         # can name the flooding pass.
-        import meltygui.core.perf_trace as _pt
-        from meltygui.core.gpu_frame_timer import GPU_TIMER as _gt
+        import meltygui.core.diagnostics.perf_trace as _pt
+        from meltygui.core.diagnostics.gpu_frame_timer import GPU_TIMER as _gt
         _pp = time.perf_counter
         _gt.begin(_pt.enabled(), cls.frame_count)
         _gt.stamp("t0")
@@ -4811,7 +4812,7 @@ class Melty:
                 # outside the content's rounded rect the composite emits the
                 # shadow as premultiplied alpha - the OS window's shadow IS
                 # this pass, cast by the root's mark / the frame add_shadow.
-                from meltygui.core.titlebar import frame_geometry
+                from meltygui.core.windowing.titlebar import frame_geometry
                 _f_origin, _f_radius, _f_size = frame_geometry(int(fb_w), int(fb_h))
                 Melty.filter.shadow_composite(
                     input_framebuffer=_scene_fb,
@@ -4864,16 +4865,16 @@ class Melty:
         # The frameless OS window's frame alpha - the last thing rendered
         # (titlebar.composite_window_frame): content opaque, corners/margin
         # cut (the shadow pass above has put the shadow there).
-        from meltygui.core.titlebar import composite_window_frame
-        from meltygui.core.titlebar import wants_transparent_framebuffer
+        from meltygui.core.windowing.titlebar import composite_window_frame
+        from meltygui.core.windowing.titlebar import wants_transparent_framebuffer
         if wants_transparent_framebuffer():
             gl.glViewport(0, 0, int(fb_w), int(fb_h))
             composite_window_frame(int(fb_w), int(fb_h))
         # Presentation: the linear fp16 scene encoded into the swapchain
         # (scene_target.present, Toggles.HDR.output). The texture GL back
         # holds the finished, display-encoded frame the screenshots read.
-        import meltygui.core.scene_target as scene_target
-        import meltygui.core.wayland_color as wayland_color
+        import meltygui.core.graphics.scene_target as scene_target
+        import meltygui.core.graphics.wayland_color as wayland_color
         wayland_color.sync(window)        # surface tag follows Toggles.HDR.output
         scene_target.present(int(fb_w), int(fb_h))
         _gt.stamp("overlay")
@@ -4881,22 +4882,22 @@ class Melty:
 
         # Fulfill any pending MCP window screenshots now: the full frame is in
         # GL_BACK and the GL context is current on this (render) thread.
-        from meltygui.core.screenshot import process_captures
-        from meltygui.core.screenshot import process_take_screenshot_flags
+        from meltygui.core.graphics.screenshot import process_captures
+        from meltygui.core.graphics.screenshot import process_take_screenshot_flags
         process_captures(window)
         # Service deferred context-menu 'window' screenshots (front + settle, then grab).
         process_take_screenshot_flags(window)
 
         # Run any pending MCP eval_python commands on this (render) thread, where
         # it's safe to touch Melty/imgui state.
-        from meltygui.core.mcp_eval import process_evals
+        from meltygui.core.automation.mcp_eval import process_evals
         process_evals()
 
         # Push this frame's resolved pointer shape to GLFW: imgui's own
         # request (titlebar edges, widgets) first, else the topmost hover
         # subscription's cursor= (gl_gui/mouse_cursor.py). Same thread as
         # every other GLFW call here.
-        import meltygui.core.mouse_cursor as mouse_cursor
+        import meltygui.core.input.mouse_cursor as mouse_cursor
         mouse_cursor.apply(window)
 
         _ps_t6 = _pp()
@@ -4975,7 +4976,7 @@ class Melty:
         # client holding a streaming/keep-alive connection can otherwise block
         # shutdown. Lazy import keeps meltygui free of an mcp_server import.
         try:
-            from meltygui.core.mcp_server import notify_melty_shutdown
+            from meltygui.core.automation.mcp_server import notify_melty_shutdown
             notify_melty_shutdown()
         except Exception as e:
             print(f"[meltygui] mcp shutdown notify failed: {e}")
@@ -5022,8 +5023,8 @@ class Melty:
         except Exception as e:
             print(f"[meltygui] window tree release failed: {e}")
         try:
-            from meltygui.core.gl_state import GLState
-            import meltygui.core.scene_target as scene_target
+            from meltygui.core.graphics.gl_state import GLState
+            import meltygui.core.graphics.scene_target as scene_target
             scene_target.shutdown()
             GLState.shutdown_all()
         except Exception as e:
@@ -5640,7 +5641,7 @@ class Melty:
         draw_list = imgui.get_window_draw_list()
         current_clip = cls.get_clip_rect()
         if current_clip is not None:
-            from meltygui.core.tile_cache import snap_int
+            from meltygui.core.cache.tile_cache import snap_int
             clip_new_rect = (
                 max(current_clip[0], snap_int(rect[0])),
                 max(current_clip[1], snap_int(rect[1])),

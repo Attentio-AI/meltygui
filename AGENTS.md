@@ -14,12 +14,13 @@ intended pattern; see [known gaps](docs/ARCHITECTURE_DEBT.md).
   Walking to an app/root model couples the view to that app's schema. Judge reuse
   and caller boilerplate, not traversal syntax alone.
 - `model/<feature>_model.py`: adapters and operations that hide stateful I/O behind
-  dictionaries, primitives or renderable types. Reuse `RenderHost` for
-  immutable/external data.
+  dictionaries, primitives or renderable types. Use `RenderHost` only when its
+  conversion/edit/persistence lifecycle is needed; a value proxy can own its resources.
 - `state/<feature>_state.py`: explicit state and helpers. Inject per-view
   `DictConversion` instances; initialize fields in `__init__`.
 - `core/`: shared injection, dispatch, conversion, caches, events, windowing and
   resource/lifecycle coordination. Complexity or GPU use alone does not make code core.
+  Use its [responsibility folders](meltygui/core/README.md), such as `input/` for events.
 
 Features need only relevant files; reuse across features. Demos belong in examples,
 never library dependencies. Fix ownership, not just filenames; avoid catch-all modules.

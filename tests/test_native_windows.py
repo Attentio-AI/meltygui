@@ -6,11 +6,11 @@ import meltygui_imgui as imgui
 import glfw
 import pytest
 
-import meltygui.core.window_api as window_api
-import meltygui.core.window_constants as window_constants
-from meltygui.core.backends.native_wayland import Backend
-from meltygui.core.backends.native_wayland import NativeWindow
-from meltygui.core.backends.imgui_renderer import WindowRenderer
+import meltygui.core.windowing.window_api as window_api
+import meltygui.core.windowing.window_constants as window_constants
+from meltygui.core.windowing.backends.native_wayland import Backend
+from meltygui.core.windowing.backends.native_wayland import NativeWindow
+from meltygui.core.windowing.backends.imgui_renderer import WindowRenderer
 
 
 @pytest.mark.parametrize('enabled,platform,environment,expected', [
@@ -48,7 +48,7 @@ def test_importing_native_backend_does_not_load_glfw():
     import sys
     subprocess.run([sys.executable, '-c',
                     'import sys; '
-                    'from meltygui.core.backends.native_wayland import Backend; '
+                    'from meltygui.core.windowing.backends.native_wayland import Backend; '
                     'from meltygui import window_api; '
                     'assert window_api.KEY_A == 65; '
                     'assert "glfw" not in sys.modules'], check=True)
@@ -153,10 +153,10 @@ def test_native_handle_identifies_its_gl_context(backend):
 
 
 def test_native_frame_is_available_to_chrome_and_collision_flush(backend, monkeypatch):
-    import meltygui.core.titlebar as titlebar
-    import meltygui.core.os_frame as os_frame
+    import meltygui.core.windowing.titlebar as titlebar
+    import meltygui.core.windowing.os_frame as os_frame
     from meltygui.core.melty import Melty
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     window = NativeWindow(backend, 800, 600, 'native', {glfw.TRANSPARENT_FRAMEBUFFER: True})
     monkeypatch.setattr(Melty, 'glfw_window', window)
     assert titlebar._studio_window() is window
@@ -183,7 +183,7 @@ def test_native_frame_is_available_to_chrome_and_collision_flush(backend, monkey
 
 def test_mock_window_is_not_a_native_handle(monkeypatch):
     from unittest.mock import MagicMock
-    import meltygui.core.titlebar as titlebar
+    import meltygui.core.windowing.titlebar as titlebar
     from meltygui.core.melty import Melty
     window = MagicMock()
     monkeypatch.setattr(Melty, 'glfw_window', window)
@@ -192,7 +192,7 @@ def test_mock_window_is_not_a_native_handle(monkeypatch):
 
 
 def test_native_decoration_protocol_metadata():
-    from meltygui.core.backends.wayland_protocol import Native
+    from meltygui.core.windowing.backends.wayland_protocol import Native
     native = Native()
     manager = native.interfaces['zxdg_decoration_manager_v1']
     decoration = native.interfaces['zxdg_toplevel_decoration_v1']
@@ -253,7 +253,7 @@ def test_pointer_motion_generation_includes_identical_local_coordinates(backend)
 
 
 def test_destroyed_child_in_shutdown_snapshot_is_not_destroyed_again(monkeypatch):
-    from meltygui.core.surface import Surface
+    from meltygui.core.windowing.surface import Surface
     # Parent teardown already removed this child; app.run's shutdown snapshot
     # still contains it. No context or GLFW handle may be touched a second time.
     child = object.__new__(Surface)

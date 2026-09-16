@@ -31,11 +31,11 @@ import ctypes
 
 import OpenGL.GL as gl
 
-from meltygui.core.gl_state import GLTexture
-from meltygui.core.gl_state import _scalar
-from meltygui.core.gl_state import is_gl_thread
-from meltygui.core.gl_state import texture3d_fit
-from meltygui.core.gl_state import tight_unpack
+from meltygui.core.graphics.gl_state import GLTexture
+from meltygui.core.graphics.gl_state import _scalar
+from meltygui.core.graphics.gl_state import is_gl_thread
+from meltygui.core.graphics.gl_state import texture3d_fit
+from meltygui.core.graphics.gl_state import tight_unpack
 
 # Keeps the test/standalone-pushed primary context referenced; the
 # globals().get idiom survives hotswap re-exec (NB: gl_state's _persistent

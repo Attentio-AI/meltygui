@@ -3,9 +3,9 @@ from pathlib import Path
 
 import meltygui_imgui as imgui
 
-from meltygui.core.app import pressed
+from meltygui.core.runtime.app import pressed
 
-from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.core_render import render_func
 
 

@@ -3,6 +3,31 @@
 Completed 2026-09-16. Shared runtime modules now live in `meltygui/core/`.
 The [core guide](../meltygui/core/README.md) groups the entry points by responsibility.
 
+## Responsibility folders
+
+A second pass moved 121 modules within core into 13 responsibility folders. See
+[the core guide](../meltygui/core/README.md) for their boundaries and entry points.
+`core_render.py`, `melty.py`, the three relocation/name modules and `__init__.py`
+remain at the root. Internal imports and resource paths use the new locations.
+
+Compatibility includes both generations of historical names. The finder adopts
+any already-loaded alias, updates package search paths and matching destination
+code, and preserves module/class/function identity without rerunning module
+initialization. Deleted legacy parent packages resolve through virtual namespaces.
+The obsolete `rendering/`, `views/`, `widgets/` and `windows/` shells are gone.
+
+A running native app adopted the move while preserving all loaded core module
+identities, its edited slider/slice values, LUT texture proxy and injected GLState.
+The full suite passed 609 tests and 396 subtests, including CUDA/GL coverage.
+Tests cover repeated relocation, removed parent packages, package child paths and
+changed resource-path code. The built wheel includes all moved modules and backend
+assets; historical imports and resource lookup work from that wheel. A fresh
+isolated Melt editor rendered a Python file and handled in-file search. The 17 deferred
+editor files remain unchanged.
+
+The sections below record the earlier move into core; their destination links
+have been updated to the final grouped locations.
+
 ## Scope
 
 - 82 whole modules moved, with line layout preserved for live source relocation.
@@ -34,85 +59,85 @@ The [core guide](../meltygui/core/README.md) groups the entry points by responsi
 
 | Previous module | Canonical module |
 |---|---|
-| `meltygui.app` | [`meltygui.core.app`](../meltygui/core/app.py) |
-| `meltygui.app_session` | [`meltygui.core.app_session`](../meltygui/core/app_session.py) |
-| `meltygui.background` | [`meltygui.core.background`](../meltygui/core/background.py) |
-| `meltygui.code.bubbling` | [`meltygui.core.bubbling`](../meltygui/core/bubbling.py) |
-| `meltygui.code.cache_tree` | [`meltygui.core.cache_tree`](../meltygui/core/cache_tree.py) |
-| `meltygui.code.chain` | [`meltygui.core.chain`](../meltygui/core/chain.py) |
-| `meltygui.code.converter_register` | [`meltygui.core.converter_register`](../meltygui/core/converter_register.py) |
-| `meltygui.code.path_finder` | [`meltygui.core.path_finder`](../meltygui/core/path_finder.py) |
-| `meltygui.code.render_host` | [`meltygui.core.render_host`](../meltygui/core/render_host.py) |
-| `meltygui.collection_action` | [`meltygui.core.collection_action`](../meltygui/core/collection_action.py) |
-| `meltygui.collision` | [`meltygui.core.collision`](../meltygui/core/collision.py) |
-| `meltygui.debug.attribute_churn` | [`meltygui.core.attribute_churn`](../meltygui/core/attribute_churn.py) |
-| `meltygui.debug.framebuffer_recorder` | [`meltygui.core.framebuffer_recorder`](../meltygui/core/framebuffer_recorder.py) |
-| `meltygui.debug.invalidation_tracker` | [`meltygui.core.invalidation_tracker`](../meltygui/core/invalidation_tracker.py) |
-| `meltygui.debug.mode` | [`meltygui.core.mode`](../meltygui/core/mode.py) |
-| `meltygui.events.input_handler` | [`meltygui.core.input_handler`](../meltygui/core/input_handler.py) |
-| `meltygui.events.pynput_backend` | [`meltygui.core.pynput_backend`](../meltygui/core/pynput_backend.py) |
-| `meltygui.events.space_mouse` | [`meltygui.core.space_mouse`](../meltygui/core/space_mouse.py) |
-| `meltygui.events.touchpad_backend` | [`meltygui.core.touchpad_backend`](../meltygui/core/touchpad_backend.py) |
-| `meltygui.extensions` | [`meltygui.core.extensions`](../meltygui/core/extensions.py) |
-| `meltygui.fonts` | [`meltygui.core.fonts`](../meltygui/core/fonts.py) |
-| `meltygui.func_metadata` | [`meltygui.core.func_metadata`](../meltygui/core/func_metadata.py) |
-| `meltygui.gc_manager` | [`meltygui.core.gc_manager`](../meltygui/core/gc_manager.py) |
-| `meltygui.geometry_feed` | [`meltygui.core.geometry_feed`](../meltygui/core/geometry_feed.py) |
-| `meltygui.gl_state` | [`meltygui.core.gl_state`](../meltygui/core/gl_state.py) |
-| `meltygui.global_style` | [`meltygui.core.global_style`](../meltygui/core/global_style.py) |
-| `meltygui.gpu_frame_timer` | [`meltygui.core.gpu_frame_timer`](../meltygui/core/gpu_frame_timer.py) |
-| `meltygui.hypr_left_drag` | [`meltygui.core.hypr_left_drag`](../meltygui/core/hypr_left_drag.py) |
-| `meltygui.lifecycle` | [`meltygui.core.lifecycle`](../meltygui/core/lifecycle.py) |
-| `meltygui.mcp_eval` | [`meltygui.core.mcp_eval`](../meltygui/core/mcp_eval.py) |
-| `meltygui.mcp_hotswap` | [`meltygui.core.mcp_hotswap`](../meltygui/core/mcp_hotswap.py) |
-| `meltygui.mcp_query` | [`meltygui.core.mcp_query`](../meltygui/core/mcp_query.py) |
-| `meltygui.mcp_server` | [`meltygui.core.mcp_server`](../meltygui/core/mcp_server.py) |
+| `meltygui.app` | [`meltygui.core.runtime.app`](../meltygui/core/runtime/app.py) |
+| `meltygui.app_session` | [`meltygui.core.runtime.app_session`](../meltygui/core/runtime/app_session.py) |
+| `meltygui.background` | [`meltygui.core.runtime.background`](../meltygui/core/runtime/background.py) |
+| `meltygui.code.bubbling` | [`meltygui.core.conversion.bubbling`](../meltygui/core/conversion/bubbling.py) |
+| `meltygui.code.cache_tree` | [`meltygui.core.conversion.cache_tree`](../meltygui/core/conversion/cache_tree.py) |
+| `meltygui.code.chain` | [`meltygui.core.conversion.chain`](../meltygui/core/conversion/chain.py) |
+| `meltygui.code.converter_register` | [`meltygui.core.conversion.converter_register`](../meltygui/core/conversion/converter_register.py) |
+| `meltygui.code.path_finder` | [`meltygui.core.conversion.path_finder`](../meltygui/core/conversion/path_finder.py) |
+| `meltygui.code.render_host` | [`meltygui.core.conversion.render_host`](../meltygui/core/conversion/render_host.py) |
+| `meltygui.collection_action` | [`meltygui.core.automation.collection_action`](../meltygui/core/automation/collection_action.py) |
+| `meltygui.collision` | [`meltygui.core.input.collision`](../meltygui/core/input/collision.py) |
+| `meltygui.debug.attribute_churn` | [`meltygui.core.diagnostics.attribute_churn`](../meltygui/core/diagnostics/attribute_churn.py) |
+| `meltygui.debug.framebuffer_recorder` | [`meltygui.core.graphics.framebuffer_recorder`](../meltygui/core/graphics/framebuffer_recorder.py) |
+| `meltygui.debug.invalidation_tracker` | [`meltygui.core.cache.invalidation_tracker`](../meltygui/core/cache/invalidation_tracker.py) |
+| `meltygui.debug.mode` | [`meltygui.core.rendering.mode`](../meltygui/core/rendering/mode.py) |
+| `meltygui.events.input_handler` | [`meltygui.core.input.input_handler`](../meltygui/core/input/input_handler.py) |
+| `meltygui.events.pynput_backend` | [`meltygui.core.input.pynput_backend`](../meltygui/core/input/pynput_backend.py) |
+| `meltygui.events.space_mouse` | [`meltygui.core.input.space_mouse`](../meltygui/core/input/space_mouse.py) |
+| `meltygui.events.touchpad_backend` | [`meltygui.core.input.touchpad_backend`](../meltygui/core/input/touchpad_backend.py) |
+| `meltygui.extensions` | [`meltygui.core.runtime.extensions`](../meltygui/core/runtime/extensions.py) |
+| `meltygui.fonts` | [`meltygui.core.styling.fonts`](../meltygui/core/styling/fonts.py) |
+| `meltygui.func_metadata` | [`meltygui.core.rendering.func_metadata`](../meltygui/core/rendering/func_metadata.py) |
+| `meltygui.gc_manager` | [`meltygui.core.runtime.gc_manager`](../meltygui/core/runtime/gc_manager.py) |
+| `meltygui.geometry_feed` | [`meltygui.core.windowing.geometry_feed`](../meltygui/core/windowing/geometry_feed.py) |
+| `meltygui.gl_state` | [`meltygui.core.graphics.gl_state`](../meltygui/core/graphics/gl_state.py) |
+| `meltygui.global_style` | [`meltygui.core.styling.global_style`](../meltygui/core/styling/global_style.py) |
+| `meltygui.gpu_frame_timer` | [`meltygui.core.diagnostics.gpu_frame_timer`](../meltygui/core/diagnostics/gpu_frame_timer.py) |
+| `meltygui.hypr_left_drag` | [`meltygui.core.input.hypr_left_drag`](../meltygui/core/input/hypr_left_drag.py) |
+| `meltygui.lifecycle` | [`meltygui.core.runtime.lifecycle`](../meltygui/core/runtime/lifecycle.py) |
+| `meltygui.mcp_eval` | [`meltygui.core.automation.mcp_eval`](../meltygui/core/automation/mcp_eval.py) |
+| `meltygui.mcp_hotswap` | [`meltygui.core.automation.mcp_hotswap`](../meltygui/core/automation/mcp_hotswap.py) |
+| `meltygui.mcp_query` | [`meltygui.core.automation.mcp_query`](../meltygui/core/automation/mcp_query.py) |
+| `meltygui.mcp_server` | [`meltygui.core.automation.mcp_server`](../meltygui/core/automation/mcp_server.py) |
 | `meltygui.melty` | [`meltygui.core.melty`](../meltygui/core/melty.py) |
-| `meltygui.mode_defaults` | [`meltygui.core.mode_defaults`](../meltygui/core/mode_defaults.py) |
-| `meltygui.models.core_decoration` | [`meltygui.core.data_decoration`](../meltygui/core/data_decoration.py) |
-| `meltygui.models.dynamic_obj` | [`meltygui.core.dynamic_obj`](../meltygui/core/dynamic_obj.py) |
-| `meltygui.modes` | [`meltygui.core.modes`](../meltygui/core/modes.py) |
-| `meltygui.mouse_cursor` | [`meltygui.core.mouse_cursor`](../meltygui/core/mouse_cursor.py) |
-| `meltygui.notifications` | [`meltygui.core.notifications`](../meltygui/core/notifications.py) |
-| `meltygui.os_frame` | [`meltygui.core.os_frame`](../meltygui/core/os_frame.py) |
-| `meltygui.paths` | [`meltygui.core.paths`](../meltygui/core/paths.py) |
-| `meltygui.perf_trace` | [`meltygui.core.perf_trace`](../meltygui/core/perf_trace.py) |
+| `meltygui.mode_defaults` | [`meltygui.core.rendering.mode_defaults`](../meltygui/core/rendering/mode_defaults.py) |
+| `meltygui.models.core_decoration` | [`meltygui.core.conversion.data_decoration`](../meltygui/core/conversion/data_decoration.py) |
+| `meltygui.models.dynamic_obj` | [`meltygui.core.conversion.dynamic_obj`](../meltygui/core/conversion/dynamic_obj.py) |
+| `meltygui.modes` | [`meltygui.core.rendering.modes`](../meltygui/core/rendering/modes.py) |
+| `meltygui.mouse_cursor` | [`meltygui.core.input.mouse_cursor`](../meltygui/core/input/mouse_cursor.py) |
+| `meltygui.notifications` | [`meltygui.core.diagnostics.notifications`](../meltygui/core/diagnostics/notifications.py) |
+| `meltygui.os_frame` | [`meltygui.core.windowing.os_frame`](../meltygui/core/windowing/os_frame.py) |
+| `meltygui.paths` | [`meltygui.core.runtime.paths`](../meltygui/core/runtime/paths.py) |
+| `meltygui.perf_trace` | [`meltygui.core.diagnostics.perf_trace`](../meltygui/core/diagnostics/perf_trace.py) |
 | `meltygui.rendering.core_render` | [`meltygui.core.core_render`](../meltygui/core/core_render.py) |
-| `meltygui.rendering.core_render_helpers` | [`meltygui.core.core_render_helpers`](../meltygui/core/core_render_helpers.py) |
-| `meltygui.rendering.decorators.core_decoration` | [`meltygui.core.core_decoration`](../meltygui/core/core_decoration.py) |
-| `meltygui.rendering.decorators.invalidation_decoration` | [`meltygui.core.invalidation_decoration`](../meltygui/core/invalidation_decoration.py) |
-| `meltygui.rendering.decorators.profile_decoration` | [`meltygui.core.profile_decoration`](../meltygui/core/profile_decoration.py) |
-| `meltygui.rendering.decorators.window_decoration` | [`meltygui.core.window_decoration`](../meltygui/core/window_decoration.py) |
-| `meltygui.rendering.render_funcs` | [`meltygui.core.render_funcs`](../meltygui/core/render_funcs.py) |
-| `meltygui.rendering.shaped` | [`meltygui.core.shaped`](../meltygui/core/shaped.py) |
-| `meltygui.resize_trace` | [`meltygui.core.resize_trace`](../meltygui/core/resize_trace.py) |
-| `meltygui.scene_target` | [`meltygui.core.scene_target`](../meltygui/core/scene_target.py) |
-| `meltygui.screenshot` | [`meltygui.core.screenshot`](../meltygui/core/screenshot.py) |
-| `meltygui.session_status` | [`meltygui.core.session_status`](../meltygui/core/session_status.py) |
-| `meltygui.settings` | [`meltygui.core.settings`](../meltygui/core/settings.py) |
-| `meltygui.shader_func` | [`meltygui.core.shader_func`](../meltygui/core/shader_func.py) |
-| `meltygui.state.dict_conversion` | [`meltygui.core.dict_conversion`](../meltygui/core/dict_conversion.py) |
-| `meltygui.state.dict_conversion_util` | [`meltygui.core.dict_conversion_util`](../meltygui/core/dict_conversion_util.py) |
-| `meltygui.state.graph_compare` | [`meltygui.core.graph_compare`](../meltygui/core/graph_compare.py) |
-| `meltygui.state.load_save_v2` | [`meltygui.core.load_save_v2`](../meltygui/core/load_save_v2.py) |
-| `meltygui.state.missing_saved_class` | [`meltygui.core.missing_saved_class`](../meltygui/core/missing_saved_class.py) |
+| `meltygui.rendering.core_render_helpers` | [`meltygui.core.rendering.core_render_helpers`](../meltygui/core/rendering/core_render_helpers.py) |
+| `meltygui.rendering.decorators.core_decoration` | [`meltygui.core.rendering.core_decoration`](../meltygui/core/rendering/core_decoration.py) |
+| `meltygui.rendering.decorators.invalidation_decoration` | [`meltygui.core.cache.invalidation_decoration`](../meltygui/core/cache/invalidation_decoration.py) |
+| `meltygui.rendering.decorators.profile_decoration` | [`meltygui.core.diagnostics.profile_decoration`](../meltygui/core/diagnostics/profile_decoration.py) |
+| `meltygui.rendering.decorators.window_decoration` | [`meltygui.core.rendering.window_decoration`](../meltygui/core/rendering/window_decoration.py) |
+| `meltygui.rendering.render_funcs` | [`meltygui.core.rendering.render_funcs`](../meltygui/core/rendering/render_funcs.py) |
+| `meltygui.rendering.shaped` | [`meltygui.core.rendering.shaped`](../meltygui/core/rendering/shaped.py) |
+| `meltygui.resize_trace` | [`meltygui.core.diagnostics.resize_trace`](../meltygui/core/diagnostics/resize_trace.py) |
+| `meltygui.scene_target` | [`meltygui.core.graphics.scene_target`](../meltygui/core/graphics/scene_target.py) |
+| `meltygui.screenshot` | [`meltygui.core.graphics.screenshot`](../meltygui/core/graphics/screenshot.py) |
+| `meltygui.session_status` | [`meltygui.core.diagnostics.session_status`](../meltygui/core/diagnostics/session_status.py) |
+| `meltygui.settings` | [`meltygui.core.runtime.settings`](../meltygui/core/runtime/settings.py) |
+| `meltygui.shader_func` | [`meltygui.core.graphics.shader_func`](../meltygui/core/graphics/shader_func.py) |
+| `meltygui.state.dict_conversion` | [`meltygui.core.conversion.dict_conversion`](../meltygui/core/conversion/dict_conversion.py) |
+| `meltygui.state.dict_conversion_util` | [`meltygui.core.conversion.dict_conversion_util`](../meltygui/core/conversion/dict_conversion_util.py) |
+| `meltygui.state.graph_compare` | [`meltygui.core.conversion.graph_compare`](../meltygui/core/conversion/graph_compare.py) |
+| `meltygui.state.load_save_v2` | [`meltygui.core.conversion.load_save_v2`](../meltygui/core/conversion/load_save_v2.py) |
+| `meltygui.state.missing_saved_class` | [`meltygui.core.conversion.missing_saved_class`](../meltygui/core/conversion/missing_saved_class.py) |
 | `meltygui.state.module_names` | [`meltygui.core.module_names`](../meltygui/core/module_names.py) |
-| `meltygui.style` | [`meltygui.core.style`](../meltygui/core/style.py) |
-| `meltygui.surface` | [`meltygui.core.surface`](../meltygui/core/surface.py) |
-| `meltygui.text_texture` | [`meltygui.core.text_texture`](../meltygui/core/text_texture.py) |
-| `meltygui.titlebar` | [`meltygui.core.titlebar`](../meltygui/core/titlebar.py) |
-| `meltygui.titlebar_buttons` | [`meltygui.core.titlebar_buttons`](../meltygui/core/titlebar_buttons.py) |
-| `meltygui.toggles` | [`meltygui.core.toggles`](../meltygui/core/toggles.py) |
-| `meltygui.utils.glfw_utils` | [`meltygui.core.glfw_utils`](../meltygui/core/glfw_utils.py) |
-| `meltygui.utils.singleton` | [`meltygui.core.singleton`](../meltygui/core/singleton.py) |
-| `meltygui.utils.thread_safe_bool` | [`meltygui.core.thread_safe_bool`](../meltygui/core/thread_safe_bool.py) |
-| `meltygui.utils.thread_signal` | [`meltygui.core.thread_signal`](../meltygui/core/thread_signal.py) |
-| `meltygui.warm_start` | [`meltygui.core.warm_start`](../meltygui/core/warm_start.py) |
-| `meltygui.wayland_color` | [`meltygui.core.wayland_color`](../meltygui/core/wayland_color.py) |
-| `meltygui.wayland_move` | [`meltygui.core.wayland_move`](../meltygui/core/wayland_move.py) |
-| `meltygui.window_api` | [`meltygui.core.window_api`](../meltygui/core/window_api.py) |
-| `meltygui.window_constants` | [`meltygui.core.window_constants`](../meltygui/core/window_constants.py) |
-| `meltygui.window_visibility` | [`meltygui.core.window_visibility`](../meltygui/core/window_visibility.py) |
-| `meltygui.windows.backends.imgui_renderer` | [`meltygui.core.backends.imgui_renderer`](../meltygui/core/backends/imgui_renderer.py) |
-| `meltygui.windows.backends.native_wayland` | [`meltygui.core.backends.native_wayland`](../meltygui/core/backends/native_wayland.py) |
-| `meltygui.windows.backends.wayland_protocol` | [`meltygui.core.backends.wayland_protocol`](../meltygui/core/backends/wayland_protocol.py) |
+| `meltygui.style` | [`meltygui.core.styling.style`](../meltygui/core/styling/style.py) |
+| `meltygui.surface` | [`meltygui.core.windowing.surface`](../meltygui/core/windowing/surface.py) |
+| `meltygui.text_texture` | [`meltygui.core.graphics.text_texture`](../meltygui/core/graphics/text_texture.py) |
+| `meltygui.titlebar` | [`meltygui.core.windowing.titlebar`](../meltygui/core/windowing/titlebar.py) |
+| `meltygui.titlebar_buttons` | [`meltygui.core.windowing.titlebar_buttons`](../meltygui/core/windowing/titlebar_buttons.py) |
+| `meltygui.toggles` | [`meltygui.core.runtime.toggles`](../meltygui/core/runtime/toggles.py) |
+| `meltygui.utils.glfw_utils` | [`meltygui.core.windowing.glfw_utils`](../meltygui/core/windowing/glfw_utils.py) |
+| `meltygui.utils.singleton` | [`meltygui.core.runtime.singleton`](../meltygui/core/runtime/singleton.py) |
+| `meltygui.utils.thread_safe_bool` | [`meltygui.core.runtime.thread_safe_bool`](../meltygui/core/runtime/thread_safe_bool.py) |
+| `meltygui.utils.thread_signal` | [`meltygui.core.runtime.thread_signal`](../meltygui/core/runtime/thread_signal.py) |
+| `meltygui.warm_start` | [`meltygui.core.styling.warm_start`](../meltygui/core/styling/warm_start.py) |
+| `meltygui.wayland_color` | [`meltygui.core.graphics.wayland_color`](../meltygui/core/graphics/wayland_color.py) |
+| `meltygui.wayland_move` | [`meltygui.core.windowing.wayland_move`](../meltygui/core/windowing/wayland_move.py) |
+| `meltygui.window_api` | [`meltygui.core.windowing.window_api`](../meltygui/core/windowing/window_api.py) |
+| `meltygui.window_constants` | [`meltygui.core.windowing.window_constants`](../meltygui/core/windowing/window_constants.py) |
+| `meltygui.window_visibility` | [`meltygui.core.windowing.window_visibility`](../meltygui/core/windowing/window_visibility.py) |
+| `meltygui.windows.backends.imgui_renderer` | [`meltygui.core.windowing.backends.imgui_renderer`](../meltygui/core/windowing/backends/imgui_renderer.py) |
+| `meltygui.windows.backends.native_wayland` | [`meltygui.core.windowing.backends.native_wayland`](../meltygui/core/windowing/backends/native_wayland.py) |
+| `meltygui.windows.backends.wayland_protocol` | [`meltygui.core.windowing.backends.wayland_protocol`](../meltygui/core/windowing/backends/wayland_protocol.py) |

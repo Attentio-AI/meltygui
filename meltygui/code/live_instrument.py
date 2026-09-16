@@ -89,7 +89,7 @@ def run_instrumented(fn, *args, **kwargs):
                 # An out-of-memory run leaves the live set holding onto VRAM;
                 # arm the deferred sweep (runs after these frames unwind).
                 try:
-                    from meltygui.core.gc_manager import respond_to_cuda_oom
+                    from meltygui.core.runtime.gc_manager import respond_to_cuda_oom
                     respond_to_cuda_oom(e, where=getattr(target, "__name__", "run"))
                 except Exception:
                     pass
@@ -102,7 +102,7 @@ def run_instrumented(fn, *args, **kwargs):
         # their CUDA tensors until an explicit collect. This runs on the
         # run's worker thread, win or lose - the garbage exists either way.ps
         # try:
-        #     from meltygui.core.gc_manager import collect_after_run
+        #     from meltygui.core.runtime.gc_manager import collect_after_run
         #     collect_after_run(getattr(target, "__name__", "run"))
         # except Exception:
         #     pass

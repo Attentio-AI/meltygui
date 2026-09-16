@@ -4,21 +4,21 @@ from meltygui.code.fileref import Address
 from meltygui.code.libcst_conversion import Comment
 from meltygui.code.libcst_conversion import SymbolUsage
 from meltygui.code.libcst_conversion import UsageRef
-from meltygui.core.fonts import Font
+from meltygui.core.styling.fonts import Font
 from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
 from meltygui.model.code_model import UsagePickerModel
-from meltygui.core.modes import Modes
+from meltygui.core.rendering.modes import Modes
 from meltygui.core.core_render import render_func
-from meltygui.core.core_decoration import Core
-from meltygui.core.render_funcs import RenderFuncs
+from meltygui.core.rendering.core_decoration import Core
+from meltygui.core.rendering.render_funcs import RenderFuncs
 from meltygui.state.code_state import SourcePreviewState
 from meltygui.state.new_core_model import Anchor
 from meltygui.state.new_core_model import DrawState
 from meltygui.state.new_core_model import ExpandMode
 from meltygui.state.new_core_model import Pin
 from meltygui.state.new_core_model import TabState
-from meltygui.core.toggles import Toggles
+from meltygui.core.runtime.toggles import Toggles
 from meltygui.view.header_view import draw_footer
 from meltygui.view.header_view import draw_header
 from meltygui_imgui.core import _DrawList
@@ -36,7 +36,7 @@ import weakref
 
 @render_func(use_cache=True, selectable=False)
 def run_button(input_value: any, with_kwargs=None, draw_state=None, clicked=False):
-    from meltygui.core.path_finder import Pending
+    from meltygui.core.conversion.path_finder import Pending
 
     is_render_func = hasattr(input_value, "__render_func__")
     if not is_render_func:
@@ -178,10 +178,10 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
     from meltygui.code.new_converters import _host_label
     from meltygui.code.new_converters import _host_relint_and_fixes
     from meltygui.code.new_converters import code_hosts_for
-    from meltygui.core.perf_trace import once as _ponce
-    from meltygui.core.perf_trace import trace as _ptrace
-    from meltygui.core.perf_trace import trace_rl as _ptrace_rl
-    from meltygui.core.glfw_utils import request_render
+    from meltygui.core.diagnostics.perf_trace import once as _ponce
+    from meltygui.core.diagnostics.perf_trace import trace as _ptrace
+    from meltygui.core.diagnostics.perf_trace import trace_rl as _ptrace_rl
+    from meltygui.core.windowing.glfw_utils import request_render
 
     code_dict, cache_error, dict_host = None, None, None
     # Scope-up auto-select (contextual func tab): a file-ABSOLUTE line whose
@@ -394,9 +394,9 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
     from meltygui.code.new_converters import _host_label
     from meltygui.code.new_converters import _host_relint_and_fixes
     from meltygui.code.new_converters import code_hosts_for
-    from meltygui.core.notifications import notify
-    from meltygui.core.perf_trace import once as _ponce
-    from meltygui.core.perf_trace import trace as _ptrace
+    from meltygui.core.diagnostics.notifications import notify
+    from meltygui.core.diagnostics.perf_trace import once as _ponce
+    from meltygui.core.diagnostics.perf_trace import trace as _ptrace
 
     _t_tabs0 = time.monotonic()
     view_funcs = [RenderFuncs.draw_collection_as_tabs, RenderFuncs.draw_text]
@@ -439,8 +439,8 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
         # far edges by reference - same adoption draw_columns gives nested
         # Columns. Absent (the usual standalone window), ColumnLayout falls back
         # to the window frame edges.
-        from meltygui.core.column_core import ColumnLayout
-        from meltygui.core.column_core import MIN_ROW_HEIGHT
+        from meltygui.core.layout.column_core import ColumnLayout
+        from meltygui.core.layout.column_core import MIN_ROW_HEIGHT
 
         cols = ColumnLayout(draw_state, len(tab_state.selected_tabs),
                             column_edges=column_edges, column_widths=column_widths,
@@ -643,7 +643,7 @@ def draw_jump_to(input_value: Address, unique, width=30, error_msg=None,
         draw_state._jump_btn_rect = (_bx, _by, _bx + _bw, _by + _bh)
     if flat_button(f"{_open_label}##jump_to{unique}", draw_state,
                    view_id=f"jump_open{unique}", width=_bw, height=_bh):
-        from meltygui.core.extensions import open_source as open_in_editor
+        from meltygui.core.runtime.extensions import open_source as open_in_editor
         open_in_editor(str(input_value.path), line_number=line_number,
                        token=fn.__name__ if fn is not None else None)
 
@@ -814,7 +814,7 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
 
     if getattr(node, "func_name", None) != "live_view":
         return
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     if not Toggles.TextEditor.enable_live_view:
         return
     # Viewport cull FIRST: the parse walk visits every node in the buffer, not
@@ -1138,7 +1138,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     # reparse, not once per frame.
     object.__setattr__(ds, "_lv_locator", _locator)
 
-    from meltygui.core.window_visibility import sync_marker_visibility
+    from meltygui.core.windowing.window_visibility import sync_marker_visibility
     sync_marker_visibility(ds, comment_args)
     auto_open = comment_args.get("auto_open", auto_open)
 
@@ -1177,7 +1177,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # None so the next value auto-opens it.
         win_ds.closed = True
         ds._lv_open = None
-        from meltygui.core.glfw_utils import request_render
+        from meltygui.core.windowing.glfw_utils import request_render
         request_render()
     if (getattr(ds, "_lv_open", None) is None and captured and auto_open
             and inline_text is None):
@@ -1250,7 +1250,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     # SEEN by a running body - a cached tile never re-tests hover); the
     # cursor mode doesn't: the caret only moves on frames the editor
     # renders, and the cursor_inside edge below invalidates the tile.
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     hover_mode = bool(Toggles.TextEditor.live_hover_preview)
     _raw_ci = bool(cursor_inside) and not hover_mode
     # Dismissed latch: an X-closed cursor preview stays dismissed until the
@@ -1281,7 +1281,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     preview_show = (captured and not open_now and inline_text is None
                     and ((hovered and hover_mode) or cursor_inside))
     if preview_show and hover_mode:
-        from meltygui.core.glfw_utils import request_render
+        from meltygui.core.windowing.glfw_utils import request_render
         ds.invalidate()
         request_render()
 
@@ -1363,7 +1363,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     if hovered and inline_text is None and imgui.is_mouse_double_clicked(0):
         open_now = not open_now
         ds._lv_open = open_now
-        from meltygui.core.window_visibility import marker_user_visibility
+        from meltygui.core.windowing.window_visibility import marker_user_visibility
         marker_user_visibility(ds, not open_now)
         if open_now:
             _auto_run_on_user_open(editor_ds, store_obj)
@@ -1390,7 +1390,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # Full (per-publish) watch once a window exists so the value streams
         # in - the first_only call above only flips the box green.
         watch(store_obj, key_path, ds)
-        from meltygui.core.render_dispatch import draw_any
+        from meltygui.core.rendering.render_dispatch import draw_any
         # Named by the code line's STABLE name - the marker's own name (raw,
         # line number stripped), never the full line-keyed path and never
         # draw_state.line: the name hashes into the unique ID, so a line
@@ -1473,7 +1473,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # replaced since; they resolve through the host's held tree (memo
         # keyed by host identity, so it self-refreshes on every reparse).
         object.__setattr__(win_ds, "_lv_locator", _locator)
-        from meltygui.core.window_visibility import override_state, user_window_closed
+        from meltygui.core.windowing.window_visibility import override_state, user_window_closed
         _window_state = override_state(ds)
         if _window_state.pending_marker_closed is not None:
             user_window_closed(win_ds, _window_state.pending_marker_closed)
@@ -1531,7 +1531,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
             except Exception as e:
                 print(f"live_view: park hint for {key_path} failed: {e!r}")
             try:
-                from meltygui.core.gc_manager import release_cuda_cache_soon
+                from meltygui.core.runtime.gc_manager import release_cuda_cache_soon
                 release_cuda_cache_soon(label="live window close")
             except Exception:
                 pass
@@ -1589,7 +1589,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
 
     if not _is_funcdef_node(node) or span is None:
         return
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     live_store = kwargs.get("live_store")
     if live_store is None and not Toggles.TextEditor.enable_live_view:
         return
@@ -2009,7 +2009,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                 # its window closed/missing).
                 if (getattr(draw_state, "_lv_full_overlay_until", 0)
                         > Core.melty.frame_count):
-                    from meltygui.core.perf_trace import trace as _ptr
+                    from meltygui.core.diagnostics.perf_trace import trace as _ptr
                     _mreg2 = getattr(draw_state, "_lv_marker_ds", None) or {}
                     _mk2 = (f"lvs::{fn.__qualname__}::"
                             f"{_skey_names.get(key_path) or _stable_key_name(key_path, _snap_vals)}")
@@ -2089,7 +2089,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                     _pills[key_path] = _pill
                 if _created == _budget:
                     _created += 1
-                    from meltygui.core.glfw_utils import request_render
+                    from meltygui.core.windowing.glfw_utils import request_render
                     draw_state.invalidate()
                     request_render()
                 continue
@@ -2167,7 +2167,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     # def, culled=off-viewport, idle=fast-id skips, drawn=full wrapper calls).
     _soms = (time.perf_counter() - _sot0) * 1000.0
     if _soms >= 2.0:
-        from meltygui.core.perf_trace import trace as _sotrace
+        from meltygui.core.diagnostics.perf_trace import trace as _sotrace
         _sotrace("snapshot_overlay", fn=getattr(fn, "__qualname__", "?"),
                  ms=round(_soms, 1), keys=_soc[0], culled=_soc[1],
                  idle=_soc[2], drawn=_soc[3])
@@ -2226,10 +2226,10 @@ def draw_function_live(input_value, draw_state=None, unique=None,
         request_run(draw_state)
 
     from meltygui.view.code_view import draw_function
-    from meltygui.core.render_dispatch import draw_any
-    from meltygui.core.column_core import ColumnLayout
-    from meltygui.core.column_core import MIN_ROW_HEIGHT
-    from meltygui.core.mode import Mode
+    from meltygui.core.rendering.render_dispatch import draw_any
+    from meltygui.core.layout.column_core import ColumnLayout
+    from meltygui.core.layout.column_core import MIN_ROW_HEIGHT
+    from meltygui.core.rendering.mode import Mode
     # Runner | source: a shared edge system (ColumnLayout): the divider is
     # a draggable line in the window's flat collision solve, and each column
     # manages its own height - no _columns_top capture to race with
@@ -2292,7 +2292,7 @@ def draw_source_preview(input_value=None, draw_state=None, preview: SourcePrevie
         pane.text_selection_start = pane.text_selection_end = offset
         pane.invalidate()
         preview.line = None
-        from meltygui.core.glfw_utils import request_render
+        from meltygui.core.windowing.glfw_utils import request_render
         request_render()
     return False, input_value
 
@@ -2461,7 +2461,7 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
 
 @render_func(is_default_for=(Parameter), wraps=render_func, with_header=draw_header)
 def draw_parameter(input_value):
-    from meltygui.core.render_dispatch import draw_any
+    from meltygui.core.rendering.render_dispatch import draw_any
 
     parameter_default = input_value.default
     if parameter_default is inspect.Parameter.empty:
@@ -2491,17 +2491,17 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
     re-fires on completion instead of being lost. The worker only writes
     draw_state attrs and uses the cross-thread invalidation path (the
     Background.run completion pattern); all rendering stays on the GL thread."""
-    from meltygui.core.glfw_utils import request_render
+    from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.utils.render_utils import print_colored_traceback
     from meltygui.view.collection_view import draw_collection
     from meltygui.view.control_view import button
-    from meltygui.core.render_dispatch import _RUN_RESULT_HOLDERS
-    from meltygui.core.render_dispatch import _format_run_error
-    from meltygui.core.render_dispatch import _respond_to_cuda_oom
-    from meltygui.core.render_dispatch import draw_any
-    from meltygui.core.render_dispatch import is_run_busy
-    from meltygui.core.render_dispatch import run_busy_begin
-    from meltygui.core.render_dispatch import run_busy_end
+    from meltygui.core.rendering.render_dispatch import _RUN_RESULT_HOLDERS
+    from meltygui.core.rendering.render_dispatch import _format_run_error
+    from meltygui.core.rendering.render_dispatch import _respond_to_cuda_oom
+    from meltygui.core.rendering.render_dispatch import draw_any
+    from meltygui.core.rendering.render_dispatch import is_run_busy
+    from meltygui.core.rendering.render_dispatch import run_busy_begin
+    from meltygui.core.rendering.render_dispatch import run_busy_end
 
     if not callable(input_value):
         imgui.text("Not a callable function")
@@ -2529,7 +2529,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
 
             draw_state.params = param_dict
         if len(draw_state.params) > 0:
-            from meltygui.core.mode import Mode
+            from meltygui.core.rendering.mode import Mode
             changed, new_val = draw_collection(draw_state.params, name="Parameters", initial={"expanded": True},
                                                use_cache=True,
                                                mode=Mode.FUNCTION_PARAMS,
@@ -2581,7 +2581,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
                     # marks the runner's subtree by tile id (force: the result
                     # pane is a cached descendant) and wakes the loop; the
                     # validation itself happens on the render thread.
-                    from meltygui.core.invalidation_tracker import Note
+                    from meltygui.core.cache.invalidation_tracker import Note
                     Melty.cache.invalidate_up(
                         draw_state._tile_id, force=True,
                         note=Note(name="draw_function run complete",

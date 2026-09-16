@@ -2,22 +2,22 @@ from collections import defaultdict
 
 from enum import Enum
 
-import meltygui.core.window_api as glfw
+import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
-from meltygui.core.dict_conversion import DictConversion
-from meltygui.core.toggles import shadow_depth_at
-from meltygui.core.toggles import Toggles
-from meltygui.core.glfw_utils import print_stack_trace
-from meltygui.core.cache_tree import CacheTree
-from meltygui.core.cache_tree import UNSET_VALUE
-from meltygui.core.core_decoration import no_save
-from meltygui.core.core_decoration import exclude
-from meltygui.core.core_decoration import deep_refresh
-from meltygui.core.core_decoration import no_save_exclude
-from meltygui.core.core_decoration import Core
-from meltygui.core.core_decoration import defaults
+from meltygui.core.conversion.dict_conversion import DictConversion
+from meltygui.core.runtime.toggles import shadow_depth_at
+from meltygui.core.runtime.toggles import Toggles
+from meltygui.core.windowing.glfw_utils import print_stack_trace
+from meltygui.core.conversion.cache_tree import CacheTree
+from meltygui.core.conversion.cache_tree import UNSET_VALUE
+from meltygui.core.rendering.core_decoration import no_save
+from meltygui.core.rendering.core_decoration import exclude
+from meltygui.core.rendering.core_decoration import deep_refresh
+from meltygui.core.rendering.core_decoration import no_save_exclude
+from meltygui.core.rendering.core_decoration import Core
+from meltygui.core.rendering.core_decoration import defaults
 
 
 class SynthColors(DictConversion):
@@ -933,8 +933,9 @@ class DrawState(DictConversion):
         self._cache = None
         self._return_value = None
 
-    def invalidate_up(self, max_depth=4, frame_delta=0, note=None):
-        Core.melty.cache.invalidate_up(self._tile_id, frame_delta=frame_delta, max_depth=max_depth, note=note)
+    def invalidate_up(self, max_depth=4, frame_delta=0, note=None, force=False):
+        Core.melty.cache.invalidate_up(self._tile_id, frame_delta=frame_delta,
+                                       max_depth=max_depth, note=note, force=force)
 
     def invalidate(self, frame_delta=0, note=None):
         Core.melty.cache.invalidate(self._tile_id, frame_delta=frame_delta, note=note)
@@ -1027,7 +1028,7 @@ class DrawState(DictConversion):
         # Reached only when normal lookup failed. `locate_params` and any
         # future explicit property resolve BEFORE this and never arrive here.
         if name.startswith("locate_"):
-            from meltygui.core.parameter_core import anywhere_value
+            from meltygui.core.rendering.parameter_core import anywhere_value
             return anywhere_value(name[7:], self)
         raise AttributeError(name)
 
@@ -1040,7 +1041,7 @@ class DrawState(DictConversion):
         view function's signature default."""
         if isinstance(getattr(type(self), name, None), property):
             raise AttributeError(f"{name} is read-only")
-        from meltygui.core.parameter_core import set_anywhere
+        from meltygui.core.rendering.parameter_core import set_anywhere
         set_anywhere(name[7:], value, self, allow_any=True, ds_fallback=True)
 
     @property
@@ -1061,7 +1062,7 @@ class DrawState(DictConversion):
         handed, so a fresh object per frame would look like a new value every
         frame. Stored via object.__setattr__ — like _anc_scroll_key above, it
         never appears on the default instance, so it isn't serialized."""
-        from meltygui.core.parameter_core import ParamProxy
+        from meltygui.core.rendering.parameter_core import ParamProxy
         proxy = self.__dict__.get('_locate_proxy')
         if proxy is None:
             proxy = ParamProxy(self)
@@ -1076,7 +1077,7 @@ class DrawState(DictConversion):
         each a live ParamProxy (reads resolve, item-writes go through
         set_anywhere). A separate cached instance, same identity rules as
         locate_params above."""
-        from meltygui.core.parameter_core import GroupedParamProxy
+        from meltygui.core.rendering.parameter_core import GroupedParamProxy
         proxy = self.__dict__.get('_locate_all_proxy')
         if proxy is None or not isinstance(proxy, GroupedParamProxy):
             proxy = GroupedParamProxy(self)
@@ -1461,7 +1462,7 @@ class DrawState(DictConversion):
             # Exempt the floating DnD window: glue_window_to_cursor assumes abs
             # is linear in window_pos, and a clamp makes its per-frame
             # correction accumulate without bound (see _cap_to_display).
-            from meltygui.core.drag_drop_core import DragDrop
+            from meltygui.core.input.drag_drop_core import DragDrop
             if DragDrop.is_dragged_item(self):
                 return base_y
         except Exception:
@@ -1505,7 +1506,7 @@ class DrawState(DictConversion):
         if not capped:
             return pos
         try:
-            from meltygui.core.drag_drop_core import DragDrop
+            from meltygui.core.input.drag_drop_core import DragDrop
             if DragDrop.is_dragged_item(self):
                 return pos
         except Exception:
@@ -2186,7 +2187,10 @@ class DrawState(DictConversion):
         return max_layer_depth - layer_and_depth
 
     def get_content_rect(self):
-        return (self.abs_left, self.abs_top + self.header_height, self.abs_left + self.width, self.abs_top + self.height - self.footer_height)
+        # An inline header shares the value row; it consumes horizontal space.
+        header_height = 0 if self._kwargs.get('header_same_line', False) else self.header_height
+        return (self.abs_left, self.abs_top + header_height,
+                self.abs_left + self.width, self.abs_top + self.height - self.footer_height)
 
     def get_header_rect(self):
         # header_width is the measured width of the drawn header, so the drag

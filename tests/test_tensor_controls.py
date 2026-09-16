@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from meltygui.core.gl_state import GLState
+from meltygui.core.graphics.gl_state import GLState
 from meltygui.model.tensor_model import TensorDim, TensorDims
 from meltygui.view import tensor_view
 
@@ -117,7 +117,7 @@ def test_label_atlas_keeps_resources_until_text_or_supplied_font_changes(monkeyp
         return SimpleNamespace(texture_id=len(baked)), {}
 
     monkeypatch.setattr(tensor_view, 'bake_texts', bake)
-    monkeypatch.setattr('meltygui.core.gl_state.current_context', lambda: 42)
+    monkeypatch.setattr('meltygui.core.graphics.gl_state.current_context', lambda: 42)
     monkeypatch.setattr(tensor_view.gl, 'glDeleteTextures', lambda ids: deleted.extend(ids))
     state = GLState()
     first_font, second_font = object(), object()

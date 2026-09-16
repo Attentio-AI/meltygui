@@ -17,22 +17,22 @@ def draw_orchestrator(input_value=None, draw_state=None, style_manager=None,
     # to the SAME (input_id, DOWN) key as left_mouse_down (DOWN has no double
     # promotion) but the per-frame name cache keeps one name per key - it
     # silently drops every plain press. DOUBLE_CLICKED is its own key.
-    from meltygui.core.glfw_utils import request_render
-    from meltygui.core.tile_cache import add_shadow
-    from meltygui.core.orchestration_core import Orchestrator
-    from meltygui.core.orchestration_core import _format_value
-    from meltygui.core.orchestration_core import _wrap_text
-    from meltygui.core.orchestration_core import cue_gesture
-    from meltygui.core.orchestration_core import cue_get
-    from meltygui.core.orchestration_core import cue_has_target
-    from meltygui.core.orchestration_core import cue_press_frac
-    from meltygui.core.orchestration_core import failure_report
-    from meltygui.core.orchestration_core import generalized_commands
-    from meltygui.core.orchestration_core import group_events
-    from meltygui.core.orchestration_core import parse_argument
-    import meltygui.core.orchestration_core
+    from meltygui.core.windowing.glfw_utils import request_render
+    from meltygui.core.cache.tile_cache import add_shadow
+    from meltygui.core.automation.orchestration_core import Orchestrator
+    from meltygui.core.automation.orchestration_core import _format_value
+    from meltygui.core.automation.orchestration_core import _wrap_text
+    from meltygui.core.automation.orchestration_core import cue_gesture
+    from meltygui.core.automation.orchestration_core import cue_get
+    from meltygui.core.automation.orchestration_core import cue_has_target
+    from meltygui.core.automation.orchestration_core import cue_press_frac
+    from meltygui.core.automation.orchestration_core import failure_report
+    from meltygui.core.automation.orchestration_core import generalized_commands
+    from meltygui.core.automation.orchestration_core import group_events
+    from meltygui.core.automation.orchestration_core import parse_argument
+    import meltygui.core.automation.orchestration_core
 
-    meltygui.core.orchestration_core._window_draw_state = draw_state
+    meltygui.core.automation.orchestration_core._window_draw_state = draw_state
     Orchestrator._precondition_watch = set()      # re-declared by the command rows below
     root = getattr(Melty.vis, "root", None)
     store = getattr(root, "orchestrations", None)
@@ -357,7 +357,7 @@ def draw_orchestrator(input_value=None, draw_state=None, style_manager=None,
                         run_pre, _ = _button(row_left + precondition_indent - px(22), row_y,
                                              px(18.0), px(16.0), play_icon, tint, icon_only=True)
                     if run_pre and not is_recording and not engine_busy:
-                        from meltygui.core.value_core import precondition_task
+                        from meltygui.core.automation.value_core import precondition_task
                         cue = orchestration.cues[ordinal]
                         path = tuple(cue_get(cue, "chain") or [cue_get(cue, "name") or "?"])
                         Orchestrator.submit(precondition_task(

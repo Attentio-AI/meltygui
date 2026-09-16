@@ -288,7 +288,7 @@ def stamp_run_marker(fn, attr, value):
             now = time.time()
             if now - _last_wake > 0.033:
                 _last_wake = now
-                from meltygui.core.glfw_utils import request_render
+                from meltygui.core.windowing.glfw_utils import request_render
                 request_render()
     except Exception:
         pass
@@ -322,7 +322,7 @@ def call_with_body_capture(func, kwargs, on_captured=None):
             # LOCAL half - `on_captured` (the context menu's CodeEditor
             # adopting the body locals into its own stack copy) - always
             # fires; it touches nothing global.
-            from meltygui.core.toggles import Toggles
+            from meltygui.core.runtime.toggles import Toggles
             if Toggles.TextEditor.enable_live_view:
                 if exit_line[0] is not None:
                     stamp_run_marker(inner, "__live_return_line__",
@@ -826,7 +826,7 @@ def _wake_render(throttle):
     _last_wake = now
     _wake_timer = None
     try:
-        from meltygui.core.glfw_utils import request_render
+        from meltygui.core.windowing.glfw_utils import request_render
         request_render()
     except Exception:
         pass  # headless (tests) - nothing to wake
@@ -1177,7 +1177,7 @@ def _record_scope_type(site, value, name, bare):
         if not local_name.isidentifier():
             return
     try:
-        from meltygui.core.func_metadata import FuncsMetadata
+        from meltygui.core.rendering.func_metadata import FuncsMetadata
         FuncsMetadata.record_value(store_obj, local_name, value)
     except Exception:
         pass
@@ -1558,7 +1558,7 @@ def _prune_keys(store_obj, removed):
         except Exception:
             pass
     try:
-        from meltygui.core.glfw_utils import request_render
+        from meltygui.core.windowing.glfw_utils import request_render
         request_render()
     except Exception:
         pass  # headless (test)
@@ -1959,7 +1959,7 @@ def _publish_stack_locals_sync(frames, extra_snapshots=None):
     from meltygui.code.chain_converters import _is_dispatch_frame
     from meltygui.code.chain_converters import _enclosing_function
     from meltygui.code.fileref import is_editable_source
-    from meltygui.core.func_metadata import FuncsMetadata
+    from meltygui.core.rendering.func_metadata import FuncsMetadata
     with _snapshot_lock:
         for entry in frames or ():
             if len(entry) < 5 or not entry[4]:
@@ -2163,7 +2163,7 @@ def _ast_for(path, mtime):
     _t0 = time.perf_counter()
     tree = ast.parse(text)
     try:  # TEMP perf: how often the full-file reparse actually fires
-        from meltygui.core.perf_trace import trace as _pt
+        from meltygui.core.diagnostics.perf_trace import trace as _pt
         _pt("live_view ast reparse", path=path.name, gen=gen,
             ms=round((time.perf_counter() - _t0) * 1000.0, 1))
     except Exception:
@@ -2206,7 +2206,7 @@ def _linemap_for(path, sig, span, text):
     else:
         lines = text.splitlines(keepends=True)
         snippet = "".join(lines[span[0] - 1:span[1]])
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     if Toggles.TextEditor.melty_syntax:
         parse = cst_module_to_dict(snippet)                 # core_syntax (raw input)
     else:

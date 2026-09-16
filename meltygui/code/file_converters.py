@@ -11,7 +11,7 @@ are used as save_data parameters on reverse converters.
 """
 import ast
 import builtins
-from meltygui.core.notifications import lag_traced
+from meltygui.core.diagnostics.notifications import lag_traced
 
 import dis
 import inspect
@@ -30,7 +30,7 @@ from meltygui.core.definition_hotswap import canonicalize_definitions
 
 import libcst as cst
 
-from meltygui.core.glfw_utils import print_stack_trace
+from meltygui.core.windowing.glfw_utils import print_stack_trace
 import meltygui.code.hotswap_guard as _hotswap_guard
 from meltygui.code.fileref import Address
 from meltygui.code.fileref import invalidate_address_cache
@@ -292,8 +292,8 @@ def fn_to_cst(input_value, data=None) -> cst.Module:
 @render_func()
 def recompile_fn(input_value, ref=None, function_ref=None):
     """Save handler: hotswap function + write source to disk."""
-    from meltygui.core.path_finder import Pending
-    from meltygui.core.path_finder import PendingState
+    from meltygui.core.conversion.path_finder import Pending
+    from meltygui.core.conversion.path_finder import PendingState
     if not is_editable_source(ref.path):
         print(f"[recompile_fn] refusing to write library source: {ref.path}")
         return None, ref
@@ -355,8 +355,8 @@ def mod_to_cst(input_value, data=None) -> cst.Module:
 @render_func()
 def recompile_mod_fn(input_value, ref=None, module_ref=None):
     """Save handler: hotswap module + write source to disk."""
-    from meltygui.core.path_finder import Pending
-    from meltygui.core.path_finder import PendingState
+    from meltygui.core.conversion.path_finder import Pending
+    from meltygui.core.conversion.path_finder import PendingState
     if not is_editable_source(ref.path):
         print(f"[recompile_mod_fn] refusing to write library source: {ref.path}")
         return None, ref
@@ -393,8 +393,8 @@ def cls_to_cst(input_value, data=None) -> cst.Module:
 def recompile_cls_fn(input_value, ref=None, class_ref=None,
                      hotswap_instances=True):
     """Save handler: hotswap class + write source to disk."""
-    from meltygui.core.path_finder import Pending
-    from meltygui.core.path_finder import PendingState
+    from meltygui.core.conversion.path_finder import Pending
+    from meltygui.core.conversion.path_finder import PendingState
     if not is_editable_source(ref.path):
         print(f"[recompile_cls_fn] refusing to write library source: {ref.path}")
         return None, ref
@@ -485,6 +485,47 @@ def cst_to_ref(input_value):
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  Instance patching (DictConversion)                                          ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
+
+def _patch_constructor_literals(cls: type, source: str) -> None:
+    """Backfill new literal state fields without rerunning live constructors.
+
+    Only unconditional ``self.field = <literal>`` assignments are safe to
+    initialize without constructor arguments or side effects. Existing values,
+    including runtime edits and fields with computed initializers, stay intact.
+    """
+    import copy
+    instances = vars(cls).get('_instances')
+    if instances is None or not instances:
+        return
+    node = ast.parse(source)
+    for name in cls.__qualname__.split('.'):
+        node = next((child for child in node.body
+                     if isinstance(child, ast.ClassDef) and child.name == name), None)
+        if node is None:
+            return
+    init = next((child for child in node.body
+                 if isinstance(child, ast.FunctionDef) and child.name == '__init__'), None)
+    if init is None or not init.args.args:
+        return
+    self_name = init.args.args[0].arg
+    for statement in init.body:
+        if isinstance(statement, ast.Assign):
+            targets, value = statement.targets, statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            targets, value = [statement.target], statement.value
+        else:
+            continue
+        try:
+            default = ast.literal_eval(value)
+        except (ValueError, TypeError, SyntaxError):
+            continue
+        for target in targets:
+            if (isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name)
+                    and target.value.id == self_name):
+                for instance in list(instances):
+                    if target.attr not in vars(instance):
+                        setattr(instance, target.attr, copy.deepcopy(default))
+
 
 def _patch_instances(cls: type) -> None:
     """Add new field defaults to live instances after a class hotswap.
@@ -1011,6 +1052,7 @@ def _recompile_module(module: types.ModuleType, source: str,
     # invalidates by object; without this a whole-file swap leaves views
     # reading class attrs (Toggles etc.) blitting stale tiles.
     for c in _swapped_classes:
+        _patch_constructor_literals(c, source)
         Melty.cache.invalidate_up_by_obj(c, max_depth=10)
 
 
@@ -1167,7 +1209,7 @@ def stamp_hotswap_baselines(delay: float = 0.0) -> int:
     _segment)."""
     import sys as _sys
     from meltygui.code.fileref import is_editable_source
-    from meltygui.core.perf_trace import span as _pt_span
+    from meltygui.core.diagnostics.perf_trace import span as _pt_span
     if delay:
         time.sleep(delay)
     by_file = {}

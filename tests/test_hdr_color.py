@@ -86,7 +86,7 @@ def test_hdr_pack_uses_the_flag_and_round_trips_within_a_code():
 
 
 def test_hdr_ceiling_and_zero_codes():
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     rng = Toggles.HDR.vertex_range
     top = HC.pack_color(*HC.white(rng * 4))          # past the ceiling clamps
     assert top & 0xFF == 255 and (top >> 8) & 0xFF == 255

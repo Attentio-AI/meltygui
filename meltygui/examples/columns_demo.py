@@ -3,9 +3,9 @@
 as an app: `@window` swapped for `@glfw_window`, nothing else changed."""
 import meltygui_imgui as imgui
 from meltygui import glfw_window
-from meltygui.core.column_core import draw_rows
-from meltygui.core.column_core import Columns
-from meltygui.core.column_core import Rows
+from meltygui.core.layout.column_core import draw_rows
+from meltygui.core.layout.column_core import Columns
+from meltygui.core.layout.column_core import Rows
 from meltygui.core.core_render import render_func
 
 columns_demo = Columns({

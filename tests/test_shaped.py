@@ -15,13 +15,13 @@ import numpy as np
 import pytest
 torch = pytest.importorskip("torch")
 
-from meltygui.core.shaped import Shaped
-from meltygui.core.shaped import best_match
-from meltygui.core.shaped import mro_distance
-from meltygui.core.shaped import shape_matches
-from meltygui.core.shaped import value_dtype
-from meltygui.core.shaped import value_shape
-from meltygui.core.shaped import SEQ_DTYPE_SCAN_CAP
+from meltygui.core.rendering.shaped import Shaped
+from meltygui.core.rendering.shaped import best_match
+from meltygui.core.rendering.shaped import mro_distance
+from meltygui.core.rendering.shaped import shape_matches
+from meltygui.core.rendering.shaped import value_dtype
+from meltygui.core.rendering.shaped import value_shape
+from meltygui.core.rendering.shaped import SEQ_DTYPE_SCAN_CAP
 
 
 # ---------------------------------------------------------------- grammar --
@@ -281,8 +281,8 @@ def test_registered_app_defaults_route_the_two_use_cases():
     for 1-D/2-D tensors, draw_voxels for 3-D+ (importing the views registers
     them)."""
     from meltygui.core.melty import Melty
-    import meltygui.core.render_dispatch as new_core_view
-    import meltygui.core.graph_core as line_graph_playground
+    import meltygui.core.rendering.render_dispatch as new_core_view
+    import meltygui.core.graphics.graph_core as line_graph_playground
     import meltygui.tensor.voxel_playground as voxel_playground
 
     look = lambda v, key="value": Melty.get_default_view_function(real_type=type(v), attrib_key=key, value=v)

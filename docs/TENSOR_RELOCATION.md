@@ -1,7 +1,7 @@
 # Tensor extraction: data and shared presentation
 
 Implemented in bounded batches on 2026-09-16; remaining ownership work
-is tracked in [Architecture gaps](ARCHITECTURE_DEBT.md#tensor-rendering-data-extraction-complete-shared-ownership-next).
+is tracked in [Architecture gaps](ARCHITECTURE_DEBT.md#tensor-rendering-shared-palettes-extracted-runtime-and-demos-remain).
 
 | Destination | Responsibility moved |
 |---|---|
@@ -59,7 +59,54 @@ Verification of this batch:
   only its sibling in the same group; the other group stayed unchanged.
 - Deferred editor sources were unchanged.
 
-Next: explicit LUT injection and shared texture ownership; remaining slice
-controls and error state; feature drawing versus generic GPU lifecycle; demo
-hosts and windows moved out of library dependencies. `voxel_playground.py`
-remains a production dependency until those responsibilities are separated.
+## Shared palette ownership
+
+- `model/lut_model.py` owns `Lut`, palette generation, editable RGB lists in
+  `LutPalette`, and lazy `LutTexture` values.
+- `model/texture_model.py` provides `TextureId`: an integer-like proxy whose GPU
+  storage belongs to the current rendering context.
+- `view/lut_view.py` owns the picker and swatch render functions.
+- `core/graphics/lut_core.py` injects `Melty.luts` and subscribes consumers before the
+  cache gate; callers can supply their own palette. No RenderHost or separate
+  `lut_resources` service is involved.
+
+Both tensor and graph views use `luts.texture(name)` as a texture ID. The proxy
+handles upload and cleanup behind that interface; CUDA uses its matching tensor.
+CUDA previously read baked defaults, and some upload keys missed colour edits
+that kept the same length. Both GL and CUDA now refresh on those edits and share
+uploads within each context and palette collection. Surface cleanup releases
+that context's resources. Migration preserves edited lists, allocations and the
+legacy texture-cache dictionary while retiring the old palette host.
+
+Verification covers lazy construction without a host, direct PyOpenGL binding,
+same-length edits, allocation adoption and context cleanup. In isolated native
+Wayland and GLFW apps, a shared red-to-blue palette edit refreshed cached
+CUDA/GL volumes and graphs without hovering them.
+
+Live `#[...]` parameters still feed `draw_voxels`. Comment changes are now checked
+before the cache gate, so changing the parsed annotation updates an existing
+view immediately. Whole-module hotswap also backfills missing literal constructor
+defaults in tracked state objects without rerunning constructors or overwriting
+live values. Both have regression coverage; the text editor remains untouched.
+
+Next: remaining slice controls and error state; feature drawing versus generic
+GPU lifecycle; demo hosts and windows moved out of library dependencies.
+`voxel_playground.py` remains a production dependency until those responsibilities
+are separated.
+
+## Slice controls, error state and graph helpers
+
+- `control_view.py` provides `draw_int_slider`, a draw-list control driven by
+  injected pointer events. Tensor and graph slice rows share `draw_tensor_slices`
+  in `tensor_view.py`; edits use the existing parameter invalidation path.
+- `draw_tensor_error` renders supplied error text with an injected
+  `TensorErrorState`. The old voxel helpers remain compatibility imports.
+- `model/graph_model.py` owns line-axis resolution, slicing, packing and finite
+  ranges. Graph coordinate/tick helpers and axis overlays live in `graph_view.py`.
+- Inline headers no longer subtract a header row from the content hit rectangle;
+  this fixes injected pointer delivery to the visible value row.
+
+A live native app verified slider and slice edits, volume rendering and the
+shared error card. Applying the subsequent core folder moves preserved its
+edited values, LUT proxy and GLState. The remaining voxel GPU/runtime/demo
+coupling is tracked in the architecture inventory.

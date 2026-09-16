@@ -9,8 +9,8 @@ swap, exactly like it owns the inspector today.
 import meltygui_imgui as imgui
 
 from meltygui.core.core_render import render_func
-from meltygui.core.window_decoration import window
-from meltygui.core.render_dispatch import draw_any
+from meltygui.core.rendering.window_decoration import window
+from meltygui.core.rendering.render_dispatch import draw_any
 
 # Module-level so hotswap re-exec reuses it and the edits made through the
 # menu keep their state while iterating.

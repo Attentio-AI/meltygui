@@ -10,7 +10,7 @@ torch = pytest.importorskip("torch")
 pytest.importorskip('meltygui_pycuda.gl')
 
 import meltygui.tensor.cuda_interop as cuda_interop
-from meltygui.core.gl_state import GLState
+from meltygui.core.graphics.gl_state import GLState
 
 needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="no CUDA device")
 

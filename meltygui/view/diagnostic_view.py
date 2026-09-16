@@ -1,7 +1,7 @@
 """Diagnostic view functions and supporting definitions."""
-from meltygui.core.path_finder import Pending
+from meltygui.core.conversion.path_finder import Pending
 from meltygui.hdr_color import pack_color
-from meltygui.core.modes import Modes
+from meltygui.core.rendering.modes import Modes
 from meltygui.core.core_render import render_func
 from meltygui.state.core_enums import PendingAction
 from meltygui.state.core_undo import NavUndo
@@ -19,10 +19,10 @@ import types
              shadow=True, selectable=False, wrap=False, with_header=draw_header,
              indent_size=5, searchable=True, shaodw=False, bg_offset=3)
 def draw_frame(input_value: types.FrameType, draw_state, **kwargs):
-    from meltygui.core.fonts import Font
+    from meltygui.core.styling.fonts import Font
     from meltygui.view.control_view import button
     from meltygui.view.text_view import draw_text
-    from meltygui.core.render_dispatch import draw_any
+    from meltygui.core.rendering.render_dispatch import draw_any
 
     file_name_truncated = Path(input_value.f_code.co_filename).name
     imgui.text(f"{file_name_truncated}:{input_value.f_lineno} in {input_value.f_code.co_name}")
@@ -60,7 +60,7 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None):
     """
     Renders the time taken for a specific operation in the profiler.
     """
-    from meltygui.core.global_style import GlobalStyle
+    from meltygui.core.styling.global_style import GlobalStyle
 
     in_ms = input_value * 1000.0
     if brief:
@@ -157,7 +157,7 @@ def pending_window(input_value, button_name, pending=None, draw_state=None,
                    show_revert=False, show_load=False):
     from meltygui.view.control_view import button
     from meltygui.view.text_view import draw_text
-    from meltygui.core.cursor_core import same_line
+    from meltygui.core.layout.cursor_core import same_line
 
     draw_text(str(pending.status), width=draw_state.width, name="Status", show_bg=True, shadow=False, with_footer=None)
     imgui.dummy(0, 5)

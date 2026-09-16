@@ -142,7 +142,7 @@ class CodexChats(ChatProxy):
         return threads
 
     def _open_transport(self, remote_id=None):
-        from meltygui.core.toggles import Toggles
+        from meltygui.core.runtime.toggles import Toggles
         holder = {}
         def event(value):
             if not holder.get("closing"):

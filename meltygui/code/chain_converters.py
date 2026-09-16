@@ -10,7 +10,7 @@ These are NEW functions — the old converters in file_converters.py
 and libcst_conversion.py stay untouched for backward compat.
 """
 import inspect
-from meltygui.core.notifications import lag_traced
+from meltygui.core.diagnostics.notifications import lag_traced
 
 import os
 import pickle
@@ -26,15 +26,15 @@ import libcst as cst
 
 from meltygui.core.melty import FileWatch
 from meltygui.core.melty import Melty
-from meltygui.core.background import Background
+from meltygui.core.runtime.background import Background
 from meltygui.state.new_core_model import Pin
 from meltygui.state.new_core_model import Anchor
-from meltygui.core.toggles import Toggles
-from meltygui.core.glfw_utils import request_render
-from meltygui.core.glfw_utils import print_stack_trace
-from meltygui.core.cache_tree import UNSET_VALUE
-from meltygui.core.path_finder import Pending
-from meltygui.core.path_finder import PendingState
+from meltygui.core.runtime.toggles import Toggles
+from meltygui.core.windowing.glfw_utils import request_render
+from meltygui.core.windowing.glfw_utils import print_stack_trace
+from meltygui.core.conversion.cache_tree import UNSET_VALUE
+from meltygui.core.conversion.path_finder import Pending
+from meltygui.core.conversion.path_finder import PendingState
 from meltygui.core.core_render import render_func
 from meltygui.code.fileref import Address
 from meltygui.code.fileref import to_address
@@ -54,10 +54,10 @@ from meltygui.code.libcst_conversion import CodeLine
 from meltygui.code.libcst_conversion import ClassParse
 from meltygui.code.libcst_conversion import FunctionParse
 from meltygui.code.libcst_conversion import NO_DEFAULT
-from meltygui.core.perf_trace import trace as _ptrace
-from meltygui.core.perf_trace import span as _pspan
-from meltygui.core.header_runtime import draw_header
-from meltygui.core.core_decoration import defaults
+from meltygui.core.diagnostics.perf_trace import trace as _ptrace
+from meltygui.core.diagnostics.perf_trace import span as _pspan
+from meltygui.core.layout.header_runtime import draw_header
+from meltygui.core.rendering.core_decoration import defaults
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -200,7 +200,7 @@ def class_to_address(input_value: type, draw_state, changed=False):
     if not isinstance(input_value, type) or input_value.__module__ in ('builtins', '_collections_abc'):
         return changed, None
     # A runtime-generated bubbling class has no source of its own - resolve its base.
-    from meltygui.core.bubbling import base_of_bubbling
+    from meltygui.core.conversion.bubbling import base_of_bubbling
     input_value = base_of_bubbling(input_value)
     try:
         import inspect
@@ -1088,7 +1088,7 @@ def address_to_general_parse(input_value: Address, pending=False, unique=None, c
     if draw_state.frame_count < 2 and auto_load:
         load = True
 
-    from meltygui.core.render_dispatch import button
+    from meltygui.core.rendering.render_dispatch import button
     file_name = input_value.path.name if input_value.path is not None else "Unknown file"
     folder_icon = ""
     # if button(f"{folder_icon} {file_name}", height=30, value=0.4, saturation=1.5)[0]:
@@ -1207,7 +1207,7 @@ def general_parse_to_address(input_value: GeneralParse=None, pending=False, draw
         PendingSave.queue_save(address, codec, data=code_str, ensure_import=ensure_import)
     if show_recompile:
         if source is not None:
-            from meltygui.core.mode import Mode
+            from meltygui.core.rendering.mode import Mode
             recompiled, _ = run_button(do_recompile, clicked=recompile and pending, name=f"do_recompile{unique}",
                         with_kwargs={"input_value": address.source,
                                  "code_str": _edited_source(code_str),
@@ -1283,8 +1283,8 @@ def focus(input_value, path=(), default=None, kind=None, draw_state=None, unique
     GeneralParse dict (code-comment / decoration tint), a draw_state, or a data
     class instance.
     """
-    from meltygui.core.render_dispatch import draw_tuple
-    from meltygui.core.render_dispatch import button
+    from meltygui.core.rendering.render_dispatch import draw_tuple
+    from meltygui.core.rendering.render_dispatch import button
 
     changed, new_value = False, input_value
     if not path:

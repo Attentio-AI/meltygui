@@ -23,7 +23,7 @@ import time
 
 
 def enabled() -> bool:
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     return bool(Toggles.InternetAccounts.notify_requests)
 
 
@@ -35,7 +35,7 @@ def notify_request(what, detail=""):
     text = what + (f" · {detail}" if detail else "")
     print(f"[anthropic] {time.strftime('%H:%M:%S')} {text}")
     try:
-        from meltygui.core.notifications import notify
+        from meltygui.core.diagnostics.notifications import notify
         notify(text, tint=(0.85, 0.55, 0.35, 1.0), tag="anthropic")
     except Exception:
         pass

@@ -1,5 +1,5 @@
 """Injected state for orchestration views."""
-from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.conversion.dict_conversion import DictConversion
 
 
 class OrchestratorPanelState(DictConversion):

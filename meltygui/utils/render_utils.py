@@ -4,15 +4,15 @@ from collections import defaultdict
 from enum import Enum
 from traceback import _parse_value_tb
 
-import meltygui.core.window_api as glfw
+import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
 from meltygui_imgui import ImGuiError
 
 from meltygui.state.model_enums import RelaxedEnum
-from meltygui.core.glfw_utils import _needs_render
-from meltygui.core.glfw_utils import print_stack_trace
-from meltygui.core.core_decoration import Core
-from meltygui.core.singleton import singleton
+from meltygui.core.windowing.glfw_utils import _needs_render
+from meltygui.core.windowing.glfw_utils import print_stack_trace
+from meltygui.core.rendering.core_decoration import Core
+from meltygui.core.runtime.singleton import singleton
 
 
 class GroupType(Enum):

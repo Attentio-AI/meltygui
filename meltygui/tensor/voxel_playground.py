@@ -1,7 +1,7 @@
 """Voxel renderer on the GLState + @shader_func stack, plugged into real data
 through a RenderHost.
 
-The pipeline — draw_voxels owns everything, no state objects:
+The pipeline — source hosting and parameter-driven tensor presentation:
 
     tensor / ndarray / None ──voxel_io──► tensor ──draw_voxels──► pixels
     (host input)             (resolve     (held in   (slice + upload + render,
@@ -18,10 +18,9 @@ The pipeline — draw_voxels owns everything, no state objects:
   controls panel write draw_state.<name> and only diverged values persist.
 - The fragment shader declares NO uniforms; break it in the editor and the last
   good program keeps rendering with the remapped driver error underneath.
-- LUTs are flat [r,g,b, r,g,b, ...] float lists (LUTS); `lut_host` is a
-  RenderHost whose io turns them into shared 1-D textures (_LUT_TEXTURES),
-  re-uploading when a list is edited. draw_voxels samples the one its `lut`
-  param names — the old custom jet() GLSL is now just the baked "jet" entry.
+- LUTs are flat [r,g,b, r,g,b, ...] float lists from model/lut_model.py.
+  Core injects the editable host data and shared uploads into tensor and graph
+  views. The LUT texture is an integer-like model, with no palette host.
 - Axis labels are textured billboards IN the scene: text_texture.py bakes the
   strings via imgui's own font atlas (a private shared-atlas context + the
   screen pass's draw-list mechanics, no freetype), and a raw-GL pass draws each
@@ -49,33 +48,33 @@ from meltygui.hdr_color import pack_color
 import numpy as np
 import OpenGL.GL as gl
 
-from meltygui.core.gl_state import GLState
-from meltygui.core.gl_state import GLTexture
-from meltygui.core.gl_state import gl_limits
-from meltygui.core.gl_state import texture3d_fit
-from meltygui.core.gl_state import tight_unpack
+from meltygui.core.graphics.gl_state import GLState
+from meltygui.core.graphics.gl_state import GLTexture
+from meltygui.core.graphics.gl_state import gl_limits
+from meltygui.core.graphics.gl_state import texture3d_fit
+from meltygui.core.graphics.gl_state import tight_unpack
 from meltygui.core.melty import Melty
-from meltygui.core.dict_conversion import DictConversion
-from meltygui.core.shader_func import shader_func
-from meltygui.core.shaped import Shaped
-from meltygui.core.text_texture import bake_text
-from meltygui.core.text_texture import bake_texts
-from meltygui.core.toggles import SwooshMode
-from meltygui.core.glfw_utils import request_render
-from meltygui.core.glfw_utils import print_stack_trace
-from meltygui.core.render_host import RenderHost
+from meltygui.core.conversion.dict_conversion import DictConversion
+from meltygui.core.graphics.shader_func import shader_func
+from meltygui.core.rendering.shaped import Shaped
+from meltygui.core.graphics.text_texture import bake_text
+from meltygui.core.graphics.text_texture import bake_texts
+from meltygui.core.runtime.toggles import SwooshMode
+from meltygui.core.windowing.glfw_utils import request_render
+from meltygui.core.windowing.glfw_utils import print_stack_trace
+from meltygui.core.conversion.render_host import RenderHost
 from meltygui.core.core_render import render_func
 from meltygui.core.core_render import release_input_refs
-from meltygui.core.window_decoration import window
-from meltygui.core.modes import Modes
-from meltygui.core.header_runtime import flat_button
-from meltygui.core.render_dispatch import draw_any
-from meltygui.core.render_dispatch import draw_bg
+from meltygui.core.rendering.window_decoration import window
+from meltygui.core.rendering.modes import Modes
+from meltygui.core.layout.header_runtime import flat_button
+from meltygui.core.rendering.render_dispatch import draw_any
+from meltygui.core.rendering.render_dispatch import draw_bg
 from meltygui.model.camera_model import basis as _cam_basis
 from meltygui.model.camera_model import apply_space_mouse
-from meltygui.core.render_funcs import RenderFuncs
-from meltygui.core.toggles import Toggles
-from meltygui.core.toggles import Swoosh
+from meltygui.core.rendering.render_funcs import RenderFuncs
+from meltygui.core.runtime.toggles import Toggles
+from meltygui.core.runtime.toggles import Swoosh
 
 HALF_PI = math.pi / 2
 
@@ -484,13 +483,14 @@ def _upload_cuda_image(gl_state, out):
     return img
 
 
-def _cuda_render(gl_state, cv, width, height, lut="jet", shade=None, **cam):
+def _cuda_render(gl_state, cv, width, height, lut="jet", shade=None,
+                 lut_texture=None, **cam):
     """Run the CUDA raymarcher over `cv` (CudaVolumeView) at width×height
     and return a display-GPU RGBA16F GLTexture holding the premultiplied
     LINEAR image (HDR headroom and P3 negatives intact, hdr_color.py) — or
     None (error recorded in _CUDA_LAST_ERROR, drawn as status).
-    Resources by gl_state key: the output image + LUT live on the TENSOR's
-    device, a pinned host buffer carries the image over, and `cuda_image`
+    The shared LUT and per-view output image live on the TENSOR's device;
+    a pinned host buffer carries the image over, and `cuda_image`
     is the GL texture it lands in (all re-made only when size/device/LUT
     change)."""
     global _CUDA_LAST_ERROR
@@ -502,11 +502,11 @@ def _cuda_render(gl_state, cv, width, height, lut="jet", shade=None, **cam):
         out = gl_state.get("cuda_out",
                            lambda: torch.empty(H, W, 4, dtype=torch.float16, device=dev),
                            deps=(W, H, str(dev)))
-        lut_list = LUTS.get(lut, LUTS["jet"])
-        lut_t = gl_state.get("cuda_lut",
-                             lambda: torch.tensor(lut_list, dtype=torch.float32,
-                                                  device=dev).reshape(-1, 3).contiguous(),
-                             deps=(str(lut), len(lut_list), str(dev)))
+        if lut_texture is None:
+            from meltygui.model.lut_model import LutTexture, make_luts, lut_values
+            lut_texture = gl_state.get(('cuda_lut_proxy', str(lut)),
+                lambda: LutTexture(lut_values(make_luts(), lut)))
+        lut_t = lut_texture.cuda(dev)
         # shading params ride one small device array, re-uploaded only when
         # a value changes (deps = the values themselves)
         shade_list = list(shade) if shade is not None else cuda_march.shade_params()
@@ -607,190 +607,23 @@ from meltygui.view.tensor_view import _label_vao
 
 from meltygui.view.tensor_view import _label_atlas
 
-# ── LUTs: a LUT is just a flat [r,g,b, r,g,b, ...] float list ───────────────
-# lut_host (bottom of file) turns these into shared 1-D textures; draw_voxels
-# samples the one its `lut` param names. Editing a list re-uploads.
-
-def _bake_lut(fn, n=256, clamp=True):
-    """Sample fn(v ∈ [0,1]) → (r, g, b) into the flat-list LUT shape.
-    Entries are EXTENDED sRGB (hdr_color.py): `clamp=False` keeps values
-    past [0, 1] — above 1 is brighter than the desktop's white, negative is
-    outside the sRGB gamut (P3) — for a table that is HDR on its own."""
-    out = []
-    for i in range(n):
-        rgb = fn(i / (n - 1))
-        if clamp:
-            rgb = (min(1.0, max(0.0, float(c))) for c in rgb)
-        out += [float(c) for c in rgb]
-    return out
+# Compatibility imports for palette values; runtime ownership lives in core.
+from meltygui.model.lut_model import _bake_lut
+from meltygui.model.lut_model import hdr_ramp
+from meltygui.model.lut_model import _hot_hdr_hue
+from meltygui.model.lut_model import _poly
+from meltygui.model.lut_model import _VIRIDIS
+from meltygui.model.lut_model import _PLASMA
+from meltygui.model.lut_model import _MAGMA
+from meltygui.model.lut_model import _INFERNO
+from meltygui.model.lut_model import _TURBO
+from meltygui.model.lut_model import _seismic
+from meltygui.model.lut_model import _coolwarm
 
 
-def hdr_ramp(hue_at, peak=16.0, chroma=1.0, white_from=0.55, n=1024):
-    """Build an HDR colour scale as a flat LUT list: ``n`` entries spaced
-    UNIFORMLY in Oklab lightness from black to ``peak`` × the desktop's
-    white, each the most saturated colour of hue ``hue_at(u)`` (u = the
-    lightness fraction, 0 → 1; radians) that fits the P3 box that tall,
-    times ``chroma``. That is what "a bigger LUT" means: an SDR scale
-    (``hot``: black → red → yellow → white) runs the max-chroma edges of a
-    box ONE white tall; this runs the same kind of path up a box ``peak``
-    whites tall, so the scale has log2(peak) extra stops of distinguishable
-    levels — not a brighter table, a longer one. Entries are extended sRGB,
-    unclamped (P3 reaches below 0, HDR above 1).
+LUTS = globals().get("LUTS")
 
-    Whitening is a SECOND axis of information, not a side effect: past
-    ``white_from`` the chroma eases to zero at the peak (smoothstep), so
-    the top of the range reads as saturated → pale → white while the
-    lightness keeps climbing — the box alone would keep a P3 yellow fully
-    saturated to within a few percent of the peak and then snap to white,
-    since a pure yellow fits a 16× box until its two channels hit 16. The
-    ease also lands the scale inside what the panel can show: a 12× white
-    saturated yellow is past any panel's peak and the compositor would
-    desaturate it anyway (Hyprland's luminance-preserving rule)."""
-    from meltygui.hdr_color import _cbrt
-    from meltygui.hdr_color import linear_to_srgb
-    from meltygui.hdr_color import oklab_max_chroma
-    from meltygui.hdr_color import oklab_to_linear
-    peak_lightness = _cbrt(peak)
-    out = []
-    for i in range(n):
-        u = i / (n - 1)
-        lightness = u * peak_lightness
-        hue = hue_at(u)
-        w = min(1.0, max(0.0, (u - white_from) / (1.0 - white_from)))
-        envelope = 1.0 - w * w * (3.0 - 2.0 * w)
-        c = chroma * envelope * oklab_max_chroma(lightness, hue, peak)
-        lin = oklab_to_linear((lightness, c * math.cos(hue), c * math.sin(hue)))
-        out += [linear_to_srgb(v) for v in lin]
-    return out
-
-
-def _hot_hdr_hue(u):
-    """`hot`'s hue path for hdr_ramp: P3 red through the lower half of the
-    lightness range, turning to P3 yellow across the middle, yellow above
-    (the box then whitens it toward the peak). The SDR `hot` is untouched:
-    an HDR scale is its own picker entry, never a scaled SDR one, so a
-    colour scale people know keeps meaning what it meant (Lukas 09-08)."""
-    from meltygui.hdr_color import linear_p3_to_srgb
-    from meltygui.hdr_color import oklab_hue
-    # [tint=(0.95, 0.35, 0.1)]
-    red_until = 0.4        # lightness fraction that stays pure red
-    # [tint=(0.95, 0.75, 0.2)]
-    yellow_from = 0.7      # ... and where it has fully turned yellow
-    red = oklab_hue(linear_p3_to_srgb((1.0, 0.0, 0.0)))
-    yellow = oklab_hue(linear_p3_to_srgb((1.0, 1.0, 0.0)))
-    t = min(1.0, max(0.0, (u - red_until) / (yellow_from - red_until)))
-    t = t * t * (3.0 - 2.0 * t)                      # smoothstep
-    return red + (yellow - red) * t
-
-
-
-def _poly(coeffs):
-    """Per-channel polynomial in t (Horner); rows are (r, g, b) coefficients
-    in ascending order — the shape of Matt Zucker's matplotlib colormap fits
-    (shadertoy WlfXRN) and of Google's turbo fit."""
-
-    def fn(t):
-        r = g = b = 0.0
-        for cr, cg, cb in reversed(coeffs):
-            r, g, b = r * t + cr, g * t + cg, b * t + cb
-        return r, g, b
-
-    return fn
-
-
-_VIRIDIS = [
-    (0.2777273272234177, 0.005407344544966578, 0.3340998053353061),
-    (0.1050930431085774, 1.404613529898575, 1.384590162594685),
-    (-0.3308618287255563, 0.214847559468213, 0.09509516302823659),
-    (-4.634230498983486, -5.799100973351585, -19.33244095627987),
-    (6.228269936347081, 14.17993336680509, 56.69055260068105),
-    (4.776384997670288, -13.74514537774601, -65.35303263337234),
-    (-5.435455855934631, 4.645852612178535, 26.3124352495832),
-]
-_PLASMA = [
-    (0.05873234392399702, 0.02333670892565664, 0.5433401826748754),
-    (2.176514634195958, 0.2383834171260182, 0.7539604599784036),
-    (-2.689460476458034, -7.455851135738909, 3.110799939717086),
-    (6.130348345893603, 42.3461881477227, -28.51885465332158),
-    (-11.10743619062271, -82.66631109428045, 60.13984767418263),
-    (10.02306557647065, 71.41361770095349, -54.07218655560067),
-    (-3.658713842777788, -22.93153465461149, 18.19190778539828),
-]
-_MAGMA = [
-    (-0.002136485053939582, -0.000749655052795221, -0.005386127855323933),
-    (0.2516605407371642, 0.6775232436837668, 2.494026599312351),
-    (8.353717279216625, -3.577719514958484, 0.3144679030132573),
-    (-27.66873308576866, 14.26473078096533, -13.64921318813922),
-    (52.17613981234068, -27.94360607168351, 12.94416944238394),
-    (-50.76852536473588, 29.04658282127291, 4.23415299384598),
-    (18.65570506591883, -11.48977351997711, -5.601961508734096),
-]
-_INFERNO = [
-    (0.0002189403691192265, 0.001651004631001012, -0.01948089843709184),
-    (0.1065134194856116, 0.5639564367884091, 3.932712388889277),
-    (11.60249308247187, -3.972853965665698, -15.9423941062914),
-    (-41.70399613139459, 17.43639888205313, 44.35414519872813),
-    (77.162935699427, -33.40235894210092, -81.80730925738993),
-    (-71.31942824499214, 32.62606426397723, 73.20951985803202),
-    (25.13112622477341, -12.24266895238567, -23.07032500287172),
-]
-_TURBO = [
-    (0.13572138, 0.09140261, 0.10667330),
-    (4.61539260, 2.19418839, 12.64194608),
-    (-42.66032258, 4.84296658, -60.58204836),
-    (132.13108234, -14.18503333, 110.36276771),
-    (-152.94239396, 4.27729857, -89.90310912),
-    (59.28637943, 2.82956604, 27.34824973),
-]
-
-
-def _seismic(v):
-    """Diverging blue-white-red with dark ends (matplotlib's seismic) —
-    strong negative coverage: zero is white, sign maps to hue, magnitude
-    to saturation/darkness. Pair with the `centered` param."""
-    if v < 0.25:
-        t = v / 0.25
-        return (0.0, 0.0, 0.3 + 0.7 * t)
-    if v < 0.5:
-        t = (v - 0.25) / 0.25
-        return (t, t, 1.0)
-    if v < 0.75:
-        t = (v - 0.5) / 0.25
-        return (1.0, 1.0 - t, 1.0 - t)
-    t = (v - 0.75) / 0.25
-    return (1.0 - 0.5 * t, 0.0, 0.0)
-
-
-def _coolwarm(v):
-    """Cool-to-warm diverging ramp: blue → near-white → red."""
-    if v < 0.5:
-        t, a, b = v * 2.0, (0.230, 0.299, 0.754), (0.865, 0.865, 0.865)
-    else:
-        t, a, b = v * 2.0 - 1.0, (0.865, 0.865, 0.865), (0.706, 0.016, 0.150)
-    return tuple(x + (y - x) * t for x, y in zip(a, b))
-
-
-LUTS = {
-    # the original custom jet, baked from the exact formula the shader uses
-    "jet": _bake_lut(lambda v: (1.5 - abs(4.0 * v - 3.0),
-                                1.5 - abs(4.0 * v - 2.0),
-                                1.5 - abs(4.0 * v - 1.0))),
-    "viridis": _bake_lut(_poly(_VIRIDIS)),
-    "plasma": _bake_lut(_poly(_PLASMA)),
-    "magma": _bake_lut(_poly(_MAGMA)),
-    "inferno": _bake_lut(_poly(_INFERNO)),
-    "turbo": _bake_lut(_poly(_TURBO)),
-    "grey": _bake_lut(lambda v: (v, v, v)),
-    "hot": _bake_lut(lambda v: (3.0 * v, 3.0 * v - 1.0, 3.0 * v - 2.0)),
-    "coolwarm": _bake_lut(_coolwarm),
-    "seismic": _bake_lut(_seismic),
-    # ── HDR ramps get their own entries (hdr_ramp - uniform Oklab lightness
-    # up a 16× box, max chroma that fits, 4 stops longer than the SDR one)
-    "hot_hdr": hdr_ramp(_hot_hdr_hue, peak=16.0),
-}
-
-# Host-converted 1-D textures by LUT name - module-level (hotswap-reused) so
-# every voxel view uses the SAME textures the LUT host materialized.
+# Retain old references until the core ownership bridge below adopts them.
 _LUT_TEXTURES = globals().get("_LUT_TEXTURES", {})
 
 # Once-only warning latch for the label-billboard path (hotswap-reused).
@@ -900,26 +733,26 @@ from meltygui.model.tensor_model import _AXIS_POS
 from meltygui.model.tensor_model import _volume_scale
 
 
-def _draw_slice_sliders(draw_state, slider_dims, dim_names, slices, source_shape, width):
-    """The slice sliders, one row per unmapped dim under the image. An edit
-    writes the full-length slices tuple to draw_state (auto-state: it
-    diverges the param, persists, and feeds the volume key so the volume
-    re-slices + re-uploads on the next frame). Shared by the render path and
-    the hold-last-frame path (no value yet) so the rows never flash."""
-    for d in slider_dims:
-        label = dim_names[d] if d < len(dim_names) else f"dim{d}"
-        cur = max(0, min(int(slices[d]) if d < len(slices) else 0,
-                         source_shape[d] - 1))
-        imgui.push_item_width(max(60, width - 110))
-        s_changed, s_val = imgui.slider_int(f"{label}##slice{d}", cur,
-                                            0, source_shape[d] - 1)
-        imgui.pop_item_width()
-        if s_changed and int(s_val) != cur:
-            new_slices = list(slices) + [0] * (len(source_shape) - len(slices))
-            new_slices[d] = int(s_val)
-            draw_state.slices = tuple(new_slices)
-            draw_state.invalidate()
-            request_render()
+from meltygui.view.tensor_view import _draw_slice_sliders
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def source_identity(src):
@@ -968,36 +801,7 @@ def voxel_io(input_value=None, view_func=None, external_change=False, **kwargs):
     return view_func(input_value=t, external_change=external_change, **kwargs)
 
 
-@render_func(show_bg=False)
-def lut_io(input_value=None, gl_state: GLState = None, view_func=None,
-           external_change=False, **kwargs):
-    """RenderHost io: {name: flat [r,g,b, ...] float list} → shared 1-D
-    GLTextures (_LUT_TEXTURES). Runs on the render thread inside the host's
-    settings window, so GL is legal. A list edit bubbles → host dirty → this
-    re-runs and re-uploads (the texture deps key on a content hash). Draws a
-    preview swatch strip per LUT."""
-    luts = input_value if isinstance(input_value, dict) else {}
-    draw_list = imgui.get_window_draw_list()
-    bar_w, bar_h, segs = 160.0, 13.0, 48
-    for name, lut in luts.items():
-        if not isinstance(lut, (list, tuple)) or len(lut) < 6 or len(lut) % 3:
-            imgui.text(f"{name}: not a flat [r,g,b,...] list")
-            continue
-        _LUT_TEXTURES[name] = gl_state.texture1d(
-            f"lut_{name}", lut, version=hash(tuple(lut)))
-        n = len(lut) // 3
-        x, y = imgui.get_cursor_screen_pos()
-        for s in range(segs):
-            i = min(n - 1, int(s * (n - 1) / max(1, segs - 1))) * 3
-            col = pack_color(lut[i], lut[i + 1], lut[i + 2], 1.0)
-            draw_list.add_rect_filled(x + bar_w * s / segs, y,
-                                      x + bar_w * (s + 1) / segs, y + bar_h, col)
-        imgui.dummy(bar_w, bar_h)
-        imgui.same_line()
-        imgui.text(f"{name} ({n})")
-    if view_func is None:
-        return False, input_value
-    return view_func(input_value=input_value, **kwargs)
+from meltygui.view.lut_view import draw_luts as lut_io
 
 
 # Near-plane depth for the axis box's Python-side projection - the old
@@ -1032,32 +836,32 @@ from meltygui.view.tensor_view import _describe_tensor
 from meltygui.view.tensor_view import _view_size
 
 
-def _draw_voxel_error(draw_state, message, who="draw_voxels"):
-    """The error card that stands IN PLACE of the 3-D view: same footprint,
-    a dark panel, the reason wrapped inside. Also printed once per distinct
-    message so the console has it without a stack trace flood. `who` names
-    the view in the title (draw_line_graph shares the card)."""
-    width, height = _view_size(draw_state)
-    dl = imgui.get_window_draw_list()
-    x, y = imgui.get_cursor_screen_pos()
-    dl.add_rect_filled(x, y, x + width, y + height,
-                       pack_color(0.09, 0.05, 0.05, 1.0), 6.0)
-    dl.add_rect(x, y, x + width, y + height,
-                pack_color(0.75, 0.25, 0.25, 0.9), 6.0, thickness=1.5)
-    pad = 12.0
-    imgui.set_cursor_screen_pos((x + pad, y + pad))
-    imgui.push_text_wrap_pos(x + width - pad)
-    imgui.push_style_color(imgui.COLOR_TEXT, 1.0, 0.55, 0.55, 1.0)
-    imgui.text(f"{who} can't display this tensor")
-    imgui.pop_style_color()
-    imgui.text_wrapped(message)
-    imgui.pop_text_wrap_pos()
-    # Reserve the full footprint so the layout matches a rendered frame.
-    imgui.set_cursor_screen_pos((x, y))
-    imgui.dummy(width, height)
-    if draw_state.misc.get("_voxel_err_msg") != message:
-        draw_state.misc["_voxel_err_msg"] = message
-        print(f"[{who}] {draw_state.name}: {message}")
+from meltygui.view.tensor_view import _draw_voxel_error
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 from meltygui.view.tensor_view import _draw_image_notice
@@ -1072,7 +876,7 @@ from meltygui.view.tensor_view import _draw_tensor_meta
 from meltygui.model.tensor_model import _is_tensorish
 
 
-from meltygui.core.tensor_core import _voxels_cleanup
+from meltygui.core.graphics.tensor_core import _voxels_cleanup
 
 
 from meltygui.view.tensor_view import draw_voxels
@@ -1149,12 +953,11 @@ voxel_host_4d = _ensure_host("voxel_host_4d", "Voxel 4D", demo_4d(), io=voxel_io
 voxel_host_5d = _ensure_host("voxel_host_5d", "Voxel 5D", demo_5d(), io=voxel_io)
 voxel_host_flow = _ensure_host("voxel_host_flow", "Voxel Flow", demo_flat(), io=voxel_io)
 
-# LUT lists → GL 1-D textures. A surviving host keeps ITS dict across
-# hotswap (user edits intact); LUTs newly added in code merge in by name.
-lut_host = _ensure_host("lut_host", "LUTs", LUTS, io=lut_io)
-if lut_host.input_value is not LUTS and isinstance(lut_host.input_value, dict):
-    for _name in LUTS:
-        lut_host.input_value.setdefault(_name, LUTS[_name])
+# Compatibility names; the palette is a model and no longer needs a RenderHost.
+from meltygui.core.graphics.lut_core import get_luts
+LUTS = get_luts()
+_LUT_TEXTURES = LUTS._textures
+lut_host = None
 
 
 def _draw_host_volume(input_value):

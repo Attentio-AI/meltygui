@@ -10,10 +10,10 @@ see exactly what dominates the file and spot anything that's growing.
 import sys
 from enum import Enum
 
-from meltygui.core.dict_conversion import DictConversion
-from meltygui.core.dict_conversion_util import ClassUtility
-import meltygui.core.load_save_v2 as v2
-import meltygui.core.graph_compare as gc
+from meltygui.core.conversion.dict_conversion import DictConversion
+from meltygui.core.conversion.dict_conversion_util import ClassUtility
+import meltygui.core.conversion.load_save_v2 as v2
+import meltygui.core.conversion.graph_compare as gc
 
 _PRIM = (int, float, bool, str, bytes, type(None))
 

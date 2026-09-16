@@ -1,28 +1,28 @@
 """Compatibility entry points for the file feature.
 
 Implementation lives in model/file_model.py, view/file_view.py and
-core/file_core.py. Keep registered window and lifecycle identities here so
+core/files/file_core.py. Keep registered window and lifecycle identities here so
 existing applications and saved sessions retain their entry points.
 """
-from meltygui.core import file_core
+from meltygui.core.files import file_core
 from meltygui.core.melty import Melty
-from meltygui.core.modes import Modes
+from meltygui.core.rendering.modes import Modes
 from meltygui.core.core_render import render_func
-from meltygui.core.window_decoration import window
+from meltygui.core.rendering.window_decoration import window
 
-from meltygui.core.file_core import ROOT
-from meltygui.core.file_core import TEST_FOLDER
-from meltygui.core.file_core import files_proxy
-from meltygui.core.file_core import test_folder_proxy
-from meltygui.core.file_core import _disk_trees
-from meltygui.core.file_core import _window_dss
-from meltygui.core.file_core import _proxies
-from meltygui.core.file_core import _poller_running
-from meltygui.core.file_core import folder_io
-from meltygui.core.file_core import folder_proxy
-from meltygui.core.file_core import watch_folder
-from meltygui.core.file_core import _draw_tree
-from meltygui.core.file_core import _poll_loop
+from meltygui.core.files.file_core import ROOT
+from meltygui.core.files.file_core import TEST_FOLDER
+from meltygui.core.files.file_core import files_proxy
+from meltygui.core.files.file_core import test_folder_proxy
+from meltygui.core.files.file_core import _disk_trees
+from meltygui.core.files.file_core import _window_dss
+from meltygui.core.files.file_core import _proxies
+from meltygui.core.files.file_core import _poller_running
+from meltygui.core.files.file_core import folder_io
+from meltygui.core.files.file_core import folder_proxy
+from meltygui.core.files.file_core import watch_folder
+from meltygui.core.files.file_core import _draw_tree
+from meltygui.core.files.file_core import _poll_loop
 from meltygui.model.file_model import _scan
 from meltygui.model.file_model import _create
 from meltygui.model.file_model import _delete

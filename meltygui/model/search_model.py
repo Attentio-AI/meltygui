@@ -47,7 +47,7 @@ def _split_words(s):
     `/`, ` `, `-`, ...) and camelCase boundaries both split; digits are their
     own words. ("draw_any" -> ("draw", "any"), "GLState" -> ("gl", "state"),
     "new_core_view.py" -> ("new", "core", "view", "py"))."""
-    from meltygui.core.render_dispatch import _WORD_RE
+    from meltygui.core.rendering.render_dispatch import _WORD_RE
 
     return tuple(w.lower() for w in _WORD_RE.findall(s))
 

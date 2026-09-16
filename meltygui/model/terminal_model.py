@@ -1,5 +1,5 @@
 """Terminal model functions and supporting definitions."""
-from meltygui.core.core_decoration import defaults
+from meltygui.core.rendering.core_decoration import defaults
 import os
 import select
 import threading
@@ -20,8 +20,8 @@ class Terminal:
         # it starts, then hands it off to its own gnome-terminal window (claude-d style).
         # No blocking `tmux new-session -d` on the UI thread first. With a launch_cmd/
         # session given (main/lsd/discovered claude-d) we just attach, as before.
-        from meltygui.core.terminal_core import _new_owned_session_name
-        from meltygui.core.terminal_core import _owned_launch_argv
+        from meltygui.core.services.terminal_core import _new_owned_session_name
+        from meltygui.core.services.terminal_core import _owned_launch_argv
 
         owned = launch_cmd is None and tmux_session is None
         if owned:
@@ -72,12 +72,12 @@ class Terminal:
         threading.Thread(target=self._start_and_read, args=(cols, rows), daemon=True).start()
 
     def _start_and_read(self, cols, rows):
-        from meltygui.core.terminal_core import _OWNED_SESSION_PREFIX
-        from meltygui.core.terminal_core import _disable_mouse
-        from meltygui.core.terminal_core import _handoff_to_gnome
-        from meltygui.core.terminal_core import _make_history_screen
-        from meltygui.core.terminal_core import _set_winsize
-        from meltygui.core.terminal_core import _spawn_in_pty
+        from meltygui.core.services.terminal_core import _OWNED_SESSION_PREFIX
+        from meltygui.core.services.terminal_core import _disable_mouse
+        from meltygui.core.services.terminal_core import _handoff_to_gnome
+        from meltygui.core.services.terminal_core import _make_history_screen
+        from meltygui.core.services.terminal_core import _set_winsize
+        from meltygui.core.services.terminal_core import _spawn_in_pty
 
         try:
             import pyte
@@ -135,7 +135,7 @@ class Terminal:
         return hash((rows, sc.cursor.x, sc.cursor.y, sc.cursor.hidden, len(sc.history.top)))
 
     def _read_loop(self):
-        from meltygui.core.glfw_utils import request_render
+        from meltygui.core.windowing.glfw_utils import request_render
 
         fd = self.master_fd
         # Force a first paint. Guarded: this runs BEFORE the try below, so a None _ds
@@ -241,7 +241,7 @@ class Terminal:
         """Resize the PTY + emulated screen immediately — no coalescing, so every size
         the window sweeps through during a drag is applied as fast as it changes.
         _resize_screen keeps each individual resize correct."""
-        from meltygui.core.terminal_core import _set_winsize
+        from meltygui.core.services.terminal_core import _set_winsize
 
         if cols < 2 or rows < 2 or (cols, rows) == self.size:
             return
@@ -265,7 +265,7 @@ class Terminal:
         BOTTOM-anchored (cursor on the last row, overflow back into history). The
         shell's SIGWINCH redraw then always lands on the same bottom row and nothing
         accumulates. Short content stays top-anchored, like a real terminal."""
-        from meltygui.core.terminal_core import _ALT_SCREEN_MODES
+        from meltygui.core.services.terminal_core import _ALT_SCREEN_MODES
 
         screen = self.screen
         old_rows = screen.lines

@@ -273,7 +273,7 @@ def test_span_call_shadowed_name_stays_silent(module_file):
 
 
 def test_span_toggle_off_restores_old_behavior(module_file, monkeypatch):
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     monkeypatch.setattr(Toggles.TextEditor, "lint_span_calls", False)
     assert _span_lint("def caller():\n    helper(1, 2, 3)\n",
                       module_file) == []

@@ -4,24 +4,24 @@ from pathlib import Path
 
 import meltygui_imgui as imgui
 
-from meltygui.core.modes import Modes
-from meltygui.core.render_funcs import RenderFuncs
-from meltygui.core.toggles import Toggles
+from meltygui.core.rendering.modes import Modes
+from meltygui.core.rendering.render_funcs import RenderFuncs
+from meltygui.core.runtime.toggles import Toggles
 from meltygui.code.new_converters import code_file_io
 from meltygui.code.new_converters import convert_in_and_out_value
 from meltygui.code.new_converters import string_to_cst_module
 from meltygui.code.new_converters import cst_module_to_string
 from meltygui.code.new_converters import cst_module_to_dict
 from meltygui.code.new_converters import dict_to_cst_module
-from meltygui.core.render_host import RenderHost
-from meltygui.core.column_core import draw_columns
+from meltygui.core.conversion.render_host import RenderHost
+from meltygui.core.layout.column_core import draw_columns
 from meltygui.core.core_render import render_func
-from meltygui.core.window_decoration import window
-from meltygui.core.render_dispatch import draw_any
-from meltygui.core.render_dispatch import draw_collection
+from meltygui.core.rendering.window_decoration import window
+from meltygui.core.rendering.render_dispatch import draw_any
+from meltygui.core.rendering.render_dispatch import draw_collection
 from meltygui.editor.text_editor import draw_text
-from meltygui.core.invalidation_tracker import Note
-from meltygui.core.mode import Mode
+from meltygui.core.cache.invalidation_tracker import Note
+from meltygui.core.rendering.mode import Mode
 
 class ModifiesPlayground:
 

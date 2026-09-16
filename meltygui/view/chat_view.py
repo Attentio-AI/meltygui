@@ -1,11 +1,14 @@
 """Chat view functions and supporting definitions."""
 from bisect import bisect_right
-from meltygui.core.chat_core import _cleanup_chat
+from functools import lru_cache
+from meltygui.chat.messages import BashString, CommandExecution, ReasoningMessage, Reference, ToolCall
+from meltygui.core.services.chat_core import _cleanup_chat
 from meltygui.core.melty import Melty
 from meltygui.core.core_render import render_func
 from meltygui.state.chat_state import ChatInterfaceState
-from meltygui.core.toggles import Toggles
+from meltygui.core.runtime.toggles import Tint, Toggles
 from pathlib import Path
+import colorsys
 import meltygui_imgui as imgui
 import time
 import uuid
@@ -35,12 +38,9 @@ def draw_chat_sidebar(sources, draw_state, state, width, height, cutoff=None, ne
     from meltygui.chat.chat_interface import _label_width
     from meltygui.chat.chat_interface import _running_dot
     from meltygui.chat.chat_interface import _text_layout
-    from meltygui.chat.chat_interface import _text_tint
     from meltygui.chat.chat_interface import _tint_slot
-    from meltygui.chat.chat_interface import _tint_style
     from meltygui.chat.chat_interface import _title
     from meltygui.chat.chat_interface import _viewport
-    from meltygui.chat.chat_interface import _visible
     from meltygui.chat.chat_interface import conversation_source_tag
     from meltygui.chat.chat_interface import is_active
     from meltygui.chat.chat_interface import project_tint
@@ -48,7 +48,7 @@ def draw_chat_sidebar(sources, draw_state, state, width, height, cutoff=None, ne
     from meltygui.chat.chat_interface import sidebar_visible
     from meltygui.files.fast_file_explorer import set_row_tint
     from meltygui.view.text_view import draw_text
-    import meltygui.core.window_api as glfw
+    import meltygui.core.windowing.window_api as glfw
 
     from meltygui.chat.chat_proxy import ChatProxy
     if isinstance(sources, ChatProxy):
@@ -292,9 +292,9 @@ def draw_chat_sidebar(sources, draw_state, state, width, height, cutoff=None, ne
              with_footer=None, shadow=False, imgui_padding=False, disable_scroll=True)
 def draw_chat_terminal(input_value, draw_state=None):
     from meltygui.chat.chat_interface import _color
-    from meltygui.core.fonts import Font
+    from meltygui.core.styling.fonts import Font
 
-    from meltygui.core.terminal_core import _resolve
+    from meltygui.core.services.terminal_core import _resolve
     grid, char_width, line_height = input_value
     x, y = draw_state.abs_left + Melty.px(4), draw_state.abs_top + Melty.px(4)
     draw_list = imgui.get_window_draw_list()
@@ -335,7 +335,6 @@ def draw_chat_queue(proxy, selected, chat, draw_state, state, key, width, tint):
     from meltygui.chat.chat_interface import _button
     from meltygui.chat.chat_interface import _title
     from meltygui.chat.chat_interface import _viewport
-    from meltygui.chat.chat_interface import _visible
     from meltygui.chat.messages import input_text
 
     queued = chat.get("queued_messages", {})
@@ -384,26 +383,16 @@ def draw_messages(messages, draw_state, state, key, width, height,
     from meltygui.chat.chat_interface import _draw_image
     from meltygui.chat.chat_interface import _draw_prose
     from meltygui.chat.chat_interface import _failure_badge
-    from meltygui.chat.chat_interface import _hold_scroll_anchor
     from meltygui.chat.chat_interface import _icon_chip
     from meltygui.chat.chat_interface import _label_width
-    from meltygui.chat.chat_interface import _message_failed
-    from meltygui.chat.chat_interface import _message_icon
-    from meltygui.chat.chat_interface import _message_label
-    from meltygui.chat.chat_interface import _message_leaves
     from meltygui.chat.chat_interface import _prose_metrics
-    from meltygui.chat.chat_interface import _row_geometry
     from meltygui.chat.chat_interface import _terminal_layout
     from meltygui.chat.chat_interface import _text_layout
-    from meltygui.chat.chat_interface import _text_tint
     from meltygui.chat.chat_interface import _title
     from meltygui.chat.chat_interface import _viewport
-    from meltygui.chat.chat_interface import _visible
     from meltygui.chat.chat_interface import image_box
     from meltygui.chat.chat_interface import image_cache
     from meltygui.chat.chat_interface import prose_offset
-    from meltygui.chat.chat_interface import selection_slice
-    from meltygui.chat.chat_interface import selection_text
     from meltygui.chat.chat_interface import transcript_entries
     from meltygui.chat.messages import AssistantMessage
     from meltygui.chat.messages import BashString
@@ -419,7 +408,7 @@ def draw_messages(messages, draw_state, state, key, width, height,
     from meltygui.chat.messages import ToolOutput
     from meltygui.chat.messages import UserMessage
     from meltygui.view.text_view import draw_text
-    import meltygui.core.window_api as glfw
+    import meltygui.core.windowing.window_api as glfw
 
     if not hasattr(state, "message_expanded"):
         state.message_expanded = {}
@@ -914,10 +903,9 @@ def draw_chat_requests(requests, draw_state, state, key, width, height, tint):
 
 def draw_conversation_title(chat, draw_state, state, selected, x, y, width, height, tint):
     """Double-click the header title to rename the same chat shown in the lists."""
-    from meltygui.chat.chat_interface import _text_tint
     from meltygui.chat.chat_interface import _title
     from meltygui.view.text_view import draw_text
-    import meltygui.core.window_api as glfw
+    import meltygui.core.windowing.window_api as glfw
 
     changed = False
     renaming = state.rename
@@ -976,7 +964,7 @@ def draw_chat_navigation(input_value, draw_state=None, state: ChatInterfaceState
     from meltygui.chat.chat_interface import age_cutoff
     from meltygui.chat.chat_interface import navigation_heading_control
     from meltygui.chat.chat_interface import navigation_row_sizes
-    from meltygui.core.column_core import RowLayout
+    from meltygui.core.layout.column_core import RowLayout
     import meltygui.accounts.internet_accounts as internet_accounts
 
     changed = False
@@ -1064,7 +1052,6 @@ def draw_chat_navigation(input_value, draw_state=None, state: ChatInterfaceState
 def draw_effort_slider(draw_state, key, value, levels, x, y, width, height, tint):
     """A discrete slider using the owning view's replayable input actions."""
     from meltygui.chat.chat_interface import _color
-    from meltygui.chat.chat_interface import _text_tint
     from meltygui.chat.chat_interface import _title
 
     if not levels or value not in levels:
@@ -1131,9 +1118,9 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
     from meltygui.chat.chat_interface import switch_new_chat_source
     from meltygui.chat.messages import user_message
     from meltygui.view.text_view import draw_text
-    from meltygui.core.column_core import ColumnLayout
+    from meltygui.core.layout.column_core import ColumnLayout
     import meltygui.accounts.internet_accounts as internet_accounts
-    import meltygui.core.window_api as glfw
+    import meltygui.core.windowing.window_api as glfw
 
     # Ephemeral layout state also adopts already-open windows on hotswap.
     if not hasattr(state, "viewports"):
@@ -1168,7 +1155,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
 
     def wake():
         # Like Fast Dock's external-change edge: the worker has queued new data.
-        from meltygui.core.glfw_utils import request_render
+        from meltygui.core.windowing.glfw_utils import request_render
         if Melty.cache is not None:
             Melty.cache.invalidate_up_by_obj(state, force=True)
             if getattr(draw_state, "_tile_id", None) is not None:
@@ -1236,7 +1223,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
                 changed = True
                 # The sessions for this frame were opened above with the old
                 # set: the next frame (asked for now) draws the new one.
-                from meltygui.core.glfw_utils import request_render
+                from meltygui.core.windowing.glfw_utils import request_render
                 request_render()
             tab_x += tab_width + Melty.px(4)
         y += tab_height + Melty.px(Toggles.Chat.header_margin)
@@ -1247,7 +1234,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
             """A fresh conversation in that source: in `project` (a heading's +),
             else `new_project` when the app was started for one, else its
             selected conversation's project, else `default_project`."""
-            from meltygui.core.paths import application_root
+            from meltygui.core.runtime.paths import application_root
             key = str(uuid.uuid4())
             current = chats.get(state.selected.get(account_id))
             project = (project or new_project or (current["project"] if current else None)
@@ -1535,9 +1522,197 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
         state.revision += 1
         # A click's effect (a row expanded, a filter picked) lays out on the
         # NEXT frame; ask for it now instead of waiting for the next input.
-        from meltygui.core.glfw_utils import request_render
+        from meltygui.core.windowing.glfw_utils import request_render
         request_render()
     return changed, input_value
     if changed:
         state.revision += 1
     return changed, input_value
+
+
+
+def _soft_wrap(text, columns):
+    """Word-wrap each line to `columns` monospace cells; indentation and blank lines survive."""
+    if columns <= 0:
+        return text
+    out = []
+    for line in text.split("\n"):
+        stripped = line.lstrip(" \t")
+        lead = line[:len(line) - len(stripped)]
+        room = max(1, columns - len(lead.expandtabs(4)))
+        while len(stripped) > room:
+            cut = stripped.rfind(" ", 0, room + 1)
+            if cut <= 0:
+                cut = room  # one word wider than the row: break it
+            out.append(lead + stripped[:cut].rstrip())
+            stripped = stripped[cut:].lstrip(" ")
+        out.append(lead + stripped)
+    return "\n".join(out)
+
+
+def _scroll_position(view, content_height, height, wheel=0, drag_fraction=None):
+    maximum = max(0.0, content_height - height)
+    offset = view.get("offset", 0.0)
+    if wheel:
+        speed = min(Toggles.ScrollSettings.scroll_speed,
+                    Toggles.ScrollSettings.max_increment_fraction * height)
+        offset -= wheel * speed
+        view["follow"] = False
+    if drag_fraction is not None:
+        offset = maximum * drag_fraction
+        view["follow"] = False
+    offset = max(0.0, min(offset, maximum))
+    if view.get("follow"):
+        offset = maximum
+    elif (wheel < 0 or drag_fraction is not None) and maximum > 0 and offset >= maximum - 1:
+        view["follow"] = True
+    view["offset"] = offset
+    return offset
+
+
+def _visible(y, height, clip):
+    return clip is None or y + height > clip[1] and y < clip[3]
+
+
+@lru_cache(maxsize=128)
+def _tint_style(tint):
+    from meltygui.core.styling.style_core import ImGuiStyleManager
+    style = ImGuiStyleManager()
+    style.current_rgb = tint[:3]
+    style.hsv = colorsys.rgb_to_hsv(*tint[:3])
+    return style
+
+
+@lru_cache(maxsize=128)
+def _text_tint(tint):
+    # The editor's neutral foreground, nudged toward the item's hue.
+    neutral = (169 / 255, 183 / 255, 198 / 255)
+    hue = Tint.dd_text(tint[:3])
+    return tuple(a * 0.8 + b * 0.2 for a, b in zip(neutral, hue))
+
+
+def selection_slice(selection, index, length):
+    """The (lo, hi) character span of prose leaf `index` inside a transcript
+    selection ({anchor: (leaf, offset), head: (leaf, offset)}), None when the
+    leaf is outside it or the selection is empty."""
+    (first, first_offset), (last, last_offset) = sorted([tuple(selection["anchor"]), tuple(selection["head"])])
+    if (first, first_offset) == (last, last_offset) or not first <= index <= last:
+        return None
+    lo = first_offset if index == first else 0
+    hi = last_offset if index == last else length
+    return (lo, hi) if hi > lo else None
+
+
+def selection_text(selection, texts):
+    """The selected prose, leaves joined by a blank line."""
+    parts = []
+    for index, text in enumerate(texts):
+        span = selection_slice(selection, index, len(text))
+        if span is not None:
+            parts.append(str(text)[span[0]:span[1]])
+    return "\n\n".join(parts)
+
+
+def _message_leaves(value, path=(), depth=0):
+    """Keep nested arguments/results inspectable without a renderer per dict."""
+    if isinstance(value, Reference):
+        yield path, value, depth
+    elif isinstance(value, dict):
+        for key, child in value.items():
+            yield from _message_leaves(child, path + (str(key),), depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            yield from _message_leaves(child, path + (str(index),), depth + 1)
+    elif value is not None:
+        yield path, value, depth
+
+
+def _message_preview(message):
+    """The first line a collapsed row would otherwise hide, markdown emphasis stripped."""
+    if isinstance(message, CommandExecution):
+        source = str(message["content"].get("command", ""))
+    elif isinstance(message, ReasoningMessage):
+        source = "\n".join(str(value) for _, value, _ in _message_leaves(message["content"])
+                          if isinstance(value, str))
+    else:
+        return ""
+    for line in source.splitlines():
+        line = line.strip().strip("*_#`").strip()
+        if line:
+            return line
+    return ""
+
+
+def _message_icon(message):
+    """The glyph that leads a row: pencil for writes, terminal for bash, brain for thinking."""
+    bash_icon = f""
+    write_icon = f""  # pencil-alt: the shipped face is FontAwesome 5, no f040 pencil
+    thinking_icon = f""
+    if isinstance(message, ReasoningMessage):
+        return thinking_icon
+    if not isinstance(message, ToolCall):
+        return ""
+    files = message.get("summary", {})
+    if any(entry.get("access", "write") == "write" for entry in files.values()):
+        return write_icon
+    if isinstance(message["content"].get("command"), BashString):
+        return bash_icon
+    return ""
+
+
+def _message_label(message, expanded):
+    label = message.label
+    if isinstance(message, ReasoningMessage):
+        return "" if expanded else _message_preview(message)
+    if isinstance(message, ToolCall):
+        icon = _message_icon(message)
+        if icon:
+            label = icon
+            # Read-only file references still leave a summary dict behind; only a
+            # WRITE row (tags shown) drops the first-line preview.
+            writes = any(entry.get("access", "write") == "write" for entry in message.get("summary", {}).values())
+            preview = "" if expanded or writes else _message_preview(message)
+            if preview:
+                label += "  " + preview
+        else:
+            name = message["details"].get("tool") or message["details"].get("name")
+            if name:
+                label += " · " + str(name)
+    return label
+
+
+def _message_failed(message):
+    details = message["details"]
+    return (message.get("status") in ("failed", "declined", "error")
+            or details.get("exitCode") not in (None, 0)
+            or bool(details.get("error")))
+
+
+def _hold_scroll_anchor(view, rows, height, restore, geometry=None):
+    """Pin the top visible row to its screen position across relayouts.
+
+    Each frame records (row key, pixels of that row above the viewport top);
+    a frame whose heights moved (`restore`) re-derives the offset from it, so
+    the reader's row stays put while rows above it re-wrap. Follow mode wins.
+    """
+    if geometry is None:
+        geometry = _row_geometry(rows)
+    tops, ends = geometry
+    total = ends[-1] if ends else 0.0
+    anchor = view.get("anchor")
+    if restore and anchor is not None and not view.get("follow") and anchor[0] in tops:
+        view["offset"] = max(0.0, min(tops[anchor[0]] + anchor[1], max(0.0, total - height)))
+    offset = view.get("offset", 0.0)
+    index = bisect_right(ends, offset)
+    view["anchor"] = ((rows[index][0], offset - tops[rows[index][0]])
+                      if index < len(rows) else None)
+
+
+def _row_geometry(rows):
+    """Index the transcript once per layout, for scrolling and visible drawing."""
+    tops, ends, y = {}, [], 0.0
+    for row in rows:
+        tops[row[0]] = y
+        y += row[3]
+        ends.append(y)
+    return tops, ends

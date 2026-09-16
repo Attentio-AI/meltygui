@@ -63,6 +63,13 @@ files, **not Python view classes**. A feature does not need all three files. A
 model, state type or view can serve multiple features; give the shared concept a
 clear name instead of copying it into each feature.
 
+Core is grouped by responsibility: input/events in `core/input/`, render dispatch
+and injection support in `core/rendering/`, conversion in `core/conversion/`, and
+similarly named folders for the other runtime systems. Keep `core_render.py` and
+`melty.py` as the main entry points; place new support modules in the appropriate
+[core folder](meltygui/core/README.md). A feature's local views and models still
+belong outside core.
+
 Classify by responsibility, not by difficulty, imports or a `draw_` prefix:
 
 - A stateful model still belongs in `model/`; having state does not make it a
@@ -99,12 +106,16 @@ stable identity of a stateful store. Its current placement and shared-service
 coupling are still migration work. These examples demonstrate specific aspects
 of the pattern, not blanket approval of their surrounding modules.
 
-Use [RenderHost](meltygui/core/render_host.py) when immutable data or external I/O
-needs to appear as an editable value. Reuse its conversion, mutation propagation
-and lifecycle instead of inventing another host/cache/save loop in a view.
-Keep the actual feature operations in the model. A view may edit its supplied
-model through the model's public interface; it should not implement file I/O,
-process management or synchronization protocols itself.
+Use [RenderHost](meltygui/core/conversion/render_host.py) when the value needs its conversion,
+editing and persistence lifecycle. External state alone does not require a host.
+For example, [TextureId](meltygui/model/texture_model.py) looks like an integer
+texture ID while owning lazy, context-specific GPU allocations;
+[LutPalette](meltygui/model/lut_model.py) exposes ordinary dictionary/list edits
+and supplies those proxies. Neither needs a host running each frame.
+
+Keep feature operations in the model and shared injection/invalidation in core.
+A view may edit its supplied model through its public interface; it should not
+implement file I/O, process management or synchronization protocols itself.
 
 ## Render-function contract
 

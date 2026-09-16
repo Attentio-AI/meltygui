@@ -35,9 +35,9 @@ import threading
 import time
 from pathlib import Path
 
-from meltygui.core.dict_conversion import DictConversion
-from meltygui.core.core_decoration import defaults
-from meltygui.core.core_decoration import no_save
+from meltygui.core.conversion.dict_conversion import DictConversion
+from meltygui.core.rendering.core_decoration import defaults
+from meltygui.core.rendering.core_decoration import no_save
 
 SAVE_DELAY_S = 0.4
 POLL_S = 0.5
@@ -513,7 +513,7 @@ class FileMetaProxy(dict):
 
 def _request_render():
     try:
-        from meltygui.core.glfw_utils import request_render
+        from meltygui.core.windowing.glfw_utils import request_render
         request_render()
     except Exception:
         pass

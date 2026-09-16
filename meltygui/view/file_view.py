@@ -1,8 +1,8 @@
 """Reusable file presentation; values and view state are supplied by callers."""
 from pathlib import Path
-from meltygui.core.modes import Modes
+from meltygui.core.rendering.modes import Modes
 from meltygui.core.core_render import render_func
-from meltygui.core.render_funcs import RenderFuncs
+from meltygui.core.rendering.render_funcs import RenderFuncs
 from collections import defaultdict
 from meltygui.hdr_color import pack_color
 from meltygui.hdr_color import with_alpha
@@ -11,8 +11,8 @@ from meltygui.state.file_state import FileExplorerState
 from meltygui.state.file_state import FileSelectorState
 from meltygui.state.file_state import FileTreeState
 from meltygui.state.file_state import ShortcutState
-from meltygui.core.toggles import Tint
-from meltygui.core.toggles import Toggles
+from meltygui.core.runtime.toggles import Tint
+from meltygui.core.runtime.toggles import Toggles
 from meltygui.state.file_state import ROOT
 import colorsys
 import difflib
@@ -163,7 +163,7 @@ def draw_changed_file_header(path, tint, draw_state, view_id, width, height=23.0
     from meltygui.editor.file_header import _ellipsize
     from meltygui.editor.source_ui import _tab_text_color
     from meltygui.view.header_view import flat_button
-    from meltygui.core.tile_cache import add_shadow
+    from meltygui.core.cache.tile_cache import add_shadow
 
     if active:
         text_color = _tab_text_color(tint, Toggles.CodeEditor.tab_active_text_brightness,
@@ -223,7 +223,7 @@ def draw_pending_saves():
     from meltygui.editor.pending_save import _render_diff_blocks
 
     pass
-    from meltygui.core.render_dispatch import draw_any
+    from meltygui.core.rendering.render_dispatch import draw_any
     RenderFuncs.draw_function(PendingSave.apply_all_saves, icon="", tint=(0,0,0,1), show_bg=False)
     # name= keeps its draw_state distinct from apply_all_saves' (both calls
     # would otherwise derive the same file-name identity); run_in_thread so
@@ -366,10 +366,10 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     from meltygui.files.fast_file_explorer import watch_directory
     from meltygui.models.file_meta import FileMeta
     from meltygui.models.file_meta import file_meta_store
-    from meltygui.core.glfw_utils import request_render
-    from meltygui.core.tile_cache import add_shadow
-    from meltygui.core.tile_cache import clear_glows
-    from meltygui.core.drag_drop_core import DragDrop
+    from meltygui.core.windowing.glfw_utils import request_render
+    from meltygui.core.cache.tile_cache import add_shadow
+    from meltygui.core.cache.tile_cache import clear_glows
+    from meltygui.core.input.drag_drop_core import DragDrop
 
     # [tint=(0.55, 0.72, 0.95)]
     folder_icon = f""
@@ -772,7 +772,7 @@ def draw_shortcuts(input_value: str, draw_state, left_mouse_clicked=False,
     The explorer draws this in its first cell; the code editor draws it as
     a leading column (`show_shortcuts=True`), a pick selecting the project
     in its injected `EditorProjectState`."""
-    from meltygui.core.extensions import source_folders as project_roots
+    from meltygui.core.runtime.extensions import source_folders as project_roots
     from meltygui.files.fast_file_explorer import chip_swatch
     from meltygui.files.fast_file_explorer import row_tint_bg
     from meltygui.files.fast_file_explorer import shortcut_directories
@@ -780,10 +780,10 @@ def draw_shortcuts(input_value: str, draw_state, left_mouse_clicked=False,
     from meltygui.files.fast_file_explorer import tinted_text
     from meltygui.models.file_meta import FileMeta
     from meltygui.models.file_meta import file_meta_store
-    from meltygui.core.glfw_utils import request_render
-    from meltygui.core.tile_cache import add_shadow
-    from meltygui.core.tile_cache import clear_glows
-    from meltygui.core.drag_drop_core import DragDrop
+    from meltygui.core.windowing.glfw_utils import request_render
+    from meltygui.core.cache.tile_cache import add_shadow
+    from meltygui.core.cache.tile_cache import clear_glows
+    from meltygui.core.input.drag_drop_core import DragDrop
 
     # [tint=(0.55, 0.72, 0.95)]
     folder_icon = f""
@@ -941,9 +941,9 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
     persisted order."""
     from meltygui.files.fast_file_explorer import row_tint_bg
     from meltygui.models.file_meta import file_meta_store
-    from meltygui.core.glfw_utils import request_render
-    from meltygui.core.tile_cache import clear_glows
-    from meltygui.core.column_core import ColumnLayout
+    from meltygui.core.windowing.glfw_utils import request_render
+    from meltygui.core.cache.tile_cache import clear_glows
+    from meltygui.core.layout.column_core import ColumnLayout
 
     # [tint=(0.55, 0.72, 0.95)]
     folder_icon = f""
@@ -1051,7 +1051,7 @@ def draw_file_selector(input_value: str | None = None, draw_state=None,
     ``browse`` = a directory to navigate to — a path or ``(path, token)``
     — applied once per distinct value; keep passing it.
     """
-    from meltygui.core.app import pressed
+    from meltygui.core.runtime.app import pressed
     from meltygui.view.control_view import draw_button
     from meltygui.view.file_view import draw_fast_file_explorer
 
@@ -1104,7 +1104,7 @@ def draw_file_selector(input_value: str | None = None, draw_state=None,
 
 @render_func()
 def file_watch_debug(draw_state=None):
-    from meltygui.core.file_watch_core import _symbol_index_view
+    from meltygui.core.files.file_watch_core import _symbol_index_view
 
     from meltygui.core.melty import Melty
     from meltygui.core.melty import FileWatch
@@ -1218,16 +1218,16 @@ def render_file_tree(input_value=None, draw_state=None,
                      escape_key_pressed=False, **kwargs):
     # Geometry authored at ui_scale 1.0 — scaled through Melty.px per frame.
     # [tint=(0.55, 0.72, 0.95)]
-    from meltygui.core.glfw_utils import request_render
+    from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.view.header_view import flat_button
-    from meltygui.core.tile_cache import add_shadow
-    from meltygui.core.drag_drop_core import DragDrop
-    from meltygui.core.header_runtime import _brightness_clamp_fn
+    from meltygui.core.cache.tile_cache import add_shadow
+    from meltygui.core.input.drag_drop_core import DragDrop
+    from meltygui.core.layout.header_runtime import _brightness_clamp_fn
     from meltygui.model.import_graph_model import start_build
-    from meltygui.core.file_tree_core import _apply_row_drop
-    from meltygui.core.file_tree_core import _flatten_ordered
-    from meltygui.core.file_tree_core import _meta
-    from meltygui.core.file_tree_core import _tint_of
+    from meltygui.core.files.file_tree_core import _apply_row_drop
+    from meltygui.core.files.file_tree_core import _flatten_ordered
+    from meltygui.core.files.file_tree_core import _meta
+    from meltygui.core.files.file_tree_core import _tint_of
     import meltygui.model.import_graph_model as file_graph
 
     row_height = 20.0

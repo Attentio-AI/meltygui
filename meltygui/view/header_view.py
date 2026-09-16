@@ -2,11 +2,11 @@
 from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
 from meltygui.core.melty import add_to_collection
-from meltygui.core.render_funcs import RenderFuncs
+from meltygui.core.rendering.render_funcs import RenderFuncs
 from meltygui.state.core_enums import ProfileMode
 from meltygui.state.new_core_model import TileMode
-from meltygui.core.toggles import Tint
-from meltygui.core.toggles import Toggles
+from meltygui.core.runtime.toggles import Tint
+from meltygui.core.runtime.toggles import Toggles
 from meltygui_imgui.core import _DrawList
 from types import NoneType
 import colorsys
@@ -28,8 +28,8 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
     focus back whenever nothing holds text focus, or other fields on the same
     tab become untypeable once focus clears.
     """
-    from meltygui.core.glfw_utils import request_render
-    import meltygui.core.window_api as glfw
+    from meltygui.core.windowing.glfw_utils import request_render
+    import meltygui.core.windowing.window_api as glfw
 
 
     from meltygui.view.text_view import draw_text
@@ -164,8 +164,8 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
                     # window, focus an input, …). Queued + the tile invalidated so
                     # it re-renders and reads the click next frame (the find UI
                     # renders too late to inject for this frame).
-                    from meltygui.core.search_core import search_activate_target
-                    from meltygui.core.input_handler import InputEvent
+                    from meltygui.core.automation.search_core import search_activate_target
+                    from meltygui.core.input.input_handler import InputEvent
                     _target = search_activate_target(Melty.search_current_node)
                     if _target is not None and _target.width and _target.height:
                         _cx = _target.abs_left + _target.width / 2.0
@@ -237,11 +237,11 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
     controls in titlebar.py, on the overlay list with their own hit logic)
     place the button and drive its hover state themselves instead of the
     cursor position and the owning draw_state."""
-    from meltygui.core.style import Style
-    from meltygui.core.tile_cache import add_shadow
-    from meltygui.core.header_runtime import _TEXT_COLOR_MEMO
+    from meltygui.core.styling.style import Style
+    from meltygui.core.cache.tile_cache import add_shadow
+    from meltygui.core.layout.header_runtime import _TEXT_COLOR_MEMO
     from meltygui.model.color_model import _brightness_clamp
-    import meltygui.core.mouse_cursor as mouse_cursor
+    import meltygui.core.input.mouse_cursor as mouse_cursor
 
     if style_manager is None:
         style_manager = Melty.style_manager
@@ -356,7 +356,7 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
 def draw_header_arrow(expanded, color=None, alpha=0.071):
     """The header's transparent tree control, also usable by flat views.
     Dimmed by Toggles.Melty.arrow_brightness (every arrow, everywhere)."""
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     dim = float(Toggles.Melty.arrow_brightness)
     alpha = alpha * dim
     if color is None:
@@ -387,13 +387,13 @@ def draw_header(input_value=None, name="", key=None, meltygui=None, parent_show_
                 show_add_types=None, on_drag=False, on_action=None, style_manager=None, font=None,
                 **kwargs):
     # Constants
-    from meltygui.core.bubbling import _BubblingDict
-    from meltygui.core.glfw_utils import request_render
+    from meltygui.core.conversion.bubbling import _BubblingDict
+    from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.utils.render_utils import pop_style_var
     from meltygui.utils.render_utils import push_style_var
     from meltygui.view.search_view import draw_search_highlight
-    from meltygui.core.cursor_core import same_line
-    from meltygui.core.header_core import _jump_to_view_source
+    from meltygui.core.layout.cursor_core import same_line
+    from meltygui.core.layout.header_core import _jump_to_view_source
     from meltygui.model.collection_model import annotation_item_type
 
     _font_pushed = False
@@ -529,7 +529,7 @@ def draw_header(input_value=None, name="", key=None, meltygui=None, parent_show_
     # back to whichever source DRIVES it — code, comment, decoration,
     # instance attr. (The property pair lives in anywhere.py; this is its
     # first caller.) Outlined so the swatch reads apart from the labels.
-    from meltygui.core.parameter_core import get_source_for
+    from meltygui.core.rendering.parameter_core import get_source_for
     _aw_attr = "tint"
     _aw_tint = draw_state.locate_tint
     if Toggles.dynamic_styles and draw_state.locate_style is not None:
@@ -780,7 +780,7 @@ def draw_footer(input_value=None, name="", key=None, meltygui=None, parent_show_
     # for key, pending in draw_state._all_pending.items():
     #     if pending is not None:
     #         if pending.state == PendingState.ERROR:
-    #             from meltygui.core.render_dispatch import draw_pending
+    #             from meltygui.core.rendering.render_dispatch import draw_pending
     #             draw_pending(pending, name=f"{key}", tint=(1, 0, 0))
 
     imgui.dummy(1,1)
@@ -789,7 +789,7 @@ def draw_footer(input_value=None, name="", key=None, meltygui=None, parent_show_
 def draw_header_end(input_value=None, name="", show_close=True, key=None, meltygui=None, parent_show_add_delete=False,
                     collection=None, draw_state=None, closable=False, style_manager=None,
                     unique=None, show_tint=False, **kwargs):
-    from meltygui.core.cursor_core import same_line
+    from meltygui.core.layout.cursor_core import same_line
 
     close_icon = ""
     # Frame-redraw indicator (left of the close button): alternates these
@@ -824,10 +824,10 @@ def draw_header_end(input_value=None, name="", show_close=True, key=None, meltyg
                            view_id=f"hdr_close{unique}",
                            color=(9, 1, 1)):
                 _was_closed = draw_state.closed
-                from meltygui.core.window_visibility import native_user_window_closed
+                from meltygui.core.windowing.window_visibility import native_user_window_closed
                 native_user_window_closed(draw_state, not draw_state.closed)
                 from meltygui.state.core_undo import NavUndo
-                from meltygui.core.window_visibility import window_edit_is_local
+                from meltygui.core.windowing.window_visibility import window_edit_is_local
                 if window_edit_is_local(draw_state, 'closed'):
                     NavUndo.record_window(draw_state, _was_closed, draw_state.closed)
                 Melty.cache.invalidate_up_by_obj(Melty.registered_windows)

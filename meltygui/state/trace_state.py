@@ -1,6 +1,6 @@
 """Injected state for trace views."""
-from meltygui.core.core_decoration import no_save
-from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.rendering.core_decoration import no_save
+from meltygui.core.conversion.dict_conversion import DictConversion
 
 
 @no_save("panes", "trace_obj", "trace_sig", "index_armed",

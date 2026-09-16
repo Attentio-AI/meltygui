@@ -9,11 +9,11 @@ FrameSummary rows — the button-click path itself, straight down from main.
 
 import traceback
 
-from meltygui.core.render_funcs import RenderFuncs
-from meltygui.core.toggles import Tint
+from meltygui.core.rendering.render_funcs import RenderFuncs
+from meltygui.core.runtime.toggles import Tint
 from meltygui.core.core_render import render_func
-from meltygui.core.window_decoration import window
-from meltygui.core.trace_core import draw_stack_trace
+from meltygui.core.rendering.window_decoration import window
+from meltygui.core.diagnostics.trace_core import draw_stack_trace
 
 
 class StackTracePlayground:

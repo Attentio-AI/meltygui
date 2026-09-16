@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any
 
-from meltygui.core.core_decoration import Core
+from meltygui.core.rendering.core_decoration import Core
 
 
 def _is_field_candidate(v) -> bool:

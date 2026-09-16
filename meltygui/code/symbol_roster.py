@@ -603,8 +603,8 @@ def _notify_consumers():
         return
     try:
         from meltygui.core.melty import Melty
-        from meltygui.core.glfw_utils import request_render
-        from meltygui.core.invalidation_tracker import Note
+        from meltygui.core.windowing.glfw_utils import request_render
+        from meltygui.core.cache.invalidation_tracker import Note
     except Exception:
         return
     for ds, _g in targets:

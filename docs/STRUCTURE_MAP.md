@@ -10,7 +10,9 @@ Reviewed 2026-09-16. Feature-view extraction and shared core relocation are
 implemented. The deeper feature/model/state splits below remain a planning inventory.
 
 The legacy `views/` and `widgets/` implementations have now all moved.
-Only compatibility namespaces remain there. See the [complete move table](LEGACY_MODULE_MOVE.md).
+The empty `views/`, `widgets/`, `rendering/` and `windows/` folder shells have
+been removed; historical imports use virtual compatibility namespaces. See the
+[complete move table](LEGACY_MODULE_MOVE.md).
 The text editor is explicitly deferred and unchanged in this pass.
 
 ## Implemented layout
@@ -20,26 +22,39 @@ meltygui/
     core/
         core_render.py        # render-function execution and injection
         melty.py              # shared runtime ownership and coordination
-        mode.py               # renderer/converter mode definitions
-        modes.py              # lazy handles that avoid import cycles
-        mode_defaults.py      # shared type-to-mode policy
-        render_host.py        # generic stateful-data hosting
-        definition_hotswap.py  # module-independent live definition relocation
-        file_core.py          # folder hosts, polling and lifecycle wiring
-        ...                   # extracted feature callbacks
+        definition_hotswap.py # module-independent live definition relocation
+        module_*.py           # canonical names and compatibility
+        input/                # events, devices, hit testing, drag/drop
+        rendering/            # dispatch, registration, modes, parameters
+        conversion/           # dict-like objects, hosting, persistence
+        cache/                # drawing caches and invalidation
+        windowing/            # surfaces, native windows, backends
+        graphics/             # shared GL resources and integration
+        layout/               # cursor, grid, column and header plumbing
+        styling/              # style, colour and fonts
+        files/                # file watching and metadata integration
+        runtime/              # apps, scheduling, settings and lifecycle
+        diagnostics/          # notifications, tracing and inspection
+        automation/           # actions, orchestration, queries and MCP
+        services/             # terminal, chat and account integration
     view/
         file_view.py          # file/tree/selector rendering
         text_view.py          # text editor and inline value rendering
         code_view.py          # code and live-value presentation
         control_view.py       # primitive controls
-        ...                   # 27 feature modules, plain functions
+        lut_view.py           # palette selection and swatches
+        ...                   # feature modules, plain functions
     model/
         file_model.py         # filesystem reconciliation and metadata adaptation
         tensor_model.py       # tensor types, slicing and data transformations
         camera_model.py       # pure orbit-camera and space-mouse math
+        graph_model.py        # series slicing, packing and ranges
+        lut_model.py          # editable palettes, typed names and texture proxies
+        texture_model.py      # lazy integer-like texture IDs and their storage
         ...                   # feature value adapters
     state/
         file_state.py         # injected explorer/selector/tree state
+        tensor_state.py       # local tensor error state
         ...                   # feature state classes
 ```
 
@@ -59,7 +74,8 @@ See [the feature/module index and validation](VIEW_RELOCATION.md).
 
 `core_render.py`, `melty.py`, modes, `RenderHost`, generic conversion and
 persistence, input, and window lifecycle now live under `core/`. See the
-[core guide](../meltygui/core/README.md) and [82-module move table](CORE_RELOCATION.md).
+[core guide](../meltygui/core/README.md) and [relocation record](CORE_RELOCATION.md).
+The second core pass groups 121 modules into the responsibility folders above.
 The detailed tables below retain the earlier inventory and proposed ownership;
 mixed feature modules and the editor remain separate follow-up work.
 Read historical `views/<feature>` and `models/<feature>` destinations as
@@ -67,8 +83,12 @@ Read historical `views/<feature>` and `models/<feature>` destinations as
 
 The [tensor extraction](TENSOR_RELOCATION.md) moves tensor operations and camera
 math into models, and shared presentation, dimension pickers and axis drawing
-into tensor views. Shared LUTs, GPU runtime ownership, slice controls and demo
-separation remain the next tensor work.
+into tensor views. Palettes now have dict-like models, integer-like texture
+proxies and reusable views; core injects the shared palette into tensor and
+graph renderers. Slice controls and error presentation now live in tensor views,
+with a reusable integer slider and injected tensor error state. Graph data
+preparation lives in `graph_model.py`; graph axes live beside graph views. GPU
+runtime ownership and demo separation remain follow-up tensor work.
 
 ## Classification rules
 
@@ -288,7 +308,7 @@ TYPE_CHECKING statements; dynamic imports and registry references are not fully
 represented. Mutual imports are not by themselves design defects or runtime
 import failures. No runtime/UI tests were run for this documentation-only work.
 
-## Complete current package inventory
+## Initial package inventory (historical snapshot)
 
 Counts below group files by their first directory; package initializers count
 in their actual directory. This is a file inventory, not a claim that each
@@ -319,55 +339,55 @@ package has a coherent responsibility.
 ### (package root)
 
 - [__init__.py](../meltygui/__init__.py) — 99 lines
-- [app.py](../meltygui/core/app.py) — 722 lines
-- [app_session.py](../meltygui/core/app_session.py) — 140 lines
-- [background.py](../meltygui/core/background.py) — 564 lines
-- [collection_action.py](../meltygui/core/collection_action.py) — 45 lines
-- [collision.py](../meltygui/core/collision.py) — 165 lines
-- [extensions.py](../meltygui/core/extensions.py) — 48 lines
-- [fonts.py](../meltygui/core/fonts.py) — 623 lines
-- [func_metadata.py](../meltygui/core/func_metadata.py) — 398 lines
-- [gc_manager.py](../meltygui/core/gc_manager.py) — 1,162 lines
-- [geometry_feed.py](../meltygui/core/geometry_feed.py) — 855 lines
-- [gl_state.py](../meltygui/core/gl_state.py) — 618 lines
-- [global_style.py](../meltygui/core/global_style.py) — 338 lines
-- [gpu_frame_timer.py](../meltygui/core/gpu_frame_timer.py) — 103 lines
+- [app.py](../meltygui/core/runtime/app.py) — 722 lines
+- [app_session.py](../meltygui/core/runtime/app_session.py) — 140 lines
+- [background.py](../meltygui/core/runtime/background.py) — 564 lines
+- [collection_action.py](../meltygui/core/automation/collection_action.py) — 45 lines
+- [collision.py](../meltygui/core/input/collision.py) — 165 lines
+- [extensions.py](../meltygui/core/runtime/extensions.py) — 48 lines
+- [fonts.py](../meltygui/core/styling/fonts.py) — 623 lines
+- [func_metadata.py](../meltygui/core/rendering/func_metadata.py) — 398 lines
+- [gc_manager.py](../meltygui/core/runtime/gc_manager.py) — 1,162 lines
+- [geometry_feed.py](../meltygui/core/windowing/geometry_feed.py) — 855 lines
+- [gl_state.py](../meltygui/core/graphics/gl_state.py) — 618 lines
+- [global_style.py](../meltygui/core/styling/global_style.py) — 338 lines
+- [gpu_frame_timer.py](../meltygui/core/diagnostics/gpu_frame_timer.py) — 103 lines
 - [hdr_color.py](../meltygui/hdr_color.py) — 757 lines
-- [hypr_left_drag.py](../meltygui/core/hypr_left_drag.py) — 323 lines
+- [hypr_left_drag.py](../meltygui/core/input/hypr_left_drag.py) — 323 lines
 - [image_load.py](../meltygui/image_load.py) — 308 lines
-- [lifecycle.py](../meltygui/core/lifecycle.py) — 21 lines
-- [mcp_eval.py](../meltygui/core/mcp_eval.py) — 167 lines
-- [mcp_hotswap.py](../meltygui/core/mcp_hotswap.py) — 107 lines
-- [mcp_query.py](../meltygui/core/mcp_query.py) — 552 lines
-- [mcp_server.py](../meltygui/core/mcp_server.py) — 657 lines
+- [lifecycle.py](../meltygui/core/runtime/lifecycle.py) — 21 lines
+- [mcp_eval.py](../meltygui/core/automation/mcp_eval.py) — 167 lines
+- [mcp_hotswap.py](../meltygui/core/automation/mcp_hotswap.py) — 107 lines
+- [mcp_query.py](../meltygui/core/automation/mcp_query.py) — 552 lines
+- [mcp_server.py](../meltygui/core/automation/mcp_server.py) — 657 lines
 - [melty.py](../meltygui/core/melty.py) — 6,718 lines
-- [mode_defaults.py](../meltygui/core/mode_defaults.py) — 41 lines
-- [modes.py](../meltygui/core/modes.py) — 136 lines
-- [mouse_cursor.py](../meltygui/core/mouse_cursor.py) — 355 lines
-- [notifications.py](../meltygui/core/notifications.py) — 706 lines
-- [os_frame.py](../meltygui/core/os_frame.py) — 1,455 lines
-- [paths.py](../meltygui/core/paths.py) — 20 lines
+- [mode_defaults.py](../meltygui/core/rendering/mode_defaults.py) — 41 lines
+- [modes.py](../meltygui/core/rendering/modes.py) — 136 lines
+- [mouse_cursor.py](../meltygui/core/input/mouse_cursor.py) — 355 lines
+- [notifications.py](../meltygui/core/diagnostics/notifications.py) — 706 lines
+- [os_frame.py](../meltygui/core/windowing/os_frame.py) — 1,455 lines
+- [paths.py](../meltygui/core/runtime/paths.py) — 20 lines
 - [pbr.py](../meltygui/pbr.py) — 1,576 lines
-- [perf_trace.py](../meltygui/core/perf_trace.py) — 280 lines
-- [resize_trace.py](../meltygui/core/resize_trace.py) — 62 lines
-- [scene_target.py](../meltygui/core/scene_target.py) — 180 lines
-- [screenshot.py](../meltygui/core/screenshot.py) — 439 lines
-- [session_status.py](../meltygui/core/session_status.py) — 98 lines
-- [settings.py](../meltygui/core/settings.py) — 14 lines
-- [shader_func.py](../meltygui/core/shader_func.py) — 477 lines
-- [style.py](../meltygui/core/style.py) — 198 lines
-- [surface.py](../meltygui/core/surface.py) — 637 lines
+- [perf_trace.py](../meltygui/core/diagnostics/perf_trace.py) — 280 lines
+- [resize_trace.py](../meltygui/core/diagnostics/resize_trace.py) — 62 lines
+- [scene_target.py](../meltygui/core/graphics/scene_target.py) — 180 lines
+- [screenshot.py](../meltygui/core/graphics/screenshot.py) — 439 lines
+- [session_status.py](../meltygui/core/diagnostics/session_status.py) — 98 lines
+- [settings.py](../meltygui/core/runtime/settings.py) — 14 lines
+- [shader_func.py](../meltygui/core/graphics/shader_func.py) — 477 lines
+- [style.py](../meltygui/core/styling/style.py) — 198 lines
+- [surface.py](../meltygui/core/windowing/surface.py) — 637 lines
 - [text_index.py](../meltygui/text_index.py) — 816 lines
-- [text_texture.py](../meltygui/core/text_texture.py) — 322 lines
-- [titlebar.py](../meltygui/core/titlebar.py) — 1,512 lines
-- [titlebar_buttons.py](../meltygui/core/titlebar_buttons.py) — 281 lines
-- [toggles.py](../meltygui/core/toggles.py) — 3,066 lines
-- [warm_start.py](../meltygui/core/warm_start.py) — 149 lines
-- [wayland_color.py](../meltygui/core/wayland_color.py) — 635 lines
-- [wayland_move.py](../meltygui/core/wayland_move.py) — 932 lines
-- [window_api.py](../meltygui/core/window_api.py) — 62 lines
-- [window_constants.py](../meltygui/core/window_constants.py) — 339 lines
-- [window_visibility.py](../meltygui/core/window_visibility.py) — 122 lines
+- [text_texture.py](../meltygui/core/graphics/text_texture.py) — 322 lines
+- [titlebar.py](../meltygui/core/windowing/titlebar.py) — 1,512 lines
+- [titlebar_buttons.py](../meltygui/core/windowing/titlebar_buttons.py) — 281 lines
+- [toggles.py](../meltygui/core/runtime/toggles.py) — 3,066 lines
+- [warm_start.py](../meltygui/core/styling/warm_start.py) — 149 lines
+- [wayland_color.py](../meltygui/core/graphics/wayland_color.py) — 635 lines
+- [wayland_move.py](../meltygui/core/windowing/wayland_move.py) — 932 lines
+- [window_api.py](../meltygui/core/windowing/window_api.py) — 62 lines
+- [window_constants.py](../meltygui/core/windowing/window_constants.py) — 339 lines
+- [window_visibility.py](../meltygui/core/windowing/window_visibility.py) — 122 lines
 
 ### accounts
 
@@ -394,12 +414,12 @@ package has a coherent responsibility.
 
 - [code/__init__.py](../meltygui/code/__init__.py) — 0 lines
 - [code/basic_converters.py](../meltygui/code/basic_converters.py) — 533 lines
-- [code/bubbling.py](../meltygui/core/bubbling.py) — 599 lines
-- [code/cache_tree.py](../meltygui/core/cache_tree.py) — 188 lines
-- [code/chain.py](../meltygui/core/chain.py) — 113 lines
+- [code/bubbling.py](../meltygui/core/conversion/bubbling.py) — 599 lines
+- [code/cache_tree.py](../meltygui/core/conversion/cache_tree.py) — 188 lines
+- [code/chain.py](../meltygui/core/conversion/chain.py) — 113 lines
 - [code/chain_converters.py](../meltygui/code/chain_converters.py) — 2,149 lines
 - [code/code_checks.py](../meltygui/code/code_checks.py) — 2,198 lines
-- [code/converter_register.py](../meltygui/core/converter_register.py) — 145 lines
+- [code/converter_register.py](../meltygui/core/conversion/converter_register.py) — 145 lines
 - [code/core_syntax.py](../meltygui/code/core_syntax.py) — 1,430 lines
 - [code/file_converters.py](../meltygui/code/file_converters.py) — 1,876 lines
 - [code/fileref.py](../meltygui/code/fileref.py) — 702 lines
@@ -410,9 +430,9 @@ package has a coherent responsibility.
 - [code/melty_scan.py](../meltygui/code/melty_scan.py) — 2,661 lines
 - [code/new_codecs.py](../meltygui/code/new_codecs.py) — 1,255 lines
 - [code/new_converters.py](../meltygui/code/new_converters.py) — 3,507 lines
-- [code/path_finder.py](../meltygui/core/path_finder.py) — 606 lines
+- [code/path_finder.py](../meltygui/core/conversion/path_finder.py) — 606 lines
 - [code/project_code.py](../meltygui/code/project_code.py) — 278 lines
-- [code/render_host.py](../meltygui/core/render_host.py) — 1,083 lines
+- [code/render_host.py](../meltygui/core/conversion/render_host.py) — 1,083 lines
 - [code/source_context.py](../meltygui/code/source_context.py) — 63 lines
 - [code/symbol_roster.py](../meltygui/code/symbol_roster.py) — 1,588 lines
 - [code/syntax_check.py](../meltygui/code/syntax_check.py) — 34 lines
@@ -438,11 +458,11 @@ package has a coherent responsibility.
 
 - [debug/__init__.py](../meltygui/debug/__init__.py) — 0 lines
 - [debug/app_view_utils.py](../meltygui/debug/app_view_utils.py) — 9 lines
-- [debug/attribute_churn.py](../meltygui/core/attribute_churn.py) — 38 lines
-- [debug/framebuffer_recorder.py](../meltygui/core/framebuffer_recorder.py) — 337 lines
-- [debug/invalidation_tracker.py](../meltygui/core/invalidation_tracker.py) — 43 lines
+- [debug/attribute_churn.py](../meltygui/core/diagnostics/attribute_churn.py) — 38 lines
+- [debug/framebuffer_recorder.py](../meltygui/core/graphics/framebuffer_recorder.py) — 337 lines
+- [debug/invalidation_tracker.py](../meltygui/core/cache/invalidation_tracker.py) — 43 lines
 - [debug/jump_to.py](../meltygui/debug/jump_to.py) — 95 lines
-- [debug/mode.py](../meltygui/core/mode.py) — 816 lines
+- [debug/mode.py](../meltygui/core/rendering/mode.py) — 816 lines
 
 ### editor
 
@@ -467,10 +487,10 @@ package has a coherent responsibility.
 
 - [events/__init__.py](../meltygui/events/__init__.py) — 0 lines
 - [events/example.py](../meltygui/events/example.py) — 118 lines
-- [events/input_handler.py](../meltygui/core/input_handler.py) — 1,103 lines
-- [events/pynput_backend.py](../meltygui/core/pynput_backend.py) — 1,054 lines
-- [events/space_mouse.py](../meltygui/core/space_mouse.py) — 335 lines
-- [events/touchpad_backend.py](../meltygui/core/touchpad_backend.py) — 393 lines
+- [events/input_handler.py](../meltygui/core/input/input_handler.py) — 1,103 lines
+- [events/pynput_backend.py](../meltygui/core/input/pynput_backend.py) — 1,054 lines
+- [events/space_mouse.py](../meltygui/core/input/space_mouse.py) — 335 lines
+- [events/touchpad_backend.py](../meltygui/core/input/touchpad_backend.py) — 393 lines
 
 ### examples
 
@@ -512,24 +532,24 @@ package has a coherent responsibility.
 ### models
 
 - [models/__init__.py](../meltygui/models/__init__.py) — 0 lines
-- [models/core_decoration.py](../meltygui/core/data_decoration.py) — 67 lines
-- [models/dynamic_obj.py](../meltygui/core/dynamic_obj.py) — 90 lines
+- [models/core_decoration.py](../meltygui/core/conversion/data_decoration.py) — 67 lines
+- [models/dynamic_obj.py](../meltygui/core/conversion/dynamic_obj.py) — 90 lines
 - [models/file_meta.py](../meltygui/models/file_meta.py) — 574 lines
 - [models/function_console.py](../meltygui/models/function_console.py) — 184 lines
 - [models/orchestration.py](../meltygui/models/orchestration.py) — 48 lines
 
 ### rendering
 
-- [rendering/__init__.py](../meltygui/rendering/__init__.py) — 0 lines
+- `rendering/__init__.py` (removed compatibility shell) — 0 lines
 - [rendering/core_render.py](../meltygui/core/core_render.py) — 6,509 lines
-- [rendering/core_render_helpers.py](../meltygui/core/core_render_helpers.py) — 328 lines
-- [rendering/decorators/__init__.py](../meltygui/rendering/decorators/__init__.py) — 0 lines
-- [rendering/decorators/core_decoration.py](../meltygui/core/core_decoration.py) — 431 lines
-- [rendering/decorators/invalidation_decoration.py](../meltygui/core/invalidation_decoration.py) — 153 lines
-- [rendering/decorators/profile_decoration.py](../meltygui/core/profile_decoration.py) — 88 lines
-- [rendering/decorators/window_decoration.py](../meltygui/core/window_decoration.py) — 25 lines
-- [rendering/render_funcs.py](../meltygui/core/render_funcs.py) — 273 lines
-- [rendering/shaped.py](../meltygui/core/shaped.py) — 312 lines
+- [rendering/core_render_helpers.py](../meltygui/core/rendering/core_render_helpers.py) — 328 lines
+- `rendering/decorators/__init__.py` (removed compatibility shell) — 0 lines
+- [rendering/decorators/core_decoration.py](../meltygui/core/rendering/core_decoration.py) — 431 lines
+- [rendering/decorators/invalidation_decoration.py](../meltygui/core/cache/invalidation_decoration.py) — 153 lines
+- [rendering/decorators/profile_decoration.py](../meltygui/core/diagnostics/profile_decoration.py) — 88 lines
+- [rendering/decorators/window_decoration.py](../meltygui/core/rendering/window_decoration.py) — 25 lines
+- [rendering/render_funcs.py](../meltygui/core/rendering/render_funcs.py) — 273 lines
+- [rendering/shaped.py](../meltygui/core/rendering/shaped.py) — 312 lines
 
 ### state
 
@@ -537,11 +557,11 @@ package has a coherent responsibility.
 - [state/core_enums.py](../meltygui/state/core_enums.py) — 59 lines
 - [state/core_markers.py](../meltygui/state/core_markers.py) — 115 lines
 - [state/core_undo.py](../meltygui/state/core_undo.py) — 1,075 lines
-- [state/dict_conversion.py](../meltygui/core/dict_conversion.py) — 1,815 lines
-- [state/dict_conversion_util.py](../meltygui/core/dict_conversion_util.py) — 177 lines
-- [state/graph_compare.py](../meltygui/core/graph_compare.py) — 183 lines
-- [state/load_save_v2.py](../meltygui/core/load_save_v2.py) — 1,032 lines
-- [state/missing_saved_class.py](../meltygui/core/missing_saved_class.py) — 36 lines
+- [state/dict_conversion.py](../meltygui/core/conversion/dict_conversion.py) — 1,815 lines
+- [state/dict_conversion_util.py](../meltygui/core/conversion/dict_conversion_util.py) — 177 lines
+- [state/graph_compare.py](../meltygui/core/conversion/graph_compare.py) — 183 lines
+- [state/load_save_v2.py](../meltygui/core/conversion/load_save_v2.py) — 1,032 lines
+- [state/missing_saved_class.py](../meltygui/core/conversion/missing_saved_class.py) — 36 lines
 - [state/model_enums.py](../meltygui/state/model_enums.py) — 11 lines
 - [state/module_names.py](../meltygui/core/module_names.py) — 19 lines
 - [state/new_core_model.py](../meltygui/state/new_core_model.py) — 2,363 lines
@@ -558,80 +578,80 @@ package has a coherent responsibility.
 ### utils
 
 - [utils/__init__.py](../meltygui/utils/__init__.py) — 0 lines
-- [utils/glfw_utils.py](../meltygui/core/glfw_utils.py) — 1,343 lines
+- [utils/glfw_utils.py](../meltygui/core/windowing/glfw_utils.py) — 1,343 lines
 - [utils/jump_to_code.py](../meltygui/utils/jump_to_code.py) — 344 lines
 - [utils/pkl_inspect.py](../meltygui/utils/pkl_inspect.py) — 90 lines
 - [utils/render_utils.py](../meltygui/utils/render_utils.py) — 1,419 lines
-- [utils/singleton.py](../meltygui/core/singleton.py) — 16 lines
-- [utils/thread_safe_bool.py](../meltygui/core/thread_safe_bool.py) — 24 lines
-- [utils/thread_signal.py](../meltygui/core/thread_signal.py) — 30 lines
+- [utils/singleton.py](../meltygui/core/runtime/singleton.py) — 16 lines
+- [utils/thread_safe_bool.py](../meltygui/core/runtime/thread_safe_bool.py) — 24 lines
+- [utils/thread_signal.py](../meltygui/core/runtime/thread_signal.py) — 30 lines
 
 ### views
 
-- [views/__init__.py](../meltygui/views/__init__.py) — 0 lines
-- [views/anywhere.py](../meltygui/core/parameter_core.py) — 1,661 lines
-- [views/basic_view_utils.py](../meltygui/core/cursor_core.py) — 161 lines
-- [views/blit_offscreen.py](../meltygui/core/tile_cache.py) — 5,968 lines
-- [views/blit_offscreen_debug_renderers.py](../meltygui/core/cache_diagnostics.py) — 0 lines
-- [views/columns.py](../meltygui/core/column_core.py) — 2,452 lines
+- `views/__init__.py` (removed compatibility shell) — 0 lines
+- [views/anywhere.py](../meltygui/core/rendering/parameter_core.py) — 1,661 lines
+- [views/basic_view_utils.py](../meltygui/core/layout/cursor_core.py) — 161 lines
+- [views/blit_offscreen.py](../meltygui/core/cache/tile_cache.py) — 5,968 lines
+- [views/blit_offscreen_debug_renderers.py](../meltygui/core/cache/cache_diagnostics.py) — 0 lines
+- [views/columns.py](../meltygui/core/layout/column_core.py) — 2,452 lines
 - [views/core_meta.py](../meltygui/state/annotation_state.py) — 22 lines
-- [views/core_settings.py](../meltygui/core/metadata_core.py) — 51 lines
+- [views/core_settings.py](../meltygui/core/files/metadata_core.py) — 51 lines
 - [views/cst_proxy.py](../meltygui/model/code_proxy_model.py) — 876 lines
-- [views/drag_drop.py](../meltygui/core/drag_drop_core.py) — 1,525 lines
+- [views/drag_drop.py](../meltygui/core/input/drag_drop_core.py) — 1,525 lines
 - [views/fa_icons.py](../meltygui/model/icon_model.py) — 1,024 lines
-- [views/fast_dock.py](../meltygui/core/dock_core.py) — 688 lines
-- [views/file_watch_debug.py](../meltygui/core/file_watch_core.py) — 147 lines
-- [views/headers.py](../meltygui/core/header_runtime.py) — 915 lines
-- [views/inspect_utils.py](../meltygui/core/inspection_core.py) — 169 lines
-- [views/line_graph_playground.py](../meltygui/core/graph_core.py) — 789 lines
+- [views/fast_dock.py](../meltygui/core/windowing/dock_core.py) — 688 lines
+- [views/file_watch_debug.py](../meltygui/core/files/file_watch_core.py) — 147 lines
+- [views/headers.py](../meltygui/core/layout/header_runtime.py) — 915 lines
+- [views/inspect_utils.py](../meltygui/core/diagnostics/inspection_core.py) — 169 lines
+- [views/line_graph_playground.py](../meltygui/core/graphics/graph_core.py) — 789 lines
 - [views/menu_bar.py](../meltygui/view/menu_view.py) — 263 lines
-- [views/monitor.py](../meltygui/core/monitor_core.py) — 105 lines
-- [views/new_core_view.py](../meltygui/core/render_dispatch.py) — 9,205 lines
+- [views/monitor.py](../meltygui/core/diagnostics/monitor_core.py) — 105 lines
+- [views/new_core_view.py](../meltygui/core/rendering/render_dispatch.py) — 9,205 lines
 - [views/search_glow.py](../meltygui/view/search_view.py) — 152 lines
-- [views/split_overlay_renderer.py](../meltygui/core/overlay_renderer.py) — 984 lines
-- [views/stack_trace_view.py](../meltygui/core/trace_core.py) — 1,002 lines
+- [views/split_overlay_renderer.py](../meltygui/core/graphics/overlay_renderer.py) — 984 lines
+- [views/stack_trace_view.py](../meltygui/core/diagnostics/trace_core.py) — 1,002 lines
 - [views/texture_view.py](../meltygui/view/texture_view.py) — 437 lines
-- [views/tile_manager.py](../meltygui/core/tile_manager_core.py) — 543 lines
-- [views/utils/__init__.py](../meltygui/views/utils/__init__.py) — 0 lines
+- [views/tile_manager.py](../meltygui/core/layout/tile_manager_core.py) — 543 lines
+- `views/utils/__init__.py` (removed compatibility shell) — 0 lines
 - [views/utils/animator.py](../meltygui/state/animation_state.py) — 97 lines
-- [views/utils/grid_dots_shader.py](../meltygui/core/grid_core.py) — 117 lines
-- [views/utils/imgui_style_manager_class.py](../meltygui/core/style_core.py) — 522 lines
+- [views/utils/grid_dots_shader.py](../meltygui/core/layout/grid_core.py) — 117 lines
+- [views/utils/imgui_style_manager_class.py](../meltygui/core/styling/style_core.py) — 522 lines
 - [views/utils/view_utils.py](../meltygui/model/format_model.py) — 390 lines
-- [views/view_func_selection.py](../meltygui/core/view_selection.py) — 177 lines
+- [views/view_func_selection.py](../meltygui/core/input/view_selection.py) — 177 lines
 
 ### widgets
 
-- [widgets/__init__.py](../meltygui/widgets/__init__.py) — 0 lines
-- [widgets/actions_playground.py](../meltygui/core/action_core.py) — 213 lines
-- [widgets/change_value.py](../meltygui/core/value_core.py) — 1,752 lines
-- [widgets/claude_terminals.py](../meltygui/core/claude_terminal_core.py) — 352 lines
+- `widgets/__init__.py` (removed compatibility shell) — 0 lines
+- [widgets/actions_playground.py](../meltygui/core/automation/action_core.py) — 213 lines
+- [widgets/change_value.py](../meltygui/core/automation/value_core.py) — 1,752 lines
+- [widgets/claude_terminals.py](../meltygui/core/services/claude_terminal_core.py) — 352 lines
 - [widgets/columns_playground.py](../meltygui/examples/columns_window_demo.py) — 61 lines
 - [widgets/context_menu_playground.py](../meltygui/examples/context_menu_window_demo.py) — 49 lines
 - [widgets/crash_reports.py](../meltygui/model/trace_report_model.py) — 667 lines
 - [widgets/file_graph.py](../meltygui/model/import_graph_model.py) — 468 lines
-- [widgets/file_tree.py](../meltygui/core/file_tree_core.py) — 537 lines
-- [widgets/import_graph_view.py](../meltygui/core/import_graph_core.py) — 344 lines
-- [widgets/mcp_query_playground.py](../meltygui/core/query_core.py) — 253 lines
+- [widgets/file_tree.py](../meltygui/core/files/file_tree_core.py) — 537 lines
+- [widgets/import_graph_view.py](../meltygui/core/files/import_graph_core.py) — 344 lines
+- [widgets/mcp_query_playground.py](../meltygui/core/automation/query_core.py) — 253 lines
 - [widgets/mode_test_playground.py](../meltygui/examples/mode_demo.py) — 49 lines
 - [widgets/modifies_playground.py](../meltygui/examples/modifies_demo.py) — 121 lines
-- [widgets/orchestrator.py](../meltygui/core/orchestration_core.py) — 3,283 lines
-- [widgets/region_screenshot.py](../meltygui/core/screenshot_core.py) — 247 lines
-- [widgets/selectors.py](../meltygui/core/selector_core.py) — 340 lines
-- [widgets/space_mouse_playground.py](../meltygui/core/input_core.py) — 444 lines
+- [widgets/orchestrator.py](../meltygui/core/automation/orchestration_core.py) — 3,283 lines
+- [widgets/region_screenshot.py](../meltygui/core/diagnostics/screenshot_core.py) — 247 lines
+- [widgets/selectors.py](../meltygui/core/automation/selector_core.py) — 340 lines
+- [widgets/space_mouse_playground.py](../meltygui/core/input/input_core.py) — 444 lines
 - [widgets/stack_trace_playground.py](../meltygui/examples/trace_demo.py) — 88 lines
-- [widgets/terminal_playground.py](../meltygui/core/terminal_core.py) — 1,101 lines
+- [widgets/terminal_playground.py](../meltygui/core/services/terminal_core.py) — 1,101 lines
 - [widgets/tile_manager_playground.py](../meltygui/examples/tile_manager_demo.py) — 42 lines
 - [widgets/tint_debug.py](../meltygui/examples/tint_demo.py) — 160 lines
 
 ### windows
 
-- [windows/__init__.py](../meltygui/windows/__init__.py) — 0 lines
-- [windows/backends/__init__.py](../meltygui/windows/backends/__init__.py) — 0 lines
-- [windows/backends/imgui_renderer.py](../meltygui/core/backends/imgui_renderer.py) — 138 lines
-- [windows/backends/native_wayland.py](../meltygui/core/backends/native_wayland.py) — 850 lines
-- [windows/backends/wayland_protocol.py](../meltygui/core/backends/wayland_protocol.py) — 101 lines
+- `windows/__init__.py` (removed compatibility shell) — 0 lines
+- `windows/backends/__init__.py` (removed compatibility shell) — 0 lines
+- [windows/backends/imgui_renderer.py](../meltygui/core/windowing/backends/imgui_renderer.py) — 138 lines
+- [windows/backends/native_wayland.py](../meltygui/core/windowing/backends/native_wayland.py) — 850 lines
+- [windows/backends/wayland_protocol.py](../meltygui/core/windowing/backends/wayland_protocol.py) — 101 lines
 
-## core_render.py import sites
+## Initial core_render.py import sites (historical snapshot)
 
 Includes imports inside functions. Repeated imports are retained so the exact
 use sites can be inspected.
@@ -729,7 +749,7 @@ use sites can be inspected.
 | 6041 | `meltygui.rendering.decorators.window_decoration` | `(module)` |
 | 6078 | `meltygui.views.new_core_view` | `draw_any` |
 
-## Modules importing core_render.py
+## Initial modules importing core_render.py (historical snapshot)
 
 - `meltygui.accounts.internet_accounts`
 - `meltygui.chat.chat_interface`

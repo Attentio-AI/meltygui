@@ -3,7 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from meltygui.model import file_model
-from meltygui.core.toggles import Toggles
+from meltygui.core.runtime.toggles import Toggles
 
 
 def test_move_between_folders_and_undo_preserves_contents(tmp_path, monkeypatch):
@@ -94,7 +94,7 @@ def test_tree_renderer_preserves_mutation_result(monkeypatch):
 
 
 def test_legacy_imports_share_host_and_model_objects():
-    from meltygui.core import file_core
+    from meltygui.core.files import file_core
     from meltygui.files import folder_files
     assert folder_files.files_proxy is file_core.files_proxy
     assert folder_files._scan is file_model._scan

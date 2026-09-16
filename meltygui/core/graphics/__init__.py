@@ -1,0 +1,1 @@
+"""Shared framework graphics machinery."""

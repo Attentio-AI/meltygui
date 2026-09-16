@@ -1,8 +1,8 @@
 """Input view functions and supporting definitions."""
-from meltygui.core.gl_state import GLState
+from meltygui.core.graphics.gl_state import GLState
 from meltygui.core.melty import Melty
 from meltygui.core.core_render import render_func
-from meltygui.core.toggles import Toggles
+from meltygui.core.runtime.toggles import Toggles
 from meltygui.view.header_view import draw_header
 import math
 import numpy as np
@@ -31,14 +31,14 @@ def render_puck(gl_state, key, width, height, axes, tilt, spin, cam_zoom,
     from meltygui.pbr import model_matrix
     from meltygui.pbr import orbit_camera
     from meltygui.pbr import rotation_matrix
-    from meltygui.core.input_core import BASE_HEIGHT
-    from meltygui.core.input_core import CAP_HEIGHT
-    from meltygui.core.input_core import HOVER_GAP
-    from meltygui.core.input_core import _CAP_MESHES
-    from meltygui.core.input_core import _cap_meshes
-    from meltygui.core.input_core import _device_model
-    from meltygui.core.input_core import _environment_tint
-    from meltygui.core.input_core import inset_depth_of_cap
+    from meltygui.core.input.input_core import BASE_HEIGHT
+    from meltygui.core.input.input_core import CAP_HEIGHT
+    from meltygui.core.input.input_core import HOVER_GAP
+    from meltygui.core.input.input_core import _CAP_MESHES
+    from meltygui.core.input.input_core import _cap_meshes
+    from meltygui.core.input.input_core import _device_model
+    from meltygui.core.input.input_core import _environment_tint
+    from meltygui.core.input.input_core import inset_depth_of_cap
 
     # [tint=(0.9, 0.6, 0.2)]
     rubber_color, rubber_roughness = (0.008, 0.008, 0.01), 0.58     # satin: catches a rim
@@ -152,10 +152,10 @@ def draw_space_mouse(input_value=None, gl_state: GLState = None, draw_state=None
     from meltygui.code.new_converters import code_hosts_for
     from meltygui.view.tensor_view import _view_size
     from meltygui.view.collection_view import draw_collection
-    from meltygui.core.column_core import ColumnLayout
-    from meltygui.core.input_core import _draw_puck
-    from meltygui.core.input_core import _draw_readout
-    import meltygui.core.space_mouse as space_mouse
+    from meltygui.core.layout.column_core import ColumnLayout
+    from meltygui.core.input.input_core import _draw_puck
+    from meltygui.core.input.input_core import _draw_readout
+    import meltygui.core.input.space_mouse as space_mouse
 
     # [tint=(0.9, 0.6, 0.2)]
     bar_width = 120

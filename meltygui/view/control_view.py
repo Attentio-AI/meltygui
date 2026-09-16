@@ -3,9 +3,9 @@ from enum import Enum
 from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
 from meltygui.core.core_render import render_func
-from meltygui.core.core_decoration import Core
+from meltygui.core.rendering.core_decoration import Core
 from meltygui.state.new_core_model import TileMode
-from meltygui.core.toggles import Tint
+from meltygui.core.runtime.toggles import Tint
 from meltygui.view.header_view import draw_header
 from meltygui_imgui.core import _DrawList
 from types import NoneType
@@ -33,7 +33,7 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left
            search_match=False, search_current=False, tint=None, rounding=None, corner_radius=6.0, text_pad=15,
            max_bg_brightness=0.25):
     from meltygui.model.color_model import _brightness_clamp
-    from meltygui.core.glfw_utils import request_render
+    from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.view.search_view import draw_search_highlight
 
     if color is not None:
@@ -432,7 +432,7 @@ def draw_button(input_value="", draw_state=None, label="", tint=(1.0, 1.0, 1.0, 
     Styled from draw_state.tint (raw imgui.button's stock style reads pure
     white in the meltygui theme). The label wraps: it's drawn OVER a label-less
     button with a text-wrap pos, and the button height grows to fit."""
-    from meltygui.core.tile_cache import add_shadow
+    from meltygui.core.cache.tile_cache import add_shadow
 
     w = min_width if wrap else (draw_state.content_width or min_width)
     _t = tint
@@ -485,6 +485,38 @@ def draw_int(input_value: int, draw_state=None, max_height=100, min_height=20,
 
         return changed, value
     return False, input_value
+
+
+@render_func(tint=(0.18, 0.46, 0.67), use_cache=True, shadow=False,
+             with_header=draw_header, header_same_line=True, wrap=False,
+             min_width=80, min_height=22, auto_resize=False)
+def draw_int_slider(input_value: int, draw_state=None, min_value=0, max_value=100,
+                    left_mouse_down=None, left_mouse_drag=None):
+    """A bounded integer edited through the view's injected pointer events."""
+    left, top = imgui.get_cursor_screen_pos()
+    width = max(1.0, draw_state.content_width)
+    height = 22.0
+    draw_state.event_rect(('left_mouse_down', 'left_mouse_drag'),
+                          (left, top, left + width, top + height))
+    value = max(min_value, min(max_value, input_value))
+    event = left_mouse_drag if left_mouse_drag is not None else left_mouse_down
+    if event is not None and max_value > min_value:
+        fraction = max(0.0, min(1.0, (event.x - left) / width))
+        value = round(min_value + fraction * (max_value - min_value))
+    fraction = (value - min_value) / max(1, max_value - min_value)
+    draw_list = imgui.get_window_draw_list()
+    draw_list.add_rect_filled(left, top + 4, left + width, top + height - 4,
+                              pack_color(*Tint.checkbox_bg(), 1.0), rounding=3)
+    draw_list.add_rect_filled(left, top + 4, left + width * fraction, top + height - 4,
+                              pack_color(*Tint.checkbox_bg_selected(), 1.0), rounding=3)
+    label = str(value)
+    label_width, label_height = imgui.calc_text_size(label)
+    draw_list.add_text(left + (width - label_width) / 2,
+                       top + (height - label_height) / 2,
+                       pack_color(*Tint.checkbox_text(), 1.0), label)
+    imgui.dummy(width, height)
+    changed = event is not None and value != input_value
+    return changed, value if changed else input_value
 
 
 @render_func(is_default_for=Enum, is_tree=False, shadow=False, align_header=False,

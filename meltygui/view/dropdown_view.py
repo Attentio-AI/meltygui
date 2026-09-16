@@ -1,12 +1,12 @@
 """Dropdown view functions and supporting definitions."""
-from meltygui.core.toggles import Toggles
+from meltygui.core.runtime.toggles import Toggles
 from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
 from meltygui.core.core_render import render_func
-from meltygui.core.core_decoration import Core
-from meltygui.core.window_decoration import window
+from meltygui.core.rendering.core_decoration import Core
+from meltygui.core.rendering.window_decoration import window
 from meltygui.state.new_core_model import DropDownState
-from meltygui.core.toggles import Tint
+from meltygui.core.runtime.toggles import Tint
 from meltygui.view.header_view import draw_header
 import meltygui_imgui as imgui
 from meltygui.core.core_render import SCROLLBAR_MARGIN
@@ -58,18 +58,18 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     opening one popover implicitly closes every other (they all fail the test).
     ``drop_down_state`` is the per-view scratch object the framework re-injects
     every frame; we stash the last picked leaf on it for the trigger label."""
-    from meltygui.core.cache_tree import UNSET_VALUE
-    from meltygui.core.glfw_utils import request_render
+    from meltygui.core.conversion.cache_tree import UNSET_VALUE
+    from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.view.control_view import button
     from meltygui.model.dropdown_model import _dd_as_tuple
-    from meltygui.core.dropdown_core import _dd_close
-    from meltygui.core.dropdown_core import _dd_handle_keys
+    from meltygui.core.layout.dropdown_core import _dd_close
+    from meltygui.core.layout.dropdown_core import _dd_handle_keys
     from meltygui.model.dropdown_model import _dd_label_for_path
     from meltygui.model.dropdown_model import _dd_path_for_value
     from meltygui.model.dropdown_model import _dd_walk
-    import meltygui.core.window_api as glfw
+    import meltygui.core.windowing.window_api as glfw
 
-    from meltygui.core.mode import Mode
+    from meltygui.core.rendering.mode import Mode
 
     # DEBUG
     # Is THIS dropdown the one whose popover is showing?
@@ -354,14 +354,14 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
     (or the code editor's per-event invalidate_up) — invalidate_up
     specifically, since it cascades to the row tiles; a plain invalidate
     leaves the inner dd_rows collection clean and it blit-skips."""
-    from meltygui.core.cache_tree import UNSET_VALUE
-    from meltygui.core.fonts import Font
-    from meltygui.core.glfw_utils import request_render
+    from meltygui.core.conversion.cache_tree import UNSET_VALUE
+    from meltygui.core.styling.fonts import Font
+    from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.view.text_view import draw_text
     from meltygui.model.dropdown_model import _dd_as_tuple
     from meltygui.model.dropdown_model import _dd_first_match_leaf
     from meltygui.model.dropdown_model import _dd_row_lookup
-    from meltygui.core.dropdown_core import _dd_set_cursor
+    from meltygui.core.layout.dropdown_core import _dd_set_cursor
     from meltygui.model.dropdown_model import _dd_visible_entries
 
     if show_search is None:
@@ -540,10 +540,10 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
     the code editor's completion popup uses it for the kind label (func/class/…)."""
     from meltygui.view.control_view import button
     from meltygui.model.dropdown_model import _dd_as_tuple
-    from meltygui.core.dropdown_core import _dd_invalidate_rows
-    from meltygui.core.dropdown_core import _dd_pick
+    from meltygui.core.layout.dropdown_core import _dd_invalidate_rows
+    from meltygui.core.layout.dropdown_core import _dd_pick
     from meltygui.model.dropdown_model import _dd_row_lookup
-    from meltygui.core.dropdown_core import _dd_set_cursor
+    from meltygui.core.layout.dropdown_core import _dd_set_cursor
 
     key, value, label, is_branch = input_value
     row_path = tuple(path_prefix) + (key,)
@@ -700,7 +700,7 @@ def _dd_popup_geometry(collection, search, trigger_top, trigger_height,
                        open_upwards=None, min_width=None):
     """Content-sized popup contained in the display, independent of old bounds."""
     from meltygui.model.dropdown_model import _dd_visible_entries
-    from meltygui.core.tile_cache import snap_int
+    from meltygui.core.cache.tile_cache import snap_int
 
     rows = _dd_visible_entries(collection, (search or "").strip().lower())
     display_w, display_h = imgui.get_io().display_size
@@ -723,7 +723,7 @@ def _dd_menu_fit(menu_ds, min_width=None, max_height=None):
     group rect (_content_rect), width floored at min_width, height capped
     at max_height and the display (rows scroll past it). None until the
     body has measured."""
-    from meltygui.core.tile_cache import snap_int
+    from meltygui.core.cache.tile_cache import snap_int
 
     rect = getattr(menu_ds, "_content_rect", None)
     if not rect or rect[0] <= 0 or rect[1] <= 0:
@@ -841,15 +841,15 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     clicked, else UNSET_VALUE.
 
     `draw_state` is the MENU window's draw_state (the level), not a per-row one."""
-    from meltygui.core.cache_tree import UNSET_VALUE
-    from meltygui.core.dropdown_core import _dd_pick
-    from meltygui.core.dropdown_core import _dd_set_cursor
+    from meltygui.core.conversion.cache_tree import UNSET_VALUE
+    from meltygui.core.layout.dropdown_core import _dd_pick
+    from meltygui.core.layout.dropdown_core import _dd_set_cursor
     from meltygui.editor.source_ui import _RowSpan
     from meltygui.editor.source_ui import _row_code_hosts
     from meltygui.editor.text_editor import draw_text
     from meltygui.model.dropdown_model import _dd_as_tuple
     from meltygui.model.dropdown_model import _dd_row_lookup
-    from meltygui.core.glfw_utils import request_render
+    from meltygui.core.windowing.glfw_utils import request_render
 
     row_path = tuple(path_prefix) + (key,)
     is_cursor = _dd_as_tuple(cursor_path) == row_path

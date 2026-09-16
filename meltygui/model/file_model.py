@@ -6,7 +6,7 @@ coordinates when disk snapshots and edits pass through them.
 import shutil
 from pathlib import Path
 
-from meltygui.core.bubbling import install_bubbling
+from meltygui.core.conversion.bubbling import install_bubbling
 
 def _scan(folder):
     """Disk → the held shape: {name: Path} for files, {name: {…}} for dirs."""
@@ -61,7 +61,7 @@ def _delete(path):
     """A key the user DELETED → remove from disk (rmtree for a folder).
     Toggles.FileSafety.block_file_delete gates ALL disk deletes (read live);
     the poller re-discovers the surviving file and restores its key."""
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     if Toggles.FileSafety.block_file_delete:
         print(f"[folder_files] delete blocked (Toggles.FileSafety.block_file_delete): {path}")
         return
@@ -226,7 +226,7 @@ def _collect_meta(tree, folder, meta):
 def initialize_file_metadata(vis, root):
     skip_suffixes = {".pyc"}
     from meltygui.models.file_meta import FileMeta
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     meta = _file_meta(root)
     if meta is None:
         return
@@ -248,7 +248,7 @@ def initialize_file_metadata(vis, root):
                 or tuple(round(c, 3) for c in stored[:3]) in unpainted):
             dict.pop(meta[key], "tint", None)
             meta.touch(key)      # raw dict op: tell the shared store
-    from meltygui.core.paths import PACKAGE_ROOT
+    from meltygui.core.runtime.paths import PACKAGE_ROOT
     module_root = PACKAGE_ROOT   # .../src
     for p in module_root.rglob("*"):
         rel = p.relative_to(module_root).parts

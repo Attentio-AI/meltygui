@@ -58,6 +58,60 @@ def test_install_updates_live_saved_names_without_replacing_the_map(package, mon
     assert module_names.canonical_name('module_move_fixture.old.Settings') == 'module_move_fixture.new.Settings'
 
 
+def test_any_loaded_historical_name_can_supply_the_live_module(package):
+    (package / 'old.py').write_text(SOURCE)
+    original = importlib.import_module('module_move_fixture.old')
+    original.state['value'] = 71
+    (package / 'old.py').rename(package / 'new.py')
+    install_module_aliases({'module_move_fixture.old': 'module_move_fixture.new',
+                           'module_move_fixture.unloaded': 'module_move_fixture.new'})
+    assert importlib.import_module('module_move_fixture.new') is original
+    assert original.read() == 71
+
+
+def test_removed_legacy_parent_directories_remain_importable(package):
+    (package / 'new.py').write_text(SOURCE)
+    install_module_aliases({'module_move_fixture.removed.nested.old': 'module_move_fixture.new'})
+    old = importlib.import_module('module_move_fixture.removed.nested.old')
+    assert old is importlib.import_module('module_move_fixture.new')
+    assert not (package / 'removed').exists()
+
+
+def test_live_package_move_updates_child_search_paths(package):
+    old = package / 'old_package'
+    old.mkdir()
+    (old / '__init__.py').write_text('state = []\n')
+    (old / 'child.py').write_text('value = 42\n')
+    original = importlib.import_module('module_move_fixture.old_package')
+    old.rename(package / 'new_package')
+    install_module_aliases({'module_move_fixture.old_package': 'module_move_fixture.new_package'})
+    current = importlib.import_module('module_move_fixture.new_package')
+    assert current is original
+    assert importlib.import_module('module_move_fixture.new_package.child').value == 42
+
+
+def test_resource_path_code_updates_without_restarting_module_state(package):
+    source = ('from pathlib import Path\nfrom . import starts\nstarts.append("initialized")\n'
+              'state = {"value": 1}\ndef resource():\n'
+              '    return Path(__file__).parent / "data.txt"\n')
+    (package / 'old.py').write_text(source)
+    original = importlib.import_module('module_move_fixture.old')
+    read_resource = original.resource
+    original.state['value'] = 91
+    nested = package / 'nested'
+    nested.mkdir()
+    (nested / '__init__.py').write_text('')
+    (nested / 'new.py').write_text(source.replace('from . import starts', 'from module_move_fixture import starts')
+                                 .replace('Path(__file__).parent', 'Path(__file__).parents[1]'))
+    (package / 'old.py').unlink()
+    install_module_aliases({'module_move_fixture.old': 'module_move_fixture.nested.new'})
+    current = importlib.import_module('module_move_fixture.nested.new')
+    assert current is original and current.resource is read_resource
+    assert read_resource() == package / 'data.txt'
+    assert current.state['value'] == 91
+    assert importlib.import_module('module_move_fixture').starts == ['initialized']
+
+
 def test_reinstall_reads_the_updated_manifest_in_a_running_session(package, monkeypatch):
     from meltygui.core import module_compatibility
 

@@ -11,12 +11,12 @@ and drives both through the same solve.
 """
 import meltygui_imgui as imgui
 
-from meltygui.core.column_core import draw_columns
-from meltygui.core.column_core import draw_rows
-from meltygui.core.column_core import Columns
-from meltygui.core.column_core import Rows
+from meltygui.core.layout.column_core import draw_columns
+from meltygui.core.layout.column_core import draw_rows
+from meltygui.core.layout.column_core import Columns
+from meltygui.core.layout.column_core import Rows
 from meltygui.core.core_render import render_func
-from meltygui.core.window_decoration import window
+from meltygui.core.rendering.window_decoration import window
 
 # Module-level so hotswap re-exec reuses it and edits keep their state while
 # iterating on draw_columns.

@@ -14,11 +14,11 @@ from typing import Any
 
 from meltygui.core.melty import Melty
 from meltygui.code.libcst_conversion import register
-from meltygui.core.path_finder import convert
-from meltygui.core.path_finder import explain_chain
-from meltygui.core.path_finder import all_paths
-from meltygui.core.path_finder import all_reachable_from
-from meltygui.core.path_finder import T
+from meltygui.core.conversion.path_finder import convert
+from meltygui.core.conversion.path_finder import explain_chain
+from meltygui.core.conversion.path_finder import all_paths
+from meltygui.core.conversion.path_finder import all_reachable_from
+from meltygui.core.conversion.path_finder import T
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗

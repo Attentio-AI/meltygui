@@ -1,6 +1,6 @@
 """Collection model functions and supporting definitions."""
 from enum import Enum
-from meltygui.core.toggles import Toggles
+from meltygui.core.runtime.toggles import Toggles
 from types import NoneType
 
 

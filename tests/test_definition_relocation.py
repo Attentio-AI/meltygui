@@ -13,7 +13,7 @@ from meltygui.core.melty import Melty
 
 
 SOURCE = '''from meltygui.core.core_render import render_func
-from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.conversion.dict_conversion import DictConversion
 VALUE = "initial"
 class FeatureState(DictConversion):
     setting = 3
@@ -53,6 +53,21 @@ def load_modules(tmp_path, monkeypatch):
         names.append(name)
         return module
     return load
+
+
+def test_module_hotswap_adds_literal_instance_fields_without_rerunning_init(load_modules):
+    module = load_modules('constructor_fields_hotswap')
+    first, second = module.FeatureState(), module.FeatureState()
+    first.held = 'edited'
+    source = SOURCE.replace('self.held = "live"',
+        'self.held = "new default"\n        self.pending = []\n'
+        '        self.computed = do_not_run()')
+    source += '\ndef do_not_run():\n    raise AssertionError("constructor rerun")\n'
+    assert _recompile_module(module, source, module.__file__) is None
+    assert first.held == 'edited' and second.held == 'live'
+    assert first.pending == second.pending == []
+    assert first.pending is not second.pending
+    assert not hasattr(first, 'computed')
 
 
 @pytest.mark.parametrize('edit_destination_first', [False, True])

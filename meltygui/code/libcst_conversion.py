@@ -23,24 +23,24 @@ from typing import Any
 import libcst as cst
 from libcst._nodes.internal import CodegenState as _CodegenState
 
-from meltygui.core.fonts import Font
+from meltygui.core.styling.fonts import Font
 from meltygui.core.melty import Melty
-from meltygui.core.modes import Modes
-from meltygui.core.modes import _LazyMode
-from meltygui.core.notifications import notify
-from meltygui.core.notifications import lag_traced
-from meltygui.core.render_funcs import RenderFuncs
-from meltygui.core.glfw_utils import print_stack_trace
-from meltygui.core.path_finder import convert
-from meltygui.core.path_finder import PendingState
-from meltygui.core.path_finder import Pending
+from meltygui.core.rendering.modes import Modes
+from meltygui.core.rendering.modes import _LazyMode
+from meltygui.core.diagnostics.notifications import notify
+from meltygui.core.diagnostics.notifications import lag_traced
+from meltygui.core.rendering.render_funcs import RenderFuncs
+from meltygui.core.windowing.glfw_utils import print_stack_trace
+from meltygui.core.conversion.path_finder import convert
+from meltygui.core.conversion.path_finder import PendingState
+from meltygui.core.conversion.path_finder import Pending
 from meltygui.core.core_render import render_func
-from meltygui.core.core_decoration import defaults
-from meltygui.core.core_decoration import Core
-from meltygui.core.perf_trace import trace as _ptrace
-from meltygui.core.perf_trace import trace_rl as _ptrace_rl
-from meltygui.core.perf_trace import span as _pspan
-from meltygui.core.perf_trace import once as _ponce
+from meltygui.core.rendering.core_decoration import defaults
+from meltygui.core.rendering.core_decoration import Core
+from meltygui.core.diagnostics.perf_trace import trace as _ptrace
+from meltygui.core.diagnostics.perf_trace import trace_rl as _ptrace_rl
+from meltygui.core.diagnostics.perf_trace import span as _pspan
+from meltygui.core.diagnostics.perf_trace import once as _ponce
 
 
 def register(fn):
@@ -1055,7 +1055,7 @@ def _prune_symbol_store():
     widest span — the widest overlaps whatever span gets opened next); bounded
     at ONE per path so the unbounded-growth bug stays fixed."""
     try:
-        from meltygui.core.toggles import Toggles  # lazy: breaks import cycle
+        from meltygui.core.runtime.toggles import Toggles  # lazy: breaks import cycle
         _keep_seeds = Toggles.TextEditor.SymbolUsages.stale_gen_incremental
     except Exception:
         _keep_seeds = True
@@ -2183,7 +2183,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     # in sync. `local_keys` also lets the bare-name scan skip resolving a local
     # against the module namespace (a local shadows a same-named global). Gated by
     # Toggles.TextEditor.SymbolUsages.local_symbol_usages.
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     if Toggles.TextEditor.SymbolUsages.local_symbol_usages:
         local_bounds, local_global, local_parent, (local_lo, local_hi) = (
             _local_var_bindings(file_tree, start_line, end_line))
@@ -2655,7 +2655,7 @@ def usages_fresh_for_address(address) -> bool:
     stayed unindexed — and untinted — until an unrelated index-gen bump."""
     if DISABLE_JEDI or address is None or getattr(address, "path", None) is None:
         return True   # nothing will ever recompute - don't keep the nudge locked
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     from meltygui.editor.pending_save import PendingSave
     resolved = _Path(address.path).resolve()
     start = (getattr(address, "start", 0) or 0) + 1
@@ -2719,7 +2719,7 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     is debounced to _SHIFT_MAT_MIN_S: mid-burst probes serve the unshifted base
     uncached (the editor splice-remaps its display independently) and the
     composite shift lands at most one window later."""
-    from meltygui.core.toggles import Toggles  # lazy: avoid import cycle
+    from meltygui.core.runtime.toggles import Toggles  # lazy: avoid import cycle
     from meltygui.editor.pending_save import PendingSave
     _t_probe = _time.monotonic()
     accurate = Toggles.jedi_correctness
@@ -3720,7 +3720,7 @@ def _park_while_frame(max_park_s=_FRAME_PARK_MAX_S):
     cur = threading.current_thread()
     if cur is threading.main_thread():
         return 0.0
-    import meltygui.core.gl_state as gl_state
+    import meltygui.core.graphics.gl_state as gl_state
     glt = getattr(gl_state, "_gl_thread", None)  # read, don't claim
     if glt is None or cur is glt:
         return 0.0
@@ -3738,7 +3738,7 @@ def _park_while_frame(max_park_s=_FRAME_PARK_MAX_S):
 
 
 def _yield_to_ui():
-    from meltygui.core.toggles import Toggles  # lazy: avoid import cycle
+    from meltygui.core.runtime.toggles import Toggles  # lazy: avoid import cycle
     if not Toggles.yield_to_ui:
         return
     # The incremental span reconvert is the LIGHT path built to run during
@@ -3778,7 +3778,7 @@ def _yield_to_ui():
     cur = threading.current_thread()
     if cur is threading.main_thread():
         return
-    import meltygui.core.gl_state as gl_state
+    import meltygui.core.graphics.gl_state as gl_state
     glt = getattr(gl_state, "_gl_thread", None)  # read, don't claim (is_current_thread claims)
     if glt is None or cur is glt:
         return
@@ -3979,7 +3979,7 @@ class _position_map:
     def __enter__(self):
         self._prev = getattr(_span_scope, "positions", None)
         try:
-            from meltygui.core.toggles import Toggles  # lazy to avoid import cycle
+            from meltygui.core.runtime.toggles import Toggles  # lazy to avoid import cycle
             if Toggles.new_position_map:
                 _span_scope.positions = _build_ast_span_map(self._module, self._source)
             else:
@@ -4631,7 +4631,7 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
     # file's cached spans so a re-click is a true refresh.
     _sym_note = None
     if address is not None:
-        from meltygui.core.toggles import Toggles  # lazy to avoid import cycle
+        from meltygui.core.runtime.toggles import Toggles  # lazy to avoid import cycle
         # The drag probe (max_wait=0) drops the auto pass while the user is
         # mid-gesture (a structured tint drag echoes through chain_in, which
         # would run this compute DURING the drag): the gp ships unstamped, and
@@ -4740,7 +4740,7 @@ def _funcdef_span_incremental(prev_gp, old_mod, a, b, pre, suf, new_src):
     numbering (`x#1`), ordering and spans come out exact; the memo only skips
     re-deriving values whose nodes survive the splice. The first reconvert
     after a plain full parse finds an empty memo and just seeds it."""
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     try:
         fd = old_mod.body[0]
         body = list(getattr(fd.body, "body", None) or ())
@@ -5057,7 +5057,7 @@ def cst_dict_incremental_update(prev_gp, old_src, new_src):
     codegen, ~a sixth of the full-parse cost) — any header/footer/comment
     attribution drift falls back to the full parse instead of corrupting the
     round-trip. All validation happens before any in-place mutation."""
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     try:
         # Normalize FIRST (see _norm_blank_lines): the held module was parsed
         # from dedent-normalized text, so raw-space diffs would misplace the
@@ -8721,7 +8721,7 @@ def _attr_no_trigger(obj, attr):
 
 
 
-from meltygui.core.paths import application_root
+from meltygui.core.runtime.paths import application_root
 _SRC_PREFIX = str(application_root()) + "/"
 
 
@@ -9397,7 +9397,7 @@ def _graft_attribute_formatting(new_attr, old_attr):
 # leans on (_threading, _index_refs_cache, _src_mod_map, _file_index_refs) is
 # already defined when this runs at import time.
 import time as _time
-from meltygui.core.window_decoration import window as _window
+from meltygui.core.rendering.window_decoration import window as _window
 
 
 def build_index_cache() -> tuple:

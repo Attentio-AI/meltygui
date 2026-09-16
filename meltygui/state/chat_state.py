@@ -1,6 +1,6 @@
 """Injected state for chat views."""
-from meltygui.core.core_decoration import no_save
-from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.rendering.core_decoration import no_save
+from meltygui.core.conversion.dict_conversion import DictConversion
 
 
 @no_save("revision", "viewports", "text_layouts", "rename")

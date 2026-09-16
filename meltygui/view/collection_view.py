@@ -3,8 +3,8 @@ from collections import defaultdict
 from collections import deque
 from collections.abc import MutableMapping
 from enum import Enum
-from meltygui.core.bubbling import _BubblingDict
-from meltygui.core.bubbling import _DeepPath
+from meltygui.core.conversion.bubbling import _BubblingDict
+from meltygui.core.conversion.bubbling import _DeepPath
 from meltygui.code.libcst_conversion import CallParse
 from meltygui.code.libcst_conversion import ClassParse
 from meltygui.code.libcst_conversion import EnumParse
@@ -14,13 +14,13 @@ from meltygui.hdr_color import pack_color
 from meltygui.core.melty import CollectionAction
 from meltygui.core.melty import Melty
 from meltygui.core.melty import SearchTerm
-from meltygui.core.modes import Modes
+from meltygui.core.rendering.modes import Modes
 from meltygui.core.core_render import render_func
-from meltygui.core.core_decoration import Core
-from meltygui.core.shaped import Shaped
+from meltygui.core.rendering.core_decoration import Core
+from meltygui.core.rendering.shaped import Shaped
 from meltygui.state.new_core_model import ColorPickerState
 from meltygui.state.new_core_model import TabState
-from meltygui.core.toggles import Toggles
+from meltygui.core.runtime.toggles import Toggles
 from meltygui.view.header_view import draw_header
 from types import NoneType
 import meltygui_imgui as imgui
@@ -44,11 +44,11 @@ def draw_collection_as_tabs(input_value, tab_state: TabState = None, draw_state=
     `included` names always show (overriding every hide rule), the type's
     __excluded_attrs__ hide unless Toggles.show_excluded, and _underscored_
     keys hide unless show_system. show_excluded=True disables all hiding."""
-    from meltygui.core.glfw_utils import request_render
+    from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.view.decoration_view import draw_bg
     from meltygui.view.tab_view import draw_tab_bar
-    from meltygui.core.render_dispatch import draw_any
-    import meltygui.core.drag_drop_core as _drag_drop
+    from meltygui.core.rendering.render_dispatch import draw_any
+    import meltygui.core.input.drag_drop_core as _drag_drop
 
     if excluded is None:
         excluded = set()
@@ -279,18 +279,18 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     dropdown to pick from; a single entry binds the + directly with no
     chevron. A bare list of types is accepted and keyed by __name__.
     """
-    from meltygui.core.render_host import RenderHost
+    from meltygui.core.conversion.render_host import RenderHost
     from meltygui.editor.text_editor import _scroll_into_view
-    from meltygui.core.glfw_utils import print_stack_trace
+    from meltygui.core.windowing.glfw_utils import print_stack_trace
     from meltygui.view.decoration_view import draw_bg
     from meltygui.view.header_view import draw_header_end
-    from meltygui.core.tile_cache import snap_int
+    from meltygui.core.cache.tile_cache import snap_int
     from meltygui.model.collection_model import annotation_item_type
     from meltygui.model.collection_model import _collection_match_keys
     from meltygui.model.search_model import _fuzzy_key_match
-    from meltygui.core.render_dispatch import draw_any
-    from meltygui.core.render_dispatch import seperator
-    import meltygui.core.drag_drop_core as _drag_drop
+    from meltygui.core.rendering.render_dispatch import draw_any
+    from meltygui.core.rendering.render_dispatch import seperator
+    import meltygui.core.input.drag_drop_core as _drag_drop
 
     
     
@@ -802,13 +802,13 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
              show_name=True, selectable=False, max_width=100, min_width=33, use_cache=False, with_header=draw_header)
 def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, outline=False,
                info=None):
-    from meltygui.core.glfw_utils import request_render
+    from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.view.color_view import draw_color_picker
     from meltygui.view.control_view import button
     from meltygui.view.color_view import color_picker_height
     from meltygui.view.color_view import color_picker_top_offset
     from meltygui.view.color_view import color_picker_width
-    import meltygui.core.window_api as glfw
+    import meltygui.core.windowing.window_api as glfw
 
     is_open = False
     changed = False
@@ -843,7 +843,7 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
             # in Melty.popover_focused_ds is the open state; click toggles it; the
             # picker window is anchored under the swatch and dismissed on outside
             # click / Esc. The picker itself is stateless and returns the new colour.
-            from meltygui.core.mode import Mode
+            from meltygui.core.rendering.mode import Mode
             is_open = Melty.popover_focused_ds is draw_state
             col = list(input_value)
             alpha = col[3] if len(col) == 4 else 1.0
@@ -962,13 +962,13 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
     the view's `bg_offset` / `z_offset` rows (`draw_view_offsets_fast`,
     written back through `view_owner.locate_<param>`) and, with
     `Toggles.dynamic_styles`, the Residuals tab."""
-    from meltygui.core.glfw_utils import request_render
+    from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.view.color_view import draw_color_picker
     from meltygui.view.color_view import _popover_anchor
     from meltygui.view.color_view import color_picker_height
     from meltygui.view.color_view import color_picker_top_offset
     from meltygui.view.color_view import color_picker_width
-    import meltygui.core.window_api as glfw
+    import meltygui.core.windowing.window_api as glfw
 
     # [tint=(0.85, 0.75, 0.05)]
     corner_radius = 4.0
@@ -1079,7 +1079,7 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
         return False, input_value
 
     # ---- the picker popover: drawn while owned, closed once not open ----
-    from meltygui.core.invalidation_tracker import Note
+    from meltygui.core.cache.invalidation_tracker import Note
     _info = (info() if callable(info) else info) if is_open else None
     picker_h = color_picker_height(4, bool(_info), has_owner=view_owner is not None)
     # Anchor under the chip; flip up past the display bottom (draw_tuple).
@@ -1136,7 +1136,7 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
         return False, input_value
     if color_changed:
         previous = input_value
-        from meltygui.core.style import Style
+        from meltygui.core.styling.style import Style
         input_value = (Style(new_color, **previous.__getnewargs_ex__()[1])
                        if isinstance(previous, Style) and new_color is not None
                        else tuple(new_color) if new_color is not None else None)

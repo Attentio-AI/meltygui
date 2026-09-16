@@ -8,23 +8,30 @@ in `state/<feature>_state.py`.
 
 ## Where to start
 
-| Responsibility | Files |
-|---|---|
-| Render-function execution, injection and caching | `core_render.py`, `core_render_helpers.py`, `parameter_core.py` |
-| Global registries, scheduling and coordination | `melty.py`, `background.py` |
-| Mode definitions, lazy handles and defaults | `mode.py`, `modes.py`, `mode_defaults.py` |
-| Renderer registration, metadata and type matching | `render_funcs.py`, `func_metadata.py`, `shaped.py`, `render_dispatch.py` |
-| Defaults, invalidation and window decorators | `core_decoration.py`, `invalidation_decoration.py`, `window_decoration.py`, `profile_decoration.py` |
-| Generic stateful-data hosting and conversion | `render_host.py`, `bubbling.py`, `cache_tree.py`, `path_finder.py`, `chain.py`, `converter_register.py` |
-| Dict-like object behavior and serialization | `dict_conversion.py`, `dict_conversion_util.py`, `data_decoration.py`, `dynamic_obj.py`, `load_save_v2.py`, `graph_compare.py` |
-| Saved identifiers and live source relocation | `module_names.py`, `module_map.json`, `missing_saved_class.py`, `module_compatibility.py`, `legacy_modules.json`, `definition_hotswap.py` |
-| App and window lifecycle | `app.py`, `app_session.py`, `surface.py`, `lifecycle.py`, `window_api.py`, `window_visibility.py` |
-| Native windows and draw-data backends | `backends/`, `os_frame.py`, `titlebar.py`, `wayland_move.py`, `geometry_feed.py` |
-| Input delivery and hit testing | `input_handler.py`, `pynput_backend.py`, `touchpad_backend.py`, `space_mouse.py`, `collision.py`, `mouse_cursor.py` |
-| Settings, style, fonts and shared GL state | `toggles.py`, `settings.py`, `style.py`, `global_style.py`, `fonts.py`, `gl_state.py` |
+The root keeps six Python modules: `core_render.py`, `melty.py`,
+`definition_hotswap.py`, `module_compatibility.py`, `module_names.py`, and the
+package initializer. The two JSON manifests describe canonical names and aliases.
+Everything else is grouped by the runtime responsibility it serves:
 
-The feature-named `*_core.py` files connect their views to shared services and
-lifecycle. Keep local drawing and data adaptation in their feature modules.
+| Folder | Responsibility and main entry points |
+|---|---|
+| `input/` | Event delivery, devices, hit testing, drag/drop and selection: `input_handler.py`, `collision.py`, `drag_drop_core.py` |
+| `rendering/` | Render dispatch, registration, parameter injection support, modes and decorators: `render_dispatch.py`, `parameter_core.py`, `mode.py` |
+| `conversion/` | Dict-like objects, conversion graphs, hosting and persistence: `dict_conversion.py`, `render_host.py`, `load_save_v2.py` |
+| `cache/` | Drawing caches and invalidation: `tile_cache.py`, `invalidation_tracker.py` |
+| `windowing/` | Surface lifecycle, native windows, chrome and platform backends: `surface.py`, `window_api.py`, `backends/` |
+| `graphics/` | Shared GL resources, shaders, overlays, capture and tensor/graph integration: `gl_state.py`, `shader_func.py`, `lut_core.py` |
+| `layout/` | Cursor, grid, column, header and dropdown plumbing |
+| `styling/` | Shared styles, colours, fonts and font warmup |
+| `files/` | Filesystem polling, metadata and file/import-tree integration |
+| `runtime/` | App/session lifecycle, scheduling, settings and shared process helpers |
+| `diagnostics/` | Notifications, profiling, tracing, inspection and diagnostics integration |
+| `automation/` | Orchestration, actions, queries, search and MCP integration |
+| `services/` | Terminal, chat and account runtime integration |
+
+These folders organize wiring; they do not turn feature algorithms or local
+presentation into core code. Some inherited integration modules remain mixed;
+see [the outstanding ownership review](../../docs/ARCHITECTURE_DEBT.md).
 
 ## Shared presentation inputs
 
@@ -36,17 +43,27 @@ parameter controls. Views can use their own `draw_state.depth_and_layer` for
 local drawing depth. This keeps feature presentation independent of `Melty`
 lookups without making callers pass the same plumbing repeatedly.
 
+Palette consumers declare `luts`. Core injects the shared `LutPalette` from
+`Melty.luts`, or accepts an explicit override, and subscribes cached consumers
+before the render-cache gate. `luts.texture(name)` is an integer-like texture ID:
+the model handles lazy uploads, updates and per-context storage. There is no
+palette host or separate resource service. `GLState` releases context resources
+when a surface closes. Palette values and proxies belong in `model/lut_model.py`;
+selection and swatches belong in `view/lut_view.py`.
+
 ## Why mode has three files
 
-`mode.py` defines the real enum and its renderer/converter policies. `modes.py`
+`rendering/mode.py` defines the real enum and its renderer/converter policies. `rendering/modes.py`
 provides lazy `Modes.X` handles so decorators can refer to modes before their
-renderers finish importing. `mode_defaults.py` holds shared type-to-mode defaults,
+renderers finish importing. `rendering/mode_defaults.py` holds shared type-to-mode defaults,
 including delayed registration for optional dependencies. Combining these at
 import time would recreate the mode/renderer import cycle.
 
 The public package exports remain available from `meltygui`. Historical module
 paths resolve to the same canonical module object. A live move adopts existing
-definitions and state rather than executing initialization again. Saved identifiers
+definitions and state without executing initialization again. Matching destination
+code updates resource paths while preserving live objects. Historical package
+names are virtual namespaces, so obsolete directory shells are unnecessary. Saved identifiers
 and source navigation use the same canonical names, including in a running session.
 
 See [the move inventory and checks](../../docs/CORE_RELOCATION.md). The mixed

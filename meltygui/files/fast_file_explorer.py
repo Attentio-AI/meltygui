@@ -63,26 +63,26 @@ import os
 import re
 from pathlib import Path
 
-import meltygui.core.window_api as glfw
+import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
 
 from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
 from meltygui.core.melty import FileWatch
-from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.models.file_meta import FileMeta
 from meltygui.models.file_meta import file_meta_store
-from meltygui.core.extensions import source_folders as project_roots
-from meltygui.core.toggles import Toggles
-from meltygui.core.glfw_utils import request_render
+from meltygui.core.runtime.extensions import source_folders as project_roots
+from meltygui.core.runtime.toggles import Toggles
+from meltygui.core.windowing.glfw_utils import request_render
 from meltygui.code.new_codecs import extension_to_codec
-from meltygui.core.tile_cache import add_shadow
-from meltygui.core.tile_cache import clear_glows
-from meltygui.core.column_core import ColumnLayout
+from meltygui.core.cache.tile_cache import add_shadow
+from meltygui.core.cache.tile_cache import clear_glows
+from meltygui.core.layout.column_core import ColumnLayout
 from meltygui.core.core_render import render_func
-from meltygui.core.core_decoration import no_save
-from meltygui.core.drag_drop_core import DragDrop
-from meltygui.core.header_runtime import _brightness_clamp_fn
+from meltygui.core.rendering.core_decoration import no_save
+from meltygui.core.input.drag_drop_core import DragDrop
+from meltygui.core.layout.header_runtime import _brightness_clamp_fn
 
 
 from meltygui.state.file_state import FileExplorerState     # the query the current selection was found for
@@ -345,7 +345,7 @@ def tint_control(draw_state, key, tint, x, y, size, text_y, hovered, default_tin
     brush_icon = f"\uf1fc"
     brush_col = pack_color(*brush_color, 1.0) if brush_color is not None else pack_color(1.0, 1.0, 1.0, 0.22)
     brush_hover_col = brush_col if brush_color is not None else pack_color(1.0, 1.0, 1.0, 0.9)
-    from meltygui.core.render_dispatch import draw_tuple_fast
+    from meltygui.core.rendering.render_dispatch import draw_tuple_fast
 
     view_id = f"tint_{key}"
     if tint:

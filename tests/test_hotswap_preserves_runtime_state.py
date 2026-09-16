@@ -183,7 +183,7 @@ class HotswapPreservesRuntimeState(unittest.TestCase):
 
     def test_real_melty_module_swap(self):
         import meltygui.core.melty as melty_mod
-        from meltygui.core.core_decoration import Core
+        from meltygui.core.rendering.core_decoration import Core
         path = Path(melty_mod.__file__)
         source = path.read_text(encoding="utf-8")
         stamp_module_baseline(melty_mod, source)

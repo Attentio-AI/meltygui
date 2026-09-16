@@ -221,7 +221,7 @@ def ollama_fim(req: FimRequest, session: OllamaSession, model="qwen2.5-coder:7b"
     blocks (FIM models have no side channel for it); the run block is
     inlined through `annotated_prefix`. `device` / `keep_alive` default to
     the account's settings (Internet Accounts → Ollama)."""
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     from meltygui.accounts.internet_accounts import account_field
     if device is None:
         device = account_field("ollama", session.account, "device", "auto")

@@ -105,7 +105,7 @@ def test_nf_display_shape():
 
 @pytest.fixture
 def st(gl_context):
-    from meltygui.core.gl_state import GLState
+    from meltygui.core.graphics.gl_state import GLState
     state = GLState()
     yield state
     state.release()

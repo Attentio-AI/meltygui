@@ -12,12 +12,12 @@ def test_modes_remain_lazy_until_used():
         [sys.executable, '-c', '''
 import pickle
 import sys
-from meltygui.core.modes import Modes
+from meltygui.core.rendering.modes import Modes
 handle = Modes.FILE_TREE
 restored = pickle.loads(pickle.dumps(handle))
-assert 'meltygui.core.mode' not in sys.modules
+assert 'meltygui.core.rendering.mode' not in sys.modules
 assert 'meltygui.debug.mode' not in sys.modules
-from meltygui.core.mode import Mode
+from meltygui.core.rendering.mode import Mode
 assert handle._resolve() is restored._resolve() is Mode.FILE_TREE
 from meltygui.modes import Modes as legacy_modes
 from meltygui.debug.mode import Mode as legacy_mode
@@ -29,11 +29,11 @@ assert legacy_modes is Modes and legacy_mode is Mode
 
 
 def test_saved_core_classes_and_modes_keep_identity():
-    from meltygui.core.dict_conversion import DictConversion
-    from meltygui.core.load_save_v2 import LSDUnpickler
-    from meltygui.core.mode import Mode
+    from meltygui.core.conversion.dict_conversion import DictConversion
+    from meltygui.core.conversion.load_save_v2 import LSDUnpickler
+    from meltygui.core.rendering.mode import Mode
     from meltygui.core.module_names import canonical_name
-    from meltygui.core.render_host import RenderHost
+    from meltygui.core.conversion.render_host import RenderHost
 
     for old, name, expected in (
         ('meltygui.debug.mode', 'Mode', Mode),
@@ -50,15 +50,15 @@ def test_saved_core_classes_and_modes_keep_identity():
 def test_source_editing_follows_core_definitions():
     from meltygui.code.fileref import to_address
     from meltygui.code.file_converters import load_text
-    from meltygui.core.mode import Mode
-    from meltygui.core.modes import _Modes
-    from meltygui.core.render_funcs import _RenderFuncs
+    from meltygui.core.rendering.mode import Mode
+    from meltygui.core.rendering.modes import _Modes
+    from meltygui.core.rendering.render_funcs import _RenderFuncs
 
     for value in (Mode, _Modes, _RenderFuncs):
         module = importlib.import_module(value.__module__)
         address = to_address(value)
         assert address.path == Path(module.__file__)
-        assert address.path.parent.name == 'core'
+        assert address.path.parent.parts[-2:] == ('core', 'rendering')
         assert f'class {value.__name__}' in load_text(address)
 
 
@@ -70,9 +70,9 @@ def test_old_imports_navigate_to_core_after_a_move(monkeypatch):
     root = Path(meltygui.__file__).resolve().parents[1]
     project = analysis_project(root)
     for old, new in (
-        ('meltygui.debug.mode', 'meltygui.core.mode'),
+        ('meltygui.debug.mode', 'meltygui.core.rendering.mode'),
         ('meltygui.rendering.core_render', 'meltygui.core.core_render'),
-        ('meltygui.views.columns', 'meltygui.core.column_core'),
+        ('meltygui.views.columns', 'meltygui.core.layout.column_core'),
     ):
         monkeypatch.setitem(symbol_roster._mod_path_cache, (project.key, old), ('/removed/source.py', 0))
         expected = str(root / (new.replace('.', '/') + '.py'))

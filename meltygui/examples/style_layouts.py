@@ -6,11 +6,11 @@ from meltygui import Style
 from meltygui import glfw_window
 from meltygui import pressed
 from meltygui.hdr_color import pack_color
-from meltygui.core.fonts import Font
+from meltygui.core.styling.fonts import Font
 from meltygui.core.melty import Melty
-from meltygui.core.toggles import Toggles
+from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.core_render import render_func
-from meltygui.core.header_runtime import draw_header
+from meltygui.core.layout.header_runtime import draw_header
 
 
 strength = 0.22

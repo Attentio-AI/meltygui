@@ -1,13 +1,13 @@
 """Layout view functions and supporting definitions."""
-from meltygui.core.layout_core import dock_header
+from meltygui.core.layout.layout_core import dock_header
 from meltygui.core.melty import Melty
 from meltygui.model.layout_model import Columns
 from meltygui.model.layout_model import Rows
 from meltygui.core.core_render import render_func
-from meltygui.core.core_decoration import Core
+from meltygui.core.rendering.core_decoration import Core
 from meltygui.state.core_undo import NavUndo
-from meltygui.core.toggles import Toggles
-from meltygui.core.toggles import WindowManager
+from meltygui.core.runtime.toggles import Toggles
+from meltygui.core.runtime.toggles import WindowManager
 import meltygui_imgui as imgui
 
 
@@ -27,8 +27,8 @@ def draw_columns(input_value, column_widths=None, column_edges=None,
     queues drags and lines its cells up with its edges.
     """
     from meltygui.model.layout_model import Rows
-    from meltygui.core.column_core import ColumnLayout
-    from meltygui.core.render_dispatch import draw_any
+    from meltygui.core.layout.column_core import ColumnLayout
+    from meltygui.core.rendering.render_dispatch import draw_any
 
     if child_kwargs is None:
         child_kwargs = {}
@@ -99,8 +99,8 @@ def draw_rows(input_value, row_heights=None, row_edges=None,
     collapses a child's width), so a Columns cell fills its row.
     """
     from meltygui.model.layout_model import Columns
-    from meltygui.core.column_core import RowLayout
-    from meltygui.core.render_dispatch import draw_any
+    from meltygui.core.layout.column_core import RowLayout
+    from meltygui.core.rendering.render_dispatch import draw_any
 
     if child_kwargs is None:
         child_kwargs = {}
@@ -160,19 +160,19 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
                    dock_tab="all", left_mouse_down=False, search_text="", **kwargs):
     # input_value is Melty.registered_windows - a plain defaultdict - so there
     # is no is_default_for registration: the root calls this view explicitly.
-    from meltygui.core.fonts import Font
-    from meltygui.core.glfw_utils import request_render
+    from meltygui.core.styling.fonts import Font
+    from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.view.search_view import draw_search_highlight
-    from meltygui.core.tile_cache import add_glow
-    from meltygui.core.tile_cache import add_shadow
-    from meltygui.core.tile_cache import clear_glows
-    from meltygui.core.dock_core import _color_u32
-    from meltygui.core.dock_core import _draw_glyph_ink_centered
-    from meltygui.core.dock_core import _floor_value
-    from meltygui.core.dock_core import _mix
-    from meltygui.core.dock_core import _row_icon
-    from meltygui.core.dock_core import _scale_saturation
-    from meltygui.core.dock_core import _summon
+    from meltygui.core.cache.tile_cache import add_glow
+    from meltygui.core.cache.tile_cache import add_shadow
+    from meltygui.core.cache.tile_cache import clear_glows
+    from meltygui.core.windowing.dock_core import _color_u32
+    from meltygui.core.windowing.dock_core import _draw_glyph_ink_centered
+    from meltygui.core.windowing.dock_core import _floor_value
+    from meltygui.core.windowing.dock_core import _mix
+    from meltygui.core.windowing.dock_core import _row_icon
+    from meltygui.core.windowing.dock_core import _scale_saturation
+    from meltygui.core.windowing.dock_core import _summon
 
     imgui.dummy(0, 10)
     # ---- styling ----

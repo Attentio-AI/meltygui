@@ -1,5 +1,5 @@
 """Account view functions and supporting definitions."""
-from meltygui.core.account_core import _cleanup_accounts
+from meltygui.core.services.account_core import _cleanup_accounts
 from meltygui.core.melty import Melty
 from meltygui.model.account_model import AccountStore
 from meltygui.core.core_render import render_func
@@ -22,15 +22,14 @@ def draw_internet_accounts(
     from meltygui.accounts.internet_accounts import CodexKind
     from meltygui.accounts.internet_accounts import KINDS
     from meltygui.accounts.internet_accounts import _color_u32
-    from meltygui.accounts.internet_accounts import _draw_field
     from meltygui.accounts.internet_accounts import _ellipsize
     from meltygui.accounts.internet_accounts import _format_gb
     from meltygui.accounts.internet_accounts import _mix
     from meltygui.accounts.internet_accounts import _refresh_stale
     from meltygui.accounts.internet_accounts import _wrap_usage_label
     from meltygui.accounts.internet_accounts import is_default
-    from meltygui.core.glfw_utils import request_render
-    from meltygui.core.tile_cache import add_shadow
+    from meltygui.core.windowing.glfw_utils import request_render
+    from meltygui.core.cache.tile_cache import add_shadow
     import meltygui.accounts.internet_accounts
 
     meltygui.accounts.internet_accounts._window_draw_state = draw_state
@@ -362,7 +361,7 @@ def draw_internet_accounts(
                     field_left = sub_left + label_width
                     field_width = max(px(60), sub_right - field_left)
                     if _draw_field(account_entry, field, field_left,
-                                   sub_top + (sub_row_height - px(26)) / 2.0, field_width, px(26)):
+                                   sub_top + (sub_row_height - px(26)) / 2.0, field_width, px(26), store=store):
                         pressed[0] = True
             elif sub[0] == "card":
                 # A highlighted strip with its own buttons: the kind supplies
@@ -504,3 +503,22 @@ def draw_internet_accounts(
             panel_state.usage = usage_cache
 
     return pressed[0], input_value
+
+
+def _draw_field(input_value: dict, field, left, top, width, height, *, store: AccountStore):
+    """An editable field: a single-line draw_text row (the editor, so focus,
+    selection and paste all work). Returns True when the edit changed the
+    stored value."""
+    from meltygui.view.text_view import draw_text
+    key = f"acct_{input_value['id']}_{field.name}"
+    value = input_value.get(field.name) or ""
+    imgui.set_cursor_screen_pos((left, top))
+    changed, new_value = draw_text(value, name=key, single_line=True, width=width, height=height,
+                                   show_widgets=False, show_root_backgrounds=False,
+                                   show_header=False, show_file_header=False, show_jump_bar=False,
+                                   shadow=False, use_cache=True, temp=True, autocomplete=False,
+                                   syntax_highlight=False, line_numbers=False, fim="")
+    if changed and isinstance(new_value, str) and new_value != value:
+        store.set_field(input_value["id"], field.name, new_value.strip())
+        return True
+    return False

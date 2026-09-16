@@ -1,6 +1,6 @@
 """Query view functions and supporting definitions."""
 from meltygui.core.core_render import render_func
-from meltygui.core.render_funcs import RenderFuncs
+from meltygui.core.rendering.render_funcs import RenderFuncs
 from meltygui.state.query_state import MCPQueryState
 import meltygui_imgui as imgui
 
@@ -12,10 +12,10 @@ def draw_mcp_query(input_value=None, draw_state=None,
     # ── knobs ────────────────────────────────────────────────────────────
     # [tint=(0.95, 0.75, 0.20)]
     from meltygui.view.header_view import flat_button
-    from meltygui.core.query_core import _TOOL_ARGS
-    from meltygui.core.query_core import _pointer
-    from meltygui.core.query_core import _run
-    from meltygui.core.query_core import _seed_args
+    from meltygui.core.automation.query_core import _TOOL_ARGS
+    from meltygui.core.automation.query_core import _pointer
+    from meltygui.core.automation.query_core import _run
+    from meltygui.core.automation.query_core import _seed_args
 
     button_height = 26                  # toolbar buttons; the rows size off this
     # [tint=(0.95, 0.75, 0.20)]

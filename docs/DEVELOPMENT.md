@@ -73,7 +73,7 @@ See [Publishing](PUBLISHING.md) for account setup and release verification.
 - `meltygui/model/<feature>_model.py`: value adapters and feature operations.
 - `meltygui/state/<feature>_state.py`: explicit feature/view state and helpers.
 - `meltygui/examples` and top-level `examples`: sample data, composition and apps.
-- `meltygui/core/extensions.py`: optional application service callbacks.
+- `meltygui/core/runtime/extensions.py`: optional application service callbacks.
 
 `views`, `widgets`, `rendering` and `windows` are compatibility namespaces.
 Remaining `tensor`, `graphics`, `files`, `models`, `chat`, `completion`, `code`,

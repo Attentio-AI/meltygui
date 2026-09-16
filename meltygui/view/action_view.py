@@ -1,7 +1,7 @@
 """Action view functions and supporting definitions."""
 from meltygui.core.core_render import render_func
-from meltygui.core.window_decoration import window
-from meltygui.core.toggles import Actions
+from meltygui.core.rendering.window_decoration import window
+from meltygui.core.runtime.toggles import Actions
 import meltygui_imgui as imgui
 
 
@@ -22,10 +22,10 @@ def draw_action_runner(input_value, draw_state=None, enter_key_pressed=False, **
     from meltygui.editor.source_ui import _category_tint
     from meltygui.view.control_view import draw_button
     from meltygui.view.text_view import draw_text
-    from meltygui.core.render_dispatch import draw_any
-    from meltygui.core.action_core import _action_funcs
-    from meltygui.core.action_core import _close_action_runner
-    from meltygui.core.action_core import _run_action
+    from meltygui.core.rendering.render_dispatch import draw_any
+    from meltygui.core.automation.action_core import _action_funcs
+    from meltygui.core.automation.action_core import _close_action_runner
+    from meltygui.core.automation.action_core import _run_action
 
     fn = input_value.action
     if fn is None:

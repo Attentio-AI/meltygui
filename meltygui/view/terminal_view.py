@@ -3,7 +3,7 @@ from meltygui.core.melty import Melty
 from meltygui.model.terminal_model import Terminal
 from meltygui.core.core_render import render_func
 from meltygui.state.terminal_state import TerminalScreenState
-from meltygui.core.toggles import Toggles
+from meltygui.core.runtime.toggles import Toggles
 import meltygui_imgui as imgui
 import threading
 
@@ -13,25 +13,25 @@ import threading
 def draw_terminal_screen(input_value: Terminal, draw_state, view_state: TerminalScreenState,
                          left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False, 
                          left_mouse_clicked=False):
-    from meltygui.core.terminal_core import _ALT_SCREEN_MODES
-    from meltygui.core.terminal_core import _COL_ERR
-    from meltygui.core.terminal_core import _DEFAULT_BG
-    from meltygui.core.terminal_core import _DEFAULT_FG
-    from meltygui.core.terminal_core import _LINK_COLOR
-    from meltygui.core.terminal_core import _LINK_HOVER_COLOR
-    from meltygui.core.terminal_core import _MOUSE_MODES
-    from meltygui.core.terminal_core import _SEL_COLOR
-    from meltygui.core.terminal_core import _TMUX_WHEEL_LINES
-    from meltygui.core.terminal_core import _find_links
-    from meltygui.core.terminal_core import _forward_keys
-    from meltygui.core.terminal_core import _mouse_seq
-    from meltygui.core.terminal_core import _norm
-    from meltygui.core.terminal_core import _pack
-    from meltygui.core.terminal_core import _push_mono
-    from meltygui.core.terminal_core import _resolve
-    from meltygui.core.terminal_core import _resolve_path
-    from meltygui.core.terminal_core import _row_blank
-    from meltygui.core.terminal_core import _wheel_lines
+    from meltygui.core.services.terminal_core import _ALT_SCREEN_MODES
+    from meltygui.core.services.terminal_core import _COL_ERR
+    from meltygui.core.services.terminal_core import _DEFAULT_BG
+    from meltygui.core.services.terminal_core import _DEFAULT_FG
+    from meltygui.core.services.terminal_core import _LINK_COLOR
+    from meltygui.core.services.terminal_core import _LINK_HOVER_COLOR
+    from meltygui.core.services.terminal_core import _MOUSE_MODES
+    from meltygui.core.services.terminal_core import _SEL_COLOR
+    from meltygui.core.services.terminal_core import _TMUX_WHEEL_LINES
+    from meltygui.core.services.terminal_core import _find_links
+    from meltygui.core.services.terminal_core import _forward_keys
+    from meltygui.core.services.terminal_core import _mouse_seq
+    from meltygui.core.services.terminal_core import _norm
+    from meltygui.core.services.terminal_core import _pack
+    from meltygui.core.services.terminal_core import _push_mono
+    from meltygui.core.services.terminal_core import _resolve
+    from meltygui.core.services.terminal_core import _resolve_path
+    from meltygui.core.services.terminal_core import _row_blank
+    from meltygui.core.services.terminal_core import _wheel_lines
 
     term, ds, vs = input_value, draw_state, view_state
     # Point the reader thread's invalidator at the tile that actually re-renders this
@@ -276,13 +276,13 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
 
 @render_func(is_default_for=Terminal)
 def draw_terminal(input_value: Terminal, draw_state):
-    from meltygui.core.terminal_core import _draw_terminal_window
+    from meltygui.core.services.terminal_core import _draw_terminal_window
 
     return _draw_terminal_window(input_value, draw_state, "terminal_screen")
 
 
 @render_func
 def draw_session_terminal(input_value: Terminal, draw_state, max_bg_value=0.064):
-    from meltygui.core.terminal_core import _draw_terminal_window
+    from meltygui.core.services.terminal_core import _draw_terminal_window
 
     return _draw_terminal_window(input_value, draw_state, "session_screen")

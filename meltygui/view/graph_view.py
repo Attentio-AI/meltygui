@@ -1,17 +1,18 @@
 """Graph view functions and supporting definitions."""
-from meltygui.core.gl_state import GLState
+from meltygui.core.graphics.gl_state import GLState
 from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
-from meltygui.model.tensor_model import Lut
+from meltygui.model.lut_model import Lut, LutPalette
 from meltygui.model.tensor_model import TensorDim
 from meltygui.model.tensor_model import TensorDims
-from meltygui.core.modes import Modes
+from meltygui.core.rendering.modes import Modes
 from meltygui.core.core_render import render_func
-from meltygui.core.shaped import Shaped
+from meltygui.core.rendering.shaped import Shaped
 from meltygui.state.graph_state import GraphViewState
-from meltygui.core.toggles import SwooshMode
-from meltygui.core.toggles import Toggles
+from meltygui.core.runtime.toggles import SwooshMode
+from meltygui.core.runtime.toggles import Toggles
 from meltygui.view.header_view import draw_header
+from meltygui.view.tensor_view import _tick_values
 from meltygui.state.file_state import ROOT
 from pathlib import Path
 import OpenGL.GL as gl
@@ -54,31 +55,29 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
                     # ── events (hover-routed wrapper kwargs) ──
                     middle_mouse_drag=None, scroll_y_changed=None,
                     left_mouse_double_clicked=None, slash_pressed=None,
-                    kp_divide_pressed=None, kp_decimal_pressed=None, **kwargs):
+                    kp_divide_pressed=None, kp_decimal_pressed=None,
+                    luts: LutPalette = None, **kwargs):
     """The line-graph renderer — draw_voxels' sibling (see the module doc).
     CUDA tensors are sampled in place; CPU tensors/ndarrays are uploaded.
     Input can also be an already-packed series GLTexture (rendered as-is; needs n_samples/tex_w/y_range stamped
     on it)."""
-    from meltygui.core.gl_state import GLTexture
-    from meltygui.core.gl_state import gl_limits
-    from meltygui.core.gl_state import texture3d_fit
-    from meltygui.tensor.voxel_playground import LUTS
-    from meltygui.tensor.voxel_playground import _LUT_TEXTURES
+    from meltygui.core.graphics.gl_state import GLTexture
+    from meltygui.core.graphics.gl_state import gl_limits
+    from meltygui.core.graphics.gl_state import texture3d_fit
     from meltygui.tensor.voxel_playground import _cached_volume_texture
     from meltygui.model.tensor_model import _clean_dim_name
     from meltygui.view.tensor_view import _describe_tensor
     from meltygui.view.tensor_view import _draw_image_notice
-    from meltygui.tensor.voxel_playground import _draw_voxel_error
+    from meltygui.view.tensor_view import _draw_voxel_error
+    from meltygui.view.tensor_view import _draw_slice_sliders
     from meltygui.view.tensor_view import _view_size
     from meltygui.tensor.voxel_playground import source_identity
-    from meltygui.core.glfw_utils import request_render
-    from meltygui.core.graph_core import _draw_axes_overlay
-    from meltygui.core.graph_core import _finite_range
-    from meltygui.core.graph_core import _unit_px
-    from meltygui.core.graph_core import line_pass
-    from meltygui.core.graph_core import pack_series
-    from meltygui.core.graph_core import slice_lines
-    from meltygui.core.render_dispatch import draw_any
+    from meltygui.core.windowing.glfw_utils import request_render
+    from meltygui.model.graph_model import _finite_range
+    from meltygui.core.graphics.graph_core import line_pass
+    from meltygui.model.graph_model import pack_series
+    from meltygui.model.graph_model import slice_lines
+    from meltygui.core.rendering.render_dispatch import draw_any
 
     import torch
     
@@ -306,13 +305,7 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
         draw_state.locate_pan_x = 0.0
         draw_state.locate_pan_y = 0.0
 
-    # ── LUT: the shared 1D texture the LUT host materialized, else a
-    # direct upload of the named list until the next is run ──
-    lut_tex = _LUT_TEXTURES.get(lut)
-    if lut_tex is None:
-        lut_list = LUTS.get(lut, LUTS["jet"])
-        lut_tex = gl_state.texture1d("lut_fallback", lut_list,
-                                     version=(lut, len(lut_list)))
+    lut_tex = luts.texture(lut)
 
     # ── GL pass: every resource keyed + lifecycle-managed by gl_state ──
     fb = gl_state.fbo("target", width, height)
@@ -332,10 +325,7 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
             out = gl_state.get('cuda_line_image',
                 lambda: torch.empty((height, width, 4), device=cuda_lines.device, dtype=torch.float16),
                 deps=(height, width, str(cuda_lines.device)))
-            colors = LUTS.get(lut, LUTS['jet'])
-            cuda_lut = gl_state.get('cuda_line_lut',
-                lambda: torch.tensor(colors, device=cuda_lines.device, dtype=torch.float32).reshape(-1, 3),
-                deps=(str(lut), str(cuda_lines.device)))
+            cuda_lut = lut_tex.cuda(cuda_lines.device)
             line_kernels.render(cuda_lines, stats, out, cuda_lut, normalize=normalize,
                 zoom_x=zoom_x, zoom_y=zoom_y, pan_x=pan_x, pan_y=pan_y,
                 y_range=y_range, margin=margin, unit=unit, line_width=max(.5, float(line_width)),
@@ -367,23 +357,7 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
     if clamp_note:
         _draw_image_notice(img_pos, width, clamp_note)
 
-    # ── slice sliders under the image (auto-state write → re-slice) ──
-    for d in slider_dims:
-        label = dim_names[d] if d < len(dim_names) else f"dim{d}"
-        cur = max(0, min(int(slices[d]) if d < len(slices) else 0,
-                         source_shape[d] - 1))
-        imgui.push_item_width(max(60, width - 110))
-        s_changed, s_val = imgui.slider_int(f"{label}##slice{d}", cur,
-                                            0, source_shape[d] - 1)
-        imgui.pop_item_width()
-        
-        imgui.set_item_allow_overlap()
-        if s_changed and int(s_val) != cur:
-            new_slices = list(slices) + [0] * (len(source_shape) - len(slices))
-            new_slices[d] = int(s_val)
-            draw_state.slices = tuple(new_slices)
-            draw_state.invalidate()
-            request_render()
+    _draw_slice_sliders(draw_state, slider_dims, dim_names, slices, source_shape, width)
 
     # ── params panel: the function's OWN params, satellite to and right
     # of the window, double-click to show/hide (draw_voxels' panel verbatim
@@ -446,13 +420,13 @@ def render_import_graph(input_value=None, draw_state=None,
     # scale grows with usage (the file's importer count on the graph's log
     # scale, 0..1), so a hub's box is bigger.
     # [tint=(0.65, 0.55, 0.95)]
-    from meltygui.core.glfw_utils import request_render
+    from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.view.header_view import flat_button
-    from meltygui.core.header_runtime import _brightness_clamp_fn
+    from meltygui.core.layout.header_runtime import _brightness_clamp_fn
     from meltygui.model.import_graph_model import start_build
-    from meltygui.core.file_tree_core import _meta
-    from meltygui.core.file_tree_core import _tint_of
-    from meltygui.core.file_tree_core import open_file
+    from meltygui.core.files.file_tree_core import _meta
+    from meltygui.core.files.file_tree_core import _tint_of
+    from meltygui.core.files.file_tree_core import open_file
     import meltygui.model.import_graph_model as file_graph
 
     box_pad_x = 8.0
@@ -718,3 +692,95 @@ def render_import_graph(input_value=None, draw_state=None,
             imgui.set_window_font_scale(1.0)
 
     return False, None
+
+def _unit_px(width, height, auto_scale):
+    """Pixels per graph unit per axis — the one place the scaling policy
+    lives (the shader's unit_px). auto_scale stretches the fitted graph to
+    the image; otherwise both axes share min(w, h)/2 so the plot keeps its
+    aspect whatever the window's shape (draw_voxels never distorts its box
+    either)."""
+    if auto_scale:
+        return width * 0.5, height * 0.5
+    u = min(width, height) * 0.5
+    return u, u
+
+
+def _graph_to_norm(g, zoom, pan, margin):
+    """graph units (the shader's g) → normalized data coordinate [0, 1]."""
+    return ((g / zoom + pan) / margin + 1.0) * 0.5
+
+
+def _norm_to_px(v, zoom, pan, margin, px, unit, flip=False):
+    """normalized data coordinate → pixel offset inside the image (one axis)."""
+    g = ((v * 2.0 - 1.0) * margin - pan) * zoom
+    return px * 0.5 - g * unit if flip else px * 0.5 + g * unit
+
+
+def _nice_step(span, target_ticks):
+    """1-2-5·10ᵏ step giving about `target_ticks` over `span`."""
+    if span <= 0 or target_ticks <= 0:
+        return 1.0
+    raw = span / target_ticks
+    k = 10.0 ** math.floor(math.log10(raw))
+    for s in (1.0, 2.0, 5.0, 10.0):
+        if s * k >= raw:
+            return s * k
+    return 10.0 * k
+
+
+def _fmt_value(v, step):
+    if step >= 1.0:
+        return f"{v:.0f}"
+    decimals = min(9, max(0, int(math.ceil(-math.log10(step)))))
+    return f"{v:.{decimals}f}"
+
+
+def _draw_axes_overlay(draw_list, img_pos, width, height, n_samples, y_range,
+                       zoom_x, zoom_y, pan_x, pan_y, margin, unit, x_label,
+                       caption, font_px):
+    """2-D axis furniture over the image: faint grid, sample-index ticks
+    along the bottom, value ticks along the left, the x dim's name, and a
+    caption (series dim × line count) top-right. Pure imgui draw-list
+    text, recomputed per frame from the camera params."""
+    x0, y0 = img_pos
+    grid_col = pack_color(1.0, 1.0, 1.0, 0.07)
+    tick_col = pack_color(0.85, 0.85, 0.85, 0.8)
+    dim_col = pack_color(0.85, 0.85, 0.85, 0.55)
+    # x: visible index span from the inverse camera at the image edges.
+    ux, uy = unit
+    if n_samples > 1:
+        # visible index span: the image edges are g = ±(half-extent / unit)
+        gx = width * 0.5 / ux
+        lo = _graph_to_norm(-gx, zoom_x, pan_x, margin) * (n_samples - 1)
+        hi = _graph_to_norm(gx, zoom_x, pan_x, margin) * (n_samples - 1)
+        lo, hi = max(0.0, lo), min(float(n_samples - 1), hi)
+        px_per_idx = 2.0 * ux * zoom_x * margin / (n_samples - 1)
+        for i in _tick_values(lo, hi, px_per_idx, font_px):
+            px = x0 + _norm_to_px(i / (n_samples - 1), zoom_x, pan_x, margin, width, ux)
+            draw_list.add_line(px, y0, px, y0 + height, grid_col)
+            label = str(i)
+            tw, th = imgui.calc_text_size(label)
+            draw_list.add_text(px - tw * 0.5, y0 + height - th - 2, tick_col, label)
+    # y: value ticks at a nice step over the visible value span.
+    ymin, ymax = y_range
+    gy = height * 0.5 / uy
+    v_lo = ymin + _graph_to_norm(-gy, zoom_y, pan_y, margin) * (ymax - ymin)
+    v_hi = ymin + _graph_to_norm(gy, zoom_y, pan_y, margin) * (ymax - ymin)
+    step = _nice_step(v_hi - v_lo, max(2, height / 70.0))
+    v = math.ceil(v_lo / step) * step
+    guard = 0
+    while v <= v_hi and guard < 200:
+        guard += 1
+        vn = (v - ymin) / (ymax - ymin)
+        py = y0 + _norm_to_px(vn, zoom_y, pan_y, margin, height, uy, flip=True)
+        draw_list.add_line(x0, py, x0 + width, py, grid_col)
+        label = _fmt_value(v, step)
+        tw, th = imgui.calc_text_size(label)
+        draw_list.add_text(x0 + 4, py - th * 0.5, tick_col, label)
+        v += step
+    if x_label:
+        tw, th = imgui.calc_text_size(x_label)
+        draw_list.add_text(x0 + width - tw - 6, y0 + height - th - 2, dim_col, x_label)
+    if caption:
+        tw, th = imgui.calc_text_size(caption)
+        draw_list.add_text(x0 + width - tw - 6, y0 + 4, dim_col, caption)

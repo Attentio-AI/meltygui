@@ -7,11 +7,11 @@ collision solve, so dragging any of them pushes and pulls the rest and
 out through the window frame, exactly like the columns playground.
 """
 from meltygui.core.core_render import render_func
-from meltygui.core.window_decoration import window
-from meltygui.core.tile_manager_core import Split
-from meltygui.core.tile_manager_core import Tile
-from meltygui.core.tile_manager_core import TileManagerState
-from meltygui.core.tile_manager_core import draw_tiles
+from meltygui.core.rendering.window_decoration import window
+from meltygui.core.layout.tile_manager_core import Split
+from meltygui.core.layout.tile_manager_core import Tile
+from meltygui.core.layout.tile_manager_core import TileManagerState
+from meltygui.core.layout.tile_manager_core import draw_tiles
 
 # Module-level so hotswap re-exec reuses it and the seeded edges survive
 # edits while iterating in draw_tiles. Blender's default screen, roughly:

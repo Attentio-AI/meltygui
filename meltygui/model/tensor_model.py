@@ -38,18 +38,7 @@ class TensorDims(tuple):
         return f"TensorDims({tuple(int(v) for v in self)})"
 
 
-class Lut(str):
-    """A LUT NAME that is still a str everywhere it matters (dict keys,
-    comparisons, GLSL host lookups) but carries its own TYPE, so meltygui routes
-    it to its own renderer — a dropdown of the available LUTs rather than a
-    text field. Same contract as TensorDim: the renderer must return
-    Lut(...) or the first edit stores a plain str and the row falls back to
-    the generic str renderer."""
-
-    __slots__ = ()
-
-    def __repr__(self):
-        return f"Lut({str(self)!r})"
+from meltygui.model.lut_model import Lut
 
 
 def _clean_dim_name(x, i):

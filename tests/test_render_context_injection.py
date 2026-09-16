@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from meltygui.core.core_render import render_func
 from meltygui.core.core_render import render_func_kwarg_names
-from meltygui.core.parameter_core import view_param_names
+from meltygui.core.rendering.parameter_core import view_param_names
 from meltygui.view.tensor_view import draw_tensor_dim, draw_voxels
 
 

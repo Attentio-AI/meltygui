@@ -6,7 +6,7 @@ painted on its row (``entry["tint"]``, absent until then) — the file
 browser's rule, brush then picker.
 """
 
-from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.conversion.dict_conversion import DictConversion
 
 
 class ChatMetadata(DictConversion):

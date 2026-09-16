@@ -3,11 +3,11 @@ from meltygui.core.melty import Melty
 from meltygui.model.trace_model import CrashReportStore
 from meltygui.model.trace_model import SavedTrace
 from meltygui.core.core_render import render_func
-from meltygui.core.render_funcs import RenderFuncs
+from meltygui.core.rendering.render_funcs import RenderFuncs
 from meltygui.state.trace_state import CrashReportsPanelState
 from meltygui.state.trace_state import StackTraceState
-from meltygui.core.toggles import Tint
-from meltygui.core.toggles import Toggles
+from meltygui.core.runtime.toggles import Tint
+from meltygui.core.runtime.toggles import Toggles
 import meltygui_imgui as imgui
 import os
 import time
@@ -64,19 +64,19 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
     from meltygui.code.fileref import Address
     from meltygui.code.fileref import _PROJECT_ROOT
     from meltygui.code.project_code import project_code
-    from meltygui.core.fonts import Font
-    from meltygui.core.trace_core import _Pane
-    from meltygui.core.trace_core import _RaisingLine
-    from meltygui.core.trace_core import _crop_folds
-    from meltygui.core.trace_core import _ensure_store
-    from meltygui.core.trace_core import _indent_of
-    from meltygui.core.trace_core import _pane_parse
-    from meltygui.core.trace_core import _pane_view
-    from meltygui.core.trace_core import _reindent_rows
-    from meltygui.core.trace_core import _resolve_pane
-    from meltygui.core.trace_core import _shift_panes
-    from meltygui.core.trace_core import chain_shift
-    from meltygui.core.trace_core import stack_frames
+    from meltygui.core.styling.fonts import Font
+    from meltygui.core.diagnostics.trace_core import _Pane
+    from meltygui.core.diagnostics.trace_core import _RaisingLine
+    from meltygui.core.diagnostics.trace_core import _crop_folds
+    from meltygui.core.diagnostics.trace_core import _ensure_store
+    from meltygui.core.diagnostics.trace_core import _indent_of
+    from meltygui.core.diagnostics.trace_core import _pane_parse
+    from meltygui.core.diagnostics.trace_core import _pane_view
+    from meltygui.core.diagnostics.trace_core import _reindent_rows
+    from meltygui.core.diagnostics.trace_core import _resolve_pane
+    from meltygui.core.diagnostics.trace_core import _shift_panes
+    from meltygui.core.diagnostics.trace_core import chain_shift
+    from meltygui.core.diagnostics.trace_core import stack_frames
 
     from meltygui.core.melty import Melty
     # [tint=(0.9, 0.35, 0.28)]
@@ -473,10 +473,10 @@ def draw_crash_reports(
     from meltygui.editor.source_ui import _file_meta_tint
     from meltygui.editor.source_ui import _tab_text_color
     from meltygui.editor.text_editor import COLORS
-    from meltygui.core.glfw_utils import request_render
+    from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.view.header_view import flat_button
-    from meltygui.core.tile_cache import add_shadow
-    from meltygui.core.header_runtime import _brightness_clamp_fn
+    from meltygui.core.cache.tile_cache import add_shadow
+    from meltygui.core.layout.header_runtime import _brightness_clamp_fn
     from meltygui.model.trace_report_model import _color_u32
     from meltygui.model.trace_report_model import _ellipsize
     from meltygui.model.trace_report_model import _mix
@@ -712,7 +712,7 @@ def draw_crash_reports(
                                           priority_delta=4) is not None:
                     fired = "file"
                 if fired:
-                    from meltygui.core.extensions import open_source as open_in_editor
+                    from meltygui.core.runtime.extensions import open_source as open_in_editor
                     open_in_editor(raising_frame[0], raising_frame[1],
                                    token=(func_name.rsplit(".", 1)[-1] if fired == "func" else None))
             # the meta takes what it needs, the error gets the rest (floored)
@@ -848,7 +848,7 @@ def _draw_file_header(pane, x, y, width, height, text_x=None, draw_state=None, i
 
     from meltygui.core.melty import Melty
     from meltygui.models.file_meta import FileMeta
-    from meltygui.core.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     from meltygui.editor.source_ui import _file_meta_tint
     from meltygui.editor.source_ui import _tab_text_color
     text_pad_x = Melty.px(8)
@@ -907,7 +907,7 @@ def _draw_file_header(pane, x, y, width, height, text_x=None, draw_state=None, i
     # body action. The whole line, not the name's glyph box: the 18 px
     # target a few px above a pane's def row was too easy to miss.
     if draw_state is not None:
-        from meltygui.core.extensions import open_source as open_in_editor
+        from meltygui.core.runtime.extensions import open_source as open_in_editor
         # At least the text's extent - a view whose width is not measured
         # yet (first frames, the render harness) would give a zero rect.
         line_rect = (x, y, max(x + width, pen), y + text_pad_y + line_height + text_pad_y)

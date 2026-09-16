@@ -1,7 +1,7 @@
 """Tab view functions and supporting definitions."""
 from meltygui.core.melty import Melty
 from meltygui.core.core_render import render_func
-from meltygui.core.core_decoration import Core
+from meltygui.core.rendering.core_decoration import Core
 from meltygui.state.new_core_model import TabState
 from meltygui.view.header_view import draw_header
 import meltygui_imgui as imgui
@@ -33,8 +33,8 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
     lines render vertically between the tabs."""
     from meltygui.view.control_view import button
     from meltygui.view.header_view import flat_button
-    from meltygui.core.cursor_core import same_line
-    import meltygui.core.drag_drop_core as _drag_drop
+    from meltygui.core.layout.cursor_core import same_line
+    import meltygui.core.input.drag_drop_core as _drag_drop
 
     if collection is None:
         return False, input_value

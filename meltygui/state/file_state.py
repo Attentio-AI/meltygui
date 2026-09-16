@@ -1,6 +1,6 @@
 """Injected state for file views."""
-from meltygui.core.core_decoration import no_save
-from meltygui.core.dict_conversion import DictConversion
+from meltygui.core.rendering.core_decoration import no_save
+from meltygui.core.conversion.dict_conversion import DictConversion
 from pathlib import Path
 
 
@@ -66,10 +66,10 @@ class FileTreeState(DictConversion):
         return Path(self.selected) if self.selected else None
 
     def open_file(self, path):
-        from meltygui.core.file_tree_core import open_file
+        from meltygui.core.files.file_tree_core import open_file
 
         open_file(path)
 
 
-from meltygui.core.paths import application_root
+from meltygui.core.runtime.paths import application_root
 ROOT = application_root()

@@ -2,9 +2,9 @@
 from math import sqrt
 from meltygui.hdr_color import pack_color
 from meltygui.core.core_render import render_func
-from meltygui.core.core_decoration import Core
-from meltygui.core.window_decoration import window
-from meltygui.core.toggles import mix
+from meltygui.core.rendering.core_decoration import Core
+from meltygui.core.rendering.window_decoration import window
+from meltygui.core.runtime.toggles import mix
 import meltygui_imgui as imgui
 
 
@@ -12,7 +12,7 @@ import meltygui_imgui as imgui
 def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                           collection, key, meltygui, y_offset, enable_flow, min_width,
                           unique, tag, style_manager, offset=0, indent_size=10):
-    from meltygui.core.global_style import GlobalStyle
+    from meltygui.core.styling.global_style import GlobalStyle
 
     if Core.melty.active_layer == Core.melty.drag_layer:
         return False, 0.0
@@ -269,9 +269,9 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
             hovered=False, pressed=False, nested_bg=False, saturation=1.0, max_bg_depth=None,
             max_bg_value=None, **kwargs):
     # -- Constants ---------------------------------
-    from meltygui.core.tile_cache import snap_int
-    from meltygui.core.render_dispatch import _DRAW_BG_COLOUR_MEMO
-    from meltygui.core.render_dispatch import _DRAW_BG_FILL_MEMO
+    from meltygui.core.cache.tile_cache import snap_int
+    from meltygui.core.rendering.render_dispatch import _DRAW_BG_COLOUR_MEMO
+    from meltygui.core.rendering.render_dispatch import _DRAW_BG_FILL_MEMO
     from meltygui.model.color_model import _clamp_bg_value
 
     min_value = -0.272

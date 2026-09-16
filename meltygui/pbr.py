@@ -57,10 +57,10 @@ import struct
 import numpy as np
 import OpenGL.GL as gl
 
-from meltygui.core.gl_state import GLState
-from meltygui.core.gl_state import GLTexture
-from meltygui.core.gl_state import _scalar
-from meltygui.core.shader_func import shader_func
+from meltygui.core.graphics.gl_state import GLState
+from meltygui.core.graphics.gl_state import GLTexture
+from meltygui.core.graphics.gl_state import _scalar
+from meltygui.core.graphics.shader_func import shader_func
 
 
 

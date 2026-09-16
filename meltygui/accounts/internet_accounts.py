@@ -50,11 +50,11 @@ from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
 from meltygui.chat.backends import chat_backend
 from meltygui.chat.backends import register_chat_backend
-from meltygui.core.dict_conversion import DictConversion
-from meltygui.core.glfw_utils import request_render
-from meltygui.core.tile_cache import add_shadow
+from meltygui.core.conversion.dict_conversion import DictConversion
+from meltygui.core.windowing.glfw_utils import request_render
+from meltygui.core.cache.tile_cache import add_shadow
 from meltygui.core.core_render import render_func
-from meltygui.core.window_decoration import window
+from meltygui.core.rendering.window_decoration import window
 
 # Where the store lives on disk - a data file, not a styling knob; shared
 # by the store methods, the footer row, and the tests' monkeypatch.
@@ -282,7 +282,7 @@ class AnthropicKind(AccountKind):
         account NAMED after the kind and "<that>-<account id>" for the
         others — keyed on the id, not on default-ness, so a row promoted to
         default (the kind-named one removed) keeps its profile files."""
-        from meltygui.core.toggles import Toggles
+        from meltygui.core.runtime.toggles import Toggles
         name = (account.get("profile") or "").strip()
         if name:
             return name
@@ -451,7 +451,7 @@ class AnthropicKind(AccountKind):
 
     def switch_claude_code(self, account):
         import meltygui.completion.providers.claude_usage as claude_usage
-        from meltygui.core.toggles import Toggles
+        from meltygui.core.runtime.toggles import Toggles
         email = (self.login_info(account) or {}).get("email")
         if not email:
             return
@@ -542,7 +542,7 @@ class AnthropicKind(AccountKind):
         usage_min_interval_s of the previous request (except `force`, the
         Refresh button) and never inside a 429 back-off window."""
         import meltygui.completion.providers.claude_usage as claude_usage
-        from meltygui.core.toggles import Toggles
+        from meltygui.core.runtime.toggles import Toggles
         if account.get("_usage_loading"):
             return
         now = time.monotonic()
@@ -602,7 +602,7 @@ class AnthropicKind(AccountKind):
         still open then — so the persisted-open panel at boot shows last
         session's bars and a restart within the delay costs no request.
         A delay of 0 fetches at once (the tests' setting)."""
-        from meltygui.core.toggles import Toggles
+        from meltygui.core.runtime.toggles import Toggles
         delay = Toggles.InternetAccounts.usage_fetch_delay_s
         if delay <= 0:
             self.fetch_usage(account)
@@ -635,7 +635,7 @@ class AnthropicKind(AccountKind):
         if not account.get("_usage_open"):
             self._disarm_usage_fetch(account)
             return []
-        from meltygui.core.toggles import Toggles
+        from meltygui.core.runtime.toggles import Toggles
         login = self._claude_login_for(account)
         if login is not None and not self._owns_claude_login(account, login):
             # Another row is the login's account (or the default row for the
@@ -850,7 +850,7 @@ class CodexKind(AccountKind):
     def _server(self, account):
         from meltygui.completion.providers.codex_accounts import AppServer
         from meltygui.completion.providers.codex_accounts import account_home
-        from meltygui.core.toggles import Toggles
+        from meltygui.core.runtime.toggles import Toggles
         return AppServer(account_home(account["id"]),
                          executable=Toggles.InternetAccounts.codex_bin,
                          timeout=Toggles.InternetAccounts.codex_request_timeout_s)
@@ -905,7 +905,7 @@ class CodexKind(AccountKind):
         accounts_changed()
 
         def run():
-            from meltygui.core.toggles import Toggles
+            from meltygui.core.runtime.toggles import Toggles
             try:
                 with self._server(account) as server:
                     server.cancelled = account["_codex_cancel"]
@@ -1179,7 +1179,7 @@ class OllamaKind(AccountKind):
         target = ollama.device_label(device, account.get("_gpus"))
 
         def load(account, name=model["name"]):
-            from meltygui.core.toggles import Toggles
+            from meltygui.core.runtime.toggles import Toggles
             _run_in_background(account, lambda: self._with_client(
                 account, lambda client: ollama.load_model(
                     client, name, account.get("device") or "auto", Toggles.Fim.ollama_keep_alive)))
@@ -1346,7 +1346,7 @@ def _format_gb(size_bytes):
 from meltygui.state.account_state import AccountsPanelState
 
 
-from meltygui.core.account_core import _cleanup_accounts
+from meltygui.core.services.account_core import _cleanup_accounts
 
 
 from meltygui.view.account_view import draw_internet_accounts
@@ -1354,22 +1354,22 @@ draw_internet_accounts = window(input_value=accounts, tint=(0.19, 0.16, 0.14), i
 
 
 def _draw_field(account, field, left, top, width, height):
-    """An editable field: a single-line draw_text row (the editor, so focus,
-    selection and paste all work). Returns True when the edit changed the
-    stored value."""
-    from meltygui.editor.text_editor import draw_text
-    key = f"acct_{account['id']}_{field.name}"
-    value = account.get(field.name) or ""
-    imgui.set_cursor_screen_pos((left, top))
-    changed, new_value = draw_text(value, name=key, single_line=True, width=width, height=height,
-                                   show_widgets=False, show_root_backgrounds=False,
-                                   show_header=False, show_file_header=False, show_jump_bar=False,
-                                   shadow=False, use_cache=True, temp=True, autocomplete=False,
-                                   syntax_highlight=False, line_numbers=False, fim="")
-    if changed and isinstance(new_value, str) and new_value != value:
-        accounts.set_field(account["id"], field.name, new_value.strip())
-        return True
-    return False
+    from meltygui.view.account_view import _draw_field as draw_account_field
+    return draw_account_field(account, field, left, top, width, height, store=accounts)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # Register the companion window on initial import and on an Accounts hotswap.
 # The import is last so its provider registry is already available.

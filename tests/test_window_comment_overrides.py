@@ -2,13 +2,14 @@
 import libcst as cst
 import pytest
 from meltygui.state.new_core_model import DrawState
-from meltygui.core.toggles import Toggles
+from meltygui.core.runtime.toggles import Toggles
 from meltygui.views import anywhere
-from meltygui.core.render_dispatch import _LazyOverrideEntry
-from meltygui.core.window_visibility import (
+from meltygui.core.rendering.render_dispatch import _LazyOverrideEntry
+from meltygui.core.windowing.window_visibility import (
     adopt_window_position, marker_user_visibility, sync_marker_visibility,
     requested_window_closed, resolved_window_kwargs, user_window_position,
     user_window_closed, native_user_window_position, override_state,
+    invalidate_comment_edit,
 )
 from meltygui.code.libcst_conversion import cst_funcdef_to_dict, dict_to_cst_funcdef
 
@@ -123,6 +124,66 @@ def test_removing_closed_override_restores_auto_open():
     assert marker._lv_open is None
 
 
+def test_replayed_comment_edit_invalidates_once_including_in_place_values(monkeypatch):
+    from unittest.mock import Mock
+    from meltygui.core.melty import Melty
+    cache = Mock()
+    monkeypatch.setattr(Melty, 'cache', cache)
+    ds = DrawState()
+    ds._tile_id = 'voxel'
+    comment = {'cam_brightness': .7, 'dim_names': ['depth', 'row', 'column']}
+    kwargs = dict(comment)
+    invalidate_comment_edit(ds, comment, kwargs)
+    invalidate_comment_edit(ds, comment, kwargs)
+    cache.invalidate_up.assert_not_called()
+    comment['cam_brightness'] = 1.6
+    comment['dim_names'][0] = 'layer'
+    kwargs.update(comment)  # The live marker/replay splats current comment inputs.
+    invalidate_comment_edit(ds, comment, kwargs)
+    cache.invalidate_up.assert_called_once_with('voxel', force=True, max_depth=8)
+    invalidate_comment_edit(ds, comment, kwargs)
+    assert cache.invalidate_up.call_count == 1
+    invalidate_comment_edit(ds, {}, kwargs)
+    assert 'cam_brightness' not in kwargs and 'dim_names' not in kwargs
+    assert cache.invalidate_up.call_count == 2
+
+
+def test_comment_tracking_field_hotswaps_into_existing_window_state(tmp_path, monkeypatch):
+    import sys
+    import types
+    from pathlib import Path
+    from unittest.mock import Mock
+    from meltygui.code.file_converters import _recompile_module, stamp_module_baseline
+    from meltygui.core.melty import Melty
+    import meltygui.core.windowing.window_visibility as visibility
+    monkeypatch.setattr(Melty, 'cache', Mock())
+    current = Path(visibility.__file__).read_text()
+    previous = current.replace('        self.comment_values = None\n', '')
+    path = tmp_path / 'window_state_hotswap.py'
+    path.write_text(previous)
+    module = types.ModuleType('window_state_hotswap')
+    module.__file__ = str(path)
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    exec(compile(previous, str(path), 'exec'), vars(module))
+    stamp_module_baseline(module, previous)
+    state = module.WindowOverrideState()
+    state.position = (12, 34)
+    assert _recompile_module(module, current, str(path)) is None
+    assert state.position == (12, 34)
+    assert state.comment_values is None
+
+
+def test_removed_comment_keeps_fresh_caller_values(monkeypatch):
+    from unittest.mock import Mock
+    from meltygui.core.melty import Melty
+    monkeypatch.setattr(Melty, 'cache', Mock())
+    ds = DrawState()
+    invalidate_comment_edit(ds, {'zoom': 2.0}, {'zoom': 2.0})
+    kwargs = {'zoom': 4.0}
+    invalidate_comment_edit(ds, {}, kwargs)
+    assert kwargs['zoom'] == 4.0
+
+
 def test_native_request_preserves_user_offset_and_adopts_source(monkeypatch):
     from meltygui.core.melty import Melty
     monkeypatch.setattr(Melty, 'surface_windows', {})
@@ -142,7 +203,7 @@ def test_native_request_preserves_user_offset_and_adopts_source(monkeypatch):
 
 
 def test_comment_edit_uses_source_undo_only(comment_window):
-    from meltygui.core.window_visibility import window_edit_is_local
+    from meltygui.core.windowing.window_visibility import window_edit_is_local
     ds, tree, entry = comment_window
     user_window_closed(ds, True)
     user_window_position(ds, (30, 40))
@@ -152,7 +213,7 @@ def test_comment_edit_uses_source_undo_only(comment_window):
 
 def test_native_close_persists_only_user_action(comment_window):
     from types import SimpleNamespace
-    from meltygui.core.app import _note_closed
+    from meltygui.core.runtime.app import _note_closed
     ds, tree, entry = comment_window
     req = SimpleNamespace(closed=False, draw_state=ds, surface=None)
     surface = SimpleNamespace(request=req, children=[], stale=False)
@@ -174,7 +235,7 @@ def test_generic_comment_position_is_movable_without_live_marker(comment_window)
 def parameter_panel_sources(monkeypatch):
     """Use real source discovery on a panel nested under a captured value."""
     from meltygui.views import new_core_view as values
-    from meltygui.core.render_dispatch import ContextMenuState
+    from meltygui.core.rendering.render_dispatch import ContextMenuState
     from unittest.mock import MagicMock
     empty_host = MagicMock()
     monkeypatch.setattr(values, 'code_hosts_for',
@@ -198,7 +259,7 @@ def parameter_panel_sources(monkeypatch):
 
 @pytest.mark.parametrize('native', [False, True])
 def test_parameter_window_close_does_not_close_inspected_window(parameter_panel_sources, native):
-    from meltygui.core.window_visibility import native_user_window_closed, window_edit_is_local
+    from meltygui.core.windowing.window_visibility import native_user_window_closed, window_edit_is_local
     parent, panel, srcs = parameter_panel_sources
     assert srcs['comment_owners']['# [tensor]'] is parent
     close = native_user_window_closed if native else user_window_closed
