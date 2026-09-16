@@ -2156,8 +2156,8 @@ def render_func(*args, **o_kwargs):
                     if passed_height is None and draw_state.frame_count == 0:
                         draw_state._height_from_content = True
 
-                from meltygui.window_visibility import adopt_window_position
-                adopt_window_position(draw_state, kwargs)
+                if 'window_pos' in kwargs:
+                    draw_state.window_pos = kwargs.get('window_pos', draw_state.window_pos)
 
                 # First-frame off-screen rescue: window positions persist (and
                 # move between machines via git), so on a smaller display a
@@ -2696,8 +2696,7 @@ def render_func(*args, **o_kwargs):
             _drag_drop.DragDrop.register_item(draw_state)
             _wtF = time.perf_counter()   # TEMP perf: size/resize time
             if draw_state.window_pos is not None and closable:
-                from meltygui.views.anywhere import window_position_movable
-                _explicit_window_pos = not window_position_movable(draw_state, kwargs)
+                _explicit_window_pos = kwargs.get("window_pos", None) is not None
                 if not _explicit_window_pos:
                     on_held = draw_state.on_action("left_mouse_held", "window_move", priority_delta=-2)
                     # The move handle shows the MOVE pointer only where a
@@ -2765,8 +2764,7 @@ def render_func(*args, **o_kwargs):
 
                         pos_x = draw_state._initial_window_pos[0] + move_drag.total_dx
                         pos_y = draw_state._initial_window_pos[1] + move_drag.total_dy
-                        from meltygui.window_visibility import user_window_position
-                        user_window_position(draw_state, (pos_x, pos_y))
+                        draw_state.window_pos = (pos_x, pos_y)
                         # A hand move: the edge pass below (window_edge_pass →
                         # os_frame) pushes the OS window's edges out of the
                         # window's way, and nothing clamps the move - a window
@@ -2795,13 +2793,8 @@ def render_func(*args, **o_kwargs):
                             if (_move_origin[0], _move_origin[1]) != (draw_state.window_pos[0],
                                                                       draw_state.window_pos[1]):
                                 from meltygui.state.core_undo import NavUndo
-                            
-                                from meltygui.window_visibility import window_edit_is_local
-
-                                if window_edit_is_local(draw_state, 'window_pos'):
-
-                                    NavUndo.record_window_move(draw_state, _move_origin,
-                                                         draw_state.window_pos)
+                                NavUndo.record_window_move(draw_state, _move_origin,
+                                                           draw_state.window_pos)
                             draw_state._move_undo_origin = None
                         draw_state._initial_window_pos = None
                 elif draw_state.parent_window is not None:
