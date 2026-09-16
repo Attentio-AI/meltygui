@@ -571,11 +571,11 @@ package has a coherent responsibility.
 ### tensor
 
 - [tensor/__init__.py](../meltygui/tensor/__init__.py) — 0 lines
-- [tensor/cuda_interop.py](../meltygui/tensor/cuda_interop.py) — 265 lines
+- [tensor/cuda_interop.py](../meltygui/model/cuda_texture_model.py) — 265 lines
 - [tensor/cuda_march.py](../meltygui/tensor/cuda_march.py) — 961 lines
 - [tensor/line_kernels.py](../meltygui/tensor/line_kernels.py) — 115 lines
 - [tensor/voxel_camera.py](../meltygui/model/camera_model.py) — 159 lines
-- [tensor/voxel_playground.py](../meltygui/tensor/voxel_playground.py) — 3,069 lines
+- [tensor/voxel_playground.py](../meltygui/view/voxel_view.py) — 3,069 lines
 
 ### utils
 
@@ -605,7 +605,7 @@ package has a coherent responsibility.
 - [views/file_watch_debug.py](../meltygui/core/files/file_watch_core.py) — 147 lines
 - [views/headers.py](../meltygui/core/layout/header_runtime.py) — 915 lines
 - [views/inspect_utils.py](../meltygui/core/diagnostics/inspection_core.py) — 169 lines
-- [views/line_graph_playground.py](../meltygui/core/graphics/graph_core.py) — 789 lines
+- [views/line_graph_playground.py](../meltygui/view/graph_view.py) — 789 lines
 - [views/menu_bar.py](../meltygui/view/menu_view.py) — 263 lines
 - [views/monitor.py](../meltygui/core/diagnostics/monitor_core.py) — 105 lines
 - [views/new_core_view.py](../meltygui/core/rendering/render_dispatch.py) — 9,205 lines

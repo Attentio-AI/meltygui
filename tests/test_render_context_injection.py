@@ -4,13 +4,17 @@ from types import SimpleNamespace
 from meltygui.core.core_render import render_func
 from meltygui.core.core_render import render_func_kwarg_names
 from meltygui.core.rendering.parameter_core import view_param_names
-from meltygui.view.tensor_view import draw_tensor_dim, draw_voxels
+from meltygui.view.tensor_view import draw_tensor_dim
+from meltygui.view.voxel_view import draw_voxels
 
 
 def test_render_context_is_not_an_editable_view_parameter():
     assert 'ui_scale' not in view_param_names(SimpleNamespace(_view_func=draw_tensor_dim))
     assert 'font_manager' not in view_param_names(SimpleNamespace(_view_func=draw_voxels))
     assert {'ui_scale', 'font_manager'}.isdisjoint(render_func_kwarg_names())
+    assert {'keyboard_available', 'pointer_buttons_down'}.isdisjoint(
+        view_param_names(SimpleNamespace(_view_func=draw_voxels)))
+    assert {'keyboard_available', 'pointer_buttons_down'}.isdisjoint(render_func_kwarg_names())
 
 
 def test_render_context_follows_runtime_and_allows_explicit_overrides(gl_context, monkeypatch):

@@ -1,5 +1,5 @@
 """CUDA raymarcher that reads a torch tensor IN PLACE — the experimental
-"compute" sibling of voxel_playground's GL fragment-shader path.
+"compute" sibling of voxel_view's GL fragment-shader path.
 
 The GL path has to own a 3-D texture, which means every volume is a COPY of
 the tensor (dtype-coerced, made contiguous, neural-flow repacked, uploaded)
@@ -21,7 +21,7 @@ path. Worth it exactly when the data moves.
 
 Mechanics: PyCUDA SourceModule, compiled once per DEVICE (its primary
 context is retained and pushed around the launch only — never around GL
-calls, see cuda_interop's context rules), launched on the legacy default
+calls, see core/graphics/cuda_interop_core.py), launched on the legacy default
 stream, which orders after torch's default-stream producers without an
 explicit sync. The output image is a torch float16 (H, W, 4) tensor on the
 tensor's device (premultiplied LINEAR RGBA, the same light the GL pass writes

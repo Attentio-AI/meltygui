@@ -49,7 +49,7 @@ through the updated `state/module_map.json`, including pre-MeltyGUI names.
 | `views/file_watch_debug.py` | [core/file_watch_core.py](../meltygui/core/files/file_watch_core.py) |
 | `views/headers.py` | [core/header_runtime.py](../meltygui/core/layout/header_runtime.py) |
 | `views/inspect_utils.py` | [core/inspection_core.py](../meltygui/core/diagnostics/inspection_core.py) |
-| `views/line_graph_playground.py` | [core/graph_core.py](../meltygui/core/graphics/graph_core.py) |
+| `views/line_graph_playground.py` | [view/graph_view.py](../meltygui/view/graph_view.py) (demos now in `examples/voxel_playground.py`) |
 | `views/menu_bar.py` | [view/menu_view.py](../meltygui/view/menu_view.py) |
 | `views/monitor.py` | [core/monitor_core.py](../meltygui/core/diagnostics/monitor_core.py) |
 | `views/new_core_view.py` | [core/render_dispatch.py](../meltygui/core/rendering/render_dispatch.py) |

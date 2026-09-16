@@ -1,5 +1,6 @@
 """Graph view functions and supporting definitions."""
 from meltygui.core.graphics.gl_state import GLState
+from meltygui.core.graphics.shader_func import shader_func
 from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
 from meltygui.model.lut_model import Lut, LutPalette
@@ -56,7 +57,7 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
                     middle_mouse_drag=None, scroll_y_changed=None,
                     left_mouse_double_clicked=None, slash_pressed=None,
                     kp_divide_pressed=None, kp_decimal_pressed=None,
-                    luts: LutPalette = None, **kwargs):
+                    luts: LutPalette = None, keyboard_available=True, **kwargs):
     """The line-graph renderer — draw_voxels' sibling (see the module doc).
     CUDA tensors are sampled in place; CPU tensors/ndarrays are uploaded.
     Input can also be an already-packed series GLTexture (rendered as-is; needs n_samples/tex_w/y_range stamped
@@ -64,17 +65,16 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
     from meltygui.core.graphics.gl_state import GLTexture
     from meltygui.core.graphics.gl_state import gl_limits
     from meltygui.core.graphics.gl_state import texture3d_fit
-    from meltygui.tensor.voxel_playground import _cached_volume_texture
+    from meltygui.model.texture_model import _cached_volume_texture
     from meltygui.model.tensor_model import _clean_dim_name
     from meltygui.view.tensor_view import _describe_tensor
     from meltygui.view.tensor_view import _draw_image_notice
     from meltygui.view.tensor_view import _draw_voxel_error
     from meltygui.view.tensor_view import _draw_slice_sliders
     from meltygui.view.tensor_view import _view_size
-    from meltygui.tensor.voxel_playground import source_identity
+    from meltygui.core.graphics.tensor_core import source_identity
     from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.model.graph_model import _finite_range
-    from meltygui.core.graphics.graph_core import line_pass
     from meltygui.model.graph_model import pack_series
     from meltygui.model.graph_model import slice_lines
     from meltygui.core.rendering.render_dispatch import draw_any
@@ -192,8 +192,8 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
         tex = None
         try:
             if vol.is_cuda:
-                import meltygui.tensor.cuda_interop as cuda_interop
-                tex = cuda_interop.tensor_to_texture(gl_state, "series_cuda", vol,
+                from meltygui.model.cuda_texture_model import tensor_to_texture
+                tex = tensor_to_texture(gl_state, "series_cuda", vol,
                                                      version=version)
             if tex is None:
                 tex = gl_state.texture3d("series", vol.cpu().numpy(), version=version)
@@ -294,8 +294,7 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
             zoom_y = nz
             draw_state.locate_zoom_y = zoom_y
             draw_state.locate_pan_y = pan_y
-    from meltygui.core.melty import Melty
-    if Melty.text_focused_ds is None and (slash_pressed is not None
+    if keyboard_available and (slash_pressed is not None
                                           or kp_divide_pressed is not None
                                           or kp_decimal_pressed is not None):
         zoom_x = zoom_y = 1.0
@@ -320,7 +319,8 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
         gl.glBlendFuncSeparate(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA,
                                gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
         if cuda_lines is not None:
-            from meltygui.tensor.voxel_playground import _upload_cuda_image, image_blit_pass
+            from meltygui.model.texture_model import _upload_cuda_image
+            from meltygui.view.texture_view import image_blit_pass
             from meltygui.tensor import line_kernels
             out = gl_state.get('cuda_line_image',
                 lambda: torch.empty((height, width, 4), device=cuda_lines.device, dtype=torch.float16),
@@ -784,3 +784,93 @@ def _draw_axes_overlay(draw_list, img_pos, width, height, n_samples, y_range,
     if caption:
         tw, th = imgui.calc_text_size(caption)
         draw_list.add_text(x0 + width - tw - 6, y0 + 4, dim_col, caption)
+
+
+LINE_VERT = """
+#version 330 core
+uniform sampler3D series;   // texel (i % tex_w, i / tex_w, line) = sample i of line
+out float v_edge;            // signed pixel distance from the line's centerline
+flat out int v_line;
+
+// data (sample index, value) → pixel. Zoom/pan ARE the camera: a fitted
+// graph spans [-margin, margin] graph units at zoom 1, pan shifts in that
+// space, and unit_px (pixels per graph unit, per axis) places it in the
+// image — equal components keep the plot's aspect (the default), the
+// image's half-extents stretch it to fill (auto_scale).
+vec2 toPix(int i, float y) {
+    float xn = n_samples > 1 ? float(i) / float(n_samples - 1) : 0.5;
+    float yn = (y - y_min) / max(y_max - y_min, 1e-30);
+    vec2 g = vec2(((xn * 2.0 - 1.0) * margin - pan_x) * zoom_x,
+                  ((yn * 2.0 - 1.0) * margin - pan_y) * zoom_y);
+    return viewport * 0.5 + g * unit_px;
+}
+
+float sampleAt(int i, int line) {
+    return texelFetch(series, ivec3(i % tex_w, i / tex_w, line), 0).r;
+}
+
+void main() {
+    int seg = gl_VertexID / 6;
+    int corner = gl_VertexID % 6;
+    int line = gl_InstanceID;
+    v_line = line;
+    float y0 = sampleAt(seg, line);
+    float y1 = sampleAt(seg + 1, line);
+    if (isnan(y0) || isnan(y1) || isinf(y0) || isinf(y1)) {
+        // A gap in the data: park the vertex outside the clip volume.
+        v_edge = 0.0;
+        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        return;
+    }
+    vec2 s0 = toPix(seg, y0);
+    vec2 s1 = toPix(seg + 1, y1);
+    vec2 dir = s1 - s0;
+    float len = length(dir);
+    vec2 ext = len > 1e-6 ? dir / len : vec2(1.0, 0.0);
+    vec2 nrm = vec2(-ext.y, ext.x);
+    float hw = line_width * 0.5 + 1.0;       // +1px skirt for the AA ramp
+    // two triangles: (s0,-)(s1,-)(s1,+) and (s0,-)(s1,+)(s0,+); the ends
+    // extend by hw along the segment so consecutive segments overlap at
+    // joins instead of leaving wedge gaps on sharp turns.
+    bool at1 = (corner == 1 || corner == 2 || corner == 4);
+    float side = (corner == 2 || corner == 4 || corner == 5) ? 1.0 : -1.0;
+    vec2 p = (at1 ? s1 + ext * hw : s0 - ext * hw) + nrm * side * hw;
+    v_edge = side * hw;
+    gl_Position = vec4(p / viewport * 2.0 - 1.0, 0.0, 1.0);
+}
+"""
+
+
+LINE_FRAG = """
+#version 330 core
+in float v_edge;
+flat in int v_line;
+out vec4 FragColor;
+uniform sampler1D lut;
+
+void main() {
+    float d = abs(v_edge);
+    float a = 1.0 - smoothstep(line_width * 0.5 - 0.5, line_width * 0.5 + 0.5, d);
+    a *= line_opacity;
+    vec3 c = n_lines > 1
+        ? texture(lut, (float(v_line) + 0.5) / float(n_lines)).rgb
+        : single_color;
+    c = pow(max(c, 0.0), vec3(2.2));   // LUT / tint are display-referred sRGB; the FBO is linear (hdr_color.py)
+    FragColor = vec4(c * a, a);     // premultiplied — the FBO composites ONE / 1-a
+}
+"""
+
+
+@shader_func(fragment=LINE_FRAG, vertex=LINE_VERT)
+def line_pass(gl_state: GLState = None, series=None, lut=None, n_samples=2,
+              tex_w=1, n_lines=1, zoom_x=1.0, zoom_y=1.0, pan_x=0.0, pan_y=0.0,
+              y_min=0.0, y_max=1.0, margin=0.92, viewport=(1.0, 1.0),
+              unit_px=(0.5, 0.5), line_width=1.5, line_opacity=1.0, single_color=(0.35, 0.75, 1.0),
+              **kwargs):
+    # Program bound, uniforms set. Attribute-less instanced draw: the vertex
+    # shader computes every segment quad from gl_VertexID / gl_InstanceID and
+    # the series texture - 6 vertices per segment, one instance per line.
+    if n_samples < 2 or n_lines < 1:
+        return
+    gl.glBindVertexArray(gl_state.vao("fs_triangle"))
+    gl.glDrawArraysInstanced(gl.GL_TRIANGLES, 0, 6 * (int(n_samples) - 1), int(n_lines))

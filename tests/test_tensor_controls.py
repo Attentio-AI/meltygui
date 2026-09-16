@@ -1,4 +1,5 @@
 """Dimension controls coordinate reusable local groups, without an app model."""
+from meltygui.view import voxel_view
 import inspect
 from types import SimpleNamespace
 
@@ -111,20 +112,20 @@ def test_tab_geometry_uses_supplied_scale_style_and_local_depth(monkeypatch):
 def test_label_atlas_keeps_resources_until_text_or_supplied_font_changes(monkeypatch):
     baked, deleted = [], []
 
-    def bake(texts, font=None):
+    def bake(texts, gl_state, font=None):
         baked.append((texts, font))
         return SimpleNamespace(texture_id=len(baked)), {}
 
-    monkeypatch.setattr(tensor_view, 'bake_texts', bake)
+    monkeypatch.setattr(voxel_view, 'bake_texts', bake)
     monkeypatch.setattr('meltygui.core.graphics.gl_state.current_context', lambda: 42)
-    monkeypatch.setattr(tensor_view.gl, 'glDeleteTextures', lambda ids: deleted.extend(ids))
+    monkeypatch.setattr(voxel_view.gl, 'glDeleteTextures', lambda ids: deleted.extend(ids))
     state = GLState()
     first_font, second_font = object(), object()
-    first = tensor_view._label_atlas(state, ('batch',), font=first_font)
-    assert tensor_view._label_atlas(state, ('batch',), font=first_font) is first
-    second = tensor_view._label_atlas(state, ('batch',), font=second_font)
+    first = voxel_view._label_atlas(state, ('batch',), font=first_font)
+    assert voxel_view._label_atlas(state, ('batch',), font=first_font) is first
+    second = voxel_view._label_atlas(state, ('batch',), font=second_font)
     assert second is not first
-    tensor_view._label_atlas(state, ('token',), font=second_font)
+    voxel_view._label_atlas(state, ('token',), font=second_font)
     assert baked == [(('batch',), first_font), (('batch',), second_font), (('token',), second_font)]
     state.release()
     GLState.flush_deletes()

@@ -44,12 +44,13 @@ if TYPE_CHECKING:   # IDE / type checkers only; never executed
     from meltygui.view.file_view import draw_file_selector
     from meltygui.view.file_view import draw_fast_file_explorer
     from meltygui.view.file_view import draw_shortcuts
+    from meltygui.view.file_view import draw_breadcrumbs
     from meltygui.core.files.file_core import draw_folder_files
     from meltygui.view.terminal_view import draw_terminal
 
 _NCV = 'meltygui.core.rendering.render_dispatch'
 _VIEWS = {
-    'draw_voxels': ('meltygui.view.tensor_view', 'draw_voxels'),
+    'draw_voxels': ('meltygui.view.voxel_view', 'draw_voxels'),
     'draw_tensor_slices': ('meltygui.view.tensor_view', 'draw_tensor_slices'),
     'draw_tensor_error': ('meltygui.view.tensor_view', 'draw_tensor_error'),
     'draw_line_graph': ('meltygui.view.graph_view', 'draw_line_graph'),
@@ -73,6 +74,7 @@ _VIEWS = {
     'draw_file_selector': ('meltygui.view.file_view', 'draw_file_selector'),
     'draw_fast_file_explorer': ('meltygui.view.file_view', 'draw_fast_file_explorer'),
     'draw_shortcuts': ('meltygui.view.file_view', 'draw_shortcuts'),
+    'draw_breadcrumbs': ('meltygui.view.file_view', 'draw_breadcrumbs'),
     'draw_folder_files': ('meltygui.core.files.file_core', 'draw_folder_files'),
     'draw_terminal': ('meltygui.view.terminal_view', 'draw_terminal'),
 }

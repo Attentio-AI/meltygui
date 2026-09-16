@@ -1,4 +1,6 @@
 """Texture view functions and supporting definitions."""
+from meltygui.core.graphics.gl_state import GLState
+from meltygui.core.graphics.shader_func import shader_func
 from meltygui.graphics.texture_manager import PendingTexture
 from meltygui.hdr_color import pack_color
 from meltygui.core.core_render import render_func
@@ -460,3 +462,19 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     gl.glBindTexture(gl.GL_TEXTURE_2D, original_texture)
 
     return False, draw_state
+
+
+IMAGE_BLIT_FRAG = """
+#version 330 core
+out vec4 FragColor;
+uniform sampler2D image;
+void main() { FragColor = texelFetch(image, ivec2(gl_FragCoord.xy), 0); }
+"""
+
+
+@shader_func(fragment=IMAGE_BLIT_FRAG)
+def image_blit_pass(gl_state: GLState = None, image=None, program=None, **kwargs):
+    """Fullscreen copy of `image` (a 2-D GLTexture the size of the target)
+    into the bound FBO — the voxel_pass stand-in for cuda_march frames."""
+    gl.glBindVertexArray(gl_state.vao("fs_triangle"))
+    gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)

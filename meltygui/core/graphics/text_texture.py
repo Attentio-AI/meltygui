@@ -11,8 +11,8 @@ the FontManager loaded works via `font=`.
 
 GL-thread only — callers sit inside a @render_func body on the render
 thread, with the MAIN imgui context current (it is restored even on error).
-Module globals survive hotswap re-exec, so the private context and program
-are created once per process.
+The caller supplies its GLState: private layout contexts and GPU resources
+are reused locally, survive source edits and are released with their GL context.
 """
 
 import ctypes
@@ -21,7 +21,7 @@ import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 import OpenGL.GL as gl
 
-from meltygui.core.graphics.gl_state import GLTexture
+from meltygui.core.graphics.gl_state import GLState, GLTexture
 from meltygui.hdr_color import GLSL_DECODE as _GLSL_DECODE
 from meltygui.hdr_color import GLSL_UNPREMULTIPLY as _GLSL_UNPREMULTIPLY
 from meltygui.hdr_color import GLSL_TEXT_CLAMP as _GLSL_TEXT_CLAMP
@@ -60,12 +60,6 @@ void main() {
 }
 """
 
-# Survives hotswap re-exec (module dict is reused): one private context and
-# one GL program per process.
-_state = globals().get("_state", {"ctx": None, "prog": None, "u_size": None,
-                                  "vao": None, "vbo": None, "ebo": None})
-
-
 def _compile(shader_type, src):
     s = gl.glCreateShader(shader_type)
     gl.glShaderSource(s, src)
@@ -75,57 +69,70 @@ def _compile(shader_type, src):
     return s
 
 
-def _ensure_gl():
-    if _state["prog"] is not None:
-        return
-    vs, fs = _compile(gl.GL_VERTEX_SHADER, _VS), _compile(gl.GL_FRAGMENT_SHADER, _FS)
-    prog = gl.glCreateProgram()
-    gl.glAttachShader(prog, vs)
-    gl.glAttachShader(prog, fs)
-    gl.glLinkProgram(prog)
-    if gl.glGetProgramiv(prog, gl.GL_LINK_STATUS) != gl.GL_TRUE:
-        raise RuntimeError(gl.glGetProgramInfoLog(prog).decode(errors="replace"))
-    gl.glDeleteShader(vs)
-    gl.glDeleteShader(fs)
+def _ensure_gl(gl_state):
+    def create():
+        vs, fs = _compile(gl.GL_VERTEX_SHADER, _VS), _compile(gl.GL_FRAGMENT_SHADER, _FS)
+        prog = gl.glCreateProgram()
+        gl.glAttachShader(prog, vs)
+        gl.glAttachShader(prog, fs)
+        gl.glLinkProgram(prog)
+        if gl.glGetProgramiv(prog, gl.GL_LINK_STATUS) != gl.GL_TRUE:
+            raise RuntimeError(gl.glGetProgramInfoLog(prog).decode(errors="replace"))
+        gl.glDeleteShader(vs)
+        gl.glDeleteShader(fs)
 
-    vao = gl.glGenVertexArrays(1)
-    vbo = gl.glGenBuffers(1)
-    ebo = gl.glGenBuffers(1)
-    gl.glBindVertexArray(vao)
-    gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
-    gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, ebo)
-    gl.glEnableVertexAttribArray(0)
-    gl.glEnableVertexAttribArray(1)
-    gl.glEnableVertexAttribArray(2)
-    gl.glVertexAttribPointer(0, 2, gl.GL_FLOAT, gl.GL_FALSE, imgui.VERTEX_SIZE,
-                             ctypes.c_void_p(imgui.VERTEX_BUFFER_POS_OFFSET))
-    gl.glVertexAttribPointer(1, 2, gl.GL_FLOAT, gl.GL_FALSE, imgui.VERTEX_SIZE,
-                             ctypes.c_void_p(imgui.VERTEX_BUFFER_UV_OFFSET))
-    gl.glVertexAttribPointer(2, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, imgui.VERTEX_SIZE,
-                             ctypes.c_void_p(imgui.VERTEX_BUFFER_COL_OFFSET))
-    gl.glBindVertexArray(0)
+        vao = gl.glGenVertexArrays(1)
+        vbo = gl.glGenBuffers(1)
+        ebo = gl.glGenBuffers(1)
+        gl.glBindVertexArray(vao)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, ebo)
+        gl.glEnableVertexAttribArray(0)
+        gl.glEnableVertexAttribArray(1)
+        gl.glEnableVertexAttribArray(2)
+        gl.glVertexAttribPointer(0, 2, gl.GL_FLOAT, gl.GL_FALSE, imgui.VERTEX_SIZE,
+                                 ctypes.c_void_p(imgui.VERTEX_BUFFER_POS_OFFSET))
+        gl.glVertexAttribPointer(1, 2, gl.GL_FLOAT, gl.GL_FALSE, imgui.VERTEX_SIZE,
+                                 ctypes.c_void_p(imgui.VERTEX_BUFFER_UV_OFFSET))
+        gl.glVertexAttribPointer(2, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, imgui.VERTEX_SIZE,
+                                 ctypes.c_void_p(imgui.VERTEX_BUFFER_COL_OFFSET))
+        gl.glBindVertexArray(0)
 
-    _state.update(prog=prog, u_size=gl.glGetUniformLocation(prog, "uSize"),
-                  vao=vao, vbo=vbo, ebo=ebo)
+        return dict(prog=prog, u_size=gl.glGetUniformLocation(prog, "uSize"),
+                    vao=vao, vbo=vbo, ebo=ebo)
+
+    def delete(resources):
+        gl.glDeleteVertexArrays(1, [int(resources["vao"])])
+        gl.glDeleteBuffers(2, [int(resources["vbo"]), int(resources["ebo"])])
+        gl.glDeleteProgram(resources["prog"])
+
+    return gl_state.get("text_pipeline", create, delete, deps=(_VS, _FS))
 
 
-def _ensure_context():
-    """The private layout context, created once, sharing the main atlas."""
-    if _state["ctx"] is not None:
-        return _state["ctx"]
+def _ensure_context(gl_state):
+    """A private layout context sharing this view's current font atlas."""
     main = imgui.get_current_context()
     if main is None:
         raise RuntimeError("text_texture: no main imgui context")
-    ctx = imgui.create_context(shared_font_atlas=imgui.get_io().fonts)
-    imgui.set_current_context(ctx)
-    try:
-        io = imgui.get_io()
-        io.display_size = (4096.0, 512.0)   # layout surface, never rendered
-        io.delta_time = 1.0 / 60.0
-    finally:
-        imgui.set_current_context(main)
-    _state["ctx"] = ctx
-    return ctx
+
+    def create():
+        context = imgui.create_context(shared_font_atlas=imgui.get_io().fonts)
+        try:
+            imgui.set_current_context(context)
+            io = imgui.get_io()
+            io.ini_file_name = None
+            io.display_size = (4096.0, 512.0)
+            io.delta_time = 1.0 / 60.0
+        finally:
+            imgui.set_current_context(main)
+        return context
+
+    def delete(context):
+        current = imgui.get_current_context()
+        imgui.destroy_context(context)
+        imgui.set_current_context(current)
+
+    return gl_state.get("text_layout", create, delete, deps=main)
 
 
 class _SavedGL:
@@ -160,15 +167,15 @@ class _SavedGL:
         (gl.glEnable if self.cull else gl.glDisable)(gl.GL_CULL_FACE)
 
 
-def _render_draw_data(dd, w, h):
+def _render_draw_data(dd, w, h, gl_state):
     """Render finalized draw data into a fresh RGBA8 (w, h) texture, exactly
     like the screen pass: stream the vtx/idx pointers, draw per command. No
     scissoring — the bake surface IS the clip."""
-    _ensure_gl()
     saved = _SavedGL()
     fbo = gl.glGenFramebuffers(1)
     tex = gl.glGenTextures(1)
     try:
+        resources = _ensure_gl(gl_state)
         gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
         gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA16F, w, h, 0,
                         gl.GL_RGBA, gl.GL_HALF_FLOAT, None)
@@ -200,18 +207,18 @@ def _render_draw_data(dd, w, h):
         gl.glBlendFuncSeparate(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA,
                                gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
 
-        gl.glUseProgram(_state["prog"])
-        gl.glUniform2f(_state["u_size"], float(w), float(h))
-        set_decode_uniforms(_state["prog"])
+        gl.glUseProgram(resources["prog"])
+        gl.glUniform2f(resources["u_size"], float(w), float(h))
+        set_decode_uniforms(resources["prog"])
         gl.glActiveTexture(gl.GL_TEXTURE0)
-        gl.glBindVertexArray(_state["vao"])
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, _state["vbo"])
+        gl.glBindVertexArray(resources["vao"])
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, resources["vbo"])
         gltype = gl.GL_UNSIGNED_SHORT if imgui.INDEX_SIZE == 2 else gl.GL_UNSIGNED_INT
         for commands in dd.commands_lists:
             gl.glBufferData(gl.GL_ARRAY_BUFFER,
                             commands.vtx_buffer_size * imgui.VERTEX_SIZE,
                             ctypes.c_void_p(commands.vtx_buffer_data), gl.GL_STREAM_DRAW)
-            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, _state["ebo"])
+            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, resources["ebo"])
             gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER,
                             commands.idx_buffer_size * imgui.INDEX_SIZE,
                             ctypes.c_void_p(commands.idx_buffer_data), gl.GL_STREAM_DRAW)
@@ -245,14 +252,14 @@ def _render_draw_data(dd, w, h):
     return GLTexture(tex, gl.GL_TEXTURE_2D, (h, w), gl.GL_RGBA16F)
 
 
-def bake_text(text, font=None, pad=2):
+def bake_text(text, gl_state: GLState, font=None, pad=2):
     """Rasterize one line of `text` into a fresh RGBA8 GLTexture — white
     glyphs on transparent, `pad` transparent pixels on every side, texture
     v=1 at the TOP of the text. `font` is any shared-atlas handle (e.g.
     Melty.font_mgr.get(Font.JETBRAINS_MONO_30)); None = the atlas default.
     The caller owns deletion (glDeleteTextures)."""
     main = imgui.get_current_context()
-    ctx = _ensure_context()
+    ctx = _ensure_context(gl_state)
     imgui.set_current_context(ctx)
     try:
         io = imgui.get_io()
@@ -270,12 +277,12 @@ def bake_text(text, font=None, pad=2):
             if font is not None:
                 imgui.pop_font()
         imgui.render()
-        return _render_draw_data(imgui.get_draw_data(), w, h)
+        return _render_draw_data(imgui.get_draw_data(), w, h, gl_state)
     finally:
         imgui.set_current_context(main)
 
 
-def bake_texts(texts, font=None, pad=2, gap=8):
+def bake_texts(texts, gl_state: GLState, font=None, pad=2, gap=8):
     """Rasterize MANY strings into ONE texture (a vertical-strip atlas), so a
     whole label set renders as a single instanced draw. Returns
     (GLTexture, {text: (u0, v0, u1, v1, px_w, px_h)}) with v1 at the TOP of
@@ -284,7 +291,7 @@ def bake_texts(texts, font=None, pad=2, gap=8):
     first mips matter)."""
     texts = list(dict.fromkeys(texts))   # de-dupe, preserving order
     main = imgui.get_current_context()
-    ctx = _ensure_context()
+    ctx = _ensure_context(gl_state)
     imgui.set_current_context(ctx)
     try:
         io = imgui.get_io()
@@ -310,7 +317,7 @@ def bake_texts(texts, font=None, pad=2, gap=8):
             if font is not None:
                 imgui.pop_font()
         imgui.render()
-        tex = _render_draw_data(imgui.get_draw_data(), w_max, height)
+        tex = _render_draw_data(imgui.get_draw_data(), w_max, height, gl_state)
     finally:
         imgui.set_current_context(main)
     rects = {}

@@ -31,84 +31,82 @@ These are placement and infrastructure milestones. Many functions in `view/`
 still access shared runtime state directly, and some feature helpers moved into
 core still need a responsibility split.
 
-As a layout snapshot, legacy folders contain 84 non-`__init__` Python modules;
-two are import-only shims. Four more implementation modules remain at the package
-root. That is 86 implementation modules outside the four intended areas, including
+As a layout snapshot, legacy folders contain 79 non-`__init__` Python modules,
+with four more implementation modules at the package root. This includes the
 15 deferred editor modules. Examples, resources and the GNOME extension are
 excluded. This count is not a compliance score: correctly named files can still
 have the wrong dependencies.
 
-## Tensor rendering: shared palettes extracted, runtime and demos remain
+## Tensor rendering: production views separated from demos
 
-[tensor_model.py](../meltygui/model/tensor_model.py) now owns slicing, dtype/axis
-handling, neural-flow transforms and shape arithmetic, the strided volume
-adapter, and typed primitive wrappers. Its operations can run without loading
-tensor views, the CUDA renderer or the playground. Pure camera math lives in
-[camera_model.py](../meltygui/model/camera_model.py).
+[tensor_model.py](../meltygui/model/tensor_model.py) owns slicing, dtype/axis
+handling, neural-flow transforms, shape arithmetic and the strided volume adapter.
+Pure camera math lives in [camera_model.py](../meltygui/model/camera_model.py).
+These operations do not load views or CUDA rendering.
 
-Tensor descriptions, viewport sizing, notices, metadata, dimension pickers and
-axis presentation now live in [tensor_view.py](../meltygui/view/tensor_view.py),
-shared with graph/input consumers. Axis label shaders and their per-view GL
-resources belong to this presentation code; resource lifetime still uses the
-injected `GLState`. Imports use the feature modules directly, and definition
-hotswap preserves existing objects. See [the extraction and verification record](TENSOR_RELOCATION.md).
+[voxel_view.py](../meltygui/view/voxel_view.py) now owns `draw_voxels`, the GL and
+CUDA presentation passes, camera interaction, outlines and label billboards.
+Shared dimension pickers, slice controls, tensor metadata and error cards remain
+in [tensor_view.py](../meltygui/view/tensor_view.py). Direct sibling dimension
+coordination remains intentional: noncolliding axis pickers form a reusable
+local data shape, without tying the view to an application's root schema.
 
-Slice controls and error panels now also live in tensor views. The slices use
-the injected-event integer slider in `control_view.py`; error history uses
-`state/tensor_state.py`. Graph series slicing, packing and ranges live in
-`model/graph_model.py`, and graph axis presentation lives in `graph_view.py`.
+[graph_view.py](../meltygui/view/graph_view.py) owns its line shader and drawing;
+[graph_model.py](../meltygui/model/graph_model.py) owns series slicing, packing and
+ranges. Both views use texture upload/cache helpers in
+[texture_model.py](../meltygui/model/texture_model.py). Their full-screen image
+copy is shared presentation in [texture_view.py](../meltygui/view/texture_view.py).
 
-[tensor/voxel_playground.py](../meltygui/tensor/voxel_playground.py) is still a
-production dependency, despite its name. It combines CUDA/GL upload and drawing,
-demo tensors, hosts and window
-registration. Importing it also constructs demo hosts and registers their
-windows.
+[voxel_state.py](../meltygui/state/voxel_state.py) holds each voxel view's error
+history and controls-panel state. Core injects keyboard availability and pointer
+button state; voxel rendering no longer reads Melty's keyboard focus directly or
+polls ImGui input. Shared settings still use the documented `Toggles` paths.
 
-[tensor_view.py](../meltygui/view/tensor_view.py) contains the main renderers but
-imports much of that implementation. `draw_tensor_dim` uses its local collection
-and immediate parent
-to coordinate sibling axis selections. That is permitted local view behavior
-and was preserved when the controls moved into feature views.
-Noncolliding dimension pickers form a reusable local data shape: callers should
-be able to repeat the picker in a loop without rebuilding its coordination.
-The controls now receive scale and styling through core injection; axis label
-rendering also receives its font through the injected font manager.
+Palette values and generation live in [lut_model.py](../meltygui/model/lut_model.py).
+`TextureId` remains the integer-like lazy GPU resource interface; `LutPalette`
+exposes editable RGB lists through a dictionary. [lut_core.py](../meltygui/core/graphics/lut_core.py)
+injects `Melty.luts` and connects edits to cached consumers, without a palette host.
 
-Palette values and generation now live in [lut_model.py](../meltygui/model/lut_model.py),
-and the picker and swatches in [lut_view.py](../meltygui/view/lut_view.py).
-[TextureId](../meltygui/model/texture_model.py) provides the integer-like texture
-interface; `LutTexture` owns the lazy GL/CUDA uploads and `LutPalette` exposes
-editable RGB lists through a dictionary. [lut_core.py](../meltygui/core/graphics/lut_core.py)
-injects `Melty.luts` and connects edits to cached consumers. No palette host or
-separate resource service is needed. Migration retires the old host while keeping
-edited lists and existing allocations. Same-length edits refresh uploads, and
-each GL context releases its resources on close.
+[tensor_core.py](../meltygui/core/graphics/tensor_core.py) owns source publication
+identity and cleanup integration. Text baking now uses the caller's `GLState`
+for its private layout context, shader, VAO and buffers. This fixes the previously
+observed cross-context VAO failure in multi-window voxel labels and gives those
+resources the existing context cleanup lifecycle.
 
-[graph_view.py](../meltygui/view/graph_view.py) still imports volume uploads from
-the voxel module. The remaining cleanup must include these
-consumers, while keeping palette ownership shared.
+The old production `tensor/voxel_playground.py` and `core/graphics/graph_core.py`
+are removed. Demo tensors and explicit window composition live in
+[examples/voxel_playground.py](../examples/voxel_playground.py); importing the
+production views creates no hosts or windows. No import shims were added.
+See [the extraction and verification record](TENSOR_RELOCATION.md).
 
-Two separate UI probes need follow-up: raw `imgui.same_line()` between cached
-views produced stale graph positions and partial tile updates, although GPU
-readback contained the new colours. A stacked layout refreshed correctly on
-both backends. A GLFW probe with several OS roots also hit an invalid cached
-VAO in `core/text_texture.py`; its global GL state needs a context-ownership
-review. The palette verification used one OS window per backend.
+CUDA-to-GL uploads now live in [cuda_texture_model.py](../meltygui/model/cuda_texture_model.py):
+versioned tensors become `GLTexture` values, with each texture/PBO/registration
+owned by the supplied `GLState`. Shared context selection, registration, copying
+and diagnostics live in [cuda_interop_core.py](../meltygui/core/graphics/cuda_interop_core.py),
+with retained runtime state on `Melty`. Standalone uploads initialize the GL
+device lazily; unsupported or incompatible contexts return the existing fallback
+signal. Torch and CUDA-library imports remain optional until the adapter is used.
 
-The remaining split is:
+Partial allocations are cleaned up, mappings unmap on copy failure, and CUDA
+unregistration must succeed before the GL buffer is deleted. The GL deletion
+queue now supports explicit deferred retries. The adapter waits for the actual
+producer device before copying, and restores caller GL bindings and CUDA context.
+Direct tensor views retain their existing in-place CUDA rendering policy; this
+adapter is also usable explicitly by passing its `GLTexture` to a view.
 
-- Give local interaction state and held resources clear owners. Reuse the
-  existing injected GL state and cleanup mechanisms where they fit.
-- Separate feature rendering/computation from shared CUDA context, GL resource
-  and synchronization machinery. Do not move every GPU-related function into
-  core merely because it is low level.
-- Move demo data, hosts and sample windows into examples. Importing a reusable
-  tensor renderer should not instantiate a playground.
+Remaining work:
 
-[tensor_core.py](../meltygui/core/graphics/tensor_core.py) still contains only the voxel
-cleanup hook. CUDA interop, CUDA marching and line kernels in `tensor/` need the
-same ownership review. Preserve GPU residency, active-device behavior, output,
-resource lifetime and hotswap; the tensor-specific CUDA/GL tests matter here.
+- Classify CUDA marching and line kernels still in `tensor/`:
+  separate feature computation from shared context and synchronization machinery.
+  Preserve GPU residency, device behavior, output, resource lifetime and hotswap.
+  The old `cuda_march` view parameter currently does not choose the backend;
+  reconcile that control with the intentional CUDA-residency policy separately.
+- Review the controls popover's gesture-time lifecycle separately. This extraction
+  preserves its existing behavior; it does not claim every interaction follows
+  the final native-window lifecycle pattern.
+- Investigate the earlier raw `imgui.same_line()` cache-layout probe: stale graph
+  positions and partial updates appeared despite correct GPU readback. The
+  stacked layout passed on both backends.
 
 ## Terminal rendering still owns runtime integration
 
@@ -208,7 +206,7 @@ Folder organization does not resolve the mixed ownership above.
 
 ## Order and evidence for the next contributions
 
-Resume with tensor GPU/demo separation and the remaining app-coupled presentation
+Continue with the remaining tensor backend ownership and app-coupled presentation
 in terminal, file and chat features
 in bounded changes. Keep the editor/state redesign separate. Use the
 [core guide](../meltygui/core/README.md) to find existing mechanisms before adding

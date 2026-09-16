@@ -429,7 +429,7 @@ _AUTO_PARAM_EXCLUDE = {
     # injected by set_default / the wrapper itself
     'input_value', 'draw_state', 'name', 'unique', 'suffix', 'window_stack',
     'func', 'render_func', 'style_manager', 'vis', 'view_func', 'outer_func',
-    'ui_scale', 'font_manager',
+    'ui_scale', 'font_manager', 'keyboard_available', 'pointer_buttons_down',
     'luts',
     # signature plumbing
     'kwargs', 'args', 'o_kwargs', 'next_kwargs', 'changed',
@@ -1856,6 +1856,11 @@ def render_func(*args, **o_kwargs):
             # values they need. Explicit overrides remain useful for previews.
             kwargs.setdefault("ui_scale", Melty.ui_scale)
             kwargs.setdefault("font_manager", Melty.font_mgr)
+            if "keyboard_available" in params:
+                kwargs.setdefault("keyboard_available", Melty.text_focused_ds is None)
+            if "pointer_buttons_down" in params:
+                kwargs.setdefault("pointer_buttons_down", any(imgui.is_mouse_down(button)
+                                                             for button in (0, 1, 2)))
             # Same injection contract as style_manager: any render_func that
             # declares `vis` in its signature receives the studio automatically
             # (explicitly passed vis, e.g. draw_main's, wins via setdefault).
@@ -6064,7 +6069,7 @@ def _adopt_raw_registrations(raw, wrapper):
 _RF_KWARG_EXCLUDE = frozenset({
     "_converter_mode", "next_kwargs", "draw_state", "input_value",
     "melty_window", "style_manager", "depth", "changed", "collection",
-    "ui_scale", "font_manager",
+    "ui_scale", "font_manager", "keyboard_available", "pointer_buttons_down",
     "luts",
     "data", "ref", "registry", "from_type", "to_type", "load_data",
     "save_data", "is_default_for", "is_lens_for", "interrupt_source_for",

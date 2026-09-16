@@ -20,7 +20,7 @@ Everything else is grouped by the runtime responsibility it serves:
 | `conversion/` | Dict-like objects, conversion graphs, hosting and persistence: `dict_conversion.py`, `render_host.py`, `load_save_v2.py` |
 | `cache/` | Drawing caches and invalidation: `tile_cache.py`, `invalidation_tracker.py` |
 | `windowing/` | Surface lifecycle, native windows, chrome and platform backends: `surface.py`, `window_api.py`, `backends/` |
-| `graphics/` | Shared GL resources, shaders, overlays, capture and tensor/graph integration: `gl_state.py`, `shader_func.py`, `lut_core.py` |
+| `graphics/` | Shared GL resources, shaders, overlays, capture and tensor/graph integration: `gl_state.py`, `shader_func.py`, `lut_core.py`, `cuda_interop_core.py` |
 | `layout/` | Cursor, grid, column, header and dropdown plumbing |
 | `styling/` | Shared styles, colours, fonts and font warmup |
 | `files/` | Filesystem polling, metadata and file/import-tree integration |
@@ -43,6 +43,11 @@ parameter controls. Views can use their own `draw_state.depth_and_layer` for
 local drawing depth. This keeps feature presentation independent of `Melty`
 lookups without making callers pass the same plumbing repeatedly.
 
+`keyboard_available` is true when no text editor owns keyboard focus;
+`pointer_buttons_down` reports whether any primary pointer button is held.
+Core supplies these only to views declaring them. Like scale and font context,
+they allow explicit overrides and are excluded from saved parameter controls.
+
 Palette consumers declare `luts`. Core injects the shared `LutPalette` from
 `Melty.luts`, or accepts an explicit override, and subscribes cached consumers
 before the render-cache gate. `luts.texture(name)` is an integer-like texture ID:
@@ -50,6 +55,15 @@ the model handles lazy uploads, updates and per-context storage. There is no
 palette host or separate resource service. `GLState` releases context resources
 when a surface closes. Palette values and proxies belong in `model/lut_model.py`;
 selection and swatches belong in `view/lut_view.py`.
+
+## CUDA interop ownership
+
+`cuda_interop_core.py` coordinates the GL device's CUDA context and registered
+buffer operations; retained runtime state lives on `Melty.cuda_interop`.
+`model/cuda_texture_model.py` owns versioned tensor uploads as `GLTexture` values.
+Their composite allocations use the caller's `GLState`, including partial-allocation
+cleanup and deferred unregistration retries. Feature renderers do not own CUDA
+context setup. CUDA raymarching and line-kernel ownership remain a separate review.
 
 ## Why mode has three files
 

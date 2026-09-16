@@ -265,6 +265,10 @@ class FBO:
         return f"FBO(id={self.fbo} {self.width}x{self.height})"
 
 
+class ResourceDeletionDeferred(Exception):
+    """A resource is still owned by another API; retry on the next drain."""
+
+
 class _Resource:
     __slots__ = ("value", "deleter", "deps")
 
@@ -312,6 +316,10 @@ class GLState:
         if rec is not None:
             self._queue(key, rec)
         return rec is not None
+
+    def defer_delete(self, key, value, deleter):
+        """Own cleanup of a partial allocation even if its factory failed."""
+        self._queue(key, _Resource(value, deleter, None))
 
     def release(self):
         """Queue every resource for deletion. The instance stays usable — a
@@ -364,6 +372,11 @@ class GLState:
                 continue
             try:
                 deleter(value)
+            except ResourceDeletionDeferred:
+                # Keep the object alive and retry once next frame, never spin
+                # in this drain or free storage another API still references.
+                deferred.append((key, value, deleter, context))
+                continue
             except Exception as e:
                 print(f"[gl_state] delete failed for {key!r}: {e}")
             n += 1

@@ -62,7 +62,7 @@ class _LazyMode:
         # Mode enum class - and raises "args[0] from __newobj__ args has the
         # wrong class". Every parse holding a mode= reference was therefore
         # unpicklable, which silently disabled the cst-dump cache for those
-        # files (a multi-second cold parse per session - voxel_playground,
+        # files (a multi-second cold parse per session - voxel_view,
         # new_converters, live_view_views, ...). Reduce BY NAME to a fresh
         # unresolved handle; resolution happens on first use in the loading
         # file's module world. Also unbreaks copy.deepcopy (same machinery).

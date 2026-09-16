@@ -2,6 +2,9 @@
 from functools import total_ordering
 import operator
 
+import OpenGL.GL as gl
+from meltygui.core.graphics.gl_state import GLTexture, tight_unpack
+
 from meltygui.core.graphics.gl_state import GLState, current_context, is_gl_thread
 
 
@@ -82,3 +85,62 @@ class TextureId:
 
     def __repr__(self):
         return f'{type(self).__name__}(target={self.target:#x})'
+
+
+def _upload_cuda_image(gl_state, out):
+    """Transfer only the finished 2-D pixels; never the source tensor."""
+    import torch
+    H, W = int(out.shape[0]), int(out.shape[1])
+    host = gl_state.get("cuda_host",
+                        lambda: torch.empty(H, W, 4, dtype=torch.float16).pin_memory(),
+                        deps=(W, H))
+    # D2H on torch's (legacy default) stream orders after the kernel on
+    # the same device's null stream — no explicit synchronize.
+    host.copy_(out)
+
+    def create():
+        tex_id = _scalar_int(gl.glGenTextures(1))
+        gl.glBindTexture(gl.GL_TEXTURE_2D, tex_id)
+        # cuda_march writes linear premultiplied fp16 — the same light
+        # the GL pass writes — so the image rides into the fp16 scene
+        # (hdr_color.py) unclamped: no encode, no 8-bit ceiling.
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA16F, W, H, 0,
+                        gl.GL_RGBA, gl.GL_HALF_FLOAT, None)
+        for pn, pv in ((gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST),
+                       (gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST),
+                       (gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE),
+                       (gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)):
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, pn, pv)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        return GLTexture(tex_id, gl.GL_TEXTURE_2D, (H, W), gl.GL_RGBA16F)
+
+    img = gl_state.get("cuda_image", create,
+                       lambda tx: gl.glDeleteTextures([tx.texture_id]),
+                       deps=(W, H))
+    gl.glBindTexture(gl.GL_TEXTURE_2D, img.texture_id)
+    with tight_unpack():
+        gl.glTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, W, H, gl.GL_RGBA,
+                           gl.GL_HALF_FLOAT, host.numpy())
+    gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+    return img
+
+
+def _scalar_int(v):
+    try:
+        return int(v)
+    except TypeError:
+        return int(v[0])
+
+
+def _cached_volume_texture(gl_state, vol_key, keys=("volume_cuda", "volume", "cuda_view")):
+    """The already-uploaded volume texture for `vol_key`, or None. Checks
+    both upload paths (interop CudaVolume wraps its GLTexture as .texture);
+    a hit means draw_voxels skips slice_volume AND the upload outright."""
+    for key in keys:
+        rec = gl_state.peek(key)
+        if rec is None:
+            continue
+        tex = getattr(rec, "texture", rec)
+        if getattr(tex, "_vol_key", None) == vol_key:
+            return tex
+    return None

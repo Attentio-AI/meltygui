@@ -990,6 +990,7 @@ class Melty:
     # in its own thread every frame; see view/core_conversion/render_host.py.
     render_hosts = {}
     luts = None  # shared editable palette values, created lazily
+    cuda_interop = None  # retained display context and interop diagnostics
     render_hosts_tick = -1   # app_tick Surface.frame last pumped the hosts in (meltygui main)
     scroll_stack = []
     tile_id_stack = []

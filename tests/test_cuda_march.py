@@ -2,6 +2,7 @@
 Kernel equivalence (strided view vs materialized volume, neural flow,
 normalize, any dtype) and a real-GL check that the CUDA image blitted into
 the FBO matches the GL voxel_pass on the same volume."""
+from meltygui.state.voxel_state import VoxelState
 import os
 import sys
 
@@ -116,10 +117,11 @@ def st(gl_context):
 def test_cuda_image_matches_gl_voxel_pass(st):
     import OpenGL.GL as gl
     from meltygui.model.tensor_model import CudaVolumeView
-    from meltygui.tensor.voxel_playground import LUTS
-    from meltygui.tensor.voxel_playground import _cuda_render
-    from meltygui.tensor.voxel_playground import image_blit_pass
-    from meltygui.tensor.voxel_playground import voxel_pass
+    from meltygui.model.lut_model import make_luts
+    LUTS = make_luts()
+    from meltygui.view.voxel_view import _cuda_render
+    from meltygui.view.texture_view import image_blit_pass
+    from meltygui.view.voxel_view import voxel_pass
     torch.manual_seed(2)
     vol = (torch.rand(24, 32, 40, device=DEV) > 0.93).float() * 0.9
     W, H = 128, 96
@@ -151,7 +153,7 @@ def test_cuda_image_matches_gl_voxel_pass(st):
     assert voxel_pass.last_error is None, voxel_pass.last_error
     # CUDA path
     cv = CudaVolumeView(vol, vol.shape, (-1, -1, 0), (0.0, 1.0, 0), (0, 1, 2), vol.shape)
-    img = _cuda_render(st, cv, W, H, lut="jet", **cam)
+    img = _cuda_render(st, cv, W, H, VoxelState(), lut="jet", **cam)
     assert img is not None
     with fb:
         gl.glDisable(gl.GL_DEPTH_TEST); gl.glDisable(gl.GL_BLEND)
@@ -370,7 +372,8 @@ def test_hdr_lut_rides_through_linear_output():
     import math
     from meltygui.hdr_color import linear_to_oklab
     from meltygui.hdr_color import srgb_to_linear
-    from meltygui.tensor.voxel_playground import LUTS
+    from meltygui.model.lut_model import make_luts
+    LUTS = make_luts()
     assert max(LUTS["hot"]) <= 1.0 and min(LUTS["hot"]) >= 0.0
     hot_hdr = LUTS["hot_hdr"]
     assert max(hot_hdr) > 2.0 and min(hot_hdr) < 0.0     # HDR peak + P3 negatives
@@ -408,8 +411,9 @@ def test_gl_voxel_pass_hdr_lut_reaches_fp16_target(st):
     above 1.0 and finite negatives (the mirrored decode), and stays within
     [0, 1] for the SDR table."""
     import OpenGL.GL as gl
-    from meltygui.tensor.voxel_playground import LUTS
-    from meltygui.tensor.voxel_playground import voxel_pass
+    from meltygui.model.lut_model import make_luts
+    LUTS = make_luts()
+    from meltygui.view.voxel_view import voxel_pass
     z, y, x = torch.meshgrid(torch.linspace(-1, 1, 24), torch.linspace(-1, 1, 32),
                              torch.linspace(-1, 1, 40), indexing="ij")
     vol = torch.exp(-(x * x + y * y + z * z) * 3.0)

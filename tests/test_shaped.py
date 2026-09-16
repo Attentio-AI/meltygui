@@ -283,7 +283,7 @@ def test_registered_app_defaults_route_the_two_use_cases():
     from meltygui.core.melty import Melty
     from meltygui.view.collection_view import draw_tuple
     from meltygui.view.graph_view import draw_line_graph
-    from meltygui.view.tensor_view import draw_voxels
+    from meltygui.view.voxel_view import draw_voxels
 
     look = lambda v, key="value": Melty.get_default_view_function(real_type=type(v), attrib_key=key, value=v)
     assert look((0.2, 0.5, 1.0)) is draw_tuple

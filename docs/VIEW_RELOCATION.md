@@ -35,7 +35,9 @@ No view classes were introduced. The validation below records earlier stages.
 | [query_view.py](../meltygui/view/query_view.py) | `draw_mcp_query` |
 | [search_view.py](../meltygui/view/search_view.py) | `draw_search`, `draw_search_highlight`, `draw_search_highlight_multi` |
 | [tab_view.py](../meltygui/view/tab_view.py) | `draw_tab_bar`, `draw_enum_tabs` |
-| [tensor_view.py](../meltygui/view/tensor_view.py) | `draw_lut`, `draw_tensor_dim`, `draw_voxels` |
+| [tensor_view.py](../meltygui/view/tensor_view.py) | `draw_tensor_dim`, `draw_tensor_slices`, `draw_tensor_error` |
+| [voxel_view.py](../meltygui/view/voxel_view.py) | `draw_voxels`, volume passes and axis labels |
+| [lut_view.py](../meltygui/view/lut_view.py) | `draw_lut`, palette swatches |
 | [terminal_view.py](../meltygui/view/terminal_view.py) | `draw_terminal_screen`, `draw_terminal`, `draw_session_terminal` |
 | [text_view.py](../meltygui/view/text_view.py) | `draw_icon_selector_plain`, `draw_bool_token`, `draw_number_token`, `draw_bool_token_plain`, `draw_number_token_plain`, `draw_color3_token`, `draw_color3_token_plain`, `draw_colorhex_token_plain`, `draw_fnrun_params_panel`, `draw_run_fn_token_plain`, `draw_text` |
 | [texture_view.py](../meltygui/view/texture_view.py) | `draw_texture`, `draw_pending_texture` |

@@ -1,7 +1,7 @@
 # Tensor extraction: data and shared presentation
 
 Implemented in bounded batches on 2026-09-16; remaining ownership work
-is tracked in [Architecture gaps](ARCHITECTURE_DEBT.md#tensor-rendering-shared-palettes-extracted-runtime-and-demos-remain).
+is tracked in [Architecture gaps](ARCHITECTURE_DEBT.md#tensor-rendering-production-views-separated-from-demos).
 
 | Destination | Responsibility moved |
 |---|---|
@@ -89,10 +89,8 @@ view immediately. Whole-module hotswap also backfills missing literal constructo
 defaults in tracked state objects without rerunning constructors or overwriting
 live values. Both have regression coverage; the text editor remains untouched.
 
-Next: remaining slice controls and error state; feature drawing versus generic
-GPU lifecycle; demo hosts and windows moved out of library dependencies.
-`voxel_playground.py` remains a production dependency until those responsibilities
-are separated.
+Those follow-up extractions are recorded below; the playground production
+dependency has now been removed.
 
 ## Slice controls, error state and graph helpers
 
@@ -108,5 +106,69 @@ are separated.
 
 A live native app verified slider and slice edits, volume rendering and the
 shared error card. Applying the subsequent core folder moves preserved its
-edited values, LUT proxy and GLState. The remaining voxel GPU/runtime/demo
-coupling is tracked in the architecture inventory.
+edited values, LUT proxy and GLState. The subsequent voxel ownership split is recorded below.
+
+
+## Voxel production path and explicit playground
+
+- `view/voxel_view.py` owns the voxel renderer, GL raymarch shader, CUDA image
+  rendering, camera interaction, and axis/label presentation. Shared tensor
+  controls stay in `view/tensor_view.py`; graph shaders join `view/graph_view.py`.
+- `model/texture_model.py` owns the shared CUDA image transfer and cached volume
+  lookup. `view/texture_view.py` owns the image blit pass. Existing resource keys,
+  tensor storage and shader algorithms are retained.
+- `state/voxel_state.py` separates each view's CUDA error, label warning and panel
+  state. A successful render in one view cannot clear another view's error.
+  Existing panel state is adopted from that view's old saved `misc` entry.
+- `core/graphics/tensor_core.py` owns publication-generation cache identity and
+  teardown integration. Core supplies input context instead of views reading
+  global keyboard focus or polling pointer buttons.
+- `core/graphics/text_texture.py` accepts the caller's GLState. Its layout context
+  and GPU pipeline are local to that owner and released with it. This fixes
+  labels using a VAO from another native window's context.
+- `examples/voxel_playground.py` explicitly opens torus, 4-D, 5-D, neural-flow and
+  line demos. Production imports create no demo tensors, hosts or windows.
+  The two former mixed production/demo modules are deleted, without shims.
+
+Validation includes unchanged shader-source comparison, CUDA/GL output and HDR
+checks, a real CUDA render through the wrapper, repeated resource reuse and
+cleanup, per-view error isolation, and text baking across two GL contexts.
+A whole-module source edit at the new voxel path preserves the held render
+function, edited camera state, injected state and CUDA output allocations while
+applying a changed camera default. Live-comment override regression tests remain
+part of the suite. Multi-window playground checks exercise the repaired labels.
+
+
+## CUDA interop ownership
+
+- `model/cuda_texture_model.py` owns `CudaVolume` and `tensor_to_texture`: a
+  versioned tensor becomes a renderable `GLTexture`; its source tensor is not
+  retained by the allocation. Cache hits avoid packing, transfers and syncs.
+- `core/graphics/cuda_interop_core.py` owns display-device discovery, CUDA context
+  setup, registration, mapping/copy/unmapping and context restoration. Retained
+  context and diagnostics are on `Melty.cuda_interop`. Imports neither initialize
+  CUDA nor require Torch. No old-module shim remains.
+- The GL device comes from `cuGLGetDevices`, not an assumed device zero. Both the
+  actual CUDA context and PyCUDA's recorded context must agree before registering.
+  Upload and cleanup temporarily activate the registration's context, then restore
+  the caller's native context, including when Torch has changed it independently
+  of PyCUDA's stack.
+- PyCUDA's inactive primary-context detach assumes release implicitly pops a
+  native context, whereas CUDA explicitly leaves it on the stack. The core release
+  helper balances that activation after the owned PyCUDA entry has been removed.
+  It does not detach caller-owned contexts.
+- Partial allocation failures queue cleanup without replacing the last good
+  resource. Explicit `ResourceDeletionDeferred` retains failed unregistrations
+  for the next GL deletion drain, preserving unregister-before-buffer-delete order.
+  Existing queued cleanup callbacks see module edits through `_release_volume`.
+- Producer synchronization names the tensor/device and happens before the driver
+  copy. Cross-device tensors are staged by Torch; raw copies stay on one device.
+  GL array/unpack-buffer and texture bindings are restored on success and failure.
+
+Verification covers float16/float32, noncontiguous input, all three local GPUs,
+nondefault producer streams, cold standalone setup, two GL contexts, conflicting
+native/PyCUDA contexts, failed allocation/copy/upload/unregistration, versioned
+reuse (including `None`), and hotswap preserving runtime and resource identities.
+An isolated app rendered a GLTexture uploaded from H100 `cuda:2` to display
+GPU `cuda:1`; live tensor updates reused the same texture and PBO.
+The full library suite passed 623 tests plus 393 subtests.

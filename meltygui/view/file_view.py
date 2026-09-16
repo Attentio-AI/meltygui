@@ -314,6 +314,98 @@ def draw_pending_saves():
             imgui.text("No original data to compare against for address: {}".format(address))
 
 
+def paint_breadcrumbs(draw_state, path, click=None, crumb_height=24.0, left_pad=6.0,
+                      folder_bg_boost=-0.12, text_mix=0.5, width=None):
+    """The path strip: every segment of `path` a crumb on the window draw
+    list at the cursor, the last one bright (the current directory / the
+    file), the rest dim, a painted folder wearing its file-meta tint, the
+    hovered one a faint wash. Advances the cursor by the strip's height.
+    `click` is the caller's injected left-click position (screen space, or
+    None): returns the clicked segment's Path when it is not the last one,
+    else None. Shared by the file listing (`draw_file_listing`, the strip
+    over the rows) and `draw_breadcrumbs` (the strip on its own)."""
+    from meltygui.files.fast_file_explorer import row_tint_bg
+    from meltygui.files.fast_file_explorer import tinted_text
+    from meltygui.models.file_meta import FileMeta
+    from meltygui.models.file_meta import file_meta_store
+
+    # [tint=(0.55, 0.72, 0.95)]
+    crumb_separator = "  /  "
+    text_rgba = (0.92, 0.92, 0.92, 1.0)
+    text_col = pack_color(*text_rgba)
+    dim_col = pack_color(0.6, 0.63, 0.68, 1.0)
+    crumb_hover_col = pack_color(1.0, 1.0, 1.0, 0.12)
+
+    px = Melty.px
+    pad, crumb_h = px(left_pad), px(crumb_height)
+    parts = Path(path).parts
+    meta = file_meta_store()
+    row_bg = row_tint_bg()
+    draw_list = imgui.get_window_draw_list()
+    content_w = width if width is not None else (draw_state.content_width or draw_state.width or 240)
+    mouse_x, mouse_y = imgui.get_mouse_pos()
+    hover_ok = draw_state._bounding_hovered
+    x0, y0 = imgui.get_cursor_screen_pos()
+    crumbs = []                              # (x_left, x_right, target Path)
+    cx = x0 + pad
+    crumb_y = y0 + (crumb_h - imgui.get_font_size()) * 0.5
+    for i, part in enumerate(parts):
+        label = part if part != os.sep else os.sep
+        label_w = imgui.calc_text_size(label).x
+        target = Path(*parts[:i + 1])
+        crumbs.append((cx - px(3), cx + label_w + px(3), target))
+        hovered = hover_ok and cx - px(3) <= mouse_x < cx + label_w + px(3) and y0 <= mouse_y < y0 + crumb_h
+        crumb_tint = FileMeta.painted_tint(meta.get(str(target))) if meta is not None else None
+        if crumb_tint:
+            draw_list.add_rect_filled(cx - px(3), y0 + px(2), cx + label_w + px(3), y0 + crumb_h - px(2),
+                                      row_bg(crumb_tint, folder_bg_boost or 0.0), rounding=px(3))
+        if hovered:
+            draw_list.add_rect_filled(cx - px(3), y0 + px(2), cx + label_w + px(3), y0 + crumb_h - px(2),
+                                      crumb_hover_col, rounding=px(3))
+        last = i == len(parts) - 1
+        crumb_col = (tinted_text(text_rgba, crumb_tint, text_mix) if crumb_tint
+                     else text_col if last else dim_col)
+        draw_list.add_text(cx, crumb_y, crumb_col, label)
+        cx += label_w
+        if not last and part == os.sep:
+            cx += px(8)  # Keep the root chip separate from the first folder.
+        elif not last:
+            draw_list.add_text(cx, crumb_y, dim_col, crumb_separator)
+            cx += imgui.calc_text_size(crumb_separator).x
+    imgui.dummy(content_w, crumb_h)
+    if click is not None and crumbs and y0 <= click[1] < y0 + crumb_h:
+        for left, right, target in crumbs[:-1]:
+            if left <= click[0] < right:
+                return target
+    return None
+
+
+@render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=True,
+             show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
+def draw_breadcrumbs(input_value: str, draw_state, left_mouse_clicked=False,
+                     crumb_height=24.0, left_pad=6.0, folder_bg_boost=-0.12,
+                     text_mix=0.5, **kwargs):
+    """The file browser's path strip on its own (`paint_breadcrumbs`) for a
+    host that shows one path — the code editor draws it along the top of
+    the selected file's column (``show_breadcrumbs=True``), the mirror of
+    the tab bar along its bottom. `input_value` is the path (a directory or
+    a file; a file's name is the last, bright crumb). A click on any other
+    crumb returns ``(True, directory)`` once, the host deciding what a
+    directory pick means; otherwise ``(False, input_value)``."""
+    if not input_value:
+        return False, input_value
+    click = ((left_mouse_clicked.x, left_mouse_clicked.y)
+             if (left_mouse_clicked and hasattr(left_mouse_clicked, "x")) else None)
+    target = paint_breadcrumbs(draw_state, input_value, click=click,
+                               crumb_height=crumb_height, left_pad=left_pad,
+                               folder_bg_boost=folder_bg_boost, text_mix=text_mix)
+    if target is not None:
+        from meltygui.core.windowing.glfw_utils import request_render
+        request_render()
+        return True, str(target)
+    return False, input_value
+
+
 @render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=False,
              show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
 def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorerState,
@@ -375,14 +467,11 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     folder_icon = f""
     # [tint=(0.55, 0.72, 0.95)]
     file_icon = f""
-    # [tint=(0.55, 0.72, 0.95)]
-    crumb_separator = "  /  "
     text_rgba = (0.92, 0.92, 0.92, 1.0)
     text_col = pack_color(*text_rgba)
     dim_col = pack_color(0.6, 0.63, 0.68, 1.0)
     folder_rgba = (0.78, 0.84, 0.92, 1.0)
     folder_col = pack_color(*folder_rgba)
-    crumb_hover_col = pack_color(1.0, 1.0, 1.0, 0.12)
     search_wash = pack_color(search_tint[0], search_tint[1], search_tint[2], 0.30)
     search_col = pack_color(search_tint[0], search_tint[1], search_tint[2], 1.0)
     no_match_col = pack_color(0.95, 0.55, 0.5, 1.0)
@@ -441,40 +530,12 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     rows = ordered_rows(listing[3], meta)
 
     # ── the path strip: every segment a crumb; click = jump there ──
-    x0, y0 = imgui.get_cursor_screen_pos()
-    crumbs = []                              # (x_left, x_right, target Path)
-    parts = directory.parts if show_crumbs else ()
-    cx = x0 + pad
-    crumb_y = y0 + (crumb_h - imgui.get_font_size()) * 0.5
-    for i, part in enumerate(parts):
-        label = part if part != os.sep else os.sep
-        width = imgui.calc_text_size(label).x
-        target = Path(*parts[:i + 1])
-        crumbs.append((cx - px(3), cx + width + px(3), target))
-        hovered = hover_ok and cx - px(3) <= mouse_x < cx + width + px(3) and y0 <= mouse_y < y0 + crumb_h
-        crumb_tint = FileMeta.painted_tint(meta.get(str(target))) if meta is not None else None
-        if crumb_tint:
-            draw_list.add_rect_filled(cx - px(3), y0 + px(2), cx + width + px(3), y0 + crumb_h - px(2),
-                                      row_bg(crumb_tint, folder_bg_boost or 0.0), rounding=px(3))
-        if hovered:
-            draw_list.add_rect_filled(cx - px(3), y0 + px(2), cx + width + px(3), y0 + crumb_h - px(2),
-                                      crumb_hover_col, rounding=px(3))
-        last = i == len(parts) - 1
-        crumb_col = (tinted_text(text_rgba, crumb_tint, text_mix) if crumb_tint
-                     else text_col if last else dim_col)
-        draw_list.add_text(cx, crumb_y, crumb_col, label)
-        cx += width
-        if not last and part == os.sep:
-            cx += px(8)  # Keep the root chip separate from the first folder.
-        elif not last:
-            draw_list.add_text(cx, crumb_y, dim_col, crumb_separator)
-            cx += imgui.calc_text_size(crumb_separator).x
     if show_crumbs:
-        imgui.dummy(content_w, crumb_h)
-    if click is not None and crumbs and y0 <= click[1] < y0 + crumb_h:
-        for left, right, target in crumbs:
-            if left <= click[0] < right and target != directory:
-                return navigate(target)
+        target = paint_breadcrumbs(draw_state, directory, click=click,
+                                   crumb_height=crumb_height, left_pad=left_pad,
+                                   folder_bg_boost=folder_bg_boost, text_mix=text_mix)
+        if target is not None:
+            return navigate(target)
 
     # ── content height: rows + the top inset (the fast_dock rule) ──
     rows_x, rows_y = imgui.get_cursor_screen_pos()
@@ -913,6 +974,42 @@ def draw_shortcuts(input_value: str, draw_state, left_mouse_clicked=False,
     return False, input_value
 
 
+def _trace_browser_size(stage, draw_state, **details):
+    """File browser size diagnostics (the nested-OS-window resize glitch):
+    one line per CHANGE of the view's box / content rect / the surface's
+    GLFW window and framebuffer size, to the bounded resize trace
+    (.melty cache root, resize-<pid>.log) and stderr. Never raises."""
+    try:
+        import sys
+        import meltygui.core.diagnostics.resize_trace as resize_trace
+        from meltygui import window_api as glfw
+        window = getattr(Melty, "glfw_window", None)
+        window_size = fb_size = None
+        if window is not None:
+            window_size = tuple(glfw.get_window_size(window))
+            fb_size = tuple(glfw.get_framebuffer_size(window))
+        try:
+            import meltygui.core.windowing.geometry_feed as geometry_feed
+            frame = geometry_feed._current_frame()
+            details["feed"] = (geometry_feed.backend(), geometry_feed._hypr_selector(),
+                               geometry_feed.hypr_honors_geometry(),
+                               None if frame is None else (frame.get("at"), frame.get("size")))
+        except Exception as error:
+            details["feed"] = f"error {error!r}"
+        stamp = (draw_state.width, draw_state.height, draw_state.abs_left, draw_state.abs_top,
+                 window_size, fb_size, tuple(sorted(details.items())))
+        if getattr(draw_state, "_browser_size_trace", None) == stamp:
+            return
+        draw_state._browser_size_trace = stamp
+        resize_trace.record(stage, draw_state, window_size=window_size, fb_size=fb_size,
+                            gesture=bool(Melty.resize_gesture_live()), **details)
+        print(f"[{stage}] f{Melty.frame_count} view {draw_state.width}x{draw_state.height} "
+              f"at ({draw_state.abs_left}, {draw_state.abs_top}) window {window_size} "
+              f"fb {fb_size} {details}", file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
 @render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=True,
              show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
 def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
@@ -939,6 +1036,9 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
     it (the frame's value lands after this call; a host drawing above the
     explorer reads last frame's). Shortcuts drag to reorder, with their own
     persisted order."""
+    _trace_browser_size("file-explorer-size", draw_state,
+                        content_width=draw_state.content_width,
+                        size_change=getattr(draw_state, "size_change", None))
     from meltygui.files.fast_file_explorer import row_tint_bg
     from meltygui.models.file_meta import file_meta_store
     from meltygui.core.windowing.glfw_utils import request_render
@@ -1071,6 +1171,9 @@ def draw_file_selector(input_value: str | None = None, draw_state=None,
             if target.is_dir():
                 selector_state.directory = str(target)
     left, top, right, bottom = draw_state.get_content_rect()
+    _trace_browser_size("file-selector-size", draw_state,
+                        content=(left, top, right, bottom),
+                        explorer=(right - left, max(120, bottom - top - 35)))
     changed, picked = draw_fast_file_explorer(
         selector_state.directory, name='files', width=right - left,
         height=max(120, bottom - top - 35),

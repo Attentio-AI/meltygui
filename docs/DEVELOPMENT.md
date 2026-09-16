@@ -38,6 +38,7 @@ share the same render functions.
 ```sh
 .venv/bin/pytest
 .venv/bin/python examples/tensor_live.py
+.venv/bin/python examples/voxel_playground.py
 ```
 
 Use `MELTY_BENCH=1` for a first-frame smoke run:
