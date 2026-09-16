@@ -44,15 +44,12 @@ from meltygui.core.input.drag_drop_core import DragDrop
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.core_decoration import no_save
 from meltygui.core.rendering.window_decoration import window
-from meltygui.core.rendering.render_dispatch import draw_tuple_fast
-from meltygui.core.rendering.render_dispatch import draw_bg
-from meltygui.core.layout.header_runtime import flat_button
+from meltygui.view.collection_view import draw_tuple_fast
+from meltygui.view.decoration_view import draw_bg
+from meltygui.view.header_view import flat_button
 from meltygui.core.cache.tile_cache import add_shadow
 from meltygui.view.texture_view import draw_texture
 import meltygui.accounts.internet_accounts as internet_accounts
-
-
-from meltygui.state.chat_state import ChatInterfaceState
 
 
 TRASH_ICON = ""   # FontAwesome trash-alt
@@ -218,22 +215,6 @@ def _reorder(chats, key, direction):
 from meltygui.view.chat_view import _soft_wrap
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _text_layout(state, key, text, prefix="", font=Font.FONTAWESOME_MONO_19, wrap_width=None, keep=False):
     """Stable display buffer and height; no per-frame string/kwargs churn.
 
@@ -274,23 +255,6 @@ def _text_layout(state, key, text, prefix="", font=Font.FONTAWESOME_MONO_19, wra
 
 
 from meltygui.view.chat_view import _scroll_position
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 @contextmanager
@@ -338,22 +302,10 @@ def _viewport(draw_state, state, key, width, height, content_height, follow=Fals
 from meltygui.view.chat_view import _visible
 
 
-
 from meltygui.view.chat_view import _tint_style
 
 
-
-
-
-
-
-
 from meltygui.view.chat_view import _text_tint
-
-
-
-
-
 
 
 def _card(x, y, width, height, tint, selected=False, max_bg_value=None, shadow_offset=None, shadow=True):
@@ -418,28 +370,6 @@ def prose_offset(text, x, y, mouse, line_px, char_w):
     row = max(0, min(len(lines) - 1, int((mouse[1] - y) // line_px)))
     col = max(0, min(len(lines[row]), int(round((mouse[0] - x - Melty.px(4)) / char_w))))
     return sum(len(line) + 1 for line in lines[:row]) + col
-
-
-from meltygui.view.chat_view import selection_slice
-
-
-
-
-
-
-
-
-
-
-
-from meltygui.view.chat_view import selection_text
-
-
-
-
-
-
-
 
 
 def _draw_prose(text, x, y, width, height, tint, clip=None, selected=None, **_):
@@ -647,23 +577,6 @@ def apply_folder_shortcuts(state, events):
     return changed
 
 
-from meltygui.view.chat_view import draw_chat_sidebar  # the height the list actually uses
-
-
-from meltygui.view.chat_view import _message_leaves
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _code_background(x, y, width, height, color, shadow=None):
     draw_list = imgui.get_window_draw_list()
     if Melty.channels_split:
@@ -718,68 +631,10 @@ def _terminal_layout(state, key, message, width):
     return value, height
 
 
-from meltygui.view.chat_view import draw_chat_terminal
-
-
 from meltygui.view.chat_view import _message_preview
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-from meltygui.view.chat_view import _message_icon
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-from meltygui.view.chat_view import _message_label
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 from meltygui.view.chat_view import _message_failed
-
-
-
-
 
 
 def _failure_badge(x, y, width, height):
@@ -801,36 +656,6 @@ def _failure_badge(x, y, width, height):
                     alpha=0, hovered=False, layout=False)
     finally:
         imgui.set_cursor_screen_pos(cursor)
-
-
-from meltygui.view.chat_view import _hold_scroll_anchor
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-from meltygui.view.chat_view import _row_geometry
-
-
-
-
-
-
-
 
 
 def _draw_image(ref, x, y, max_width, box_height, caption_height, tint, *, name="image", size=None):
@@ -926,19 +751,7 @@ def chat_activity(chat, provider):
     return f"{provider} is starting the next step…"
 
 
-from meltygui.view.chat_view import draw_chat_queue
-
-
-from meltygui.view.chat_view import draw_messages
-
-
 from meltygui.core.services.chat_core import _cleanup_chat
-
-
-from meltygui.view.chat_view import draw_chat_requests
-
-
-from meltygui.view.chat_view import draw_conversation_title
 
 
 def navigation_heading_control(pane, draw_state, state, x, y, width, height):
@@ -977,9 +790,6 @@ def navigation_row_sizes(state, edges, opened, top, height, minimum):
     return fitted
 
 
-from meltygui.view.chat_view import draw_chat_navigation
-
-
 def chat_context_menu_items(state, sources):
     """The wrapper owns right-release routing; rows only identify its target."""
     def action(operation):
@@ -1004,7 +814,6 @@ def chat_context_menu_items(state, sources):
     return {"Rename chat": lambda: action("rename"),
             "Fork chat": lambda: action("fork"),
             "Delete chat": lambda: action("delete")}
-
 
 
 def chat_models(kind, proxy, selected_model=""):
@@ -1053,9 +862,6 @@ def chat_effort_levels(kind, proxy, model):
     if levels is None:
         levels = ("low", "medium", "high") if kind.name == "anthropic" else ()
     return tuple(levels)
-
-
-from meltygui.view.chat_view import draw_effort_slider
 
 
 def switch_new_chat_source(state, proxies, kinds, key, account_id, model):

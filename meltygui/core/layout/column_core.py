@@ -23,12 +23,6 @@ HIGHLIGHT_TINT = (0,0,0, 1.0)
 _NOTE = dict(name="draw_columns", tint=(0.5, 0.8, 1.0))
 
 
-from meltygui.model.layout_model import Columns
-
-
-from meltygui.model.layout_model import Rows
-
-
 # ---------------------------------------------------------------------------
 # Edge model
 #
@@ -2307,9 +2301,3 @@ class RowLayout:
         imgui.set_cursor_screen_pos((self.left,
                                      self.win_y + self._band_bottom()))
         imgui.dummy(0, 0)
-
-
-from meltygui.view.layout_view import draw_columns
-
-
-from meltygui.view.layout_view import draw_rows

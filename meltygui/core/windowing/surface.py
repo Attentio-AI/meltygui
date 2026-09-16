@@ -461,7 +461,7 @@ class Surface:
         tint, capped at the same max_bg_value), edge to edge with the alpha
         cut's corner radius and no outline stroke. Sets the style tint for
         the body; returns (the tint to restore, the ground's colour)."""
-        from meltygui.core.rendering.render_dispatch import draw_bg
+        from meltygui.view.decoration_view import draw_bg
         style_manager = Melty.style_manager
         previous_tint = style_manager.get_tint()
         tint = self.tint if self.tint is not None else Toggles.Melty.app_root_tint

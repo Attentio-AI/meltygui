@@ -31,7 +31,6 @@ from meltygui.core.cache.tile_cache import add_glow
 from meltygui.core.cache.tile_cache import add_shadow
 from meltygui.core.cache.tile_cache import clear_glows
 from meltygui.core.core_render import render_func
-from meltygui.state.core_undo import NavUndo
 from meltygui.core.rendering.core_decoration import Core
 
 _last_signature = None
@@ -181,6 +180,3 @@ def _draw_glyph_ink_centered(draw_list, glyph, center_x, center_y, color_u32):
 
 
 from meltygui.core.layout.layout_core import dock_header
-
-
-from meltygui.view.layout_view import draw_fast_dock

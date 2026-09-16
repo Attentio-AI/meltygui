@@ -19,8 +19,8 @@ import meltygui_imgui as imgui
 import numpy as np
 import ctypes
 from meltygui.core.styling.fonts import Font
-from meltygui.core.layout.header_runtime import flat_button
-from meltygui.core.rendering.render_dispatch import draw_bg
+from meltygui.view.header_view import flat_button
+from meltygui.view.decoration_view import draw_bg
 from meltygui.core.graphics.text_texture import bake_texts
 from meltygui.model.camera_model import basis as _cam_basis
 

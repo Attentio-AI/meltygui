@@ -25,27 +25,21 @@ from meltygui.core.windowing.glfw_utils import request_render
 from meltygui.core.core_render import render_func
 from meltygui.core.layout.header_runtime import _brightness_clamp_fn
 import meltygui.model.import_graph_model as file_graph
-from meltygui.model.import_graph_model import start_build
 from meltygui.core.runtime.toggles import Toggles
-from meltygui.files.folder_files import folder_proxy
-from meltygui.files.folder_files import watch_folder
-from meltygui.files.folder_files import _file_meta
+from meltygui.core.files.file_core import folder_proxy
+from meltygui.core.files.file_core import watch_folder
+from meltygui.model.file_model import _file_meta
 from meltygui.core.input.drag_drop_core import DragDrop
 from meltygui.core.cache.tile_cache import add_shadow
 from meltygui.core.rendering.window_decoration import window
 
 from meltygui.core.runtime.paths import application_root
-from meltygui.state.file_state import ROOT     # .../src
-
 
 
 def open_file(path):
     """Route `path` into the code editor (summons the editor window)."""
     from meltygui.core.runtime.extensions import open_source as open_in_editor
     open_in_editor(str(path))
-
-
-from meltygui.state.file_state import FileTreeState
 
 
 def _children(folder):

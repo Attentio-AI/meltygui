@@ -8,9 +8,9 @@ in `state/<feature>_state.py`.
 
 ## Where to start
 
-The root keeps six Python modules: `core_render.py`, `melty.py`,
-`definition_hotswap.py`, `module_compatibility.py`, `module_names.py`, and the
-package initializer. The two JSON manifests describe canonical names and aliases.
+The root keeps five Python modules: `core_render.py`, `melty.py`,
+`definition_hotswap.py`, `module_names.py`, and the package initializer.
+`module_map.json` translates identifiers in older saved sessions.
 Everything else is grouped by the runtime responsibility it serves:
 
 | Folder | Responsibility and main entry points |
@@ -59,12 +59,11 @@ renderers finish importing. `rendering/mode_defaults.py` holds shared type-to-mo
 including delayed registration for optional dependencies. Combining these at
 import time would recreate the mode/renderer import cycle.
 
-The public package exports remain available from `meltygui`. Historical module
-paths resolve to the same canonical module object. A live move adopts existing
-definitions and state without executing initialization again. Matching destination
-code updates resource paths while preserving live objects. Historical package
-names are virtual namespaces, so obsolete directory shells are unnecessary. Saved identifiers
-and source navigation use the same canonical names, including in a running session.
+The public package exports remain available from `meltygui`. Internal imports
+use current modules; there are no legacy import aliases, forwarding shims or
+virtual historical namespaces. Definition hotswap preserves live objects and
+state. Saved-name translation belongs to session loading, and source navigation
+resolves actual imports. Update the editor and its Pro dependency with source moves.
 
 See [the move inventory and checks](../../docs/CORE_RELOCATION.md). The mixed
 `state/new_core_model.py` and the text-editor implementation await the separate

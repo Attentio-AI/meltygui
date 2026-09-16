@@ -22,18 +22,18 @@ from pathlib import Path
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
-from meltygui.melty import Melty
-from meltygui.toggles import Tint
-from meltygui.toggles import Toggles
-from meltygui.fonts import Font
+from meltygui.core.melty import Melty
+from meltygui.core.runtime.toggles import Tint
+from meltygui.core.runtime.toggles import Toggles
+from meltygui.core.styling.fonts import Font
 from meltygui.code.libcst_conversion import UsageRef
-from meltygui.views.blit_offscreen import add_shadow
+from meltygui.core.cache.tile_cache import add_shadow
 from meltygui.editor.code_line_fast import CodeLineTints
-from meltygui.editor.code_line_fast import draw_code_line_fast
+from meltygui.view.code_view import draw_code_line_fast
 from meltygui.editor.code_line_fast import pop_code_font
 from meltygui.editor.code_line_fast import push_code_font
 from meltygui.editor.code_line_fast import shift_spans
-from meltygui.rendering.core_render import render_func
+from meltygui.core.core_render import render_func
 
 # Row pitch shared with the scroll-into-view helper — the Code tab's 24 + 2.
 ROW_H = Toggles.UsagePicker.row_height
@@ -255,7 +255,7 @@ def picker_content_height(menu_ds, model):
 def picker_fit(menu_ds, model):
     """The popover size that fits its rows, display-clamped: the fresh
     content rect's width (else the minimum) and the content height."""
-    from meltygui.views.blit_offscreen import snap_int
+    from meltygui.core.cache.tile_cache import snap_int
     display_w, display_h = imgui.get_io().display_size
     rect = _fresh_rect(menu_ds, model)
     fit_w = snap_int(max(min(rect[0] if rect else PICKER_MIN_W, display_w), PICKER_MIN_W))
@@ -267,11 +267,11 @@ def picker_fit(menu_ds, model):
 def scroll_row_into_view(menu_ds, row_index):
     """Minimal scroll of the picker window so `row_index` is fully visible
     (the dd-menu helper at this module's row pitch)."""
-    from meltygui.core.dropdown_core import _dd_scroll_cursor_into_view
+    from meltygui.core.layout.dropdown_core import _dd_scroll_cursor_into_view
     _dd_scroll_cursor_into_view(menu_ds, row_index, pitch=ROW_PITCH)
 
 
-from meltygui.view.code_view import draw_usage_picker
+
 
 
 def paint_usage_rows(input_value, draw_state, *, width=None,

@@ -11,10 +11,10 @@ change, so Melty.read_code at render time is both fresh and cheap.
 import difflib
 from pathlib import Path
 
-from meltygui.rendering.render_funcs import RenderFuncs
-from meltygui.utils.glfw_utils import request_render
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.window_decoration import window
+from meltygui.core.rendering.render_funcs import RenderFuncs
+from meltygui.core.windowing.glfw_utils import request_render
+from meltygui.core.core_render import render_func
+from meltygui.core.rendering.window_decoration import window
 from meltygui.editor.pending_save import _diff_lines_with_numbers
 
 
@@ -50,8 +50,8 @@ class ExternalChanges:
         event, with the code_cache text as it was BEFORE the event popped it.
         old_text=None means the studio never read the file — nothing to
         baseline against, so it isn't tracked."""
-        from meltygui.melty import FileWatch
-        from meltygui.melty import Melty
+        from meltygui.core.melty import FileWatch
+        from meltygui.core.melty import Melty
         if FileWatch.is_self_write(src_path):
             return              # an in-process save, not an outside program
         # An external write obsoletes any cached NO-OP pending edits for this
@@ -77,7 +77,7 @@ class ExternalChanges:
         # The conflict window shares the same edge: external drift may now
         # overlap a pending span. Lazy import (merge_files imports this module).
         try:
-            from meltygui.extensions import call
+            from meltygui.core.runtime.extensions import call
             call('conflicts_changed')
         except Exception:
             pass

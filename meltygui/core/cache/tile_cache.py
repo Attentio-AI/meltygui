@@ -3835,7 +3835,7 @@ class TileCacheMasked:
         if (not fb or not fb.get("show_bg")
                 or width is None or height is None or width <= 5 or height <= 5):
             return None
-        from meltygui.core.rendering.render_dispatch import draw_bg
+        from meltygui.view.decoration_view import draw_bg
         style_manager = Melty.global_attrs['style_manager']
         if live:
             fb.update({

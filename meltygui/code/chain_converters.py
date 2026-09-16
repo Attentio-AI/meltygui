@@ -56,7 +56,7 @@ from meltygui.code.libcst_conversion import FunctionParse
 from meltygui.code.libcst_conversion import NO_DEFAULT
 from meltygui.core.diagnostics.perf_trace import trace as _ptrace
 from meltygui.core.diagnostics.perf_trace import span as _pspan
-from meltygui.core.layout.header_runtime import draw_header
+from meltygui.view.header_view import draw_header
 from meltygui.core.rendering.core_decoration import defaults
 
 
@@ -1088,7 +1088,7 @@ def address_to_general_parse(input_value: Address, pending=False, unique=None, c
     if draw_state.frame_count < 2 and auto_load:
         load = True
 
-    from meltygui.core.rendering.render_dispatch import button
+    from meltygui.view.control_view import button
     file_name = input_value.path.name if input_value.path is not None else "Unknown file"
     folder_icon = ""
     # if button(f"{folder_icon} {file_name}", height=30, value=0.4, saturation=1.5)[0]:
@@ -1283,8 +1283,8 @@ def focus(input_value, path=(), default=None, kind=None, draw_state=None, unique
     GeneralParse dict (code-comment / decoration tint), a draw_state, or a data
     class instance.
     """
-    from meltygui.core.rendering.render_dispatch import draw_tuple
-    from meltygui.core.rendering.render_dispatch import button
+    from meltygui.view.collection_view import draw_tuple
+    from meltygui.view.control_view import button
 
     changed, new_value = False, input_value
     if not path:
@@ -2109,9 +2109,3 @@ def str_to_general_parse(input_value, reference=None, changed=False, draw_state=
     fresh = getattr(draw_state, '_last_propagated_str', None) != input_str
     draw_state._last_propagated_str = input_str
     return fresh, general_parse
-
-
-
-
-
-

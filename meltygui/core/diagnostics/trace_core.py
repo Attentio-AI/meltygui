@@ -160,9 +160,6 @@ class _Pane:
         return (self.first, self.last, self.def_last)
 
 
-from meltygui.state.trace_state import StackTraceState
-
-
 def _span_bounds(span_index, lineno):
     """(def_first, def_last, stmt_last) in 1-based lines from a FileCode
     span_index (one ast walk per text version — never a walk per query):
@@ -446,9 +443,3 @@ def _shift_panes(panes, edited_pane, path, edit_line, delta,
             pane.view = (new_whole, pane.bounds()) + view[2:]
         else:
             pane.view = None
-
-
-from meltygui.view.trace_view import _draw_file_header
-
-
-from meltygui.view.trace_view import draw_stack_trace

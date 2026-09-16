@@ -38,7 +38,7 @@ from meltygui.core.core_render import render_func
 from meltygui.core.rendering.core_decoration import defaults, no_save
 from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.conversion.render_host import RenderHost
-from meltygui.editor.live_view_views import draw_function_live
+from meltygui.view.code_view import draw_function_live
 from meltygui.graphics import Filter
 from meltygui.chat import draw_chat_interface, register_chat_backend
 ```

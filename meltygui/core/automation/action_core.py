@@ -27,9 +27,6 @@ from meltygui.core.runtime.extensions import jump_to_symbol as _jump_to_symbol_d
 from meltygui.core.rendering.render_dispatch import draw_any
 
 
-from meltygui.view.action_view import draw_actions
-
-
 def _action_funcs():
     """(name, function, icon) for every public function on Actions, definition
     order. Reads vars() live each call so a hotswapped/added action shows up
@@ -154,5 +151,3 @@ class ActionRunner:
     action = None  # the Actions function the window is parameterizing
     params = {}    # name -> value being edited, seeded from the signature
     _focus_requested = False  # one-shot: focus the first str param next frame
-
-

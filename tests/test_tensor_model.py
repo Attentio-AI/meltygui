@@ -1,5 +1,4 @@
 """Tensor data operations work without loading a viewer or a GPU backend."""
-import importlib
 import subprocess
 import sys
 
@@ -29,22 +28,6 @@ for module in ('meltygui.tensor.voxel_playground', 'meltygui.tensor.cuda_march',
         close_fds=False, capture_output=True, text=True, timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-
-
-def test_legacy_exports_share_canonical_definitions():
-    legacy = importlib.import_module('meltygui.tensor.voxel_playground')
-    march = importlib.import_module('meltygui.tensor.cuda_march')
-    camera = importlib.import_module('meltygui.tensor.voxel_camera')
-    views = importlib.import_module('meltygui.view.tensor_view')
-    assert camera is camera_model
-    assert march.nf_display_shape is tensor_model.nf_display_shape
-    for name in ('TensorDim', 'TensorDims', 'Lut', 'CudaVolumeView',
-                 'slice_volume', 'slice_volume_view', 'neural_flow_volume',
-                 'auto_neural_flow', 'to_display_dtype'):
-        assert getattr(legacy, name) is getattr(tensor_model, name)
-    for name in ('_describe_tensor', '_view_size', '_draw_image_notice',
-                 'format_bytes', '_draw_tensor_meta'):
-        assert getattr(legacy, name) is getattr(views, name)
 
 
 def test_named_axes_and_pinned_slices_preserve_source_storage():

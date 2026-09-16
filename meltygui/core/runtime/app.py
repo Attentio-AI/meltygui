@@ -365,7 +365,7 @@ def _searchable_body(body):
     def searchable(surface):
         body(surface)
         from meltygui.core.runtime.extensions import call
-        from meltygui.editor.source_preview import draw_pending_preview
+        from meltygui.view.code_view import draw_pending_preview
         draw_pending_preview()
         call('root_draw', surface)
     return searchable

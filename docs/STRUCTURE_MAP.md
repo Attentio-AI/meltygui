@@ -11,9 +11,10 @@ implemented. The deeper feature/model/state splits below remain a planning inven
 
 The legacy `views/` and `widgets/` implementations have now all moved.
 The empty `views/`, `widgets/`, `rendering/` and `windows/` folder shells have
-been removed; historical imports use virtual compatibility namespaces. See the
+been removed. The library, Pro components and editor now use current imports;
+the temporary import-compatibility layer has also been removed. See the
 [complete move table](LEGACY_MODULE_MOVE.md).
-The text editor is explicitly deferred and unchanged in this pass.
+The text-editor refactor is explicitly deferred; only its imports have changed.
 
 ## Implemented layout
 
@@ -23,7 +24,7 @@ meltygui/
         core_render.py        # render-function execution and injection
         melty.py              # shared runtime ownership and coordination
         definition_hotswap.py # module-independent live definition relocation
-        module_*.py           # canonical names and compatibility
+        module_names.py       # translate older saved identifiers
         input/                # events, devices, hit testing, drag/drop
         rendering/            # dispatch, registration, modes, parameters
         conversion/           # dict-like objects, hosting, persistence
@@ -68,8 +69,9 @@ The first pass relocated 142 view functions and 29 supporting definitions.
 The second pass moved 64 feature helpers out of legacy view/editor modules,
 placing presentation beside the views and model/state/core helpers in their
 corresponding feature files.
-Old import paths retain compatibility aliases; public exports use the new view
-modules. Hotswap now preserves canonical live identities and destination globals.
+Public exports use the new view modules, and internal callers import current
+paths directly. Temporary compatibility aliases are gone. Hotswap preserves
+live definition identities and destination globals.
 See [the feature/module index and validation](VIEW_RELOCATION.md).
 
 `core_render.py`, `melty.py`, modes, `RenderHost`, generic conversion and
@@ -461,7 +463,7 @@ package has a coherent responsibility.
 - [debug/attribute_churn.py](../meltygui/core/diagnostics/attribute_churn.py) — 38 lines
 - [debug/framebuffer_recorder.py](../meltygui/core/graphics/framebuffer_recorder.py) — 337 lines
 - [debug/invalidation_tracker.py](../meltygui/core/cache/invalidation_tracker.py) — 43 lines
-- [debug/jump_to.py](../meltygui/debug/jump_to.py) — 95 lines
+- [debug/jump_to.py](../meltygui/view/code_view.py) — 95 lines
 - [debug/mode.py](../meltygui/core/rendering/mode.py) — 816 lines
 
 ### editor
@@ -511,8 +513,8 @@ package has a coherent responsibility.
 
 - [files/__init__.py](../meltygui/files/__init__.py) — 0 lines
 - [files/fast_file_explorer.py](../meltygui/files/fast_file_explorer.py) — 1,287 lines
-- [files/file_selector.py](../meltygui/files/file_selector.py) — 82 lines
-- [files/folder_files.py](../meltygui/files/folder_files.py) — 461 lines
+- [files/file_selector.py](../meltygui/view/file_view.py) — 82 lines
+- [files/folder_files.py](../meltygui/core/files/file_core.py) — 461 lines
 
 ### graphics
 

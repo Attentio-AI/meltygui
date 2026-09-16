@@ -281,23 +281,23 @@ def test_registered_app_defaults_route_the_two_use_cases():
     for 1-D/2-D tensors, draw_voxels for 3-D+ (importing the views registers
     them)."""
     from meltygui.core.melty import Melty
-    import meltygui.core.rendering.render_dispatch as new_core_view
-    import meltygui.core.graphics.graph_core as line_graph_playground
-    import meltygui.tensor.voxel_playground as voxel_playground
+    from meltygui.view.collection_view import draw_tuple
+    from meltygui.view.graph_view import draw_line_graph
+    from meltygui.view.tensor_view import draw_voxels
 
     look = lambda v, key="value": Melty.get_default_view_function(real_type=type(v), attrib_key=key, value=v)
-    assert look((0.2, 0.5, 1.0)) is new_core_view.draw_tuple
-    assert look((0, 0, 0, 0.1)) is new_core_view.draw_tuple
-    assert look((1, 2, 3)) is not new_core_view.draw_tuple            # int triple → collection
-    assert look((0, 0, 0), key="tint") is new_core_view.draw_tuple    # name still wins
-    assert look(torch.zeros(16)) is line_graph_playground.draw_line_graph
-    assert look(torch.zeros(16, 4)) is line_graph_playground.draw_line_graph
-    assert look(torch.zeros(4, 4, 4)) is voxel_playground.draw_voxels
-    assert look(torch.zeros(2, 4, 4, 4)) is voxel_playground.draw_voxels
-    assert look(torch.tensor(1.0)) is voxel_playground.draw_voxels      # "Tensor" fallback
+    assert look((0.2, 0.5, 1.0)) is draw_tuple
+    assert look((0, 0, 0, 0.1)) is draw_tuple
+    assert look((1, 2, 3)) is not draw_tuple            # int triple → collection
+    assert look((0, 0, 0), key="tint") is draw_tuple    # name still wins
+    assert look(torch.zeros(16)) is draw_line_graph
+    assert look(torch.zeros(16, 4)) is draw_line_graph
+    assert look(torch.zeros(4, 4, 4)) is draw_voxels
+    assert look(torch.zeros(2, 4, 4, 4)) is draw_voxels
+    assert look(torch.tensor(1.0)) is draw_voxels      # "Tensor" fallback
     # Project-process captures arrive as NumPy arrays, including 3-D volumes.
     import numpy as np
-    assert look(np.zeros(16)) is line_graph_playground.draw_line_graph
-    assert look(np.zeros((16, 4))) is line_graph_playground.draw_line_graph
-    assert look(np.zeros((4, 4, 4))) is voxel_playground.draw_voxels
-    assert look(np.zeros((2, 4, 4, 4))) is voxel_playground.draw_voxels
+    assert look(np.zeros(16)) is draw_line_graph
+    assert look(np.zeros((16, 4))) is draw_line_graph
+    assert look(np.zeros((4, 4, 4))) is draw_voxels
+    assert look(np.zeros((2, 4, 4, 4))) is draw_voxels

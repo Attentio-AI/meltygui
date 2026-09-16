@@ -126,7 +126,7 @@ def _sources_for(draw_state, class_to_show=None):
     (a drag writing per-release, say) reuse the parsed hosts. class_to_show
     defaults to the value's runtime class, so the @defaults/class-var rows
     resolve the same way here as under the context menu."""
-    from meltygui.core.rendering.render_dispatch import ContextMenuState
+    from meltygui.state.inspection_state import ContextMenuState
     from meltygui.core.rendering.render_dispatch import collect_input_sources
     if not draw_state._call_site_captured and not draw_state._call_site_requested:
         draw_state._call_site_requested = True

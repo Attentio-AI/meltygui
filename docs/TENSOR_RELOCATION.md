@@ -13,8 +13,8 @@ The no-copy slicing path no longer imports the CUDA renderer for shape arithmeti
 Model operations run without importing tensor/graph views or constructing demo
 hosts. Algorithms, tensor storage behavior and rendering output are unchanged.
 
-Old definition imports remain re-exports. The old camera path shares the canonical
-module through the common compatibility layer; saved module names point to it.
+Callers import the feature modules directly; temporary re-exports and the
+module-alias layer have been removed. Saved names still translate on load.
 The existing generic definition relocation machinery preserves held functions,
 classes and instances. No tensor-specific hotswap path was added.
 
@@ -100,7 +100,7 @@ are separated.
   injected pointer events. Tensor and graph slice rows share `draw_tensor_slices`
   in `tensor_view.py`; edits use the existing parameter invalidation path.
 - `draw_tensor_error` renders supplied error text with an injected
-  `TensorErrorState`. The old voxel helpers remain compatibility imports.
+  `TensorErrorState`. Tensor and graph consumers import these views directly.
 - `model/graph_model.py` owns line-axis resolution, slicing, packing and finite
   ranges. Graph coordinate/tick helpers and axis overlays live in `graph_view.py`.
 - Inline headers no longer subtract a header row from the content hit rectangle;

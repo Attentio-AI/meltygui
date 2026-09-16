@@ -39,8 +39,7 @@ from meltygui.core.conversion.render_host import RenderHost
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.core_decoration import Core
 from meltygui.core.rendering.window_decoration import window
-from meltygui.core.services.terminal_core import Terminal
-from meltygui.core.services.terminal_core import draw_terminal_screen
+from meltygui.model.terminal_model import Terminal
 
 _SESSION_PREFIX = "claude-d-"
 

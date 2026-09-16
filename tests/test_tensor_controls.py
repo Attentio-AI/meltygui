@@ -1,5 +1,4 @@
 """Dimension controls coordinate reusable local groups, without an app model."""
-import importlib
 import inspect
 from types import SimpleNamespace
 
@@ -130,11 +129,3 @@ def test_label_atlas_keeps_resources_until_text_or_supplied_font_changes(monkeyp
     state.release()
     GLState.flush_deletes()
     assert sorted(deleted) == [1, 2, 3]
-
-
-def test_legacy_presentation_exports_keep_identity():
-    legacy = importlib.import_module('meltygui.tensor.voxel_playground')
-    for name in ('_row_collection', '_draw_dim_tabs', '_sibling_dim_keys', '_swap_sibling_dim',
-                 '_label_program', '_label_vao', '_label_atlas', '_axis_edges',
-                 '_draw_axis_lines', '_tick_values', '_billboard_specs', '_render_label_billboards'):
-        assert getattr(legacy, name) is getattr(tensor_view, name)

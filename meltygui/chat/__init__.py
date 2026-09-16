@@ -56,8 +56,8 @@ if TYPE_CHECKING:   # IDE and type checkers only; never executed
     from meltygui.chat.metadata import ChatMetadata
     from meltygui.chat.metadata import persistent_metadata
     from meltygui.chat.metadata import shared_metadata
-    from meltygui.chat.chat_interface import draw_chat_interface
-    from meltygui.chat.chat_interface import ChatInterfaceState
+    from meltygui.view.chat_view import draw_chat_interface
+    from meltygui.state.chat_state import ChatInterfaceState
     from meltygui.accounts.internet_accounts import accounts
     from meltygui.accounts.internet_accounts import KINDS
     from meltygui.accounts.internet_accounts import AccountKind

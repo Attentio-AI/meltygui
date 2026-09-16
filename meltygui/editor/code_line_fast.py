@@ -27,9 +27,9 @@ import bisect
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
-from meltygui.fonts import Font
-from meltygui.melty import Melty
-from meltygui.toggles import Toggles
+from meltygui.core.styling.fonts import Font
+from meltygui.core.melty import Melty
+from meltygui.core.runtime.toggles import Toggles
 
 
 def push_code_font(font=Font.FONTAWESOME_MONO_19):
@@ -85,7 +85,7 @@ def _split_emphasis(col, token, emphasis):
     return out
 
 
-from meltygui.view.code_view import draw_code_line_fast
+
 
 
 class CodeLineTints:

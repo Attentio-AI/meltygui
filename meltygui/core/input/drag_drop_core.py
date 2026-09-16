@@ -604,7 +604,7 @@ class DragDrop:
         meltygui = Core.melty
         sm = meltygui.style_manager
         if sm is not None:
-            from meltygui.core.rendering.render_dispatch import draw_bg
+            from meltygui.view.decoration_view import draw_bg
             draw_bg(bypass=True, left=x, top=y, width=w, height=h - 2,
                     rounding=5.0, bg_offset=1, depth=meltygui.shadow_depth,
                     opacity=1.0, nested_bg=True, style_manager=sm)

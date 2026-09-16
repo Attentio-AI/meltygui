@@ -43,9 +43,9 @@ from meltygui_imgui.core import _DrawList
 
 from meltygui.state.new_core_model import Anchor
 from meltygui.state.new_core_model import Pin
-from meltygui.fonts import Font
-from meltygui.modes import Modes
-from meltygui.rendering.core_render import render_func
+from meltygui.core.styling.fonts import Font
+from meltygui.core.rendering.modes import Modes
+from meltygui.core.core_render import render_func
 from meltygui.code.live_view import live_values_for
 from meltygui.code.live_view import label_for
 from meltygui.code.live_view import site_for_line
@@ -53,9 +53,9 @@ from meltygui.code.live_view import watch
 from meltygui.code.live_view import install_builtin
 from meltygui.code.live_view import auto_dim_names_for
 from meltygui.code.live_view import RerunHint
-from meltygui.rendering.decorators.core_decoration import Core
-from meltygui.rendering.decorators.window_decoration import window
-from meltygui.views.blit_offscreen import add_shadow
+from meltygui.core.rendering.core_decoration import Core
+from meltygui.core.rendering.window_decoration import window
+from meltygui.core.cache.tile_cache import add_shadow
 import meltygui.editor.live_usage as live_usage
 
 # The seamless path: any app can call live_view() with no import (like
@@ -1092,7 +1092,7 @@ def _sever_value_pins(window_ds):
     generation can die, yet draw_voxels' hold-last-frame path can still
     read source_shape/mapping off it to keep the slice sliders up. The FBO
     / last image / GL-path textures are display-GPU objects and stay."""
-    from meltygui.gl_state import GLState
+    from meltygui.core.graphics.gl_state import GLState
     for state in GLState.states_under(window_ds):
         cv = state.peek("cuda_view")
         if cv is not None:
@@ -1136,7 +1136,7 @@ def release_live_value(ds, gl=True, keep_image=False):
         targets.extend(ds.descendants(max_depth=8))
     except Exception:
         pass
-    from meltygui.rendering.core_render import release_input_refs
+    from meltygui.core.core_render import release_input_refs
     for d in targets:
         # The wrapper owns more refs than the obvious two: the offscreen
         # blit stamps `_input_value_cache` (mark_start_offscreen) and the
@@ -1160,7 +1160,7 @@ def release_live_value(ds, gl=True, keep_image=False):
                     kw[k] = None
     if gl:
         try:
-            from meltygui.gl_state import GLState
+            from meltygui.core.graphics.gl_state import GLState
             if keep_image:
                 _sever_value_pins(ds)
             else:
@@ -1185,7 +1185,7 @@ def _drop_captured_value(store_obj, key_path):
     # The tensor is unreferenced now; hand its blocks back to the system so
     # the VRAM actually drops (allocator cache → empty_cache), off-thread.
     try:
-        from meltygui.gc_manager import release_cuda_cache_soon
+        from meltygui.core.runtime.gc_manager import release_cuda_cache_soon
         release_cuda_cache_soon(label="live view close")
     except Exception:
         pass
@@ -1215,7 +1215,7 @@ def set_marker_open(marker_ds, open_):
     if bool(getattr(marker_ds, "_lv_open", False)) == open_:
         return
     marker_ds._lv_open = open_
-    from meltygui.window_visibility import marker_user_visibility
+    from meltygui.core.windowing.window_visibility import marker_user_visibility
     marker_user_visibility(marker_ds, not open_)
     win_ds = getattr(marker_ds, "_lv_window_ds", None)
     if open_:
@@ -1268,7 +1268,7 @@ def _draw_usage_labels(draw_state, fn, node, span, source_lines, snap_vals,
     the overlay pass. No caret/selection suppression here: the code text
     stays fully visible and closing the gap under an active caret would
     shift the line mid-edit."""
-    from meltygui.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     usages_on = bool(Toggles.TextEditor.live_inline_usages)
     if not snap_vals or (not usages_on and not binding_pills):
         return
@@ -1478,7 +1478,7 @@ def _stamp_and_paint(draw_state, fn, span, occurrences, bindings, snap_vals,
         # its cache on the stamp).
         draw_state._lv_trail_gen = getattr(draw_state, "_lv_trail_gen", 0) + 1
         draw_state.invalidate()
-        from meltygui.utils.glfw_utils import request_render
+        from meltygui.core.windowing.glfw_utils import request_render
         request_render()
     # Paint into the gaps the CURRENT layout reserved (stamped back by
     # draw_text's _window). A gap not laid out yet - first frame after a
@@ -1771,7 +1771,7 @@ def request_run(lab_ds):
     subscriptions lapse under a cached ancestor, so the root re-routes via
     BVH). At most one half fires per press — the body's blocking sub stops
     the chain before the root's."""
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.windowing.glfw_utils import request_render
     for d in lab_ds.descendants(max_depth=8):
         if str(getattr(d, 'name', '')).endswith(" runner"):
             d.misc["_run_requested"] = True
@@ -1785,7 +1785,7 @@ def request_run(lab_ds):
 # drop the action, letting draw_main's global handler win. The two column
 # children keep their own tile caches, so the shell itself is all this
 # dispatch about.
-from meltygui.view.code_view import draw_function_live
+
 
 
 def is_volume(value):

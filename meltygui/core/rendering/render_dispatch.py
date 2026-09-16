@@ -29,14 +29,6 @@ from meltygui.core.melty import ManagedWindow
 from meltygui.core.melty import SearchTerm
 from meltygui.core.conversion.render_host import RenderHost
 from meltygui.core.rendering.shaped import Shaped
-from meltygui.state.new_core_model import ZoomState
-from meltygui.state.new_core_model import TileMode
-from meltygui.state.new_core_model import DrawState
-from meltygui.state.new_core_model import TabState
-from meltygui.state.new_core_model import DropDownState
-from meltygui.state.new_core_model import ColorPickerState
-from meltygui.state.new_core_model import ExpandMode
-from meltygui.state.new_core_model import ContextMenuWindowState
 from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.rendering.modes import Modes
 from meltygui.core.diagnostics.notifications import display
@@ -98,8 +90,6 @@ from meltygui.core.rendering.parameter_core import anywhere_value
 from meltygui.core.rendering.parameter_core import set_anywhere
 from meltygui.core.rendering.parameter_core import flush_deferred_writes
 from meltygui.core.rendering.parameter_core import SET_ANYWHERE_PARAMS
-from meltygui.state.core_undo import NavUndo
-from meltygui.state.core_undo import UndoManager
 # Module import (not "from ... import DragDrop`) so hotswaps rebind cleanly.
 import meltygui.core.input.drag_drop_core as _drag_drop
 from meltygui.model.code_proxy_model import *
@@ -107,37 +97,17 @@ from meltygui.core.rendering.core_decoration import hotkey
 from meltygui.core.rendering.core_decoration import Core
 from meltygui.core.cache.invalidation_decoration import live
 from meltygui.core.rendering.window_decoration import window
-from meltygui.core.layout.header_runtime import draw_header
+from meltygui.view.header_view import draw_header
 from meltygui.core.diagnostics.inspection_core import set_fn_defaults
-from meltygui.editor.text_editor import draw_text
+from meltygui.view.text_view import draw_text
 from meltygui.editor.text_editor import _scroll_into_view
 from meltygui.graphics.texture_manager import PendingTexture
 from meltygui.core.rendering.core_decoration import defaults
 from meltygui.code.symbol_roster import pass_scope
 
 
-from meltygui.view.control_view import empty
-
-
-from meltygui.view.diagnostic_view import draw_frame
-
-
-from meltygui.view.code_view import draw_module
-
-
-
 def some_text(input_value: str, draw_state, **kwargs):
     imgui.text(f"Text: {input_value}")
-
-from meltygui.view.code_view import draw_type_name
-
-from meltygui.model.collection_model import _collection_match_keys
-
-
-from meltygui.model.search_model import _fuzzy_substring_distance
-
-
-from meltygui.model.search_model import _fuzzy_key_match
 
 
 # --- Word-aware fuzzy matcher (global search) ---------------------------------
@@ -157,31 +127,11 @@ from meltygui.model.search_model import _fuzzy_key_match
 _WORD_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
 
 
-from meltygui.model.search_model import _split_words
-
-
-from meltygui.model.search_model import _edit_distance
-
 def print_hello():
     print("Hello, world!")
 
-from meltygui.model.search_model import _word_edits
-
-from meltygui.model.search_model import _assign_words
-
-from meltygui.model.search_model import _segment_match
-
-
-from meltygui.model.search_model import _word_match
-
-
-from meltygui.view.collection_view import draw_collection_as_tabs
-
 
 from meltygui.core.automation.search_core import search_activate_target
-
-
-from meltygui.view.code_view import draw_symbol_usage
 
 
 from meltygui.view.collection_view import draw_collection
@@ -191,7 +141,6 @@ def main_header(input_value, name, **kwargs):
     imgui.text("Main Header")
 
 
-from meltygui.view.code_view import draw_property
     # value = input_value.fget(input_value)
     # draw_any(value, name="Value", show_bg=True, draw_state=draw_state)
 
@@ -210,9 +159,6 @@ def type_lens(input_value, view_func, child_kwargs, **kwargs):
                     pass
 
     return changed, value
-
-
-from meltygui.view.code_view import draw_type
 
 
 @render_func()
@@ -260,10 +206,6 @@ def test_columns():
     for i in range(10):
         draw_float(0.4, name=f"float_{i}", column=2)
 
-
-from meltygui.view.inspection_view import draw_with_modes
-
-from meltygui.view.diagnostic_view import draw_draw_state
 
 @render_func(use_cache=False, shadow=False, show_bg=False, disable_scroll=False, selectable=False)
 def run_chain(input_value, chain=None, draw_state=None, route=None,
@@ -389,18 +331,6 @@ class TestObj:
 test_obj = TestObj()
 
 
-
-
-from meltygui.view.texture_view import draw_pending_texture
-
-
-# draw_texture lives in texture_view.py (importable by this module); re-exported
-# here, in its old position, so registration order and this import path match.
-
-
-from meltygui.view.window_view import draw_managed_window
-
-
 def draw(vis):
     draw_melty_windows(vis)
 
@@ -409,9 +339,6 @@ def export_code(test_param_2: int = 5):
     # print(f"hello {test_param_2}")
     global code_export_str
     code_export_str = proxy.node.code
-
-
-from meltygui.view.decoration_view import draw_drag_drop_target
 
 
 @hotkey(glfw.KEY_O)
@@ -426,7 +353,6 @@ import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 from meltygui.hdr_color import scale_saturation
 # new comment
-from meltygui.view.decoration_view import draw_vertical_scrollbar
 
 
 bg_style_default = {
@@ -544,24 +470,9 @@ def compute_bg_color(bg_offset=0, tint=None, nested_bg=False, max_bg_depth=None,
     return _clamp_bg_value(bg_color, max_bg_value)
 
 
-from meltygui.view.decoration_view import draw_bg
-
-
 # (style hsv, bg colour −2, bg colour −1, outline value, sat) → (bleed, outline)
 _DRAW_BG_COLOUR_MEMO = globals().get("_DRAW_BG_COLOUR_MEMO", {})
 _DRAW_BG_FILL_MEMO = globals().get("_DRAW_BG_FILL_MEMO", {})     # (colour key, sat, depth, bleed) → fill rgb
-
-
-from meltygui.view.control_view import button
-
-
-from meltygui.view.diagnostic_view import render_profiler_time
-
-
-from meltygui.view.control_view import draw_none
-
-
-from meltygui.view.control_view import draw_bool
 
 
 from meltygui.view.control_view import text
@@ -591,9 +502,6 @@ def unsort_dict_alphabetically(input_value, ref=None, changed=False):
         # Ref is the original dict
         ref.update(input_value)
         return changed, ref
-
-
-from meltygui.view.inspection_view import draw_view_func_selector
 
 
 def param_source_matrix(input_value, keys=None, func=None, include_unmatched=False, **kwargs):
@@ -716,15 +624,6 @@ def apply_param_source_matrix(input_value, ref=None, changed=False):
     return changed, ref
 
 
-from meltygui.view.inspection_view import draw_param_matrix
-
-
-from meltygui.view.code_view import draw_usage
-
-
-from meltygui.view.code_view import draw_comment
-
-
 # Picker layout shared by the popover callers (draw_tuple, draw_tuple_fast,
 # the editor's swatches) — they size the fixed popover window from it.
 # [tint=(0.85, 0.75, 0.05)]
@@ -750,25 +649,10 @@ PICKER_ANCHOR_GAP = Toggles.ColorPicker.anchor_gap
 PICKER_OFFSETS_HEIGHT = Toggles.ColorPicker.offsets_height
 
 
-from meltygui.view.color_view import color_picker_height
-
-
-from meltygui.view.color_view import color_picker_top_offset
-
-
-from meltygui.view.color_view import color_picker_width
-
-
 from meltygui.core.styling.color_core import _style_policy_source
 
 
 from meltygui.core.styling.color_core import _add_style_policy
-
-
-from meltygui.view.color_view import draw_style_policy_fast
-
-
-from meltygui.view.color_view import draw_style_residuals_fast
 
 
 # The view params the picker edits beside the colour, with their drag rows:
@@ -780,69 +664,14 @@ from meltygui.view.color_view import draw_style_residuals_fast
 VIEW_OFFSET_ROWS = Toggles.ColorPicker.view_offset_rows
 
 
-from meltygui.view.color_view import draw_view_offsets_fast
-
-
-from meltygui.view.color_view import draw_color_picker
-
-
-from meltygui.view.color_view import _draw_wide_picker
-
-
-from meltygui.model.color_model import _wide_pick
-
-
-from meltygui.model.color_model import _wide_marker
-
-
-from meltygui.view.color_view import _wide_square_texture
-
-
-from meltygui.view.color_view import _draw_extended_picker
-
-
-from meltygui.model.color_model import _srgb_plus_pick
-
-
-from meltygui.model.color_model import _srgb_plus_marker
-
-
-from meltygui.model.color_model import _extension_pick
-
-
-from meltygui.view.color_view import _srgb_plus_texture
-
-
-from meltygui.view.color_view import _draw_srgb_picker
-
-
-from meltygui.view.collection_view import draw_tuple
-
-
-from meltygui.view.color_view import _popover_anchor
-
-
-from meltygui.view.collection_view import draw_tuple_fast
-
-
 class TestClass(DictConversion):
     def __init__(self):
         super().__init__()
         self.value = 2
         self.str_val = "Test"
 
-from meltygui.view.control_view import draw_float_ctx
-
 
 from meltygui.view.control_view import draw_float
-
-
-from meltygui.view.control_view import draw_button
-
-
-from meltygui.view.code_view import draw_parameter
-
-from meltygui.view.collection_view import draw_mapping_proxy
 
 
 @render_func(wraps=render_func, show_add_delete=False, with_header=draw_header)
@@ -878,15 +707,6 @@ def eval_function(input_value, draw_state):
     pop_style_var(3)
 
     return changed, input_value
-
-
-
-
-from meltygui.view.diagnostic_view import draw_style_manager
-
-
-
-
 
 
 def _format_run_error(exc):
@@ -968,34 +788,7 @@ def _respond_to_cuda_oom(exc, where):
         pass
 
 
-from meltygui.view.code_view import draw_function
-
-
 from meltygui.view.control_view import draw_int
-
-
-from meltygui.view.diagnostic_view import draw_debug_label
-
-
-from meltygui.view.control_view import draw_enum
-
-
-from meltygui.view.tab_view import draw_tab_bar
-
-
-from meltygui.view.tab_view import draw_enum_tabs
-
-
-from meltygui.view.diagnostic_view import draw_debug
-
-
-from meltygui.view.inspection_view import draw_lens
-
-
-from meltygui.view.color_view import draw_tint_context
-
-
-from meltygui.view.inspection_view import context_menu_settings
 
 
 def eval_input_scope(draw_state):
@@ -1120,30 +913,8 @@ _ACTIVE_SRC_TINT = (0.9, 0.8, 0.2)
 # works afterwards. The dunder key never renders (underscore-skipped).
 _INFO_GROUP_OVERRIDES = {"__header__": {"initial": {"expanded": False}}}
 
-from meltygui.state.inspection_state import _InfoRow
-
-
-from meltygui.view.inspection_view import draw_info_param
-
-
-from meltygui.view.inspection_view import draw_info_tab
-
-
-from meltygui.view.inspection_view import draw_config_tab
-
-from meltygui.view.inspection_view import draw_live_tab
-
-
-from meltygui.view.inspection_view import draw_func_tab
-
-
-from meltygui.view.inspection_view import draw_eval_tab
-
 
 from meltygui.core.conversion.render_host import RenderHost
-
-
-from meltygui.state.inspection_state import ContextMenuState
 
 
 class _InstanceAttrSource(dict):
@@ -1850,15 +1621,6 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
     return cm_state._collect_cache
 
 
-from meltygui.view.inspection_view import draw_input_tab
-
-
-from meltygui.view.inspection_view import draw_class_tab
-
-
-from meltygui.view.inspection_view import draw_mode_tab
-
-
 def _ancestor_call_line(target_ds, ancestor_ds):
     """File-absolute line inside `ancestor_ds`'s view function whose statement
     (transitively) rendered `target_ds`'s element — e.g. inspecting a button
@@ -2002,56 +1764,7 @@ def _merged_call_stack_frames(target_ds, menu_state):
 INSPECT = object()
 
 
-from meltygui.view.inspection_view import draw_context_menu_items
-
-
-from meltygui.view.inspection_view import draw_context_menu
-
-
-from meltygui.view.diagnostic_view import draw_undo_manager
-
-
-from meltygui.view.dropdown_view import draw_drop_down_item
-
-
-from meltygui.view.dropdown_view import draw_dropdown
-
-
 from meltygui.core.layout.dropdown_core import _ds_in_subtree
-
-
-from meltygui.model.dropdown_model import _dd_entries
-
-
-from meltygui.model.dropdown_model import _dd_subtree_matches
-
-
-from meltygui.model.dropdown_model import _dd_visible_entries
-
-
-from meltygui.model.dropdown_model import _dd_walk
-
-
-from meltygui.model.dropdown_model import _dd_rows_at
-
-
-from meltygui.model.dropdown_model import _dd_first_match_leaf
-
-
-from meltygui.model.dropdown_model import _dd_as_tuple
-
-
-from meltygui.view.dropdown_view import _dd_fit_label
-
-
-
-from meltygui.view.dropdown_view import _dd_obj_tint
-
-
-from meltygui.model.dropdown_model import _dd_path_for_value
-
-
-from meltygui.model.dropdown_model import _dd_label_for_path
 
 
 from meltygui.core.layout.dropdown_core import _dd_set_cursor
@@ -2081,23 +1794,13 @@ _DD_MENU_MIN_H = Toggles.Dropdown.min_height
 _DD_MENU_MAX_H = Toggles.Dropdown.max_height
 
 
-from meltygui.view.dropdown_view import _dd_submenu_position
-
-
-from meltygui.view.dropdown_view import _dd_popup_geometry
-
-
 from meltygui.core.layout.dropdown_core import _dd_update_menu_size
 
 
-from meltygui.view.dropdown_view import _dd_menu_fit
 # Limits on the scope-label column of code-preview rows (usage-jump picker):
 # the main code column clamps here, and longer labels ellipsize, so the
 # code keeps most of the row's width.
 _DD_CODE_LBL_MAX_W = Toggles.Dropdown.code_label_max_width
-
-
-from meltygui.model.dropdown_model import _dd_row_lookup
 
 
 # Row tags (the right-aligned dim column): default colour - the
@@ -2109,48 +1812,8 @@ _DD_TAG_GAP = Toggles.Dropdown.tag_gap
 _DD_ROW_TINT_A = Toggles.Dropdown.row_tint_alpha
 
 
-from meltygui.view.dropdown_view import _dd_tag_segments
-
-
-from meltygui.view.dropdown_view import _dd_tag_width
-
-
-from meltygui.view.dropdown_view import _dd_paint_tag
-
-
-from meltygui.view.dropdown_view import _dd_row_width
-
-
-from meltygui.view.dropdown_view import _dd_leaf_row
-
-
-from meltygui.view.dropdown_view import draw_dd_menu
-
-from meltygui.view.dropdown_view import dd_menu_row
-
-
-from meltygui.view.diagnostic_view import draw_draw_state_info
-
-
-from meltygui.view.diagnostic_view import draw_pending
-
-
-from meltygui.state.core_enums import PendingAction
-
-
-from meltygui.view.diagnostic_view import pending_window
-
-
-from meltygui.view.search_view import search_pill_layout
-
-
-from meltygui.view.search_view import draw_search
-
-
 from meltygui.view.control_view import draw_single
 
-
-from meltygui.view.control_view import draw_blank
 
 # [tint=(0.75, 0.0, 0.0), show_tint=True]
 def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=None, **kwargs):

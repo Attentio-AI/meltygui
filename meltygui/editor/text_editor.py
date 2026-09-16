@@ -5,7 +5,7 @@ import math
 import re
 import time
 
-import meltygui.window_api as glfw
+import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 from meltygui.hdr_color import unpack_color
@@ -13,24 +13,24 @@ from meltygui.hdr_color import scale_alpha
 
 from meltygui.state.new_core_model import DropDownState
 from meltygui.state.new_core_model import TextEditorState
-from meltygui.rendering.render_funcs import RenderFuncs
-from meltygui.toggles import Tint
+from meltygui.core.rendering.render_funcs import RenderFuncs
+from meltygui.core.runtime.toggles import Tint
 from meltygui.code.libcst_conversion import CodeLine
-from meltygui.views.blit_offscreen import add_shadow
-from meltygui.views.blit_offscreen import add_glow
-from meltygui.views.blit_offscreen import clear_glows
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.core_render import SCROLLBAR_MARGIN
-import meltygui.mouse_cursor as mouse_cursor
-from meltygui.melty import Melty
-from meltygui.melty import SearchTerm
-from meltygui.perf_trace import trace as _ptrace
-from meltygui.fonts import Font
-from meltygui.utils.glfw_utils import request_render
-from meltygui.rendering.decorators.core_decoration import defaults
-from meltygui.rendering.decorators.core_decoration import Core
-from meltygui.rendering.decorators.window_decoration import window
-from meltygui.toggles import Swoosh
+from meltygui.core.cache.tile_cache import add_shadow
+from meltygui.core.cache.tile_cache import add_glow
+from meltygui.core.cache.tile_cache import clear_glows
+from meltygui.core.core_render import render_func
+from meltygui.core.core_render import SCROLLBAR_MARGIN
+import meltygui.core.input.mouse_cursor as mouse_cursor
+from meltygui.core.melty import Melty
+from meltygui.core.melty import SearchTerm
+from meltygui.core.diagnostics.perf_trace import trace as _ptrace
+from meltygui.core.styling.fonts import Font
+from meltygui.core.windowing.glfw_utils import request_render
+from meltygui.core.rendering.core_decoration import defaults
+from meltygui.core.rendering.core_decoration import Core
+from meltygui.core.rendering.window_decoration import window
+from meltygui.core.runtime.toggles import Swoosh
 from meltygui.completion.fim import FimState
 from meltygui.editor.source_tools import SourceToolsState
 
@@ -266,8 +266,8 @@ def _completion_pool(code_tree, text, line, func=None):
 
     meta = {}
     if func is not None:
-        from meltygui.func_metadata import FuncsMetadata
-        from meltygui.func_metadata import _type_name
+        from meltygui.core.rendering.func_metadata import FuncsMetadata
+        from meltygui.core.rendering.func_metadata import _type_name
         meta = FuncsMetadata.get(func)
 
     def add(name, kind):
@@ -418,7 +418,7 @@ def _ac_param_suffixes(ds, text, cands, anchor, dot_trigger, address):
     ns, _func = _ac_live_context(ds, text, address)
     base = None
     if dot_trigger:
-        from meltygui.func_metadata import _receiver_before
+        from meltygui.core.rendering.func_metadata import _receiver_before
         base = _live_receiver_obj(ns, _receiver_before(text, anchor))
         import types as _types
         if not isinstance(base, (type, _types.ModuleType)):
@@ -450,7 +450,7 @@ def _snippet_triggers():
     one trigger string or a tuple of alias triggers; values a Snippet or a
     list of them."""
     global _SNIP_FLAT
-    from meltygui.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     m = Toggles.TextEditor.AC_SNIPPETS or {}
     key = (id(m), len(m))
     if _SNIP_FLAT[0] != key:
@@ -962,13 +962,13 @@ def _wake_on_future(fut, ds):
 
     def _cb(_f, tile=tile):
         try:
-            from meltygui.melty import Melty
+            from meltygui.core.melty import Melty
             if tile is not None:
                 Melty.cache.invalidate(tile)
         except Exception:
             pass
         try:
-            import meltygui.utils.glfw_utils as glfw_utils
+            import meltygui.core.windowing.glfw_utils as glfw_utils
             glfw_utils._needs_render.set()   # survive the training-branch render gate
         except Exception:
             pass
@@ -1018,8 +1018,8 @@ def _ensure_member_completions(ds, text, anchor, address=None):
         ds._ac_jedi_done_key = None
 
     if text[max(anchor - 1, 0):anchor] == ".":
-        from meltygui.func_metadata import member_completions
-        from meltygui.func_metadata import _receiver_before
+        from meltygui.core.rendering.func_metadata import member_completions
+        from meltygui.core.rendering.func_metadata import _receiver_before
         rcv = _receiver_before(text, anchor)
         # A receiver head followed by )/]/quote is a call/index/literal access
         # (`foo().cache.`) - its NAME means nothing in the module namespace, so
@@ -1069,7 +1069,7 @@ def _ensure_member_completions(ds, text, anchor, address=None):
     # (typically a function-local import). Recover the tint file through the
     # buffer's top() statements; None when that dead-ends too.
     if text[max(anchor - 1, 0):anchor] == ".":
-        from meltygui.func_metadata import _receiver_before
+        from meltygui.core.rendering.func_metadata import _receiver_before
         ds._ac_member_tints = _file_name_tints(
             _receiver_file_via_imports(text, _receiver_before(text, anchor)))
     else:
@@ -1188,7 +1188,7 @@ def _fim_poll(ds, fim_state, text, address, profile, typed=False):
     EditorView (cheap — whole-file work is lazy) and poll. `typed` = the
     buffer changed this frame (only typing triggers a request). Provider /
     context errors surface ONCE per distinct message as a notification."""
-    from meltygui.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     try:
         from meltygui.completion.fim_context import editor_view
         view = editor_view(text, ds.text_cursor_pos, address)
@@ -1203,7 +1203,7 @@ def _fim_poll(ds, fim_state, text, address, profile, typed=False):
     if err and err != getattr(ds, '_fim_err_shown', None):
         ds._fim_err_shown = err
         try:
-            from meltygui.notifications import notify
+            from meltygui.core.diagnostics.notifications import notify
             notify(f"FIM: {err}", tint=(1.0, 0.65, 0.4, 1.0), tag="fim")
         except Exception:
             pass
@@ -1404,8 +1404,8 @@ DEFAULT_TOKEN_VIEWS = None
 # (see fa_icons.py - generated, do not hand-edit). The dropdown lists the NAMES
 # (searchable, e.g. type "arrow") and picks the glyph value. FA_GLYPH_SET gives an
 # O(1) "is this a known glyph?" check for the current-value fallback below.
-from meltygui.views.fa_icons import FA_ICONS
-from meltygui.views.fa_icons import FA_GLYPH_SET
+from meltygui.model.icon_model import FA_ICONS
+from meltygui.model.icon_model import FA_GLYPH_SET
 ICON_COLLECTION = FA_ICONS
 GENERIC_ICON = "\uf005"  # star - the placeholder Ctrl+I inserts; pick the real one from the dropdown
 
@@ -1416,7 +1416,7 @@ from meltygui.view.text_view import draw_icon_selector_plain
 draw_icon_selector_plain._plain_tv = True
                 
 
-from meltygui.view.text_view import draw_bool_token
+
 
 
 def _parse_number_token(s):
@@ -1444,7 +1444,7 @@ def _parse_number_token(s):
         return None, None, None, None
 
 
-from meltygui.view.text_view import draw_number_token
+
 
 
 def _plain_tv_bg(x, y, w, h, tint=None, bg_offset=0, max_bg_value=None,
@@ -1460,7 +1460,7 @@ def _plain_tv_bg(x, y, w, h, tint=None, bg_offset=0, max_bg_value=None,
     standalone add_shadow depth mark (same pattern as fast_dock rows: these
     aren't draw_states the compositor can see). clip=True snapshots the
     editor's live clip rect, so partially scrolled widgets clip correctly."""
-    from meltygui.views.new_core_view import draw_bg
+    from meltygui.view.decoration_view import draw_bg
     if shadow_offset is not None:
         add_shadow((x, y, w, h), offset=shadow_offset, corner_radius=5.0)
     sm = Melty.global_attrs['style_manager']
@@ -1499,7 +1499,7 @@ def _fmt_color_channel(v):
     return s + '0' if s.endswith('.') else s
        
         
-from meltygui.view.text_view import draw_color3_token
+
 
 from meltygui.view.text_view import draw_color3_token_plain
 
@@ -1527,8 +1527,8 @@ def _color_swatch_plain(s, vals, splice, width, height, name, editor_ds):
     """The swatch + latched picker shared by the tuple and hex-string color
     widgets: `vals` are the 3/4 parsed channels, `splice(new_color)` renders
     the edited channels back into source text. Returns (changed, text)."""
-    from meltygui.debug.mode import Mode
-    from meltygui.views.new_core_view import draw_color_picker
+    from meltygui.core.rendering.mode import Mode
+    from meltygui.view.color_view import draw_color_picker
     has_alpha = len(vals) == 4
     r, g, b = vals[0], vals[1], vals[2]
     a = vals[3] if has_alpha else 1.0
@@ -2299,8 +2299,8 @@ def _fnrun_run(fn, instrumented=False, params=None):
             fn(**params)
         return True, None
     except Exception as e:
-        from meltygui.views.new_core_view import _format_run_error
-        from meltygui.views.new_core_view import _respond_to_cuda_oom
+        from meltygui.core.rendering.render_dispatch import _format_run_error
+        from meltygui.core.rendering.render_dispatch import _respond_to_cuda_oom
         from meltygui.utils.render_utils import print_colored_traceback
         print(f"Error calling function '{fn.__name__}': {e}")
         print_colored_traceback(*sys.exc_info())
@@ -2328,7 +2328,7 @@ def _fnrun_start(editor_ds, file_path, def_line, def_name,
             queued[skey] = (file_path, def_line, def_name, instrumented, params)
         return False
     mode = 'live' if instrumented else 'run'
-    from meltygui.extensions import call
+    from meltygui.core.runtime.extensions import call
     try:
         external_run = call('source_run', file_path, def_name, params, console, instrumented)
         python = external_run is not None
@@ -2367,7 +2367,7 @@ def _fnrun_start(editor_ds, file_path, def_line, def_name,
 
 
 def _draw_fnrun_console(console, draw_state, unique):
-    from meltygui.views.headers import flat_button
+    from meltygui.view.header_view import flat_button
     text, running, waiting = console.snapshot()
     imgui.text('Console — ' + ('Waiting for input' if waiting else 'Running' if running else 'Finished' if console.thread else 'Ready'))
     RenderFuncs.draw_text(text or '', name=f'console-output##{unique}',
@@ -2576,7 +2576,7 @@ def _fnrun_auto_exec_check(editor_ds, editor_state, skey, ent):
     nk = _fnrun_change_key(got[0])
     if nk == ent[2] or nk == (ent[5] or (None,))[0]:
         return
-    from meltygui.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     dbc = Toggles.TextEditor.fnrun_auto_exec_edit_debounce_ms / 1000.0
     ent[4] = None
     ent[5] = (nk, code_root, got[1] + 1, def_line, got[1], text)
@@ -2894,7 +2894,7 @@ def fnrun_auto_run_on_open(editor_ds, store_obj):
     _fnrun_auto_exec_arm(editor_ds, state, skey, skey[0], def_name, ent, 0.2)
 
 
-from meltygui.view.text_view import draw_fnrun_params_panel
+
 
 
 from meltygui.view.text_view import draw_run_fn_token_plain
@@ -3853,7 +3853,7 @@ def _usage_jump_targets(su, view_path=None, view_span=None, at_def=None):
 
 
 def _enclosing_editor_window(ds):
-    from meltygui.extensions import call
+    from meltygui.core.runtime.extensions import call
     return call('source_owner', ds)
 
 
@@ -3865,7 +3865,7 @@ def _open_usage_ref(ref, token=None, editor_window=None):
     rides along on OpenFiles.jump_to_token so the caret lands ON the symbol
     rather than at the line's first code character; `editor_window` keeps the
     jump in the originating editor instance."""
-    from meltygui.extensions import open_source as open_in_editor
+    from meltygui.core.runtime.extensions import open_source as open_in_editor
     open_in_editor(str(ref.path), line_number=getattr(ref, 'line', None),
                    token=token, editor_window=editor_window)
 
@@ -4503,8 +4503,8 @@ def _bg_adjust(rgb, factors):
     got = _BG_ADJ_CACHE.get(key)
     if got is not None:
         return got
-    from meltygui.toggles import rgb_to_hsv
-    from meltygui.toggles import hsv_to_rgb
+    from meltygui.core.runtime.toggles import rgb_to_hsv
+    from meltygui.core.runtime.toggles import hsv_to_rgb
     sat_f, val_f, min_b, max_b = factors
     r, g, b = rgb[0], rgb[1], rgb[2]
     if sat_f != 1.0 or val_f != 1.0:
@@ -4524,9 +4524,9 @@ def _comment_tint_color(rgb):
     (the same hsv-factor adjustment pattern as toggles.Tint; factors live in
     Toggles.TextEditor, read live), then the shared perceived-brightness
     clamp so a very dark/bright tint's comment stays readable."""
-    from meltygui.toggles import rgb_to_hsv
-    from meltygui.toggles import hsv_to_rgb
-    from meltygui.toggles import Toggles
+    from meltygui.core.runtime.toggles import rgb_to_hsv
+    from meltygui.core.runtime.toggles import hsv_to_rgb
+    from meltygui.core.runtime.toggles import Toggles
     saturation_factor = Toggles.TextEditor.comment_tint_saturation
     value_factor = Toggles.TextEditor.comment_tint_value
 
@@ -5280,7 +5280,7 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
     # == ProfileMode.ON` washes as a blend of those tints) - so a value keeps
     # its color trail as it flows through code. Iterated so a local defined
     # from an already-propagated local fades one step further per hop.
-    from meltygui.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     fade = Toggles.TextEditor.def_propagation_fade
     if Toggles.TextEditor.def_tint_propagation:
         for _pass in range(4):
@@ -5676,7 +5676,7 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None,
     fast typing pays the collect a few times a second, not per keystroke.
     Stale spans can sit a hair off the glyphs for that window; they're
     translucent washes, and the background parse churn already did this."""
-    from meltygui.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     # Roster mode (Toggles.TextEditor.roster_def_tints): washes come from the
     # text-derived symbol roster (roster_tints.collect_def_tints) - no
     # cst-dict, no __symbol_usages__. The key is the buffer text identity + the
@@ -5811,7 +5811,7 @@ def _usage_wash_color(n_targets):
     live-editable Toggles.TextEditor.usage_tint; this just clamps + packs its
     (r, g, b, a) into the int the draw list wants. Read fresh every call so a
     tweak to usage_tint shows immediately."""
-    from meltygui.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     r, g, b, a = Toggles.TextEditor.usage_tint(n_targets)
     return pack_color(r, g, b, max(0.0, min(1.0, a)))
 
@@ -7602,7 +7602,7 @@ def _apply_import_fix(stmt, jump_to, text):
 
     try:
         from pathlib import Path as _P
-        from meltygui.melty import Melty
+        from meltygui.core.melty import Melty
         from meltygui.editor.pending_save import PendingSave
         from meltygui.code.new_codecs import TypeCodec
         from meltygui.code.new_codecs import _span_fingerprint
@@ -7944,7 +7944,7 @@ def _scope_fold_ranges(text):
         before other module-level code (blank lines, comments and paren /
         backslash continuations stay inside). Also returned in
         default_collapsed: imports start folded on a fresh editor."""
-    from meltygui.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     blocks_on = Toggles.TextEditor.block_fold_ranges
     lines = text.split('\n')
     out = []
@@ -8462,7 +8462,7 @@ def _fold_headless_set(key_of, ranges):
     collapsed ones: an EXPANDED single-line meta comment needs it to know
     whether to offer a chevron. Part of the fold cache key, so flipping
     the toggle relays out on the next frame."""
-    from meltygui.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     if not Toggles.TextEditor.hide_meta_comment_folds or not key_of:
         return frozenset()
     return frozenset(r for r in ranges
@@ -8871,6 +8871,3 @@ def fold_project_jump(ds, text, pos, li):
     dli = bisect.bisect_right(d2b, li) - 1     # li is visible now - exact hit
     dpos = _line_starts(disp)[dli] + (pos - _line_starts(text)[li])
     return dpos, dli
-
-
-from meltygui.view.text_view import draw_text

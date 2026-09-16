@@ -399,8 +399,6 @@ def module_to_path(dotted, project=None):
     """Resolve a module against this project's ordered source/venv paths."""
     if not dotted:
         return None
-    from meltygui.core.module_names import canonical_name
-    dotted = canonical_name(dotted)
     project = analysis_project(project)
     key = (project.key, dotted)
     hit = _mod_path_cache.get(key)

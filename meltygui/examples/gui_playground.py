@@ -11,7 +11,7 @@ from meltygui.hdr_color import p3
 from meltygui.core.melty import Melty
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.core_render import render_func
-from meltygui.core.layout.header_runtime import draw_header
+from meltygui.view.header_view import draw_header
 
 
 def toggle_styles():

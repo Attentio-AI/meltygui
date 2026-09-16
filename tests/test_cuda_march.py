@@ -93,11 +93,12 @@ def test_view_matches_materialized_features(lut, case):
 
 
 def test_nf_display_shape():
-    assert cm.nf_display_shape((8, 16, 64), 2, 0, 16) == ((32, 16, 16), (2, 0, 16))
-    assert cm.nf_display_shape((8, 16, 70), 2, 0, 16) == ((40, 16, 16), (2, 0, 16))  # pad
-    assert cm.nf_display_shape((8, 16, 70), 2, 0, 16, pad=False) == ((8, 16, 70), (-1, -1, 0))
-    assert cm.nf_display_shape((8, 16, 12), 2, 0, 16) == ((8, 16, 12), (-1, -1, 0))  # fits
-    assert cm.nf_display_shape((8, 16, 64), -1, 0, 16) == ((8, 16, 64), (-1, -1, 0))
+    from meltygui.model.tensor_model import nf_display_shape
+    assert nf_display_shape((8, 16, 64), 2, 0, 16) == ((32, 16, 16), (2, 0, 16))
+    assert nf_display_shape((8, 16, 70), 2, 0, 16) == ((40, 16, 16), (2, 0, 16))  # pad
+    assert nf_display_shape((8, 16, 70), 2, 0, 16, pad=False) == ((8, 16, 70), (-1, -1, 0))
+    assert nf_display_shape((8, 16, 12), 2, 0, 16) == ((8, 16, 12), (-1, -1, 0))  # fits
+    assert nf_display_shape((8, 16, 64), -1, 0, 16) == ((8, 16, 64), (-1, -1, 0))
 
 
 # ── real GL: the CUDA image through _cuda_render/image_blit_pass matches the

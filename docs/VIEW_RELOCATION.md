@@ -5,9 +5,10 @@ plain functions. This pass moved 142 view definitions into 27 feature modules,
 plus 29 supporting definitions into model, state and core modules. The earlier
 file-tree and metadata views remain in `file_view.py`.
 
-Old modules retain import aliases and their window registrations for existing
-callers and saved qualified names. Public `meltygui.draw_*` exports now resolve
-to feature modules. No view classes were introduced.
+Public `meltygui.draw_*` exports resolve to feature modules. Temporary forwarding
+imports have now been removed, and consumers use canonical modules. Saved names
+translate on load; definition hotswap remains independent of import compatibility.
+No view classes were introduced. The validation below records earlier stages.
 
 ## Layout
 

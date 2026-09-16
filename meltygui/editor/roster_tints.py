@@ -145,7 +145,7 @@ def _scan_range(lines, line_start_idx, text, window, line_open):
 
 def _collect(text, line_offset, view_path, window=None, line_open=None,
              hold_live=True, world=None, table=None, project=None):
-    from meltygui.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     lines = text.split("\n")
     line_start_idx = [0]
     for l in lines:

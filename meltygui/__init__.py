@@ -11,9 +11,6 @@ import sys
 if sys.platform.startswith('linux') and (os.environ.get('WAYLAND_DISPLAY') or os.environ.get('WAYLAND_SOCKET')):
     os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
 
-from meltygui.core.module_compatibility import install_module_aliases
-install_module_aliases()
-
 from typing import TYPE_CHECKING
 from meltygui.core.styling.style import Style
 from meltygui.core.styling.style import default_tint_accumulation
@@ -47,7 +44,7 @@ if TYPE_CHECKING:   # IDE / type checkers only; never executed
     from meltygui.view.file_view import draw_file_selector
     from meltygui.view.file_view import draw_fast_file_explorer
     from meltygui.view.file_view import draw_shortcuts
-    from meltygui.files.folder_files import draw_folder_files
+    from meltygui.core.files.file_core import draw_folder_files
     from meltygui.view.terminal_view import draw_terminal
 
 _NCV = 'meltygui.core.rendering.render_dispatch'
@@ -76,7 +73,7 @@ _VIEWS = {
     'draw_file_selector': ('meltygui.view.file_view', 'draw_file_selector'),
     'draw_fast_file_explorer': ('meltygui.view.file_view', 'draw_fast_file_explorer'),
     'draw_shortcuts': ('meltygui.view.file_view', 'draw_shortcuts'),
-    'draw_folder_files': ('meltygui.files.folder_files', 'draw_folder_files'),
+    'draw_folder_files': ('meltygui.core.files.file_core', 'draw_folder_files'),
     'draw_terminal': ('meltygui.view.terminal_view', 'draw_terminal'),
 }
 

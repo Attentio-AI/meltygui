@@ -67,11 +67,7 @@ from meltygui.core.core_render import render_func
 from meltygui.core.core_render import release_input_refs
 from meltygui.core.rendering.window_decoration import window
 from meltygui.core.rendering.modes import Modes
-from meltygui.core.layout.header_runtime import flat_button
 from meltygui.core.rendering.render_dispatch import draw_any
-from meltygui.core.rendering.render_dispatch import draw_bg
-from meltygui.model.camera_model import basis as _cam_basis
-from meltygui.model.camera_model import apply_space_mouse
 from meltygui.core.rendering.render_funcs import RenderFuncs
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.runtime.toggles import Swoosh
@@ -591,34 +587,8 @@ def _scalar_int(v):
 # quad's placement rides a per-instance vertex buffer, and the whole label
 # set is a single glDrawArraysInstanced.
 
-from meltygui.view.tensor_view import LABEL_VERT
-
-from meltygui.view.tensor_view import LABEL_FRAG
-
-from meltygui.view.tensor_view import _LABEL_UNIFORMS
-from meltygui.view.tensor_view import _LABEL_FLOATS
-
-
-from meltygui.view.tensor_view import _label_program
-
-
-from meltygui.view.tensor_view import _label_vao
-
-
-from meltygui.view.tensor_view import _label_atlas
 
 # Compatibility imports for palette values; runtime ownership lives in core.
-from meltygui.model.lut_model import _bake_lut
-from meltygui.model.lut_model import hdr_ramp
-from meltygui.model.lut_model import _hot_hdr_hue
-from meltygui.model.lut_model import _poly
-from meltygui.model.lut_model import _VIRIDIS
-from meltygui.model.lut_model import _PLASMA
-from meltygui.model.lut_model import _MAGMA
-from meltygui.model.lut_model import _INFERNO
-from meltygui.model.lut_model import _TURBO
-from meltygui.model.lut_model import _seismic
-from meltygui.model.lut_model import _coolwarm
 
 
 LUTS = globals().get("LUTS")
@@ -650,38 +620,9 @@ def demo_volume():
     return _VOLUME
 
 
-from meltygui.model.tensor_model import _clean_dim_name
-
-
-from meltygui.model.tensor_model import TensorDim
-
-
-from meltygui.model.tensor_model import TensorDims
-
-
-from meltygui.model.tensor_model import Lut
-
-
-from meltygui.view.tensor_view import draw_lut
-
-
-from meltygui.view.tensor_view import _row_collection
-
-
-from meltygui.model.tensor_model import _collection_dim_labels
-
-
 # Dim-tab geometry, authored at ui_scale 1.0 (scaled through Melty.px at
 # draw time). Tighter than draw_tab_bar's 30px tabs / 15px text pad / imgui
 # item-spacing gap, which made the dim rows the tallest thing in the panel.
-from meltygui.view.tensor_view import DIM_TAB_HEIGHT
-from meltygui.view.tensor_view import DIM_TAB_TEXT_PAD
-from meltygui.view.tensor_view import DIM_TAB_GAP
-from meltygui.view.tensor_view import DIM_TAB_BAND_PAD
-from meltygui.view.tensor_view import DIM_TAB_COLOR
-
-
-from meltygui.view.tensor_view import _draw_dim_tabs
 
 
 # Axis params that must name unique dims: `_resolve_axes` (and the line
@@ -690,69 +631,9 @@ from meltygui.view.tensor_view import _draw_dim_tabs
 # the legacy voxel_renderer behavior - instead of silently knocking the other
 # axis back to its derived default. sort_dim / nf_chop / nf_along stay out:
 # duplicing an axis is their whole point.
-from meltygui.view.tensor_view import SWAP_DIM_KEYS
-
-
-from meltygui.view.tensor_view import _sibling_dim_keys
-
-
-from meltygui.view.tensor_view import _swap_sibling_dim
-
-
-from meltygui.view.tensor_view import draw_tensor_dim
-
-
-from meltygui.model.tensor_model import _resolve_dim
-
-
-from meltygui.model.tensor_model import _resolve_axes
-
-
-from meltygui.model.tensor_model import to_display_dtype
-
-
-from meltygui.model.tensor_model import _display_view_dtype
-
-
-from meltygui.model.tensor_model import _slice_core
-
-
-from meltygui.model.tensor_model import slice_volume
-
-
-from meltygui.model.tensor_model import CudaVolumeView
-
-
-from meltygui.model.tensor_model import slice_volume_view
 
 
 # Display-axis position in the sliced (z, y, x) volume.
-from meltygui.model.tensor_model import _AXIS_POS
-
-
-from meltygui.model.tensor_model import _volume_scale
-
-
-from meltygui.view.tensor_view import _draw_slice_sliders
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def source_identity(src):
@@ -779,13 +660,6 @@ def _cached_volume_texture(gl_state, vol_key, keys=("volume_cuda", "volume", "cu
     return None
 
 
-from meltygui.model.tensor_model import neural_flow_volume
-
-
-from meltygui.model.tensor_model import auto_neural_flow
-
-
-
 @render_func(show_bg=False)
 def voxel_io(input_value=None, view_func=None, external_change=False, **kwargs):
     """RenderHost io: resolve the SOURCE and pass it through — slicing and
@@ -801,79 +675,13 @@ def voxel_io(input_value=None, view_func=None, external_change=False, **kwargs):
     return view_func(input_value=t, external_change=external_change, **kwargs)
 
 
-from meltygui.view.lut_view import draw_luts as lut_io
-
-
 # Near-plane depth for the axis box's Python-side projection - the old
 # per-corner behind-camera cutoff; edges now CLIP here instead of vanishing.
-from meltygui.view.tensor_view import _AXIS_NEAR
-
-
-from meltygui.view.tensor_view import _axis_edges
 
 
 # Outline edges draw shortened by this many screen px at each true-corner
 # end (the original fixed_shorten look); clipped edges compresses into the
 # same span so the end labels align with the visible span ends.
-from meltygui.view.tensor_view import _EDGE_SHORTEN_PX
-
-
-from meltygui.view.tensor_view import _draw_axis_lines
-
-
-from meltygui.view.tensor_view import _tick_values
-
-
-from meltygui.view.tensor_view import _billboard_specs
-
-
-from meltygui.view.tensor_view import _render_label_billboards
-
-
-from meltygui.view.tensor_view import _describe_tensor
-
-
-from meltygui.view.tensor_view import _view_size
-
-
-from meltygui.view.tensor_view import _draw_voxel_error
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-from meltygui.view.tensor_view import _draw_image_notice
-
-
-from meltygui.view.tensor_view import format_bytes
-
-
-from meltygui.view.tensor_view import _draw_tensor_meta
-
-
-from meltygui.model.tensor_model import _is_tensorish
 
 
 from meltygui.core.graphics.tensor_core import _voxels_cleanup

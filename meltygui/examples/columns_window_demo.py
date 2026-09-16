@@ -11,10 +11,9 @@ and drives both through the same solve.
 """
 import meltygui_imgui as imgui
 
-from meltygui.core.layout.column_core import draw_columns
-from meltygui.core.layout.column_core import draw_rows
-from meltygui.core.layout.column_core import Columns
-from meltygui.core.layout.column_core import Rows
+from meltygui.view.layout_view import draw_rows
+from meltygui.model.layout_model import Columns
+from meltygui.model.layout_model import Rows
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.window_decoration import window
 

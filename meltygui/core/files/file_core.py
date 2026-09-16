@@ -21,7 +21,6 @@ wrapper's body is blit-cached, so it wouldn't otherwise notice a file that
 appeared/vanished with no edit to invalidate it).
 """
 
-import sys
 import threading
 
 from meltygui.core.runtime.lifecycle import module_is_live
@@ -36,13 +35,11 @@ from meltygui.view.file_view import draw_file_metadata
 from meltygui.core.windowing.glfw_utils import request_render
 from meltygui.core.conversion.render_host import RenderHost
 from meltygui.core.core_render import render_func
+from meltygui.core.rendering.window_decoration import window
 from meltygui.core.rendering.core_decoration import Core
 
 from meltygui.model.file_model import _scan
-from meltygui.model.file_model import _create
-from meltygui.model.file_model import _delete
 from meltygui.model.file_model import _reconcile
-from meltygui.model.file_model import _collect
 from meltygui.model.file_model import _file_meta
 from meltygui.model.file_model import _apply_meta
 from meltygui.model.file_model import _collect_meta
@@ -64,15 +61,8 @@ TEST_FOLDER = application_root()
 # _LazyOverrideEntry / bubbling, drag reorders land as tree key order).
 
 
-# ── startup: materialize the metadata tree for the whole module root ────────────
-# Same lifecycle moment as the open-files restore (Melty.on_load): once the
-# app model exists, every file and folder under the module root gets its
-# entry in file_meta, so the debug view shows the full tree and attributes
-# can attach anywhere without waiting for a first write. setdefault-only -
-# existing values (tint, order) are never touched.
-from meltygui.model.file_model import initialize_file_metadata as _init_file_meta
-
 # ── debug window: the persisted per-file metadata tree ──────────────────────────
+@window(disable_scroll=False, use_cache=True, tint=(0.18, 0.11, 0.11))
 def file_meta_debug(_, draw_state=None):
     """Raw view of AppModel.file_meta_collection.file_meta — the path-keyed
     params store the folder tree and the codec layer read/write (tint, order,
@@ -133,24 +123,34 @@ def folder_io(input_value, draw_state, view_func=None, root=None, external_chang
 
 
 # ── the proxy: to the program it's just a dict shaped like the folder ───────────
-_previous_module = sys.modules.get("meltygui.files.folder_files")
-_previous_state = vars(_previous_module) if _previous_module is not None else {}
-
-files_proxy = (_previous_state["files_proxy"] if "files_proxy" in _previous_state
-               else RenderHost(io_function=folder_io, input_value=None,
-                               name="Folder Files", root=ROOT))
-
-test_folder_proxy = (_previous_state["test_folder_proxy"] if "test_folder_proxy" in _previous_state
-                     else RenderHost(io_function=folder_io, input_value=None,
-                                     name="TestFolderProxy", root=TEST_FOLDER))
+if "files_proxy" not in globals():
+    files_proxy = RenderHost(io_function=folder_io, input_value=None,
+                             name="Folder Files", root=ROOT)
+if "test_folder_proxy" not in globals():
+    test_folder_proxy = RenderHost(io_function=folder_io, input_value=None,
+                                   name="TestFolderProxy", root=TEST_FOLDER)
 
 # ── per-root state: every root gets its own snapshot, window draw_state, and
 # poller entry. (These were single globals once: the second window reconciled
 # against the first root's snapshot and rendered ROOT's files.)
-_disk_trees = _previous_state.get("_disk_trees", {})        # root -> the poller's nested snapshot ({name: Path | dict})
-_window_dss = _previous_state.get("_window_dss", {})        # root -> that root's @window draw_state, stashed each render
-_proxies = _previous_state.get("_proxies", {ROOT: files_proxy, TEST_FOLDER: test_folder_proxy})   # poller targets
-_poller_running = _previous_state.get("_poller_running", False)
+_disk_trees = globals().get("_disk_trees", {})        # root -> the poller's nested snapshot ({name: Path | dict})
+_window_dss = globals().get("_window_dss", {})        # root -> that root's @window draw_state, stashed each render
+_proxies = globals().get("_proxies", {ROOT: files_proxy, TEST_FOLDER: test_folder_proxy})   # poller targets
+_poller_running = globals().get("_poller_running", False)
+
+
+@window(input_value=files_proxy, tint=(0.36, 0.46, 0.59), disable_scroll=False, mode=Modes.WINDOW)
+@render_func(show_bg=True, use_cache=True, shadow=True, selectable=False)
+def draw_folder_files(input_value, draw_state, **kwargs):
+    _draw_tree(input_value, draw_state, ROOT)
+    return False, None
+
+
+@window(input_value=test_folder_proxy, tint=(0.84, 0.933, 0.98), bg_offset=4, disable_scroll=False, mode=Modes.WINDOW)
+@render_func(show_bg=False, use_cache=True, selectable=False)
+def draw_test_folders(input_value, draw_state, **kwargs):
+    _draw_tree(input_value, draw_state, TEST_FOLDER)
+    return False, None
 
 
 def folder_proxy(root, name):

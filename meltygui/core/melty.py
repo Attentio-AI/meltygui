@@ -3988,7 +3988,7 @@ class Melty:
         Melty.mode_stack = []
 
         from meltygui.core.rendering.modes import Modes
-        from meltygui.core.rendering.render_dispatch import draw_with_modes
+        from meltygui.view.inspection_view import draw_with_modes
         # draw_with_modes(Counters, name="counters", modes=(Modes.CODE_UI, Modes.CODE_PLAIN_TEXT), mode=Modes.WINDOW)
 
         if Toggles.debug_z_depth:

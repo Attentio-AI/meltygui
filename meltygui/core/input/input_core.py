@@ -52,7 +52,6 @@ from meltygui.code.new_converters import code_hosts_for
 from meltygui.core.layout.column_core import ColumnLayout
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.window_decoration import window
-from meltygui.view.tensor_view import _view_size
 
 
 def _lathe_profile(fn, y0, y1, steps, r_end=None):

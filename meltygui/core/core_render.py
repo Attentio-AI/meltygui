@@ -34,11 +34,9 @@ from meltygui.code.fileref import Address
 from meltygui.core.conversion.path_finder import PendingState
 from meltygui.state.new_core_model import DrawState
 from meltygui.state.new_core_model import Hotkey
-from meltygui.state.new_core_model import DragMode
 from meltygui.state.new_core_model import Anchor
 from meltygui.state.new_core_model import Pin
 from meltygui.state.new_core_model import TileMode
-from meltygui.state.new_core_model import AttrDict
 from meltygui.state.new_core_model import TOP_ANCHORS
 from meltygui.state.new_core_model import LEFT_ANCHORS
 from meltygui.state.new_core_model import ExpandMode
@@ -222,7 +220,6 @@ def column_max_height(column_parent):
     return column_parent.clip_size[1] - columns_top + 10
 
 
-
 def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
                            bar_width=SCROLL_BAR_WIDTH_DEFAULT,
                            bar_brightness=SCROLL_BAR_BRIGHTNESS_DEFAULT,
@@ -399,7 +396,6 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
         dl.pop_clip_rect()
 
 
-
 # ── Auto draw_state params ──────────────────────────────────────────────────
 # Every named render_func parameter (minus the exclusions below) is mirrored
 # on the view's draw_state as a plain attribute: draw_state.<param>. This
@@ -479,7 +475,6 @@ def _values_differ(a, b):
 
 _ds_reserved_cache = None
 _ds_reserved_for_cls = None
-
 
 
 def _draw_state_reserved_names():
@@ -867,8 +862,8 @@ def render_func(*args, **o_kwargs):
             kwargs['show_header'] = True
             kwargs['disable_scroll'] = False
 
-            from meltygui.core.layout.header_runtime import draw_header_end
-            from meltygui.core.layout.header_runtime import draw_header
+            from meltygui.view.header_view import draw_header_end
+            from meltygui.view.header_view import draw_header
             # A caller-passed header wins (SourcePriority: caller kwargs beat
             # defaults) - the window chrome fills in the empty slots, so a
             # custom header like fast_dock.dock_header isn't clobbered here.
@@ -1617,7 +1612,6 @@ def render_func(*args, **o_kwargs):
                 return_value = (False, None)
                 if draw_state._tile_id in Melty.returned_values:
                     return_value = Melty.returned_values.pop(draw_state._tile_id)
-
 
 
                 Melty.cache.mark_uncached(name, input_value, collection, tile_id, draw_state)
@@ -2874,7 +2868,6 @@ def render_func(*args, **o_kwargs):
                 Melty.is_melty_window = False
 
 
-
             ######################## ERROR HANDLING FOR TYPES ########################
             cursor_pos = imgui.get_cursor_pos()
             imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
@@ -3512,7 +3505,7 @@ def render_func(*args, **o_kwargs):
 
                 if closable:
                     Melty.root_draw_states[draw_state.id]
-                from meltygui.core.rendering.render_dispatch import pending_window
+                from meltygui.view.diagnostic_view import pending_window
 
                 from meltygui.core.rendering.mode import Mode
 
@@ -3521,7 +3514,7 @@ def render_func(*args, **o_kwargs):
                 # pill in a window anchored to this view's bottom-right corner.
                 _has_header = kwargs.get("show_header", True)
                 # if draw_state.search_active and not _has_header and kwargs.get("searchable", False):
-                from meltygui.core.rendering.render_dispatch import draw_search
+                from meltygui.view.search_view import draw_search
                 from meltygui.view.search_view import search_pill_layout
                 # WINDOW_PILL: WINDOW_CLEAN's look (no resize arrow / tint,
                 # matching pending_window) without its fixed 500px width, so
@@ -4150,7 +4143,7 @@ def render_func(*args, **o_kwargs):
                     # Stamped onto the draw_state so framework painters (meltygui
                     # highlights, blurr mask) read this view's effective radius.
                     draw_state.corner_radius = kwargs.get("corner_radius", 5.0)
-                    from meltygui.core.rendering.render_dispatch import draw_bg
+                    from meltygui.view.decoration_view import draw_bg
                     style_manager = Melty.global_attrs['style_manager']
 
                     bg_color = (0, 0, 0, 0)
@@ -4283,8 +4276,8 @@ def render_func(*args, **o_kwargs):
                     draw_state.selected = draw_state in Melty.selected
 
                 ########### CONTEXT MENU HANDLING ############
-                from meltygui.core.rendering.render_dispatch import draw_context_menu
-                from meltygui.core.rendering.render_dispatch import draw_context_menu_items
+                from meltygui.view.inspection_view import draw_context_menu
+                from meltygui.view.inspection_view import draw_context_menu_items
                 from meltygui.core.rendering.render_dispatch import INSPECT
                 # context_menu={label: callable}: a right-click opens the labels as
                 # a dropdown menu at the origin (draw_context_menu_items) instead
@@ -4802,7 +4795,6 @@ def render_func(*args, **o_kwargs):
                     style_manager.set_imgui_tint(*previous_tint)
 
 
-
             draw_state._imgui_is_edited = imgui.is_item_edited()
             draw_state._imgui_is_activated = imgui.is_item_activated()
             draw_state._imgui_is_active = imgui.is_item_active()
@@ -5174,7 +5166,6 @@ def render_func(*args, **o_kwargs):
                 clipped_top = max(clip_rect[1], draw_state.abs_top)
                 clipped_height = clipped_bottom - clipped_top
                 draw_state._parent._melty_content_height += clipped_height
-
 
 
                 # else:

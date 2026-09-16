@@ -13,7 +13,7 @@ from meltygui.core.rendering.render_funcs import RenderFuncs
 from meltygui.core.runtime.toggles import Tint
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.window_decoration import window
-from meltygui.core.diagnostics.trace_core import draw_stack_trace
+from meltygui.view.trace_view import draw_stack_trace
 
 
 class StackTracePlayground:

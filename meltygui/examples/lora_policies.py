@@ -16,7 +16,7 @@ from meltygui.examples.scalar_policies import weight_curve
 from meltygui.examples.scalar_policies import shadow_curve
 from meltygui.core.melty import Melty
 from meltygui.core.core_render import render_func
-from meltygui.core.layout.header_runtime import draw_header
+from meltygui.view.header_view import draw_header
 
 
 loras = lora_preview()

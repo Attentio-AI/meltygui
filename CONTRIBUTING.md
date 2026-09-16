@@ -210,14 +210,14 @@ Use the existing relocation support rather than feature-specific adoption code:
 
 - [Definition relocation](meltygui/core/definition_hotswap.py) handles definitions
   moved between modules, including consumers and injected-state metadata.
-- [Module compatibility](meltygui/core/module_compatibility.py) and
-  [its manifest](meltygui/core/legacy_modules.json) make historical imports share
-  the canonical module. Its whole-module adoption rebases source filenames and
-  relies on preserved source line layout. A split or rewrite needs definition
-  relocation/hotswap, not that assumption.
-- [Saved-name mappings](meltygui/core/module_map.json) and source navigation must
-  follow the same destinations. New code uses canonical imports; compatibility
-  namespaces contain no second implementation or duplicate runtime registry.
+- Imports use current canonical modules. Update the library, `meltygui_pro` and
+  `melty_code_editor` together when moving code. Do not add legacy import hooks,
+  forwarding modules or compatibility exports; no external import compatibility
+  is required at this stage. Public `meltygui.draw_*` exports remain the app API.
+- [Saved-name mappings](meltygui/core/module_map.json) translate older serialized
+  identifiers when loading sessions. This is separate from Python imports;
+  source navigation resolves the actual import path. Register built-in renderers
+  explicitly where needed, rather than relying on forwarding exports.
 
 Preserve unrelated work and application/session data. The
 [migration inventory](docs/ARCHITECTURE_DEBT.md) records deferred areas; an adjacent

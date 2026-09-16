@@ -33,7 +33,7 @@ from meltygui.code.live_view import label_for
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.window_decoration import window
 from meltygui.core.rendering.render_dispatch import draw_any
-from meltygui.core.rendering.render_dispatch import draw_collection
+from meltygui.view.collection_view import draw_collection
 from meltygui.core.rendering.mode import Mode
 from meltygui.core.rendering.core_decoration import defaults
 import json
@@ -197,7 +197,7 @@ def fit_line(n=45, noise=9):
 @window
 @render_func(auto_resize=True)
 def live_view_snapshot(input_value=None, draw_state=None, **kwargs):
-    from meltygui.editor.live_view_views import draw_function_live
+    from meltygui.view.code_view import draw_function_live
     draw_function_live(fit_line, name="fit_line snapshot")
 
 
@@ -252,5 +252,5 @@ def attention_lab(heads=28, seq=48, dim=32, temp=0.35, shift=3, layers=17):
 @window
 @render_func(tint=(0.611, 0.42, 0.095), auto_resize=True)
 def live_view_tensors(input_value=None, draw_state=None, **kwargs):
-    from meltygui.editor.live_view_views import draw_function_live
+    from meltygui.view.code_view import draw_function_live
     draw_function_live(attention_lab, name="attention_lab runner", icon=None, display_name=None)

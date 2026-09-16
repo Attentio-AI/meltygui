@@ -15,7 +15,7 @@ import os
 import sys
 
 
-from meltygui.views import columns as C
+from meltygui.core.layout import column_core as C
 from meltygui.core.melty import Melty
 
 

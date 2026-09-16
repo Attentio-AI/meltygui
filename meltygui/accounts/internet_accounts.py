@@ -1343,32 +1343,11 @@ def _format_gb(size_bytes):
     return f"{size_bytes / 1e9:.1f} GB"
 
 
-from meltygui.state.account_state import AccountsPanelState
-
-
 from meltygui.core.services.account_core import _cleanup_accounts
 
 
 from meltygui.view.account_view import draw_internet_accounts
 draw_internet_accounts = window(input_value=accounts, tint=(0.19, 0.16, 0.14), icon=f'\uf0c2', display_name='Internet Accounts', initial={'width': 760, 'height': 460})(draw_internet_accounts)
-
-
-def _draw_field(account, field, left, top, width, height):
-    from meltygui.view.account_view import _draw_field as draw_account_field
-    return draw_account_field(account, field, left, top, width, height, store=accounts)
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # Register the companion window on initial import and on an Accounts hotswap.

@@ -3,6 +3,24 @@
 Completed 2026-09-16. Shared runtime modules now live in `meltygui/core/`.
 The [core guide](../meltygui/core/README.md) groups the entry points by responsibility.
 
+## Current import policy
+
+The temporary import-compatibility layer has been removed. The library,
+`meltygui_pro` and `melty_code_editor` use canonical imports. The alias finder,
+its 252-name manifest, forwarding exports and shim modules are gone. Built-in
+view registration is explicit in the mode module. Folder window wiring lives
+in `core/files/file_core.py`.
+
+`module_names.py` and `module_map.json` only translate saved identifiers;
+`definition_hotswap.py` still preserves live definitions and runtime state.
+The editor implementation has only mechanical import changes. Validation after
+removal: 599 library tests and 391 subtests passed, including CUDA/GL coverage;
+208 Pro tests passed with one skipped. The built wheel rejects all 252 historical
+module paths while exposing the public views and restoring saved mode identifiers.
+A fresh isolated Melt editor rendered and searched a Python file and opened its
+file picker. The remaining sections record earlier migration stages,
+when temporary aliases existed.
+
 ## Responsibility folders
 
 A second pass moved 121 modules within core into 13 responsibility folders. See

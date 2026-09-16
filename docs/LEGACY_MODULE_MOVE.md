@@ -1,8 +1,9 @@
 # Legacy view and widget packages retired
 
 2026-09-16. All implementation files have moved out of `meltygui/views/` and
-`meltygui/widgets/`. Their three remaining `__init__.py` files only establish
-legacy import namespaces (`views`, `views.utils`, and `widgets`).
+`meltygui/widgets/`. Their empty namespace shells and the temporary import
+compatibility layer have also been removed. Consumers use canonical modules;
+only saved-session identifiers retain historical-name translation.
 
 This pass relocates modules by their remaining responsibility: rendering
 infrastructure, layout and process coordination live in core; dictionary/code
@@ -12,7 +13,9 @@ extracted into `view/<feature>_view.py` stay there.
 
 No text-editor implementation was changed. Every `.py` file under `editor/`
 and `view/text_view.py` is byte-for-byte identical to its pre-pass contents.
-Those files can keep their legacy imports until the deliberate editor refactor.
+A later pass updated only their imports to remove compatibility dependencies;
+the deliberate editor refactor remains deferred. The sections below record the
+earlier migration and its temporary compatibility machinery.
 
 ## Compatibility and live state
 

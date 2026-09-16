@@ -941,6 +941,3 @@ def build_mip(view, *, display_shape, nf=(-1, -1, 0), norm=(0.0, 1.0, 0),
            np.uintp(mip.data_ptr()), i32(mz), i32(my), i32(mx),
            block=(256, 1, 1), grid=((total + 255) // 256, 1, 1))
     return mip
-
-
-from meltygui.model.tensor_model import nf_display_shape

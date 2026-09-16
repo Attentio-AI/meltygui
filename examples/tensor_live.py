@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import meltygui
-from meltygui.editor.live_view_views import draw_function_live
+from meltygui.view.code_view import draw_function_live
 
 axis = torch.linspace(-1.5, 1.5, 40, device='cuda:0')
 x, y, z = torch.meshgrid(axis, axis, axis, indexing='ij')

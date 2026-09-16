@@ -674,7 +674,7 @@ def _paint_buttons(dl, buttons, over_button):
     manager, the way a header runs under its window's tint (that tint is
     what make_color_rgb mixes the colour against). The previous tint is
     restored afterwards."""
-    from meltygui.core.layout.header_runtime import flat_button
+    from meltygui.view.header_view import flat_button
     from meltygui.core.cache.tile_cache import add_shadow
     from meltygui.core.melty import Melty
     from meltygui.core.runtime.toggles import Toggles

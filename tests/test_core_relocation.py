@@ -19,9 +19,6 @@ assert 'meltygui.core.rendering.mode' not in sys.modules
 assert 'meltygui.debug.mode' not in sys.modules
 from meltygui.core.rendering.mode import Mode
 assert handle._resolve() is restored._resolve() is Mode.FILE_TREE
-from meltygui.modes import Modes as legacy_modes
-from meltygui.debug.mode import Mode as legacy_mode
-assert legacy_modes is Modes and legacy_mode is Mode
 '''],
         close_fds=False, capture_output=True, text=True, timeout=60,
     )
@@ -41,7 +38,6 @@ def test_saved_core_classes_and_modes_keep_identity():
         ('meltygui.code.render_host', 'RenderHost', RenderHost),
     ):
         saved = f'c{old}\n{name}\n.'.encode()
-        assert pickle.loads(saved) is expected
         assert LSDUnpickler(io.BytesIO(saved)).load() is expected
         assert canonical_name(old + '.' + name) == expected.__module__ + '.' + name
     assert pickle.loads(pickle.dumps(Mode.FILE_TREE)) is Mode.FILE_TREE
@@ -62,7 +58,7 @@ def test_source_editing_follows_core_definitions():
         assert f'class {value.__name__}' in load_text(address)
 
 
-def test_old_imports_navigate_to_core_after_a_move(monkeypatch):
+def test_source_navigation_resolves_only_current_import_paths():
     import meltygui
     from meltygui.code import symbol_roster
     from meltygui.code.source_context import analysis_project
@@ -74,6 +70,6 @@ def test_old_imports_navigate_to_core_after_a_move(monkeypatch):
         ('meltygui.rendering.core_render', 'meltygui.core.core_render'),
         ('meltygui.views.columns', 'meltygui.core.layout.column_core'),
     ):
-        monkeypatch.setitem(symbol_roster._mod_path_cache, (project.key, old), ('/removed/source.py', 0))
         expected = str(root / (new.replace('.', '/') + '.py'))
-        assert symbol_roster.module_to_path(old, project=project) == expected
+        assert symbol_roster.module_to_path(old, project=project) is None
+        assert symbol_roster.module_to_path(new, project=project) == expected

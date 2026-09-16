@@ -89,11 +89,7 @@ import libcst as cst
 import meltygui.core.runtime.toggles as toggles
 from meltygui.core.melty import FileWatch
 from meltygui.core.melty import Melty
-from meltygui.state.core_enums import ProfileMode
-from meltygui.state.new_core_model import TabState
-from meltygui.state.new_core_model import DrawState
 from meltygui.core.conversion.dict_conversion import DictConversion
-from meltygui.state.model_enums import RelaxedEnum
 from meltygui.core.rendering.modes import Modes
 from meltygui.core.diagnostics.notifications import notify
 from meltygui.core.rendering.render_funcs import RenderFuncs
@@ -131,7 +127,7 @@ from meltygui.core.core_render import render_func
 from meltygui.core.rendering.core_decoration import no_save_exclude
 from meltygui.core.rendering.core_decoration import no_save
 from meltygui.core.rendering.window_decoration import window
-from meltygui.core.layout.header_runtime import draw_header
+from meltygui.view.header_view import draw_header
 from meltygui.editor.pending_save import PendingSave
 from meltygui.core.cache.invalidation_tracker import Note
 from meltygui.core.rendering.core_decoration import defaults
@@ -1472,9 +1468,6 @@ class ModesState:
 def compute_height(draw_state):
     return None
     # return min(draw_state., 400)
-
-
-from meltygui.view.code_view import draw_with_view_funcs
 
 
 @render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
@@ -2994,9 +2987,6 @@ def _error_markers(err, lint):
     return markers
 
 
-from meltygui.view.code_view import draw_text_from_code_cache
-
-
 def _host_code_tree_error(dict_host):
     """The dict-host's parse / compile / lint error, normalized to draw_text's
     code_tree shape ({__error__, __line__, __errors__}), or None when clean.
@@ -3025,6 +3015,3 @@ def _host_code_tree_error(dict_host):
         dict_host._err_view_memo = (err, lint, cache_error)
         return cache_error
     return None
-
-
-from meltygui.view.code_view import draw_code_tabs_from_cache

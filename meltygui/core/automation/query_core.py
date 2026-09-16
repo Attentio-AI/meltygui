@@ -52,9 +52,6 @@ _TOOL_ARGS = {
 }
 
 
-from meltygui.state.query_state import MCPQueryState
-
-
 def _seed_args(panel_state):
     """Reconcile the persisted arguments against `_TOOL_ARGS`.
 

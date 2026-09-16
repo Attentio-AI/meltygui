@@ -907,9 +907,6 @@ def failure_report(failure):
     return "\n".join(lines)
 
 
-from meltygui.state.orchestration_state import OrchestratorPanelState               # orchestration id -> "commands" | "events"
-
-
 class Orchestrator:
     """The record/replay engine. All state in class attributes (hotswap keeps
     live values, same as UndoManager). Exactly one of `recording` /

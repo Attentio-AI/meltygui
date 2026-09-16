@@ -6,9 +6,7 @@ from pathlib import Path, PosixPath
 from typing import Optional, Any
 
 from meltygui.state.new_core_model import Anchor
-from meltygui.state.new_core_model import Pin
 from meltygui.core.conversion.dict_conversion import DictConversion
-from meltygui.state.model_enums import RelaxedEnum
 from meltygui.core.rendering.render_funcs import RenderFuncs
 from meltygui.core.runtime.toggles import WindowManager
 from meltygui.code.chain_converters import module_to_address
@@ -27,7 +25,16 @@ from meltygui.code.chain_converters import address_to_call_parse
 from meltygui.code.chain_converters import call_dict_to_save
 from meltygui.code.chain_converters import class_to_address_incl_overrides
 from meltygui.code.file_converters import path_to_dict
-from meltygui.code.file_converters import bytes_to_str
+from meltygui.code.file_converters import rf_bytes_to_str
+
+# Register built-in views used by lazy render-function handles in the modes.
+import meltygui.view.color_view
+import meltygui.view.decoration_view
+import meltygui.view.diagnostic_view
+import meltygui.view.search_view
+import meltygui.view.tab_view
+import meltygui.view.texture_view
+import meltygui.view.window_view
 from meltygui.code.file_converters import rf_dict_to_path
 from meltygui.code.file_converters import rf_str_to_bytes
 from meltygui.code.libcst_conversion import GeneralParse
@@ -41,31 +48,28 @@ from meltygui.code.libcst_conversion import dict_to_cst_module
 from meltygui.code.new_codecs import CallSite
 from meltygui.code.new_codecs import Decorations
 from meltygui.core.rendering.window_decoration import window
-from meltygui.core.layout.header_runtime import draw_footer
-from meltygui.core.layout.header_runtime import draw_header_end
-from meltygui.core.layout.header_runtime import draw_header
+from meltygui.view.header_view import draw_footer
+from meltygui.view.header_view import draw_header_end
+from meltygui.view.header_view import draw_header
 from meltygui.model.code_proxy_model import *
-from meltygui.core.rendering.render_dispatch import draw_collection
-from meltygui.core.rendering.render_dispatch import draw_comment
+from meltygui.view.collection_view import draw_collection
+from meltygui.view.code_view import draw_comment
 from meltygui.core.rendering.render_dispatch import sort_dict_alphabetically
 from meltygui.core.rendering.render_dispatch import unsort_dict_alphabetically
-from meltygui.core.rendering.render_dispatch import draw_with_modes
-from meltygui.core.rendering.render_dispatch import draw_type
+from meltygui.view.inspection_view import draw_with_modes
+from meltygui.view.code_view import draw_type
 from meltygui.core.rendering.render_dispatch import class_to_var_dict
 from meltygui.core.rendering.render_dispatch import var_dict_to_class
-from meltygui.core.rendering.render_dispatch import draw_dropdown
-from meltygui.core.rendering.render_dispatch import draw_blank
-from meltygui.core.rendering.render_dispatch import draw_drop_down_item
-from meltygui.core.rendering.render_dispatch import draw_type_name
+from meltygui.view.dropdown_view import draw_drop_down_item
+from meltygui.view.code_view import draw_type_name
 from meltygui.core.rendering.render_dispatch import type_lens
-from meltygui.editor.text_editor import draw_text
+from meltygui.view.text_view import draw_text
 from meltygui.code.new_converters import code_file_io
 from meltygui.code.new_converters import convert_in_and_out
 from meltygui.code.new_converters import string_to_cst_module
 from meltygui.code.new_converters import cst_module_to_string
-from meltygui.code.new_converters import draw_with_view_funcs
-from meltygui.code.new_converters import draw_text_from_code_cache
-from meltygui.code.new_converters import draw_code_tabs_from_cache
+from meltygui.view.code_view import draw_text_from_code_cache
+from meltygui.view.code_view import draw_code_tabs_from_cache
 
 
 def compute_height(draw_state):
@@ -426,8 +430,6 @@ class Mode(Enum):
     }
 
 
-
-
     code_plain_text_auto_load = True
     code_plain_text_params = {'save': True,
                               'recompile': False}
@@ -479,7 +481,7 @@ class Mode(Enum):
             recursive=True,
         ),
         bytes: ModeOverrides(
-            kwargs={"convert_in": [bytes_to_str],
+            kwargs={"convert_in": [rf_bytes_to_str],
                     "convert_out": [rf_str_to_bytes]},
             func=draw_text,
             recursive=True,

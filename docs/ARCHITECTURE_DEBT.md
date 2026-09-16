@@ -22,9 +22,10 @@ open. The text-editor refactor remains explicitly deferred.
 - `TensorDim`, `TensorDims` and `Lut` preserve primitive behavior while selecting
   specialized renderers. `FileMetaProxy` provides a shared dict-like store. These
   are useful value contracts even where their surrounding wiring needs work.
-- `views/`, `widgets/`, `rendering/` and `windows/` contain only compatibility
-  initializers. Historical imports, saved classes and source navigation can
-  follow canonical modules without duplicating live state.
+- `views/`, `widgets/`, `rendering/` and `windows/` have been removed. The
+  library, Pro components and editor use canonical imports without aliases or
+  shims. Saved identifiers translate during session loading; definition hotswap
+  preserves live state independently of import compatibility.
 
 These are placement and infrastructure milestones. Many functions in `view/`
 still access shared runtime state directly, and some feature helpers moved into
@@ -49,8 +50,8 @@ Tensor descriptions, viewport sizing, notices, metadata, dimension pickers and
 axis presentation now live in [tensor_view.py](../meltygui/view/tensor_view.py),
 shared with graph/input consumers. Axis label shaders and their per-view GL
 resources belong to this presentation code; resource lifetime still uses the
-injected `GLState`. Old imports remain aliases, and live relocation preserves
-existing objects. See [the extraction and verification record](TENSOR_RELOCATION.md).
+injected `GLState`. Imports use the feature modules directly, and definition
+hotswap preserves existing objects. See [the extraction and verification record](TENSOR_RELOCATION.md).
 
 Slice controls and error panels now also live in tensor views. The slices use
 the injected-event integer slider in `control_view.py`; error history uses
@@ -176,7 +177,8 @@ with the code views; common execution and lifecycle belong in core.
 
 The text-editor implementation, editor-owned state and the mixed `DrawState`
 split require the separately planned editor refactor. Keep this work out of the
-tensor cleanup. Preserve existing imports through compatibility where necessary.
+tensor cleanup. Import paths have been updated mechanically; editor behavior
+and the deliberate editor/state redesign remain outside this migration.
 
 ## Legacy helpers and core files need classification, not bulk moves
 
@@ -189,8 +191,9 @@ or replacing them.
 The remaining `graphics/` modules and root `hdr_color.py`, `image_load.py`,
 `pbr.py` and `text_index.py` likewise need review by responsibility. File count,
 the presence of GL calls or the word “utility” is not an ownership decision.
-`debug/jump_to.py` and `files/file_selector.py` are already import-only shims;
-they do not represent two more implementations to extract.
+The `debug/jump_to.py`, `files/file_selector.py` and `files/folder_files.py`
+compatibility shims have been deleted. Folder window registration now lives in
+`core/files/file_core.py`; the reusable file views remain in `view/file_view.py`.
 
 Some feature-named `*_core.py` modules hold helpers inherited from whole-module
 moves. Keep their shared coordination in core, but move any remaining local
@@ -200,8 +203,8 @@ whether it is runtime state, styling or an unused import.
 
 Core is now grouped into responsibility folders, with input and event handling
 together in `core/input/`. The obsolete `rendering/`, `views/`, `widgets/` and
-`windows/` namespace shells have been removed; compatibility is provided by the
-alias loader. Folder organization does not resolve the mixed ownership above.
+`windows/` namespace shells and the import-alias loader have been removed.
+Folder organization does not resolve the mixed ownership above.
 
 ## Order and evidence for the next contributions
 

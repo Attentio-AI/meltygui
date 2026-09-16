@@ -49,8 +49,9 @@ never library dependencies. Fix ownership, not just filenames; avoid catch-all m
 - Subprocesses: full-path executable, `close_fds=False`, no `cwd`, `preexec_fn` or
   `start_new_session`; follow existing `posix_spawn` patterns, never fork the app.
 - Hotswap every definition in place, preserving identities, callbacks and runtime
-  state while applying source edits. Reuse relocation support; preserve old imports,
-  saved identifiers and source navigation. New imports use canonical paths.
+  state while applying source edits. Use canonical imports; update the library,
+  `meltygui_pro` and `melty_code_editor` together, without legacy aliases or shims.
+  Saved identifiers translate on load; source navigation follows actual imports.
 - Report and fix framework gaps instead of hiding them with global lookups,
   disabled caches, per-frame invalidation or restart requirements.
 

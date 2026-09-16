@@ -93,10 +93,10 @@ def test_tree_renderer_preserves_mutation_result(monkeypatch):
     assert held['new.txt'] == 'new file'
 
 
-def test_legacy_imports_share_host_and_model_objects():
+def test_file_runtime_owns_the_public_entry_point_and_hosts():
+    import meltygui
     from meltygui.core.files import file_core
-    from meltygui.files import folder_files
-    assert folder_files.files_proxy is file_core.files_proxy
-    assert folder_files._scan is file_model._scan
-    assert folder_files._proxies is file_core._proxies
-    assert file_core.ROOT == Path(folder_files.__file__).parent
+    assert meltygui.draw_folder_files is file_core.draw_folder_files
+    assert file_core._proxies[file_core.ROOT] is file_core.files_proxy
+    assert file_core._proxies[file_core.TEST_FOLDER] is file_core.test_folder_proxy
+    assert file_core.ROOT == Path(meltygui.__file__).parent / 'files'

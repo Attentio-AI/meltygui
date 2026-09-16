@@ -846,7 +846,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     from meltygui.core.layout.dropdown_core import _dd_set_cursor
     from meltygui.editor.source_ui import _RowSpan
     from meltygui.editor.source_ui import _row_code_hosts
-    from meltygui.editor.text_editor import draw_text
+    from meltygui.view.text_view import draw_text
     from meltygui.model.dropdown_model import _dd_as_tuple
     from meltygui.model.dropdown_model import _dd_row_lookup
     from meltygui.core.windowing.glfw_utils import request_render

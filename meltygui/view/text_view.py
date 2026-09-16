@@ -2,18 +2,18 @@
 from meltygui.code.libcst_conversion import CodeLine
 from meltygui.completion.fim import FimState
 from meltygui.editor.source_tools import SourceToolsState
-from meltygui.fonts import Font
+from meltygui.core.styling.fonts import Font
 from meltygui.hdr_color import pack_color
 from meltygui.hdr_color import unpack_color
-from meltygui.melty import Melty
-from meltygui.melty import SearchTerm
-from meltygui.rendering.core_render import render_func
-from meltygui.rendering.decorators.core_decoration import Core
-from meltygui.rendering.decorators.window_decoration import window
-from meltygui.rendering.render_funcs import RenderFuncs
+from meltygui.core.melty import Melty
+from meltygui.core.melty import SearchTerm
+from meltygui.core.core_render import render_func
+from meltygui.core.rendering.core_decoration import Core
+from meltygui.core.rendering.window_decoration import window
+from meltygui.core.rendering.render_funcs import RenderFuncs
 from meltygui.state.new_core_model import DropDownState
 from meltygui.state.new_core_model import TextEditorState
-from meltygui.toggles import Tint
+from meltygui.core.runtime.toggles import Tint
 from meltygui.view.header_view import draw_footer
 from meltygui.view.header_view import draw_header
 import bisect
@@ -50,14 +50,14 @@ def draw_icon_selector_plain(input_value, width=20, height=20, name=None,
     from meltygui.editor.text_editor import COLORS
     from meltygui.editor.text_editor import ICON_COLLECTION
     from meltygui.editor.text_editor import _plain_tv_bg
-    from meltygui.utils.glfw_utils import request_render
-    from meltygui.views.fa_icons import FA_GLYPH_SET
-    import meltygui.window_api as glfw
+    from meltygui.core.windowing.glfw_utils import request_render
+    from meltygui.model.icon_model import FA_GLYPH_SET
+    import meltygui.core.windowing.window_api as glfw
 
     from meltygui.view.dropdown_view import draw_dd_menu
-    from meltygui.core.dropdown_core import _dd_handle_keys
-    from meltygui.core.dropdown_core import _dd_close
-    from meltygui.code.cache_tree import UNSET_VALUE
+    from meltygui.core.layout.dropdown_core import _dd_handle_keys
+    from meltygui.core.layout.dropdown_core import _dd_close
+    from meltygui.core.conversion.cache_tree import UNSET_VALUE
     cur = input_value if isinstance(input_value, str) else ""
     x, y = imgui.get_cursor_screen_pos()
     w = max(1.0, width)
@@ -185,7 +185,7 @@ def draw_icon_selector_plain(input_value, width=20, height=20, name=None,
         _snap = getattr(root, "_snap_frames", 0)
         if (_snap > 0 or _nav_hit) and menu_ds is not None:
             from meltygui.model.dropdown_model import _dd_rows_at
-            from meltygui.core.dropdown_core import _dd_scroll_cursor_into_view
+            from meltygui.core.layout.dropdown_core import _dd_scroll_cursor_into_view
             from meltygui.model.dropdown_model import _dd_as_tuple
             if _snap > 0:
                 root._snap_frames = _snap - 1
@@ -405,7 +405,7 @@ def draw_number_token_plain(input_value, width=20, height=20, name=None,
     from meltygui.editor.text_editor import COLORS
     from meltygui.editor.text_editor import _parse_number_token
     from meltygui.editor.text_editor import _plain_tv_bg
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.windowing.glfw_utils import request_render
 
     from meltygui.utils.render_utils import push_style_var
     from meltygui.utils.render_utils import pop_style_var
@@ -550,10 +550,10 @@ def draw_color3_token(input_value, draw_state=None,
     Draws nothing if the tuple doesn't parse (the text is still there).
     left_mouse_* declared (never read) for the event latch — see draw_number_token."""
     from meltygui.editor.text_editor import _fmt_color_channel
-    from meltygui.utils.glfw_utils import request_render
-    import meltygui.window_api as glfw
+    from meltygui.core.windowing.glfw_utils import request_render
+    import meltygui.core.windowing.window_api as glfw
 
-    from meltygui.debug.mode import Mode
+    from meltygui.core.rendering.mode import Mode
     from meltygui.view.color_view import draw_color_picker
     s = input_value if isinstance(input_value, str) else str(input_value)
     parts = [p.strip() for p in s.strip('()').split(',')]
@@ -703,10 +703,10 @@ def draw_fnrun_params_panel(input_value=None, draw_state=None, unique=0,
     from meltygui.editor.text_editor import _fnrun_params_from_node
     from meltygui.editor.text_editor import _fnrun_queue_panel_splices
     from meltygui.editor.text_editor import _fnrun_start
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.windowing.glfw_utils import request_render
 
     from meltygui.view.header_view import flat_button
-    from meltygui.views.new_core_view import draw_any
+    from meltygui.core.rendering.render_dispatch import draw_any
     run = flat_button(f" Run##fnpprun{unique}", draw_state,
                       f"fnpprun::{unique}", height=28,
                       color=(0.499, 0.844, 0.488), corner_radius=5.0,
@@ -782,7 +782,7 @@ def draw_fnrun_params_panel(input_value=None, draw_state=None, unique=0,
         if _pt is not None:
             _pt.cancel()
         if auto_execute:
-            from meltygui.toggles import Toggles
+            from meltygui.core.runtime.toggles import Toggles
             _hd = Toggles.TextEditor.fnrun_text_sync_debounce_ms / 1000.0
             import threading as _thr
 
@@ -836,8 +836,8 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
     from meltygui.editor.text_editor import _fnrun_param_src
     from meltygui.editor.text_editor import _fnrun_start
     from meltygui.editor.text_editor import _fnrun_sync_panel_params
-    from meltygui.perf_trace import trace as _ptrace
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.diagnostics.perf_trace import trace as _ptrace
+    from meltygui.core.windowing.glfw_utils import request_render
 
     from meltygui.view.header_view import flat_button
     x, y = imgui.get_cursor_screen_pos()
@@ -948,7 +948,7 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
             _pp_want = False
     if _params_node is not None and (
             _pp_want or (_pw is not None and not _pw.closed)):
-        from meltygui.debug.mode import Mode
+        from meltygui.core.rendering.mode import Mode
         # Seed geometry through `initial`, never a per-frame window_pos:
         # the panel starts at the parent's right edge and keeps user drags
         # and resizing on subsequent frames. The default position is (0, 0),
@@ -1015,7 +1015,7 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
         if isinstance(_params_node, dict) and tv_text is not None:
             # The window renders later than this widget. Keep its input node
             # stable, and merge it only after the trailing debounce.
-            from meltygui.toggles import Toggles
+            from meltygui.core.runtime.toggles import Toggles
             _dbc = Toggles.TextEditor.fnrun_text_sync_debounce_ms / 1000.0
             _ent = _fnrun_panel_sync_entry(editor_ds, skey)
             _due = False
@@ -1238,15 +1238,15 @@ def draw_text(input_value: str, height=None,
     from meltygui.editor.text_editor import fold_project_jump
     from meltygui.editor.text_editor import fold_root_scopes
     from meltygui.editor.text_editor import jump_emph_cols
-    from meltygui.perf_trace import trace as _ptrace
-    from meltygui.utils.glfw_utils import request_render
+    from meltygui.core.diagnostics.perf_trace import trace as _ptrace
+    from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.view.code_view import draw_jump_to
     from meltygui.view.search_view import draw_search_highlight_multi
-    from meltygui.views.blit_offscreen import add_glow
-    from meltygui.views.blit_offscreen import add_shadow
-    from meltygui.views.blit_offscreen import clear_glows
-    import meltygui.mouse_cursor as mouse_cursor
-    import meltygui.window_api as glfw
+    from meltygui.core.cache.tile_cache import add_glow
+    from meltygui.core.cache.tile_cache import add_shadow
+    from meltygui.core.cache.tile_cache import clear_glows
+    import meltygui.core.input.mouse_cursor as mouse_cursor
+    import meltygui.core.windowing.window_api as glfw
 
     ds = draw_state
     # ── Instant restore (input_value==LOADING) ─────────────────────────────
@@ -1333,7 +1333,7 @@ def draw_text(input_value: str, height=None,
     # diff folds track on ds._diff_fold_collapsed, seeded by `expand_diff`.
     # In-function import, same cycle-avoidance as the main Toggles import
     # further down (which harmlessly re-binds the same name).
-    from meltygui.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     _fold_key_of = None
     # not restore_active: the loading stand-in is ALREADY display-shaped
     # (the snapshot captured fold-spliced display text), so fold processing
@@ -2251,7 +2251,7 @@ def draw_text(input_value: str, height=None,
     qf_state = ds._qf_state
     # Imported in-function to avoid a module-load import cycle (toggles pulls in
     # decoration/window machinery). For the spell-check button + squiggles below.
-    from meltygui.toggles import Toggles
+    from meltygui.core.runtime.toggles import Toggles
     # Error markers to highlight in red: the routed code_tree's parse errors plus
     # any exception routed in via the mode route (e.g. draw_modes hands us the
     # chain_in failure so the offending source line lights up here). Computed up
@@ -2991,7 +2991,7 @@ def draw_text(input_value: str, height=None,
                     if _mx is not None:
                         _target = min(_target, _mx)
                     ds.scroll_offset = (ds.scroll_offset[0], max(0.0, _target))
-                    from meltygui.notifications import notify
+                    from meltygui.core.diagnostics.notifications import notify
                     notify(f"scroll goto-local ds={ds.name} line={_line} "
                            f"li={_li} src_li={_src_li} "
                            f"sy={_sy0:.0f}->{ds.scroll_offset[1]:.0f} "
@@ -3092,7 +3092,7 @@ def draw_text(input_value: str, height=None,
             return
         ds._uj_open = False
         if _row.kind == "file" or _row.ref is None:
-            from meltygui.extensions import open_source as open_in_editor
+            from meltygui.core.runtime.extensions import open_source as open_in_editor
             _uj_log(f"pick FILE {_row.path}")
             open_in_editor(str(_row.path),
                            editor_window=_enclosing_editor_window(ds))
@@ -3574,7 +3574,7 @@ def draw_text(input_value: str, height=None,
             threading.Thread(target=open_in_intellij, args=(str(_xp), _xline),
                              daemon=True, name="open_in_intellij").start()
         else:
-            from meltygui.notifications import notify
+            from meltygui.core.diagnostics.notifications import notify
             notify("No file path for this buffer — can't open it externally.",
                    tint=(1.0, 0.65, 0.4, 1.0), tag="external_editor")
 
@@ -3660,7 +3660,7 @@ def draw_text(input_value: str, height=None,
                 ac_state.cursor_path = (_ac_cands[_ac_idx],)
                 # Keep the selection cursor visible: nudge the popup window to
                 # scroll the minimal amount (no-op while the row is in view).
-                from meltygui.core.dropdown_core import _dd_scroll_cursor_into_view
+                from meltygui.core.layout.dropdown_core import _dd_scroll_cursor_into_view
                 _dd_scroll_cursor_into_view(
                     Melty.cache.key_to_draw_state.get(getattr(ds, '_ac_menu_tile', None)),
                     _ac_idx)
@@ -3783,7 +3783,7 @@ def draw_text(input_value: str, height=None,
                 ds._qf_index = _qf_idx
                 qf_state._kbd_mode = True
                 qf_state.cursor_path = (_qf_opts[_qf_idx],)
-                from meltygui.core.dropdown_core import _dd_scroll_cursor_into_view
+                from meltygui.core.layout.dropdown_core import _dd_scroll_cursor_into_view
                 _dd_scroll_cursor_into_view(
                     Melty.cache.key_to_draw_state.get(getattr(ds, '_qf_menu_tile', None)),
                     _qf_idx)
@@ -4471,7 +4471,7 @@ def draw_text(input_value: str, height=None,
                     # Snap the (latched) popup back to the top so the restarted
                     # selection is visible - the popup keeps its scroll_offset
                     # across reshapes and reopens otherwise.
-                    from meltygui.core.dropdown_core import _dd_scroll_cursor_into_view
+                    from meltygui.core.layout.dropdown_core import _dd_scroll_cursor_into_view
                     _dd_scroll_cursor_into_view(
                         Melty.cache.key_to_draw_state.get(getattr(ds, '_ac_menu_tile', None)), 0)
                     # Assert keyboard-select mode so the top match is highlighted
@@ -7367,7 +7367,7 @@ def draw_text(input_value: str, height=None,
                     Melty.popover_focused_ds = None
             _io_root = getattr(ds, '_icon_dd_root', None)
             if _io_root is not None:
-                from meltygui.core.dropdown_core import _dd_close
+                from meltygui.core.layout.dropdown_core import _dd_close
                 _dd_close(_io_root)   # collapse paths / release the box's text focus
             ds._icon_open_name = None
             request_render()
@@ -7701,7 +7701,7 @@ def draw_text(input_value: str, height=None,
     _err_open_line = getattr(ds, '_err_open_line', None)
     _err_open_msg = (dict((l - 1, m) for l, m in _err_markers).get(_err_open_line)
                      if _err_markers and _err_open_line is not None else None)
-    from meltygui.extensions import call
+    from meltygui.core.runtime.extensions import call
     dependency_statement = call('source_diagnostic_view', source_tools, jump_to, _err_open_msg,
                                 _err_open_line, draw_state, origin_x, origin_y, line_px)
     if dependency_statement:

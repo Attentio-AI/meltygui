@@ -1,10 +1,10 @@
 """File labels shared by the file UI and chat change summaries."""
 from pathlib import Path
 import meltygui_imgui as imgui
-from meltygui.melty import Melty
-from meltygui.toggles import Toggles, Tint
+from meltygui.core.melty import Melty
+from meltygui.core.runtime.toggles import Toggles, Tint
 from meltygui.hdr_color import pack_color
-from meltygui.views.blit_offscreen import add_shadow
+from meltygui.core.cache.tile_cache import add_shadow
 from meltygui.editor.source_ui import _tab_text_color
 
 _ELLIPSIZE_MEMO = globals().get("_ELLIPSIZE_MEMO", {})
@@ -39,7 +39,3 @@ def _ellipsize(text, max_width):
         _ELLIPSIZE_MEMO.clear()
     _ELLIPSIZE_MEMO[memo_key] = result
     return result
-
-
-from meltygui.view.file_view import draw_changed_file_header
-

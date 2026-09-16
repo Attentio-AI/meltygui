@@ -15,8 +15,6 @@ import meltygui.core.input.mouse_cursor as mouse_cursor
 from meltygui.core.styling.global_style import GlobalStyle
 from meltygui.core.melty import Melty
 from meltygui.core.melty import add_to_collection
-from meltygui.state.core_enums import ProfileMode
-from meltygui.state.new_core_model import TileMode
 from meltygui.core.rendering.render_funcs import RenderFuncs
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.runtime.toggles import Tint
@@ -52,13 +50,6 @@ def open_file(path, app=None):
         print(f"Path does not exist: {path}")
 
 
-
-from meltygui.model.collection_model import annotation_item_type
-
-
-from meltygui.view.header_view import render_search
-
-
 def _brightness_clamp_fn():
     """Compatibility accessor for the shared color model."""
     from meltygui.model.color_model import _brightness_clamp
@@ -74,16 +65,3 @@ flat_button = window(tint=(0.0, 0.335, 0.772, 1.0))(flat_button)
 
 
 from meltygui.core.layout.header_core import _jump_to_view_source
-
-
-from meltygui.view.header_view import draw_header_arrow
-
-
-from meltygui.view.header_view import draw_header
-
-
-from meltygui.view.header_view import draw_footer
-
-
-
-from meltygui.view.header_view import draw_header_end

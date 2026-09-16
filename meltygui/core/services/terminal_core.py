@@ -103,8 +103,6 @@ def _set_winsize(fd, rows, cols):
         pass
 
 
-
-
 def _inheritable_fds():
     """Every fd >= 3 that would survive an exec (not FD_CLOEXEC). Python-created fds are
     CLOEXEC by default (PEP 446); this catches the C libraries' (CUDA / GL / inotify)."""
@@ -187,7 +185,6 @@ def _make_history_screen(pyte, cols, rows):
             pyte.Stream.csi = {**pyte.Stream.csi, "S": "scroll_up", "T": "scroll_down"}
         _TERM_SCREEN_CLS = _TermScreen
     return _TERM_SCREEN_CLS(cols, rows, history=4000, ratio=0.5)
-
 
 
 # A new "owned" terminal names its session claude-d-<pid>-<n> so the studio's
@@ -322,8 +319,6 @@ def _resolve(name, default, bold=False):
 # --------------------------------------------------------------------------- #
 # View
 # --------------------------------------------------------------------------- #
-
-from meltygui.state.terminal_state import TerminalScreenState
 
 
 def _push_mono():

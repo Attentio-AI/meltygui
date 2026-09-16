@@ -1039,7 +1039,7 @@ def render_host_view(input_value, external_change=False, draw=False, draw_state=
 
     # data-bag (no wrapper): just render the dict itself.
     if host.io_function is None:
-        from meltygui.core.rendering.render_dispatch import draw_collection
+        from meltygui.view.collection_view import draw_collection
         return draw_collection(host, name=host.name)
 
     # external_change for the wrapper: the framework's, OR the input-changed flag that

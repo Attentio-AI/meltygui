@@ -9,7 +9,7 @@ from meltygui import pressed
 from meltygui.examples.style_layouts import panel
 from meltygui.examples.style_layouts import terraces
 from meltygui.core.core_render import render_func
-from meltygui.core.layout.header_runtime import draw_header
+from meltygui.view.header_view import draw_header
 
 
 def darken(context_tint, tint_res):

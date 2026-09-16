@@ -16,7 +16,7 @@ def test_packaged_runtime_assets():
     root = Path(meltygui.__file__).parent
     for path in ('png_unfilter.c', 'resources/dejavu/DejaVuSans.ttf',
                  'resources/dejavu/LICENSE.txt', 'resources/JetBrainsMono-Regular.ttf',
-                 'resources/fontawesome-webfont.ttf', 'core/legacy_modules.json',
+                 'resources/fontawesome-webfont.ttf',
                  'core/module_map.json',
                  'core/windowing/backends/protocols/xdg-shell.xml',
                  'core/windowing/backends/protocols/xdg-decoration-unstable-v1.xml',
@@ -34,7 +34,6 @@ def test_native_namespace():
 
 
 def test_moved_view_and_widget_classes_restore_from_saved_names():
-    import pickle
     from meltygui.state.annotation_state import AnnotationOverride
     from meltygui.model.import_graph_model import ImportGraph
 
@@ -43,7 +42,6 @@ def test_moved_view_and_widget_classes_restore_from_saved_names():
         ('meltygui.widgets.file_graph', 'ImportGraph', ImportGraph),
     ):
         saved_global = f'c{module}\n{name}\n.'.encode()
-        assert pickle.loads(saved_global) is expected
         assert LSDUnpickler(io.BytesIO(saved_global)).load() is expected
     historical = b'csrc.lsd.gl_gui.view.core_views.core_meta\nAnnotationOverride\n.'
     assert LSDUnpickler(io.BytesIO(historical)).load() is AnnotationOverride

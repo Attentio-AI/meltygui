@@ -14,7 +14,7 @@ Validation: 33 targeted tests passed; old-source migration/hotswap checks passed
 Isolated UI comparison found the same nested-Path renderer issue in the original
 and extracted paths. That pre-existing issue remains unresolved.
 
-Source reviewed: `meltygui/files/folder_files.py` (the complete module), plus its
+Source reviewed: `meltygui/core/files/file_core.py` (the complete module), plus its
 host notification contract, metadata store references, public exports and callers.
 
 ## Intended arrangement

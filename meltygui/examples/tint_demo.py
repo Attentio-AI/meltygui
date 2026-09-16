@@ -16,7 +16,7 @@ from meltygui.core.rendering.render_funcs import RenderFuncs
 from meltygui.core.windowing.glfw_utils import request_render
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.window_decoration import window
-from meltygui.editor.text_editor import draw_text
+from meltygui.view.text_view import draw_text
 
 # Anchored at src/sample.py regardless of cwd (this file lives at
 # src/lsd/gl_gui/view/playground/) - inside the watched project tree, where

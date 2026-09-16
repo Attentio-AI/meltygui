@@ -75,7 +75,9 @@ See [Publishing](PUBLISHING.md) for account setup and release verification.
 - `meltygui/examples` and top-level `examples`: sample data, composition and apps.
 - `meltygui/core/runtime/extensions.py`: optional application service callbacks.
 
-`views`, `widgets`, `rendering` and `windows` are compatibility namespaces.
+`views`, `widgets`, `rendering` and `windows` have been removed. All imports use
+current paths; update `meltygui_pro` and `melty_code_editor` together with moves.
+Saved-session name translation does not make historical paths importable.
 Remaining `tensor`, `graphics`, `files`, `models`, `chat`, `completion`, `code`,
 `editor` and helper modules are a mixture of feature implementations and adapters
 still being classified. Their existing locations are not the template for new

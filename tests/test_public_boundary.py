@@ -16,7 +16,7 @@ def test_public_sources_have_no_private_imports():
 
 
 def test_standalone_text_inspection_and_symbol_usage(tmp_path):
-    script = r'''
+    script = '''
 import importlib.abc
 import sys
 class NoPrivate(importlib.abc.MetaPathFinder):
@@ -30,8 +30,10 @@ from meltygui.code import symbol_roster
 from meltygui.editor import pending_save, usage_picker, source_preview
 from meltygui.code.source_context import analysis_project
 from meltygui.state.core_undo import UndoManager
-from meltygui.widgets import file_tree, actions_playground as actions, crash_reports
-from meltygui.views import stack_trace_view
+from meltygui.core.files import file_tree_core as file_tree
+from meltygui.core.automation import action_core as actions
+from meltygui.model import trace_report_model as crash_reports
+from meltygui.core.diagnostics import trace_core as stack_trace_view
 assert not hasattr(meltygui, 'draw_code_editor')
 assert not hasattr(meltygui, 'global_search')
 assert not hasattr(meltygui, 'EditorProjectState')
@@ -44,7 +46,7 @@ from pathlib import Path
 root = Path(sys.argv[1])
 (root / 'pyproject.toml').touch()
 source = root / 'source.py'
-source.write_text('def target():\n    return 1\n\nanswer = target()\n')
+source.write_text('def target():\\n    return 1\\n\\nanswer = target()\\n')
 entry = symbol_roster.table_for(source).by_name['target'][0]
 usages = symbol_roster.usages_of(entry, project=analysis_project(root))
 assert any(usage.path == str(source) and usage.line == 4 for usage in usages), usages

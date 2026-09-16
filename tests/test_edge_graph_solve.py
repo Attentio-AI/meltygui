@@ -22,7 +22,7 @@ import sys
 
 import conftest  # noqa: F401,E402
 
-from meltygui.views import columns as C  # noqa: E402
+from meltygui.core.layout import column_core as C  # noqa: E402
 from test_column_edge_solve import FakeWindow, run_pass  # noqa: E402
 from meltygui.core.melty import Melty  # noqa: E402
 

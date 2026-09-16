@@ -1014,7 +1014,8 @@ def draw_chat_navigation(input_value, draw_state=None, state: ChatInterfaceState
             y = top + heading_height
             if pane == "accounts":
                 imgui.set_cursor_screen_pos((x, y))
-                edited, _ = internet_accounts.draw_internet_accounts(
+                from meltygui.view.account_view import draw_internet_accounts
+                edited, _ = draw_internet_accounts(
                     internet_accounts.accounts, name="chat-internet-accounts",
                     width=width, height=max(0, height - heading_height),
                     show_header=False, show_name=False, show_bg=False, shadow=False,

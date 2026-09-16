@@ -85,12 +85,6 @@ from meltygui.core.input.drag_drop_core import DragDrop
 from meltygui.core.layout.header_runtime import _brightness_clamp_fn
 
 
-from meltygui.state.file_state import FileExplorerState     # the query the current selection was found for
-
-
-from meltygui.state.file_state import ShortcutState
-
-
 # ── the directory watch ─────────────────────────────────────────────────────
 # directory (str) -> the listing draw_states showing it. One FileWatch emitter per
 # dir in this map; a listing moves its emitter on navigation (watch_directory)
@@ -345,7 +339,7 @@ def tint_control(draw_state, key, tint, x, y, size, text_y, hovered, default_tin
     brush_icon = f"\uf1fc"
     brush_col = pack_color(*brush_color, 1.0) if brush_color is not None else pack_color(1.0, 1.0, 1.0, 0.22)
     brush_hover_col = brush_col if brush_color is not None else pack_color(1.0, 1.0, 1.0, 0.9)
-    from meltygui.core.rendering.render_dispatch import draw_tuple_fast
+    from meltygui.view.collection_view import draw_tuple_fast
 
     view_id = f"tint_{key}"
     if tint:
@@ -563,7 +557,6 @@ def search_typed(query, keys):
 
 
 # ── the listing ─────────────────────────────────────────────────────────────
-from meltygui.view.file_view import draw_file_listing
 
 
 def _scroll_row_into_view(draw_state, index, row_h, rows_top, centre=False, content_h=None):
@@ -595,8 +588,6 @@ def _scroll_row_into_view(draw_state, index, row_h, rows_top, centre=False, cont
 
 
 # ── the shortcuts column ────────────────────────────────────────────────────
-from meltygui.view.file_view import draw_shortcuts
 
 
 # ── the explorer: shortcuts + listing ───────────────────────────────────────
-from meltygui.view.file_view import draw_fast_file_explorer
