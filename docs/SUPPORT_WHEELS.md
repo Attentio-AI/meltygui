@@ -4,7 +4,7 @@ MeltyGUI depends on two independently named distributions, published on PyPI:
 
 | Distribution | Import namespace | Contents | Repository |
 | --- | --- | --- | --- |
-| `meltygui-imgui` 2.0.0.post2 | `meltygui_imgui` | pyimgui 2.0.0 | [Attentio-AI/meltygui-imgui](https://github.com/Attentio-AI/meltygui-imgui) |
+| `meltygui-imgui` 2.0.0.post3 | `meltygui_imgui` | pyimgui 2.0.0 | [Attentio-AI/meltygui-imgui](https://github.com/Attentio-AI/meltygui-imgui) |
 | `meltygui-pycuda` 2026.1.post2 | `meltygui_pycuda` | Pinned PyCUDA with OpenGL and cuRAND enabled | [Attentio-AI/meltygui-pycuda](https://github.com/Attentio-AI/meltygui-pycuda) |
 
 Neither installs files into upstream `imgui` or `pycuda`. MeltyGUI imports its

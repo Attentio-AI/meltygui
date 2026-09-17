@@ -37,7 +37,7 @@ def verify(directory, require_license=False, core_only=False):
         raise SystemExit('Publication needs the owner-selected project license and LICENSE file.')
     found = set()
     seen = set()
-    versions = {'meltygui': project['version'], 'meltygui-imgui': '2.0.0.post2',
+    versions = {'meltygui': project['version'], 'meltygui-imgui': '2.0.0.post3',
                 'meltygui-pycuda': '2026.1.post2'}
     for path in sorted(directory.glob('*.whl')):
         with zipfile.ZipFile(path) as wheel:

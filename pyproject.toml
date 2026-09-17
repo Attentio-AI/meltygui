@@ -7,7 +7,7 @@ name = "meltygui"
 version = "0.1.0"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-classifiers = ["Development Status :: 3 - Alpha", "Operating System :: POSIX :: Linux", "Programming Language :: Python :: 3.11", "Programming Language :: Python :: 3.12", "Programming Language :: Python :: 3.13"]
+classifiers = ["Development Status :: 3 - Alpha", "Operating System :: POSIX :: Linux", "Operating System :: Microsoft :: Windows","Programming Language :: Python :: 3.11", "Programming Language :: Python :: 3.12", "Programming Language :: Python :: 3.13"]
 description = "Immediate-mode Python UI, live inspection, HDR and tensor visualization"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
