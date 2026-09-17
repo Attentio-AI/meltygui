@@ -72,6 +72,7 @@ class TileManagerState(DictConversion):
     def __init__(self):
         super().__init__()
         self.gesture = None
+        self.content_top = {"y": 0.0}
 
 
 # The four corners of a tile: (name, on the left?, on the top?).
@@ -382,7 +383,7 @@ def draw_tile_node(node, frame, draw_state, path=(), tree=None,
 
 
 def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
-               multi_instance_renderers=()):
+               multi_instance_renderers=(), content_top=None):
     """Render a whole tile tree over the host window's frame: the root
     adopts the window's four frame edges (``frame_edges``), so the window
     frame and every divider move through one collision solve. Call from a
@@ -390,9 +391,15 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
     tiles draw and their edges drag, but corners don't split). Returns
     True when the layout, editor selection or editor content changed.
     ``multi_instance_renderers`` is supplied by the hosting render_func's
-    injected parameter of the same name. The root must be a Split."""
+    injected parameter of the same name. ``content_top`` optionally reserves
+    space above the tiles (an absolute screen y coordinate). The root must be a Split."""
     window = layout_window(draw_state)
     root_frame = frame_edges(window)
+    if content_top is not None:
+        # Keep the body boundary stable while menus above it change height.
+        top = tile_state.content_top if tile_state is not None else {}
+        top["y"] = content_top - window.abs_top
+        root_frame = (*root_frame[:2], top, root_frame[3])
     changed = draw_tile_node(tree, root_frame, draw_state, (), tree=tree,
                              root_frame=root_frame, tile_state=tile_state,
                              gap=gap)
@@ -427,7 +434,7 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
             continue
         imgui.set_cursor_screen_pos((left + grip_inset, top + grip_inset))
         content_changed, _ = draw_tile_content(
-            tile, key=tile.id, width=right - left - 2 * grip_inset,
+            tile, width=right - left - 2 * grip_inset,
             height=bottom - top - 2 * grip_inset,
             multi_instance_renderers=multi_instance_renderers,
             layout_frame=frame,

@@ -242,6 +242,10 @@ class FontManager:
         self.io = io
         self.scale = float(scale)
         self._handles: dict = {}
+        # imgui keeps a POINTER to each font's glyph ranges until the atlas is
+        # built, and a GlyphRanges frees its array when collected: the bake
+        # owns them here until the next bake replaces the atlas.
+        self._glyph_ranges: list = []
         # Fonts baked into the current atlas (load failures included, stamped
         # None in _handles so they never re-queue) / fonts get() queued for
         # the next between-frames bake (flush_pending).
@@ -342,6 +346,7 @@ class FontManager:
         self._variant_last_used = {f: t for f, t in self._variant_last_used.items() if f in include}
         self._handles.clear()
         self.io.fonts.clear()
+        self._glyph_ranges.clear()
         variants = sorted((f for f in include if isinstance(f, FontSpec)),
                           key=lambda f: (f.path, f.size, f.weight))
         entries = list(Font) + [f for base in variants if not base.merge
@@ -388,6 +393,7 @@ class FontManager:
                     glyph_ranges = _UI_RANGE
                 if glyph_ranges is not None:
                     ranges = imgui.GlyphRanges(list(glyph_ranges))
+                    self._glyph_ranges.append(ranges)
                     handle = self.io.fonts.add_font_from_file_ttf(spec.path, size, cfg, ranges)
                 else:
                     handle = self.io.fonts.add_font_from_file_ttf(spec.path, size, cfg)

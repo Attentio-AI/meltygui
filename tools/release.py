@@ -10,6 +10,7 @@ import tomllib
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+SUPPORT_PYTHONS = ('cp311', 'cp312', 'cp313')
 PACKAGES = {'meltygui': 'meltygui/', 'meltygui-imgui': 'meltygui_imgui/', 'meltygui-pycuda': 'meltygui_pycuda/'}
 
 
@@ -32,15 +33,19 @@ def verify(directory, require_license=False):
     if require_license and (not project.get('license') or not (ROOT / 'LICENSE').is_file()):
         raise SystemExit('Publication needs the owner-selected project license and LICENSE file.')
     found = set()
-    versions = {'meltygui': project['version'], 'meltygui-imgui': '2.0.0.post1',
-                'meltygui-pycuda': '2026.1.post1'}
+    seen = set()
+    versions = {'meltygui': project['version'], 'meltygui-imgui': '2.0.0.post2',
+                'meltygui-pycuda': '2026.1.post2'}
     for path in sorted(directory.glob('*.whl')):
         with zipfile.ZipFile(path) as wheel:
             names = wheel.namelist()
             metadata = BytesParser().parsebytes(wheel.read(next(n for n in names if n.endswith('.dist-info/METADATA'))))
             name = metadata['Name'].replace('_', '-')
             assert name in PACKAGES, (path, name)
-            assert name not in found, ('Duplicate release wheel', name)
+            # The support packages ship one wheel per CPython; meltygui itself is pure Python.
+            interpreter = path.name.split('-')[2]
+            assert (name, interpreter) not in seen, ('Duplicate release wheel', path.name)
+            seen.add((name, interpreter))
             assert metadata['Version'] == versions[name], path
             found.add(name)
             expected = PACKAGES[name]
@@ -60,7 +65,7 @@ def verify(directory, require_license=False):
                 assert not any(d.startswith(('imgui[', 'imgui>', 'pycuda>')) for d in deps)
                 assert not any(n in d.replace('_', '-') for d in deps for n in ('meltygui-pro', 'meltyprivate'))
             else:
-                assert 'cp312-cp312-manylinux' in path.name, path
+                assert interpreter in SUPPORT_PYTHONS and f'{interpreter}-{interpreter}-manylinux' in path.name, path
                 assert any('/licenses/' in n for n in names), path
                 if name.endswith('pycuda'):
                     assert any('NVIDIA-CUDA-12.1-EULA' in n for n in names), path

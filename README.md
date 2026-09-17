@@ -11,14 +11,16 @@ MeltyGUI is capable of rendering tensors exceeding 64GB in size. The primary cha
 MeltyGUI is not yet published to PyPI. For now, install from a checkout using
 [the setup guide](docs/DEVELOPMENT.md#setup).
 
-The current setup targets Linux with Python 3.12 and a working OpenGL 4.3
-context. CUDA tensor rendering also requires PyTorch, an NVIDIA GPU, a CUDA
-toolkit, and MeltyGUI's GL-enabled CUDA binding. See the setup guide for the
-required native dependency wheels.
+The current setup targets Linux x86-64 with Python 3.11, 3.12 or 3.13 and a
+working OpenGL 4.3 context. CUDA tensor rendering also requires PyTorch, an
+NVIDIA GPU, a CUDA toolkit, and MeltyGUI's GL-enabled CUDA binding. The native
+bindings install as prebuilt wheels on those targets; elsewhere installers
+compile them, see [when no wheel matches](docs/SUPPORT_WHEELS.md#when-no-wheel-matches).
 
 ## Visualize a tensor
 
-Create a small volume on the GPU and pass it to `draw_voxels`:
+Create a small volume on the GPU and tag `draw_voxels` as an OS window with
+`glfw_window`:
 
 ```python
 import torch
@@ -28,13 +30,9 @@ axis = torch.linspace(-1.5, 1.5, 40, device="cuda:0")
 x, y, z = torch.meshgrid(axis, axis, axis, indexing="ij")
 volume = torch.exp(-4 * ((torch.sqrt(x * x + y * y) - 0.85) ** 2 + z * z))
 
-
-@meltygui.glfw_window(name="CUDA tensor", width=850, height=700)
-def tensor_window(input_value=None):
-    meltygui.draw_voxels(
-        volume, name="Torus", width=800, height=630
-    )
-    return False, input_value
+meltygui.glfw_window(
+    meltygui.draw_voxels, name="Torus", value=volume, width=850, height=700
+)
 ```
 
 Save this as `tensor_demo.py` and run it with the Python from your configured
@@ -44,10 +42,21 @@ environment:
 .venv/bin/python tensor_demo.py
 ```
 
-The window loop starts automatically after the module finishes defining its
-windows. The function runs each frame; create the tensor outside it to avoid
-reallocating the volume on every frame. The CUDA renderer reads the volume on
+`glfw_window` turns a view into a native window: `name` is the window title,
+`width` / `height` its content size, `value` the view's input, and every other
+keyword argument goes to the view. The window loop starts automatically after
+the module finishes defining its windows. The CUDA renderer reads the volume on
 its own GPU and transfers the rendered 2D image for display.
+
+To compose several views in one window, decorate your own function instead. It
+runs each frame, so create the tensor outside it to avoid reallocating the
+volume on every frame:
+
+```python
+@meltygui.glfw_window(name="CUDA tensor", width=850, height=700)
+def tensor_window():
+    meltygui.draw_voxels(volume, name="Torus", width=800, height=630)
+```
 
 `draw_voxels` chooses CUDA for CUDA tensors and OpenGL for CPU tensors, NumPy
 arrays and GL textures. Select a renderer explicitly with the framework's

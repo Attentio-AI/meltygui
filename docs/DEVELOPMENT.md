@@ -7,28 +7,58 @@ remaining migration work and deliberate deferrals.
 
 ## Setup
 
-The first release target is Linux x86-64, Python 3.12, with a working OpenGL 4.3
-context. Build the native support wheels with [the native build guide](SUPPORT_WHEELS.md),
-or use the prepared artifacts under `dist/release`:
+Supported targets are Linux x86-64 with CPython 3.11, 3.12 or 3.13 and a working
+OpenGL 4.3 context. MeltyGUI itself is not on PyPI yet, so install it from a
+checkout; its native support packages (`meltygui-imgui`, `meltygui-pycuda`) come
+from PyPI as prebuilt wheels:
 
 ```sh
 uv venv --python 3.12
-uv pip install --python .venv/bin/python --find-links dist/release -e . --group dev
+uv pip install --python .venv/bin/python -e . --group dev
 ```
 
-The `meltygui-imgui` dependency supplies a namespaced Python 3.12 binding; it does
-not replace upstream `imgui`. Low-level app code uses `from meltygui import imgui`.
+To use MeltyGUI from another project, add the checkout as a path dependency:
+
+```sh
+uv add "meltygui[tensor] @ /path/to/meltygui"
+```
+
+`meltygui-imgui` supplies a namespaced binding; it does not replace upstream
+`imgui`. Low-level app code uses `from meltygui import imgui`.
 
 ### Tensor dependencies
 
 ```sh
-uv pip install --python .venv/bin/python --find-links dist/release -e '.[tensor]' --group dev
+uv pip install --python .venv/bin/python -e '.[tensor]' --group dev
 ```
 
-The extra declares Torch and the namespaced, GL-enabled PyCUDA build. Select the
-appropriate Torch CUDA backend for your project. CUDA rendering needs an NVIDIA
-driver and CUDA toolkit with nvcc and a compatible host compiler. Both native
-support packages also ship source distributions for local compilation.
+The extra declares Torch and the namespaced, GL-enabled PyCUDA build. It does
+not pin a Torch CUDA backend: select the one for your project, for example
+`torch==2.5.1+cu121` with `--extra-index-url https://download.pytorch.org/whl/cu121`.
+Torch older than 2.3 also needs `numpy<2`. CUDA rendering needs an NVIDIA driver
+and a CUDA toolkit with nvcc and a compatible host compiler, because kernels
+compile at runtime; the PyCUDA wheel's own CUDA 12.1 build does not have to
+match the toolkit or Torch's CUDA version. A Torch environment is several GB;
+the GL/CPU path without the extra is about 260 MB.
+
+### When no wheel matches
+
+On another platform or Python, pip and uv silently fall back to compiling the
+support packages, and only show the build output when it fails.
+[Native support wheels](SUPPORT_WHEELS.md#when-no-wheel-matches) describes what
+to expect. Use unpublished support wheels with `--find-links <folder>`.
+
+### PyTorch compatibility matrix
+
+`tools/torch_matrix.py` installs a noneditable MeltyGUI wheel next to a range of
+Torch releases (one fresh venv each, outside the checkout) and runs the CUDA and
+tensor tests against it. It downloads several GB per Torch build:
+
+```sh
+python3 tools/torch_matrix.py --list
+python3 tools/torch_matrix.py --only py312-torch2.5
+python3 tools/torch_matrix.py --window-smoke   # also opens the README example: agent desktop only
+```
 
 ## Run and check
 
@@ -45,6 +75,13 @@ Use `MELTY_BENCH=1` for a first-frame smoke run:
 
 ```sh
 MELTY_BENCH=1 .venv/bin/python examples/tensor_live.py
+```
+
+Smoke-run every README example the same way (opens windows; run it from a
+reserved agent desktop):
+
+```sh
+MELTY_README_SMOKE=1 .venv/bin/pytest tests/test_readme_examples.py
 ```
 
 For UI verification, follow the desktop reservation instructions in

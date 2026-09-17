@@ -72,16 +72,18 @@ def test_selection_stores_callable_and_propagates_editor_changes(monkeypatch):
         return True, input_value + " edited"
 
     monkeypatch.setattr(tile_view, "draw_dropdown", lambda *a, **kw: (True, editor))
+    monkeypatch.setattr(tile_view.imgui, "get_cursor_screen_pos", lambda: (10, 20))
+    monkeypatch.setattr(tile_view.imgui, "set_cursor_screen_pos", lambda pos: None)
     tile = Tile(input_value="original")
     changed, result = inspect.unwrap(tile_view.draw_tile_content)(
-        tile, SimpleNamespace(width=300, height=200), (editor,))
+        tile, 300, 200, (editor,))
     assert changed
     assert result is tile
     assert tile.render_func is editor
     assert tile.input_value == "original edited"
     monkeypatch.setattr(tile_view, "draw_dropdown", lambda *a, **kw: (True, None))
     changed, result = inspect.unwrap(tile_view.draw_tile_content)(
-        tile, SimpleNamespace(width=300, height=200), (editor,))
+        tile, 300, 200, (editor,))
     assert changed and result is tile
     assert tile.render_func is None
     assert tile.input_value == "original edited"
@@ -110,6 +112,7 @@ def test_tile_instances_keep_state_across_switching_and_reordering(gl_context, m
         assert draw_state.abs_left == pytest.approx(cursor_x, abs=1.0)
         # The wrapper adds its normal vertical content padding inside this box.
         assert draw_state.abs_top <= cursor_y <= draw_state.abs_top + 8
+        assert inspect.unwrap(draw_state._parent._view_func) is inspect.unwrap(host)
         seen.append(state)
         return False, input_value
 
@@ -120,7 +123,7 @@ def test_tile_instances_keep_state_across_switching_and_reordering(gl_context, m
         x, y = imgui.get_cursor_screen_pos()
         for index, tile in enumerate(tiles):
             imgui.set_cursor_screen_pos((x + index * 350, y))
-            draw_tile_content(tile, key=tile.id, width=320, height=220)
+            draw_tile_content(tile, width=320, height=220)
         return False, input_value
 
     def frame():

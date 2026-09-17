@@ -43,14 +43,15 @@ python3 tools/release.py collect --require-license
 uvx --from twine==7.0.0 twine check --strict dist/release/*.whl dist/release/*.tar.gz
 ```
 
-Only upload the six verified `.whl`/`.tar.gz` artifacts in `dist/release`, not the
+Only upload the verified `.whl`/`.tar.gz` artifacts in `dist/release` (one MeltyGUI wheel, a wheel per
+CPython for each support package, and three source archives), not the
 entire `dist` tree. The latter also contains older experimental artifacts.
 `SHA256.json` records the intended uploads. Never reuse a published version for
 changed files; bump the relevant core or support-package version.
 
 ## Acceptance after upload
 
-Use a new Python 3.12 environment with no local find-links or extra index:
+Use a new environment for each supported Python (3.11, 3.12, 3.13) with no local find-links or extra index:
 
 ```sh
 uv venv --python 3.12 /tmp/meltygui-from-pypi
