@@ -54,7 +54,9 @@ volume on every frame:
 
 ```python
 @meltygui.glfw_window(name="CUDA tensor", width=850, height=700)
-def tensor_window():
+def draw_frame():
+    # Interactive widget, rendered in a loop. This function will be called wheneven
+    # the rendered image is invalidated
     meltygui.draw_voxels(volume, name="Torus", width=800, height=630)
 ```
 
