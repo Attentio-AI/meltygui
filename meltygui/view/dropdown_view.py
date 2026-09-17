@@ -1,4 +1,5 @@
 """Dropdown view functions and supporting definitions."""
+from meltygui.core.runtime.paths import debug_log_path
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
@@ -85,7 +86,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
             except Exception:
                 _mx = _my = -1.0;
                 _clk = _dn = None
-            with open("/tmp/dd_debug.log", "a") as _f:
+            with open(debug_log_path("dd_debug.log"), "a") as _f:
                 _f.write(f"[DD-DBG] f={Melty.frame_count} name={name!r} ds={id(draw_state)} "
                          f"pf={id(_pf) if _pf is not None else None} is_open={is_open} "
                          f"mouse=({_mx:.0f},{_my:.0f}) clk={_clk} down={_dn} "
@@ -176,7 +177,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
 
         was_open = is_open
         if _DD_DBG:
-            with open("/tmp/dd_debug.log", "a") as _f:
+            with open(debug_log_path("dd_debug.log"), "a") as _f:
                 _f.write(f"[DD-DBG] CLICK toggle f={Melty.frame_count} name={name!r} was_open={was_open}\n")
         Melty.popover_focused_ds = None if is_open else draw_state
         is_open = Melty.popover_focused_ds is draw_state
@@ -251,7 +252,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
             drop_down_state.selected_path = _p
             drop_down_state.selected_label = _dd_label_for_path(collection, _p)
             if _DD_DBG:
-                with open("/tmp/dd_debug.log", "a") as _f:
+                with open(debug_log_path("dd_debug.log"), "a") as _f:
                     _f.write(f"[DD-DBG] CLOSE via menu-pick f={Melty.frame_count} name={name!r} picked={_p}\n")
             Melty.popover_focused_ds = None  # picking dismisses the popover
             _dd_close(drop_down_state)
@@ -275,7 +276,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         # cleared the box's focus this same frame, so we don't require it here.
         if any(k == glfw.KEY_ESCAPE for k, _ in Core.melty.frame_key_events):
             if _DD_DBG:
-                with open("/tmp/dd_debug.log", "a") as _f:
+                with open(debug_log_path("dd_debug.log"), "a") as _f:
                     _f.write(f"[DD-DBG] CLOSE via Esc f={Melty.frame_count} name={name!r}\n")
             Melty.popover_focused_ds = None
             _dd_close(drop_down_state)

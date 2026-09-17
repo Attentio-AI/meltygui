@@ -11,17 +11,19 @@ Pipeline:
 The shell owns line-editing, history, cd, prompts, job control — so this file is
 just a PTY pump + a screen renderer + a key encoder, plus selection/copy on top.
 """
-import fcntl
 import os
 import shlex
 import shutil
 import signal
 import struct
 import subprocess
-import termios
 import threading
 import time
 import uuid
+
+if os.name != "nt":          # the pseudo-terminal pump is POSIX; Terminal reports that on Windows
+    import fcntl
+    import termios
 
 import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui

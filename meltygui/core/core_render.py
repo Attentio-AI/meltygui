@@ -12,6 +12,7 @@ from functools import wraps
 from math import ceil
 from typing import Any, get_type_hints
 
+from meltygui.core.runtime.paths import debug_log_path
 import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
@@ -5587,7 +5588,7 @@ def render_func(*args, **o_kwargs):
             if (draw_state.scroll_offset[1] > 1
                     and Melty.frame_count - getattr(draw_state, "_jump_dbg", -9999) < 120):
                 try:  # jump-scroll debug (see _uj_log in text_editor.py)
-                    with open("/tmp/uj_debug.log", "a") as _jf:
+                    with open(debug_log_path("uj_debug.log"), "a") as _jf:
                         _jf.write(f"[f{Melty.frame_count}] WIPE {draw_state.name!r} "
                                   f"sy={draw_state.scroll_offset[1]:.0f}->0 "
                                   f"content_h={draw_state.abs_content_height:.0f} "
@@ -5654,7 +5655,7 @@ def render_func(*args, **o_kwargs):
                 if (abs(_clamped_y - current_y) > 1
                         and Melty.frame_count - getattr(draw_state, "_jump_dbg", -9999) < 120):
                     try:  # jump-scroll debug (see _uj_log in text_editor.py)
-                        with open("/tmp/uj_debug.log", "a") as _jf:
+                        with open(debug_log_path("uj_debug.log"), "a") as _jf:
                             _jf.write(f"[f{Melty.frame_count}] CLAMP {draw_state.name!r} "
                                       f"sy={current_y:.0f}->{_clamped_y:.0f} "
                                       f"max={max_scroll_y:.0f} "

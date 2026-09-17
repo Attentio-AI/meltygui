@@ -29,8 +29,9 @@ import os
 import sys
 import threading
 import time
+from meltygui.core.runtime.paths import debug_log_path
 
-LOG_PATH = "/tmp/lsd_symbol_perf.log"
+LOG_PATH = debug_log_path("lsd_symbol_perf.log")
 _MAX_CARRYOVER_BYTES = 5 * 1024 * 1024   # start fresh when the file grows past this
 
 _lock = threading.Lock()

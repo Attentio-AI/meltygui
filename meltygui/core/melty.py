@@ -9,6 +9,7 @@ from copy import copy
 from enum import Enum
 from typing import MutableMapping, Optional
 
+from meltygui.core.runtime.paths import debug_log_path
 import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
 import meltygui.hdr_color as hdr_color
@@ -209,8 +210,10 @@ class FileWatch:
         """Keep registered watches and listeners when native watch limits are hit."""
         import errno
         from watchdog.observers.polling import PollingObserver
-        if (error.errno not in (errno.EMFILE, errno.ENFILE, errno.ENOSPC)
-                or isinstance(cls.observer, PollingObserver)):
+        # inotify runs out of instances / watches; ReadDirectoryChangesW fails with
+        # Windows error codes no errno names (a network or removable folder).
+        recoverable = os.name == "nt" or error.errno in (errno.EMFILE, errno.ENFILE, errno.ENOSPC)
+        if not recoverable or isinstance(cls.observer, PollingObserver):
             raise error
         previous = cls.observer
         # Startup can fail after starting some emitters. Stop all of them,
@@ -2057,14 +2060,14 @@ class Melty:
                         _in_rect = (_l <= _mx <= _l + (ds.width or 0)) and (_t <= _my <= _t + (ds.height or 0))
                     except Exception:
                         pass
-                    with open("/tmp/dd_debug.log", "a") as _fh:
+                    with open(debug_log_path("dd_debug.log"), "a") as _fh:
                         _fh.write(f"[DD-DBG] clear_focus NULLED popover f={cls.frame_count} "
                                   f"ds={id(ds)}({getattr(ds,'name',None)!r}) grace={popover_grace} "
                                   f"mouse=({_mx:.0f},{_my:.0f}) dd_rect={_rect} mouse_in_dd_rect={_in_rect}\n"
                                   f"   seeds={_seed_names}\n{_tail}\n")
                 except Exception as _e:
                     try:
-                        with open("/tmp/dd_debug.log", "a") as _fh:
+                        with open(debug_log_path("dd_debug.log"), "a") as _fh:
                             _fh.write(f"[DD-DBG] clear_focus NULLED (log err {_e}) f={cls.frame_count} ds={id(ds)}\n")
                     except Exception:
                         pass

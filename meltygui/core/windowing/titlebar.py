@@ -32,6 +32,7 @@ each frame, so flipping the toggle takes effect without a restart.
 """
 
 import ctypes
+import sys
 import time
 
 import meltygui.core.windowing.window_api as glfw
@@ -229,11 +230,12 @@ def _on_wayland():
 def backend_supported():
     """X11 always; native Wayland only once libdecor is out of the picture
     (the fallback frame has no buttons — ours fill in), never beside
-    libdecor's own title bar."""
+    libdecor's own title bar. Never off Linux: the move / resize / frame
+    plumbing behind it is Xlib and Wayland."""
     if _on_wayland():
         from meltygui.core.windowing.glfw_utils import wayland_native_frame_active
         return wayland_native_frame_active()
-    return True
+    return sys.platform.startswith("linux")
 
 
 def titlebar_enabled():

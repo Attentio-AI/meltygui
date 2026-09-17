@@ -98,7 +98,8 @@ def boot(app_id=None):
     cache = pathlib.Path(os.environ.get('XDG_CACHE_HOME') or pathlib.Path.home() / '.cache') / _state['app_id']
     _state['cache'] = cache
     _register_editable(getattr(sys.modules.get('__main__'), '__file__', None))
-    os.environ.setdefault('GDK_BACKEND', 'wayland')
+    if sys.platform.startswith('linux'):
+        os.environ.setdefault('GDK_BACKEND', 'wayland')
     import meltygui.core.styling.warm_start as warm_start
     warm_start.prepare(cache)
     import meltygui.core.windowing.window_api as glfw

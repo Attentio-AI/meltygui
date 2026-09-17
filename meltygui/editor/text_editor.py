@@ -5,6 +5,7 @@ import math
 import re
 import time
 
+from meltygui.core.runtime.paths import debug_log_path
 import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
@@ -3921,7 +3922,7 @@ def _uj_log(msg):
     press, gutter click, span-scan outcome, and pick lands here with the
     frame count. `tail -f /tmp/uj_debug.log` while reproducing."""
     try:
-        with open("/tmp/uj_debug.log", "a") as f:
+        with open(debug_log_path("uj_debug.log"), "a") as f:
             f.write(f"[f{Melty.frame_count}] {msg}\n")
     except OSError:
         pass
@@ -3932,7 +3933,7 @@ def _uj_log(msg):
 # background graph should already hold for the caret's line. Any disagreement
 # IS the stuck-stale-graph bug observed at the moment it's reproduced - so
 # every Ctrl+B recheck diffs the two and dumps a full forensic block here.
-_USAGE_MISMATCH_LOG = "/tmp/usage_graph_mismatch.log"
+_USAGE_MISMATCH_LOG = debug_log_path("usage_graph_mismatch.log")
 
 
 def _tree_usages_on_line(tree, file_line):

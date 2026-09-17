@@ -597,11 +597,16 @@ def _get_jedi_mp_ctx():
     global _jedi_mp_ctx
     if _jedi_mp_ctx is None:
         import multiprocessing as _mp
-        ctx = _mp.get_context("forkserver")
-        try:
-            ctx.set_forkserver_preload([__name__])
-        except Exception:
-            pass
+        if "forkserver" in _mp.get_all_start_methods():
+            ctx = _mp.get_context("forkserver")
+            try:
+                ctx.set_forkserver_preload([__name__])
+            except Exception:
+                pass
+        else:
+            # Windows has only `spawn`: each worker is a fresh interpreter, so it is
+            # just as free of the studio's address space, without the shared preload.
+            ctx = _mp.get_context("spawn")
         _jedi_mp_ctx = ctx
     return _jedi_mp_ctx
 

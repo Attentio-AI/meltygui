@@ -1,5 +1,6 @@
 import ctypes
 import math
+import sys
 import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -152,7 +153,8 @@ _GROUP_OF = _build_groups()
 
 
 def detect_auto_scale(window=None) -> float:
-    """dp scale for the monitor the OS window currently sits on: 1.5 on
+    """dp scale for the monitor the OS window currently sits on. On Windows
+    the monitor's display scaling (content scale); elsewhere 1.5 on
     4k-and-larger panels (video mode at/above 3840 wide or 2160 tall, so a
     portrait 4k still counts), 1.0 otherwise. The window's monitor is found
     by which video mode contains the window's center; falls back to the
@@ -174,6 +176,14 @@ def detect_auto_scale(window=None) -> float:
                     break
         if target is None:
             target = glfw.get_primary_monitor()
+        if not target:
+            return 1.0                   # headless session: no monitor to ask
+        if sys.platform == 'win32':
+            # Windows reports the display scaling the user chose (100 / 125 / 150 %...)
+            # per monitor, and a GLFW window there is sized in physical pixels, so that
+            # factor IS the dp scale. Elsewhere the compositor scales or the figure is
+            # a session-wide DPI guess, so the panel resolution stays the signal.
+            return float(max(glfw.get_monitor_content_scale(target)))
         mode = glfw.get_video_mode(target)
         return 1.5 if (mode.size.width >= 3840 or mode.size.height >= 2160) else 1.0
     except Exception:
