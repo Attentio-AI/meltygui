@@ -55,6 +55,7 @@ from meltygui.core.layout.column_core import _bands
 from meltygui.core.layout.column_core import frame_edges
 from meltygui.core.layout.column_core import layout_window
 from meltygui.core.layout.column_core import _drag_inc
+from meltygui.core.layout.column_core import _grab_zone
 from meltygui.core.rendering.core_decoration import Core
 from meltygui.core.rendering.core_decoration import no_save
 from meltygui.core.cache.invalidation_tracker import Note
@@ -181,9 +182,9 @@ def corner_rect(rect, on_left, on_top, size):
 
 def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
               tile_state=None, gap=4.0):
-    """Paint one leaf — its tint as a filled rect inset by ``gap`` / 2 on
-    every side (so the dividers read as gaps), and a corner grip
-    where hovered — and run the corner split gesture when ``tree`` /
+    """Paint one leaf — no background (``draw_split_dividers`` draws the
+    lines between tiles), only a corner grip where hovered — and run the
+    corner split gesture when ``tree`` /
     ``root_frame`` / ``tile_state`` are given (``draw_tiles`` passes
     them). Returns True when the gesture changed the tree."""
     # [tint=(1.0, 0.8, 0.3)]
@@ -194,7 +195,6 @@ def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
     if rect is None:
         return False
     draw_list = imgui.get_window_draw_list()
-    draw_list.add_rect_filled(*rect, pack_color(*tile.tint, 1.0))
 
     changed = False
     for name, on_left, on_top in CORNERS:
@@ -336,6 +336,36 @@ def draw_join_preview(tree, root_frame, draw_state, tile_state):
             break
 
 
+def draw_split_dividers(layout, axis, frame, draw_state):
+    """Draw one Split's interior edges as lines across its band: black at
+    rest, highlighted while the cursor is in that edge's grab zone (the
+    same zone the layout drags from) or the edge is being dragged."""
+    # [tint=(1.0, 0.8, 0.3)]
+    # Change the divider look here: resting / hovered colour and line width.
+    divider_color = (0.0, 0.0, 0.0, 1.0)
+    divider_hover_color = (0.35, 0.65, 1.0, 1.0)
+    divider_thickness = 2.0
+
+    window = layout_window(draw_state)
+    x0, y0, x1, y1 = frame_rect(frame, window)
+    origin = window.abs_left if axis == "x" else window.abs_top
+    edges = layout.edges
+    draw_list = imgui.get_window_draw_list()
+    for k in range(1, len(edges) - 1):
+        lo, hi = _grab_zone(edges, k, axis=axis)
+        line = snap_int(origin + edges[k][axis])
+        if axis == "x":
+            grab = (origin + lo, y0, origin + hi, y1)
+            ends = (line, y0, line, y1)
+        else:
+            grab = (x0, origin + lo, x1, origin + hi)
+            ends = (x0, line, x1, line)
+        hot = layout.active_edge == k or draw_state.hover_eligible(rect=grab)
+        draw_list.add_line(*ends,
+                           pack_color(*(divider_hover_color if hot else divider_color)),
+                           divider_thickness)
+
+
 def draw_tile_node(node, frame, draw_state, path=(), tree=None,
                    root_frame=None, tile_state=None, gap=4.0):
     """Render one node into ``frame``. A Tile paints (and runs its corner
@@ -372,6 +402,7 @@ def draw_tile_node(node, frame, draw_state, path=(), tree=None,
                 or len(node.edges) != len(interior):
             node.edges = interior
     edges = layout.edges
+    draw_split_dividers(layout, axis, frame, draw_state)
     changed = False
     for index, child in enumerate(list(children)):
         if draw_tile_node(child, child_frame(frame, axis, edges[index], edges[index + 1]),
