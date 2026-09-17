@@ -26,6 +26,8 @@ import sys
 import pytest
 
 
+from meltygui.core.layout import edge_constraints
+
 from meltygui.core.windowing import os_frame, titlebar as tb
 from meltygui.core.melty import Melty
 from meltygui.core.runtime.toggles import Toggles
@@ -1537,7 +1539,7 @@ def test_background_release_applies_only_its_remaining_motion(studio, monkeypatc
 
 
 @pytest.mark.parametrize('axis', ['x', 'y'])
-def test_failed_window_solve_restores_shared_screen_coordinates(studio, monkeypatch, axis):
+def test_failed_window_solve_never_changes_shared_screen_coordinates(studio, monkeypatch, axis):
     window = FakeWindow(x=120, y=90)
     studio.roots = [window]
     studio.frame(window)
@@ -1550,7 +1552,10 @@ def test_failed_window_solve_restores_shared_screen_coordinates(studio, monkeypa
     def fail_solve(window, solve_axis, context):
         assert context is not None
         assert context.base != 0
-        assert original[0][0][axis] != original[0][1]
+        assert original[0][0][axis] == original[0][1]
+        assert context.native[0][axis] == original[0][1] - context.base
+        context.native[0][axis] += 123.  # even a partially solved context is private
+        assert original[0][0][axis] == original[0][1]
         raise RuntimeError('injected collision failure')
 
     with monkeypatch.context() as patch:
@@ -1655,10 +1660,10 @@ def test_off_surface_window_edges_never_form_a_cycle(axis):
     assert positions[id(outside_near)] < positions[id(outside_far)]
     floors = [os_frame._chain_floor(a, ra, b, rb, axis)
               for (a, ra), (b, rb) in zip(ranked, ranked[1:])]
-    graph = C._EdgeGraph(C._cells_from_lists(
+    graph = edge_constraints.EdgeGraph(C._cells_from_lists(
         [chain, [outside_near, outside_far]], axis,
         specs=[(floors, [None] * len(floors)), ([100.0], [200.0])]))
-    C._solve_graph(graph, far, 400.0, axis=axis)
+    edge_constraints.solve_edge(graph, far, 400.0, axis=axis)
     assert outside_far[axis] == 400.0
     assert outside_near[axis] == 300.0
 

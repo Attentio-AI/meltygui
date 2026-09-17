@@ -2226,6 +2226,15 @@ class DrawState(DictConversion):
         for f, v in snapshot.items():
             setattr(self, f, v)
 
+    def get_action(self, event_name, view_id=None):
+        """Read an already-delivered event without registering a hit region.
+
+        Geometry owners consume input, resolve their rectangle, then subscribe
+        with on_action using that final rectangle for the next input dispatch.
+        """
+        identity = self._tile_id if view_id is None else f"{self._tile_id}_{view_id}"
+        return Core.melty.events.get(identity, {}).get(event_name)
+
     def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None, cursor=None,
                   cursor_gate=None):
         """Subscribe this view to `event_names` (or, with an empty list, just
@@ -2282,9 +2291,7 @@ class DrawState(DictConversion):
                               cursor_gate=cursor_gate)
 
         if single_event:
-            if view_id in Core.melty.events:
-                return Core.melty.events.get(view_id, None).get(event_names[0], None)
-            return None
+            return self.get_action(event_names[0], view_id=view_suffix)
 
         return_events = {}
         if view_id in Core.melty.events:

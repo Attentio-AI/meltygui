@@ -15,6 +15,7 @@ The GLFW and Wayland adapters must honor those capabilities. See
 ``docs/WINDOW_COLLISION_COLUMNS.md`` for the authoritative behavior contract.
 """
 import meltygui.core.windowing.window_api as glfw
+from meltygui.core.layout import edge_constraints
 
 # Smallest OS window the physics allows (content px): the OS frame cell is
 # zero, so a drag to it pushes the other OS edge instead of collapsing.
@@ -320,6 +321,26 @@ def _native_layout_frame(ds):
             and _caller_owns_frame(ds) and _native_layout_parent(ds) is not None)
 
 
+def frame_binding(window, axis):
+    """Read the declared surface relationship before any edge is solved.
+
+    The root's last layout size is the reference: the newly observed native
+    size may already differ from it. Measuring against that new size would
+    turn native motion into a changing margin and cancel the resize.
+    """
+    from meltygui.core.windowing.frame_geometry import SurfaceBinding
+    i = _AXIS[axis]
+    if _frame_pinned(window):
+        return SurfaceBinding(window, axis, (window.window_pos or (0, 0))[i], 0.)
+    if not _native_layout_frame(window):
+        return None
+    root = _native_layout_parent(window)
+    native_size = (root.width if axis == "x" else root.height) + (root.window_pos or (0, 0))[i]
+    near_gap = _screen_pos(window, axis)
+    size = window.width if axis == "x" else window.height
+    return SurfaceBinding(window, axis, near_gap, native_size - near_gap - size)
+
+
 def _has_measured_anchor(ds):
     if _caller_owns_frame(ds):
         return False
@@ -369,14 +390,18 @@ def _book_pin_rebases():
     workspace geometry, await a native request. Movable-frame anchors
     are booked separately by solve() when containment actually changes that
     frame; otherwise the next hand resize would be mistaken for feedback.
+    Pending origins belong to the layout commit, not an axis or solve call:
+    retain them until rebase_pin consumes them or the window closes.
     """
     pending = _STATE["pin_rebases"]
-    _STATE["pin_rebases"] = {
-        id(ds): pending.get(id(ds), pin_origin(ds))
-        for ds in _all_windows()
-        if _open(ds) and _native_layout_parent(ds) is not None
-        and _has_measured_anchor(ds)
-    }
+    windows = [ds for ds in _all_windows() if _open(ds)]
+    alive = {id(ds) for ds in windows}
+    for identity in list(pending):
+        if identity not in alive:
+            del pending[identity]
+    for ds in windows:
+        if _native_layout_parent(ds) is not None and _has_measured_anchor(ds):
+            pending.setdefault(id(ds), pin_origin(ds))
 
 
 def rebase_pin(ds):
@@ -720,10 +745,12 @@ def _foreign_change(axis, d, size, far_held, constrained=False):
 # ---------------------------------------------------------------------------
 
 class Context:
-    """One root window's view of the OS level for one axis' solve. The OS
-    and screen edge dicts are shifted into the WINDOW's coordinates
-    (by -base) for the solve and back in detach — the window's own edges
-    are never touched unless the solve moves them."""
+    """A local solve's private native/display edges, in window coordinates.
+
+    Shared native geometry stays in screen coordinates throughout the solve.
+    Only detach commits these results; an interrupted solve changes no native
+    geometry. Source identities keep gesture snapshots stable across contexts.
+    """
     __slots__ = ("axis", "base", "os_near0", "os_far0", "lists", "specs", "walls",
                  "drags", "os_ids", "shifted", "move")
 
@@ -738,14 +765,24 @@ class Context:
         self.shifted = ()
         self.move = False              # the window was moved by hand this frame
 
+    @property
+    def native(self):
+        return self.shifted.native
+
+    @property
+    def sources(self):
+        return self.shifted.sources
+
+    @property
+    def binding(self):
+        return self.shifted.binding
+
 
 def applied_origin(axis):
     """The surface's content origin on ``axis`` in SCREEN coords as it is
     APPLIED right now: the model's near edge less the motion not yet
-    landed (apply_rebase). What a window's content coordinate is relative
-    to this frame. Only valid OUTSIDE a window's solve (attach shifts the
-    OS dicts into window coordinates until detach — inside, read it off
-    ctx.base as columns._replay_hand_drags does). 0 with the OS level off."""
+    landed (apply_rebase). Shared edges remain in screen coordinates, even
+    while a local frame is solving. 0 with the OS level off."""
     if not _enabled():
         return 0.0
     near, _far = _STATE["edges"][axis]
@@ -760,11 +797,11 @@ def queue_drag(axis, index, inc):
         _STATE["pending"][axis].append((int(index), float(inc)))
 
 
-def attach(window, axis, has_pending=True, hand_move=False):
+def attach(window, axis, has_pending=True, hand_move=False, binding=None):
     """Called by columns._frame_pass for a ROOT window before its solve:
-    the OS-level cells / walls / drags to add, in the WINDOW's coordinates
-    (the OS and screen dicts shifted by -base, base = the screen coordinate
-    of the window's near edge; detach shifts them back). None when the OS
+    the native/display cells, walls and drags in window coordinates.
+    These are private copies; detach commits only their native results in
+    screen coordinates. None when the OS
     level is off, or when there is nothing to solve at all — no queued
     drag of the window (``has_pending``), no hand move of it this frame
     (``hand_move``: its frame pushes the OS edge it overlaps,
@@ -792,7 +829,12 @@ def attach(window, axis, has_pending=True, hand_move=False):
         seen_all[axis] = cur
     if not (has_pending or os_moved or hand_move):
         return None
+    from meltygui.core.windowing.frame_geometry import EdgeProjection
     ctx = Context(axis)
+    binding = binding if binding is not None else frame_binding(window, axis)
+    screen = () if _STATE["mode"] == "walls" else _STATE["screen"][axis]
+    ctx.shifted = EdgeProjection((near, far), screen, binding)
+    near, far = ctx.native
     ctx.move = hand_move
     ctx.os_ids = frozenset({id(near), id(far)})
     ctx.os_near0 = near[axis]
@@ -806,13 +848,11 @@ def attach(window, axis, has_pending=True, hand_move=False):
         ctx.lists.append([near, far])
         ctx.specs.append(([MIN_SIZE[i]], [None]))
         ctx.walls = ctx.os_ids
-        ctx.shifted = (near, far)
     else:
-        scr_near, scr_far = _STATE["screen"][axis]
+        scr_near, scr_far = ctx.shifted.screen
         ctx.lists.append([scr_near, near, far, scr_far])
         ctx.specs.append(([0.0, MIN_SIZE[i], 0.0], [None, None, None]))
         ctx.walls = frozenset({id(scr_near), id(scr_far)})
-        ctx.shifted = (scr_near, near, far, scr_far)
     # the OS edges' motion since this window last saw them: a drag from
     # there to here through this window's cells (foreign: the other OS
     # edge and the screen are walls - the edge IS where it is, the pile
@@ -845,22 +885,15 @@ def attach(window, axis, has_pending=True, hand_move=False):
     return ctx
 
 
-def gap_lists(ctx, window_near, window_far, rigid=False):
-    """The two zero-floor gap cells linking a root's frame pair (screen
-    coords) to the OS frame pair. A free root's gaps are uncapped: it
-    sits anywhere inside the surface and only a push reaches the OS
-    edge. ``rigid`` (a frame-pinned root — an app's root, its frame IS
-    the OS window's) caps them at zero too, so the OS edge follows the
-    frame edge BOTH ways: a divider pushed past the pile pushes it out,
-    a capped column at its maximum PULLS it in, a right-drag on the
-    frame edge shrinks the window — exactly what a studio window's own
-    frame does, with no special handling on the drags (Lukas 09-13).
-    A headerless body reserves its fixed near gap below native chrome."""
-    near, far = _STATE["edges"][ctx.axis]
-    inset = float(window_near.get("surface_inset", 0.0)) if rigid else 0.0
-    cap = 0.0 if rigid else None
-    return ([[near, window_near], [window_far, far]],
-            [([inset], [inset if rigid else None]), ([0.0], [cap])])
+def gap_lists(ctx, window_near, window_far):
+    """Contact or fixed-gap constraints in the local solve's coordinates."""
+    near, far = ctx.native
+    if ctx.binding is not None:
+        cells = ctx.binding.cells((near, far), (window_near, window_far))
+    else:
+        cells = [(near, window_near, 0., None), (window_far, far, 0., None)]
+    return ([[a, b] for a, b, _floor, _cap in cells],
+            [([floor], [cap]) for _a, _b, floor, cap in cells])
 
 
 def content_size(display):
@@ -891,8 +924,8 @@ def detach(window, axis, ctx):
     where this window saw the edges. Returns the OS near edge's motion
     this pass."""
     near, far = _STATE["edges"][axis]
-    for e in ctx.shifted:
-        e[axis] += ctx.base
+    for source, solved in zip((near, far), ctx.native):
+        source[axis] = solved[axis] + ctx.base
     d_os = near[axis] - ctx.os_near0
     if d_os:
         _STATE["unapplied"][_AXIS[axis]] += d_os
@@ -1139,7 +1172,7 @@ def _extent_of(root, children, frames, axis):
     return {axis: near}, {axis: far}, max(0.0, (far - near) - give)
 
 
-def solve():
+def solve(bindings=()):
     """Frame start, after begin_frame and the titlebar's poll: the OS
     window's own drags (queue_drag) and the OS edges' motion since the last
     solve (the compositor's resize) — the GLFW window resizes — solved
@@ -1157,15 +1190,22 @@ def solve():
     is then solved using parent extents. This is implementation machinery,
     not a rule that children must stay inside their Melty parent. Ordinary
     placement views are skipped for collision ancestry; their actual origin
-    displacement is reconciled after layout by rebase_pin. Pushed geometry
-    is written back and native origin changes go through apply_rebase."""
+    displacement is reconciled after layout by rebase_pin. Both axes read
+    the same window geometry; their results are committed together after the
+    solves. Native origin changes go through apply_rebase."""
     from meltygui.core.melty import Melty
     from meltygui.core.layout.column_core import _cells_from_lists
-    from meltygui.core.layout.column_core import _EdgeGraph
-    from meltygui.core.layout.column_core import _solve_graph
     from meltygui.core.layout.column_core import snap_int
     if not _enabled() or _STATE["frame"] != Melty.frame_count:
         return
+    # Binding discovery is independent of the axis solves and their writes.
+    surface_bindings = {(id(ds), axis): binding
+                        for ds in _all_windows() if _open(ds)
+                        for axis in _AXIS
+                        if (binding := frame_binding(ds, axis)) is not None}
+    surface_bindings.update({(id(binding.window), binding.axis): binding for binding in bindings})
+    changes = []
+    anchors_booked = False
     for axis, i in _AXIS.items():
         near, far = _STATE["edges"][axis]
         cur = (near[axis], far[axis])
@@ -1181,7 +1221,9 @@ def solve():
         os_moved = seen is not None and (abs(seen[0] - cur[0]) > 1e-6 or abs(seen[1] - cur[1]) > 1e-6)
         if not own and not os_moved:
             continue
-        _book_pin_rebases()
+        if not anchors_booked:
+            _book_pin_rebases()
+            anchors_booked = True
         walls_mode = _STATE["mode"] == "walls"
         applied = near[axis] - _STATE["unapplied"][i]
         near0 = near[axis]
@@ -1194,7 +1236,7 @@ def solve():
         # inside it. A duplicate proxy root to wall off the inspector
         # since an inward OS edge could reach and compress it.
         windows = [ds for ds in _colliding_windows()
-                   if not _frame_pinned(ds)
+                   if (id(ds), axis) not in surface_bindings
                    and not getattr(ds, "_capped_x" if axis == "x" else "_capped_y", False)]
         window_ids = {id(ds) for ds in windows}
 
@@ -1229,10 +1271,10 @@ def solve():
                 frames[identity] = n, f, floor, size
                 for edge, value in saved_edges:
                     edge[axis] = value
-        from meltygui.core.layout.column_core import _frame
         os_floor = max([MIN_SIZE[i]] + [
-            _window_floor(ds, axis) + ((_frame(ds, axis) or [{}])[0].get("surface_inset", 0.0))
-            for ds in _movable_roots() if _frame_pinned(ds) and _open(ds)])
+            binding.minimum_size(_window_floor(binding.window, axis))
+            for (_identity, bound_axis), binding in surface_bindings.items()
+            if bound_axis == axis])
 
         if walls_mode:
             os_list, os_spec = [near, far], ([os_floor], [None])
@@ -1256,7 +1298,7 @@ def solve():
                           for (a, ra), (b, rb) in zip(ranked, ranked[1:])]
                 lists.append([edge for edge, _role in ranked])
                 specs.append((floors, [None] * len(floors)))
-            return _EdgeGraph(_cells_from_lists(lists, axis, specs=specs))
+            return edge_constraints.EdgeGraph(_cells_from_lists(lists, axis, specs=specs))
 
         # the drags: the OS edges' foreign motion (the edge IS where it is;
         # the other OS edge holds), then the OS window's own drags
@@ -1326,7 +1368,7 @@ def solve():
             edge_walls = walls | driving_walls | outward
             if not cursor:
                 edge_walls = edge_walls | ({id(near), id(far)} - {id(edge)})
-            _solve_graph(graph_a, edge, target, walls=frozenset(edge_walls), axis=axis)
+            edge_constraints.solve_edge(graph_a, edge, target, walls=frozenset(edge_walls), axis=axis)
             if abs(target - edge[axis]) > 1e-6:
                 residual.append((edge, target, cursor))
         after_a = {wid: (n[axis], f[axis]) for wid, (n, f, _fl, _sz) in frames.items()}
@@ -1351,12 +1393,12 @@ def solve():
             graph_b = graph_of(cells_b)
             for edge, target, cursor in residual:
                 edge_walls = walls if cursor else (walls | ({id(near), id(far)} - {id(edge)}))
-                _solve_graph(graph_b, edge, target, walls=frozenset(edge_walls), axis=axis)
+                edge_constraints.solve_edge(graph_b, edge, target, walls=frozenset(edge_walls), axis=axis)
                 left = target - edge[axis]
                 if cursor:
                     opposite = near if left > 0 else far
                     if abs(left) > 1e-6 and opposite is not edge:           # the flip
-                        _solve_graph(graph_b, opposite, opposite[axis] - left, walls=frozenset(edge_walls), axis=axis)
+                        edge_constraints.solve_edge(graph_b, opposite, opposite[axis] - left, walls=frozenset(edge_walls), axis=axis)
                 else:
                     edge[axis] = float(target)                             # forced: it's there
 
@@ -1402,14 +1444,7 @@ def solve():
                 n_b, f_b, nb0, fb0 = extents[wid]
                 delta += n_b[axis] - nb0
                 new_size -= (fb0 - nb0) - (f_b[axis] - n_b[axis])
-            if abs(delta) > 1e-6:
-                _rebase(ds, axis, delta)
-            size = float(ds.width if axis == "x" else ds.height)
-            if abs(new_size - size) > 0.5:
-                if axis == "x":
-                    ds.width = snap_int(new_size)
-                else:
-                    ds.height = snap_int(new_size)
+            changes.append((ds, axis, delta, new_size))
             seen_all = getattr(ds, "_os_seen", None)
             if seen_all is not None:
                 seen_all[axis] = (near[axis], far[axis])
@@ -1419,6 +1454,16 @@ def solve():
             _trace(f"{axis}: OS near edge moved {d_os:+.0f} (OS-level solve)")
         compensate_far(axis, far[axis] - cur[1])
         _STATE["os_seen"][i] = (near[axis], far[axis])
+
+    # Commit once, after both independent axis graphs have finished. In
+    # particular, measuring a vertical placement must not observe a horizontal
+    # parent resize before its child's corresponding position is committed.
+    for ds, axis, delta, new_size in changes:
+        if abs(delta) > 1e-6:
+            _rebase(ds, axis, delta)
+        attr = "width" if axis == "x" else "height"
+        if abs(new_size - float(getattr(ds, attr))) > 0.5:
+            setattr(ds, attr, snap_int(new_size))
 
 
 # ---------------------------------------------------------------------------

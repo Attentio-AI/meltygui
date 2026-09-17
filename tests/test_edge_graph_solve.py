@@ -22,6 +22,8 @@ import sys
 
 import conftest  # noqa: F401,E402
 
+from meltygui.core.layout import edge_constraints
+
 from meltygui.core.layout import column_core as C  # noqa: E402
 from test_column_edge_solve import FakeWindow, run_pass  # noqa: E402
 from meltygui.core.melty import Melty  # noqa: E402
@@ -97,14 +99,14 @@ def test_nested_shared_edge_wall_clamp_takes_the_binding_chain():
     # L→b1→a1 (two floors, 120) binds before the direct cell L→a1 (60).
     L, a1, R = {"x": 0.0}, {"x": 300.0}, {"x": 600.0}
     b1 = {"x": 150.0}
-    graph = C._EdgeGraph(C._cells_from_lists([[L, a1, R], [L, b1, a1]]))
-    C._solve_graph(graph, a1, 20.0, walls=frozenset({id(L), id(R)}))
+    graph = edge_constraints.EdgeGraph(C._cells_from_lists([[L, a1, R], [L, b1, a1]]))
+    edge_constraints.solve_edge(graph, a1, 20.0, walls=frozenset({id(L), id(R)}))
     assert _xs([L, b1, a1, R]) == [0, 60, 120, 600]
     # Unwalled, the same drag pushes b1 into L and carries L along.
     L, a1, R = {"x": 0.0}, {"x": 300.0}, {"x": 600.0}
     b1 = {"x": 150.0}
-    graph = C._EdgeGraph(C._cells_from_lists([[L, a1, R], [L, b1, a1]]))
-    C._solve_graph(graph, a1, 20.0)
+    graph = edge_constraints.EdgeGraph(C._cells_from_lists([[L, a1, R], [L, b1, a1]]))
+    edge_constraints.solve_edge(graph, a1, 20.0)
     assert _xs([L, b1, a1, R]) == [-100, -40, 20, 600]
 
 
@@ -114,8 +116,8 @@ def test_pulled_shared_edge_pushes_the_other_cells_it_bounds():
     # and b1 ahead of it is pushed by B's cell a1→b1 as usual.
     L, a1, R = {"x": 0.0}, {"x": 100.0, "max": 100}, {"x": 600.0}
     b1 = {"x": 150.0}
-    graph = C._EdgeGraph(C._cells_from_lists([[L, a1, R], [a1, b1, R]]))
-    C._solve_graph(graph, a1, 200.0)
+    graph = edge_constraints.EdgeGraph(C._cells_from_lists([[L, a1, R], [a1, b1, R]]))
+    edge_constraints.solve_edge(graph, a1, 200.0)
     assert _xs([L, a1, b1, R]) == [100, 200, 260, 600]
 
 

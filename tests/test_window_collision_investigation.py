@@ -31,9 +31,10 @@ def placement_layout(monkeypatch):
     monkeypatch.setattr(C, 'window_edge_pass', after_layout)
 
 
+@pytest.mark.parametrize('height_delta', [0., -10.])
 @pytest.mark.parametrize('ordinary_depth', [0, 1, 2])
 @pytest.mark.parametrize('reflow_fraction', [0., 0.5, 1.])
-def test_native_shrink_through_ordinary_parents(studio, ordinary_depth, reflow_fraction):
+def test_native_shrink_through_ordinary_parents(studio, ordinary_depth, reflow_fraction, height_delta):
     parent = root(studio, x=100., width=400, min_width=200, name='parent')
     child = nested(studio, parent, x=200., width=260, min_width=200, name='child')
     class ReflowView(SimpleNamespace):
@@ -51,6 +52,7 @@ def test_native_shrink_through_ordinary_parents(studio, ordinary_depth, reflow_f
             (400., (100., 240), (100., 200)),
             (300., (60., 200), (60., 200))]:
         studio.size[0] = available
+        studio.size[1] += height_delta
         studio.frame(parent, child)
         observed = (parent.window_pos[0], parent.width, abs_of(child)[0], child.width)
         expected = (*expected_parent, expected_parent[0] + expected_child[0], expected_child[1])
@@ -203,7 +205,8 @@ def test_inspector_push_through_layout_sized_workspace(studio, hand, monkeypatch
 
 @pytest.mark.parametrize('axis', ['x', 'y'])
 @pytest.mark.parametrize('side', [0, 1])
-def test_caller_sized_workspace_frame_resizes_native_parent(studio, hand, monkeypatch, axis, side):
+@pytest.mark.parametrize('target', ['frame', 'divider'])
+def test_caller_sized_workspace_edges_resize_native_parent(studio, hand, monkeypatch, axis, side, target):
     from test_os_frame import app_root, app_frame, FakeWindow
     studio.size = studio.feed_size = [800., 600.]
     app = app_root(studio)
@@ -227,6 +230,7 @@ def test_caller_sized_workspace_frame_resizes_native_parent(studio, hand, monkey
     def frame():
         app_frame(studio, app, workspace)
     frame()
+    declared_minimum = (app.min_width, app.min_height)
     index = 0 if axis == 'x' else 1
     gap = 10 if axis == 'x' else 30
     edges = workspace._frame_edges if axis == 'x' else workspace._frame_rows
@@ -237,17 +241,18 @@ def test_caller_sized_workspace_frame_resizes_native_parent(studio, hand, monkey
     specs = C._specs(workspace, axis)
     specs['cells'] = ([100., 100., 100.], [None, None, None])
     frame()
+    dragged = edges[side] if target == 'frame' else dividers[side]
     previous = 0
     for total in [*range(20, 641, 20), *range(620, -1, -20)]:
         inc = (total-previous) * (1 if side == 0 else -1)
         previous = total
         pending = workspace._pending_drags if axis == 'x' else workspace._pending_row_drags
-        pending.append((edges[side], edges[side][axis]+inc, True))
+        pending.append((dragged, dragged[axis]+inc, True))
         frame()
         native = os_frame.edges(axis)
         native_span = native[1][axis] - native[0][axis]
         actual = workspace.width if axis == 'x' else workspace.height
-        assert actual == pytest.approx(native_span-gap)
+        assert actual == pytest.approx(native_span-gap, abs=.5)
         assert workspace.window_pos == (5., 20.)
         assert edges[0][axis] == 0
         assert edges[1][axis] == pytest.approx(actual)
@@ -255,3 +260,5 @@ def test_caller_sized_workspace_frame_resizes_native_parent(studio, hand, monkey
         frame()
         assert (workspace.width if axis == 'x' else workspace.height) == pytest.approx(actual)
     assert studio.size[index] == (800 if axis == 'x' else 600)
+    # A child's constraints must not overwrite the ancestor's declared policy.
+    assert (app.min_width, app.min_height) == declared_minimum

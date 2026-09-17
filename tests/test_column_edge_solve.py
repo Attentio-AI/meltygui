@@ -34,6 +34,9 @@ class FakeWindow:
         self._edges_frame = None
         self.invalidations = 0
 
+    def get_action(self, *a, **k):
+        return None
+
     def on_action(self, *a, **k):
         return None
 
@@ -101,3 +104,19 @@ def test_foreign_width_below_pile_span_is_walled():
     assert (left["x"], right["x"]) == (0.0, 180.0)
     assert (d0["x"], d1["x"]) == (60.0, 120.0)
     assert (w.window_pos[0], w.width) == (100.0, 180)
+
+
+def test_frame_hit_regions_use_both_solved_dimensions(monkeypatch):
+    window = FakeWindow(width=300, height=400)
+    C.window_edge_pass(window)
+    rectangles = {}
+    monkeypatch.setattr(window, 'on_action', lambda event, **kwargs:
+                        rectangles.__setitem__((event, kwargs['view_id']), kwargs['rect']))
+    window._pending_drags.append((window._frame_edges[1], 360., True))
+    window._pending_row_drags.append((window._frame_rows[1], 450., True))
+    run_pass(window)
+    assert (window.width, window.height) == (360, 450)
+    half = C.EDGE_GRAB_WIDTH / 2
+    x, y = window.window_pos
+    assert rectangles['left_mouse_drag', 'win_edge_x_1'] == (x+360-half, y, x+360+half, y+450)
+    assert rectangles['left_mouse_drag', 'win_edge_y_1'] == (x, y+450-half, x+360, y+450+half)

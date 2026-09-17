@@ -1,5 +1,7 @@
 from contextlib import contextmanager
 
+from meltygui.core.layout import edge_constraints
+
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 
@@ -390,162 +392,15 @@ def _window_graph(window, axis, extra_lists=(), extra_specs=()):
     keys = list(views)
     lists = [views[k][1] for k in keys] + list(extra_lists)
     spec_list = [specs.get(k) for k in keys] + list(extra_specs)
-    return _EdgeGraph(_cells_from_lists(lists, axis, specs=spec_list))
-
-
-class _EdgeGraph:
-    """Adjacency over cells: ``ahead[id(near)]`` → ``[(far, floor, cap)]``,
-    ``behind[id(far)]`` → ``[(near, floor, cap)]``, ``nodes`` id → edge."""
-
-    def __init__(self, cells):
-        self.ahead, self.behind, self.nodes = {}, {}, {}
-        for near, far, floor, cap in cells:
-            self.nodes[id(near)] = near
-            self.nodes[id(far)] = far
-            self.ahead.setdefault(id(near), []).append((far, floor, cap))
-            self.behind.setdefault(id(far), []).append((near, floor, cap))
-
-    def chain(self, start, goal, walls=frozenset(), forward=True,
-              capped_only=False):
-        """Weight of the binding chain of cells from ``start`` to ``goal``:
-        the LONGEST sum of floors (a push chain — ``capped_only=False``) or
-        the SHORTEST sum of caps over capped cells only (a pull chain —
-        ``capped_only=True``), walking cells ahead (``forward``) or behind.
-        None when no chain links them. Chains never pass through another
-        wall: a wall never moves, so nothing propagates past it."""
-        links = self.ahead if forward else self.behind
-        pick = min if capped_only else max
-        memo, on_stack = {}, set()
-
-        def best(edge):
-            edge_id = id(edge)
-            if edge_id == id(goal):
-                return 0.0
-            if edge_id in walls or edge_id in on_stack:
-                return None
-            if edge_id in memo:
-                return memo[edge_id]
-            on_stack.add(edge_id)
-            found = None
-            for other, floor, cap in links.get(edge_id, ()):
-                if capped_only:
-                    if cap is None:
-                        continue
-                    weight = cap
-                else:
-                    weight = floor
-                rest = best(other)
-                if rest is None:
-                    continue
-                total = weight + rest
-                found = total if found is None else pick(found, total)
-            on_stack.discard(edge_id)
-            memo[edge_id] = found
-            return found
-
-        return best(start)
-
-
-def _solve_graph(graph, edge, target, walls=frozenset(), axis="x"):
-    """Move ``edge`` to ``target`` through the cell graph. Edges are
-    independent objects: no other edge moves unless the moving edge (or
-    one it already carried) makes CONTACT through a cell — two kinds, one
-    per side of the moving edge:
-
-      PUSH, ahead: the cell in front closes to its floor (_edge_min) and
-      its far edge is shoved on ahead.
-      PULL, behind: the cell it leaves behind opens to its cap (_edge_max)
-      and its far edge is dragged along behind.
-
-    Either chain runs cell by cell — a pushed edge closes the next cell, a
-    pulled edge opens the next — and stops at the first cell with slack;
-    consecutive capped cells therefore travel as one, exactly as
-    consecutive floor-packed cells do. A cell with no cap never pulls. An
-    edge several cells share (a nested layout's far edge) carries every
-    cell it bounds.
-
-    ``walls`` is a set of edge ids the cascade must NOT move. Contact stops
-    dead at a wall: the *dragged* edge itself is clamped so the pile packs
-    against the wall at its floors (push side) or stretches to its summed
-    caps (pull side) instead of the chain shoving the wall along. Used by
-    _solve_collisions to keep one FRAME edge from moving the other (breaks
-    the foreign-width feedback loop — see there; its mirror image is a
-    fully-capped row, which refuses a foreign widening the same way);
-    interior divider drags pass no walls, so a divider can still push or
-    pull a frame edge and slide/grow/shrink the window 1:1 with the
-    cursor. Returns True if anything moved."""
-    old = edge[axis]
-    if target == old or id(edge) not in graph.nodes:
-        return False
-    forward = target > old
-    # Wall clamps first: ahead through the floors, behind through the caps
-    # (a pull chain can only reach a wall over capped cells). The
-    # binding chain per wall is the longest floor chain / shortest cap
-    # chain - the one that would move the wall first.
-    for wall_id in walls:
-        wall = graph.nodes.get(wall_id)
-        if wall is None or wall is edge:
-            continue
-        push = graph.chain(edge, wall, walls, forward=forward)
-        if push is not None:
-            target = (min(target, wall[axis] - push) if forward
-                      else max(target, wall[axis] + push))
-        pull = graph.chain(edge, wall, walls, forward=not forward,
-                           capped_only=True)
-        if pull is not None:
-            target = (min(target, wall[axis] + pull) if forward
-                      else max(target, wall[axis] - pull))
-    if target == old:
-        return False
-    edge[axis] = float(target)
-    # Propagate contact. Every relaxation moves an edge the way the drag
-    # went and never back, so this is a monotone worklist that settles on
-    # its own; the guard only ever trips on a cyclic (corrupt) cell graph.
-    pending = [edge]
-    guard = 64 * (len(graph.nodes) + 1)
-    while pending and guard > 0:
-        guard -= 1
-        current = pending.pop()
-        current_id = id(current)
-        if forward:
-            for far, floor, _cap in graph.ahead.get(current_id, ()):    # push ahead
-                if id(far) in walls:
-                    continue
-                need = current[axis] + floor
-                if far[axis] < need:
-                    far[axis] = need
-                    pending.append(far)
-            for near, _floor, cap in graph.behind.get(current_id, ()):  # pull behind
-                if cap is None or id(near) in walls:
-                    continue
-                need = current[axis] - cap
-                if near[axis] < need:
-                    near[axis] = need
-                    pending.append(near)
-        else:
-            for near, floor, _cap in graph.behind.get(current_id, ()):  # push ahead
-                if id(near) in walls:
-                    continue
-                need = current[axis] - floor
-                if near[axis] > need:
-                    near[axis] = need
-                    pending.append(near)
-            for far, _floor, cap in graph.ahead.get(current_id, ()):    # pull behind
-                if cap is None or id(far) in walls:
-                    continue
-                need = current[axis] + cap
-                if far[axis] > need:
-                    far[axis] = need
-                    pending.append(far)
-    return True
+    return edge_constraints.EdgeGraph(_cells_from_lists(lists, axis, specs=spec_list))
 
 
 def _drag_edge(edges, k, target, walls=frozenset(), axis="x"):
     """Move edge k of ONE ordered edge list to ``target`` — the single-list
-    case of _solve_graph (consecutive edges of one list are its cells);
+    case of edge_constraints.solve_edge (consecutive edges of one list are its cells);
     _clamp_interior's cap repair runs through here."""
-    graph = _EdgeGraph(_cells_from_lists([edges], axis))
-    _solve_graph(graph, edges[k], target, walls=walls, axis=axis)
+    graph = edge_constraints.EdgeGraph(_cells_from_lists([edges], axis))
+    edge_constraints.solve_edge(graph, edges[k], target, walls=walls, axis=axis)
 
 
 def _replay_hand_drags(window, axis, pending, os_ctx):
@@ -601,7 +456,11 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
     # replays it - dropped, the last step landed incrementally and the
     # OS edges stayed one step short of the return, 09-13 - and pops after)
     i = 0 if axis == "x" else 1
-    pinned = bool(getattr(window, "_frame_pinned", False))
+    # Every surface-bound frame rides the native origin. Its local edges
+    # replay in that space; its caller-owned position must never be restored
+    # as though it belonged to a free floating window.
+    binding = os_ctx.binding if os_ctx is not None else os_frame.frame_binding(window, axis)
+    pinned = binding is not None
     parent = os_frame._frame_parent(window)
     is_root = parent is None
     # Whose coordinates move with the SURFACE: a root's (free: apply_rebase
@@ -633,7 +492,7 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
         base = os_frame._anchor_base(window)
         origin_now = os_ctx.base - os_frame._screen_pos(window, axis) + base[i]
     elif hangs_far:
-        origin_now = os_frame.edges(axis)[1][axis] + os_ctx.base       # the OS far edge, screen coords
+        origin_now = os_ctx.native[1][axis] + os_ctx.base       # the OS far edge, screen coords
     else:
         origin_now = os_ctx.base - os_frame._screen_pos(window, axis)
     gesture = gestures.get(axis)
@@ -660,7 +519,7 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
             "os": None,
         }
     if gesture["os"] is None and os_ctx is not None:
-        gesture["os"] = {id(e): e[axis] + os_ctx.base for e in os_ctx.shifted
+        gesture["os"] = {id(os_ctx.sources[id(e)]): e[axis] + os_ctx.base for e in os_ctx.shifted
                          if id(e) in os_ctx.os_ids and id(e) not in os_ctx.walls}
     if not hand and not gesture["totals"]:
         # a pure move gesture: only the OS edges are replayed; the push
@@ -668,8 +527,8 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
         # move put the window this frame
         if gesture["os"]:
             for e in os_ctx.shifted:
-                if id(e) in gesture["os"] and id(e) not in os_ctx.walls:
-                    e[axis] = gesture["os"][id(e)] - os_ctx.base
+                if id(os_ctx.sources[id(e)]) in gesture["os"] and id(e) not in os_ctx.walls:
+                    e[axis] = gesture["os"][id(os_ctx.sources[id(e)])] - os_ctx.base
         if released:
             gestures.pop(axis, None)
         return pending
@@ -691,12 +550,9 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
         pos[i] = gesture["pos"] + shift
         window.window_pos = tuple(pos)
         if os_ctx is not None and moved:
-            # attach shifted the OS dicts against the window's DRAWN
-            # position; the window now sits `moved` px from there, so the
-            # OS level re-bases with it (detach shifts back against the
-            # same base) - else the OS edges sat `moved` px off in window
-            # coordinates and the far edge slid past the screen wall by the
-            # flip's last slide (09-13)
+            # Replay changed the window origin. Translate the context's
+            # private edges by the same amount so their screen coordinates
+            # and the native result remain unchanged.
             os_ctx.base += moved
             # Keep current external walls in screen coordinates when the
             # replay changes the origin used by attach/detach.
@@ -708,8 +564,8 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
         window.height = gesture["size"]
     if os_ctx is not None and gesture["os"]:
         for e in os_ctx.shifted:
-            if id(e) in gesture["os"] and id(e) not in os_ctx.walls:
-                e[axis] = gesture["os"][id(e)] - os_ctx.base
+            if id(os_ctx.sources[id(e)]) in gesture["os"] and id(e) not in os_ctx.walls:
+                e[axis] = gesture["os"][id(os_ctx.sources[id(e)])] - os_ctx.base
     # absolute targets from the gesture's start
     replayed = []
     for item in pending:
@@ -757,7 +613,7 @@ def _solve_collisions(window, axis="x", os_ctx=None):
     pending_attr = _REGISTRY[axis][1]
     pending = getattr(window, pending_attr)
     setattr(window, pending_attr, [])
-    if (getattr(window, "_frame_pinned", False) and os_ctx is not None and os_ctx.drags):
+    if os_ctx is not None and os_ctx.binding is not None and os_ctx.drags:
         # The native frame already overlaps this root's contacts through
         # the OS edge links. Its width is a fixed value, not the far edge's
         # coordinate while the near edge is moving. Replaying right=width
@@ -766,7 +622,7 @@ def _solve_collisions(window, axis="x", os_ctx=None):
         # Synchronize to the native far edge in this graph's coordinates.
         frame = _frame(window, axis) or ()
         if len(frame) == 2:
-            pending = [(item[0], os_ctx.os_far0 - os_ctx.base, *item[2:])
+            pending = [(item[0], os_ctx.os_far0 - os_ctx.base - os_ctx.binding.far_gap, *item[2:])
                        if item[0] is frame[1] and not (len(item) > 2 and bool(item[2]))
                        else item for item in pending]
     pending = _replay_hand_drags(window, axis, pending, os_ctx)     # sticky: targets from the gesture's start
@@ -776,12 +632,11 @@ def _solve_collisions(window, axis="x", os_ctx=None):
     fe = _frame(window, axis) or ()
     local_graph = _window_graph(window, axis)
     if os_ctx is not None and len(fe) == 2:
-        gap_lists, gap_specs = os_frame.gap_lists(
-            os_ctx, fe[0], fe[1], rigid=bool(getattr(window, "_frame_pinned", False)))
+        gap_lists, gap_specs = os_frame.gap_lists(os_ctx, fe[0], fe[1])
         os_graph = _window_graph(window, axis, extra_lists=list(os_ctx.lists) + gap_lists,
                                  extra_specs=list(os_ctx.specs) + gap_specs)
         base_walls, os_ids = os_ctx.walls, os_ctx.os_ids
-        os_pair = tuple(os_frame.edges(axis))
+        os_pair = os_ctx.native
     else:
         os_graph, base_walls, os_ids, os_pair = local_graph, frozenset(), frozenset(), None
     # A FRAME edge drag must never shove the OTHER frame edge. The danger
@@ -818,9 +673,9 @@ def _solve_collisions(window, axis="x", os_ctx=None):
         # wall; the window's own edges are not part of it.
         os_near, os_far = os_pair
         if os_far[axis] < fe[1][axis]:
-            _solve_graph(os_graph, os_far, fe[1][axis], walls=base_walls, axis=axis)
+            edge_constraints.solve_edge(os_graph, os_far, fe[1][axis], walls=base_walls, axis=axis)
         if os_near[axis] > fe[0][axis]:
-            _solve_graph(os_graph, os_near, fe[0][axis], walls=base_walls, axis=axis)
+            edge_constraints.solve_edge(os_graph, os_near, fe[0][axis], walls=base_walls, axis=axis)
     for item in os_items + pending:
         # Optional third slot marks a CURSOR-DRIVEN drag (the right-drag
         # corner resize queues frame edges around it): those move 1:1 with the
@@ -849,7 +704,7 @@ def _solve_collisions(window, axis="x", os_ctx=None):
             # onto the opposite edge (the min hold's slide) - the window
             # kept moving while its height stayed capped (Lukas 09-04).
             target = _cap_frame_target(window, edge, target, axis)
-        if _solve_graph(graph, edge, target, walls=walls, axis=axis) and not is_os:
+        if edge_constraints.solve_edge(graph, edge, target, walls=walls, axis=axis) and not is_os:
             moved = True
         if is_os and not cursor_driven:
             # A foreign OS edge IS where it is: the pile packed against it
@@ -874,7 +729,7 @@ def _solve_collisions(window, axis="x", os_ctx=None):
         opposite = pair[0] if residual > 0 else pair[1]
         if opposite is edge:                         # dragged inward, blocked: nothing to flip
             continue
-        _solve_graph(graph, opposite, opposite[axis] - residual, walls=walls, axis=axis)
+        edge_constraints.solve_edge(graph, opposite, opposite[axis] - residual, walls=walls, axis=axis)
     if tuple(e[axis] for e in fe) != frame_before:
         moved = True
     return moved
@@ -1027,6 +882,27 @@ def _has_rows_ancestor(draw_state):
     return _has_layout_ancestor(draw_state, "_row_container")
 
 
+def _register_frame_handles(window):
+    """Hit regions and cursors use the same committed rectangle as drawing."""
+    win_x, win_y = window.abs_left, window.abs_top
+    half = EDGE_GRAB_WIDTH / 2
+    for axis in _REGISTRY:
+        for k, edge in enumerate(_frame(window, axis) or ()):
+            if axis == "x":
+                x = win_x + edge[axis]
+                rect = (x-half, win_y, x+half, win_y+window.height)
+                cursor = mouse_cursor.RESIZE_EW
+            else:
+                y = win_y + edge[axis]
+                rect = (win_x, y-half, win_x+window.width, y+half)
+                cursor = mouse_cursor.RESIZE_NS
+            view_id = f"win_edge_{axis}_{k}"
+            window.on_action("left_mouse_drag", view_id=view_id, rect=rect,
+                             priority_delta=1, cursor=cursor)
+            window.on_action("left_mouse_down", view_id=view_id, rect=rect,
+                             priority_delta=1)
+
+
 def window_edge_pass(window):
     """Every window's FRAME edges — left/right on the x axis, top/bottom on
     the y axis — as draggable edge objects, run once per frame per window
@@ -1066,6 +942,7 @@ def window_edge_pass(window):
 
     moved = _frame_pass(window, "x")
     moved = _frame_pass(window, "y") or moved
+    _register_frame_handles(window)
 
     if moved:
         seen = set()
@@ -1143,12 +1020,6 @@ def _frame_pass(window, axis):
     specs[window.id] = ([max(_axis_min(axis), declared)], [None])
     near, far = fe
 
-    # Headerless native bodies begin below the control row. Preserve that
-    # placement gap through a solve; a zero-cap gap pulls the body to y=0.
-    inset = (float((window.window_pos or (0, 0))[0 if axis == "x" else 1])
-             if getattr(window, "_frame_pinned", False) else 0.0)
-    near["surface_inset"] = inset
-
     bands = _bands(window, axis)
     for key, (ds, _) in list(views.items()):
         # A window body owns its own layouts. Evict registrations left on
@@ -1182,32 +1053,15 @@ def _frame_pass(window, axis):
     elif (window.min_height or 0) < need:
         window.min_height = need
 
-    # Frame edge drag handles: full window height for the left/right pair,
-    # full window width for the top/bottom pair. The band straddles the
-    # edge, so the top handle's inner rect covers the header's top rows -
-    # the buttons sit above it (flat_button priority_delta 4), the
-    # window move sits below (priority_delta 0 / -2).
-    win_x, win_y = window.abs_left, window.abs_top
+    # Delivered events refer to the previous committed hit regions. Consume
+    # them before solving; register the next regions only after both axes.
     seen_handles = set()
+    total = "total_dx" if axis == "x" else "total_dy"
     for k, e in enumerate(fe):
-        if axis == "x":
-            x = win_x + e["x"]
-            rect = (x - EDGE_GRAB_WIDTH / 2, win_y,
-                    x + EDGE_GRAB_WIDTH / 2, win_y + window.height)
-            cursor, total = mouse_cursor.RESIZE_EW, "total_dx"
-        else:
-            y = win_y + e["y"]
-            rect = (win_x, y - EDGE_GRAB_WIDTH / 2,
-                    win_x + window.width, y + EDGE_GRAB_WIDTH / 2)
-            cursor, total = mouse_cursor.RESIZE_NS, "total_dy"
         view_id = f"win_edge_{axis}_{k}"
-        drag = window.on_action("left_mouse_drag", view_id=view_id,
-                                rect=rect, priority_delta=1, cursor=cursor)
-        press = window.on_action("left_mouse_down", view_id=view_id,
-                                 rect=rect, priority_delta=1)
+        drag = window.get_action("left_mouse_drag", view_id=view_id)
+        press = window.get_action("left_mouse_down", view_id=view_id)
         if press:
-            # Resize press, before any edge motion: freeze views snap their
-            # clean pre-drag capture this frame (mark_start_offscreen).
             Melty.resize_press_frame = Melty.frame_count
         if not drag:
             continue
@@ -1215,11 +1069,6 @@ def _frame_pass(window, axis):
         seen_handles.add(handle)
         inc = _drag_inc(window, handle, drag, total=total)
         if inc:
-            # Third slot True = CURSOR-DRIVEN (a hand on the edge): solved on
-            # the OS-level graph like the corner right-drag, or a frame edge
-            # pushed into the OS edge pushes IT (an app's pinned root: its
-            # frame IS the OS window's). A 2-tuple read as a foreign write
-            # and solved locally - the push stopped at the frame (09-13).
             _pending(window, axis).append((e, e[axis] + inc, True))
     totals = getattr(window, "_drag_totals", None)
     if totals:
@@ -1235,47 +1084,31 @@ def _frame_pass(window, axis):
                   and h not in seen_handles]:
             del totals[h]
 
-    # ---- The OS level. A root window's frame pair collides with the OS
-    # window's pair (os_frame: zero-floor gap cells link them, the screen
-    # is the wall outside) - attach shifts the OS and screen dicts into
-    # THIS window's coordinates for the solve (and back in detach), so the
-    # window's own edges are never written unless the solve moves them; an
-    # idle frame moves nothing. Nested windows solve only their own frame.
+    # Native/display contact contributes private edges in this window's
+    # coordinates. Free frames have contact gaps; surface-bound frames have
+    # fixed gaps. Only the completed solve publishes native geometry.
     import meltygui.core.windowing.os_frame as os_frame
     # The app root's handles resize the GLFW frame. Run that drag through
     # the OS graph (which contains its floating children), then pack this
     # root's columns into the resulting size. A local solve alone let the
     # root push the same OS edge back out in its own pass.
-    surface_layout = os_frame._native_layout_frame(window)
-    if ((getattr(window, "_frame_pinned", False) or surface_layout)
-            and os_frame._enabled() and os_frame._STATE["frame"] == Melty.frame_count):
+    binding = os_frame.frame_binding(window, axis)
+    if (binding is not None and os_frame._enabled()
+            and os_frame._STATE["frame"] == Melty.frame_count):
         pending = _pending(window, axis)
         frame_drags = [item for item in pending
                        if len(item) > 2 and item[2] and any(item[0] is e for e in fe)]
         if frame_drags:
-            # A caller-sized workspace cannot retain a frame resize of its
-            # own. Its outer-edge gesture belongs to the native frame, while
-            # interior divider gestures stay on its local layout graph.
-            os_near, os_far = os_frame.edges(axis)
-            surface_gap = os_far[axis] - os_near[axis] - size if surface_layout else inset
-            if surface_layout:
-                root = os_frame._native_layout_parent(window)
-                minimum = "min_width" if axis == "x" else "min_height"
-                setattr(root, minimum, max(getattr(root, minimum) or 0,
-                                          getattr(window, minimum) + surface_gap))
+            # A fixed-gap frame edge and its native edge are the same degree
+            # of freedom. Delegate that input; interior edges remain local.
             for edge, target, _cursor in frame_drags:
                 target = _cap_frame_target(window, edge, target, axis)
                 os_frame.queue_drag(axis, 0 if edge is near else 1, target - edge[axis])
             pending[:] = [item for item in pending if not any(item is drag for drag in frame_drags)]
-            os_frame.solve()
-            if surface_layout:
-                window.window_pos = tuple(window._kwargs["window_pos"])
+            os_frame.solve(bindings=(binding,))
             os_near, os_far = os_frame.edges(axis)
-            size = os_far[axis] - os_near[axis] - surface_gap
-            if axis == "x":
-                window.width = snap_int(size)
-            else:
-                window.height = snap_int(size)
+            size = binding.content_size(os_far[axis] - os_near[axis])
+            setattr(window, "width" if axis == "x" else "height", snap_int(size))
             pending.append((far, size, None))
     # a cursor-driven drag of THIS window's frame (handle / corner right-drag;
     # a foreign size write queues None): a hand resize, stamped for the
@@ -1283,7 +1116,7 @@ def _frame_pass(window, axis):
     hand_resize = any(len(item) < 3 or bool(item[2]) for item in _pending(window, axis))
     import meltygui.core.diagnostics.resize_trace as resize_trace
     os_ctx = os_frame.attach(window, axis, has_pending=bool(_pending(window, axis)),
-                             hand_move=_hand_moved(window, Melty.frame_count))
+                             hand_move=_hand_moved(window, Melty.frame_count), binding=binding)
     try:
         trace_solve = bool(_pending(window, axis) or os_ctx is not None)
         if trace_solve:
@@ -1298,9 +1131,9 @@ def _frame_pass(window, axis):
     except Exception:
         resize_trace.record("solve-error", window, axis=axis, error=True)
         raise
-    finally:
-        # Attach shifts SHARED OS/screen edges into this window's space.
-        # Even a failed solve must return them before another window runs.
+    else:
+        # Only a completed solve publishes native geometry. The context owns
+        # private edge copies, so an exception cannot corrupt another window.
         if os_ctx is not None:
             os_frame.detach(window, axis, os_ctx)
 
@@ -1335,7 +1168,7 @@ def _frame_pass(window, axis):
         # The native body stays at its surface content inset. Its native
         # frame carries the near-edge motion; only local layout edges need
         # rebasing here. Moving the body too makes content jump until ack.
-        if not getattr(window, "_frame_pinned", False):
+        if binding is None:
             window.window_pos = ((pos[0] + d_near, pos[1]) if axis == "x"
                                  else (pos[0], pos[1] + d_near))
         if axis == "x":

@@ -1,4 +1,6 @@
 """Surface roots below native chrome retain the inset through edge contacts."""
+from meltygui.core.layout import edge_constraints
+
 import pytest
 
 from test_os_frame import studio, hand, app_root, abs_of, os_frame, C, Melty, tb
@@ -37,12 +39,12 @@ def test_surface_body_frame_contacts_preserve_chrome(studio, hand, top, index):
     origin = studio.pos[1]
     expected = [{'y': origin + top}, {'y': origin + top + 190.},
                 {'y': origin + 720.}]
-    graph = C._EdgeGraph(C._cells_from_lists([expected], 'y',
+    graph = edge_constraints.EdgeGraph(C._cells_from_lists([expected], 'y',
                            specs=[([120., 200.], [None, None])]))
     direction = 1 if index == 0 else -1
     for step in range(1, 13):
         target = origin + (top if index == 0 else 720.) + direction * 40 * step
-        C._solve_graph(graph, expected[index * 2], target, axis='y')
+        edge_constraints.solve_edge(graph, expected[index * 2], target, axis='y')
         edge = (near, far)[index]
         root._pending_row_drags.append((edge, edge['y'] + direction * 40, True))
         body_frame(studio, root, top)
@@ -112,9 +114,9 @@ def test_interior_divider_pushes_surface_through_fixed_chrome_gap(studio, hand, 
     for travel in (-100., -200., -100., 0., 100., 400., 0.):
         expected = [{'y': origin + top}, {'y': origin + top + 190.},
                     {'y': origin + 720.}]
-        graph = C._EdgeGraph(C._cells_from_lists([expected], 'y',
+        graph = edge_constraints.EdgeGraph(C._cells_from_lists([expected], 'y',
                                specs=[([120., 200.], [None, None])]))
-        C._solve_graph(graph, expected[1], expected[1]['y'] + travel, axis='y')
+        edge_constraints.solve_edge(graph, expected[1], expected[1]['y'] + travel, axis='y')
         root._pending_row_drags.append((divider, divider['y'] + travel - previous, True))
         previous = travel
         body_frame(studio, root, top)

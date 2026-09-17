@@ -152,6 +152,9 @@ class _RowsCell:
     def hover_eligible(self, rect=None):
         return False
 
+    def get_action(self, *a, **k):
+        return None
+
     def on_action(self, *a, **k):
         return None
 

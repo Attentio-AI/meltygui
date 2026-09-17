@@ -1,4 +1,6 @@
 """A native frame's geometry must cross the same cell contacts exactly once."""
+from meltygui.core.layout import edge_constraints
+
 import pytest
 from test_os_frame import studio, hand, app_root, app_frame, os_frame, C
 
@@ -26,12 +28,12 @@ def test_native_edge_pushes_divider_before_opposite_frame(studio, hand, axis, in
     # Independent collision graph is the reference for the native-frame
     # adapter, including a push through the divider into the opposite edge.
     expected = [{axis: origin}, {axis: origin + 190}, {axis: origin + 720}]
-    graph = C._EdgeGraph(C._cells_from_lists([expected], axis,
+    graph = edge_constraints.EdgeGraph(C._cells_from_lists([expected], axis,
                            specs=[([120., 200.], [None, None])]))
     direction = 1 if index == 0 else -1
     for step in range(1, 11):
         target = origin + (0 if index == 0 else 720) + direction * 50 * step
-        C._solve_graph(graph, expected[0 if index == 0 else 2], target, axis=axis)
+        edge_constraints.solve_edge(graph, expected[0 if index == 0 else 2], target, axis=axis)
         root_pending = root._pending_drags if axis == 'x' else root._pending_row_drags
         edge = pair[index]
         root_pending.append((edge, edge[axis] + direction * 50, True))
