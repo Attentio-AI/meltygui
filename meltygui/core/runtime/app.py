@@ -73,6 +73,17 @@ def _default_app_id():
     return pathlib.Path(path).stem.replace('_', '-') if path else 'meltygui-app'
 
 
+def _utf8_output():
+    """Trace groups and stack reports draw bars with box characters. A stream
+    that encodes with a legacy code page (Windows redirects stdout as cp1252)
+    raises UnicodeEncodeError on them in the middle of a frame, which leaves
+    the imgui ID stack unbalanced; such a stream writes UTF-8 instead."""
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, 'encoding', None) or '').lower().replace('-', '')
+        if encoding != 'utf8' and hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', errors='replace')
+
+
 def boot(app_id=None):
     """Start meltygui: shortcuts, glfw, the owner window, the import thread.
     Idempotent; the first @glfw_window calls it."""
@@ -82,6 +93,7 @@ def boot(app_id=None):
                   f"(the first boot names the session and cache directories)", file=sys.stderr)
         return
     _state['booted'] = True
+    _utf8_output()
     _state['app_id'] = app_id or _default_app_id()
     cache = pathlib.Path(os.environ.get('XDG_CACHE_HOME') or pathlib.Path.home() / '.cache') / _state['app_id']
     _state['cache'] = cache

@@ -79,8 +79,13 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
     from meltygui.model.graph_model import slice_lines
     from meltygui.core.rendering.render_dispatch import draw_any
 
-    import torch
-    
+    try:
+        import torch
+    except ImportError:
+        _draw_voxel_error(draw_state, "Line graphs of arrays and tensors require torch:\n"
+                                      "pip install meltygui[tensor]", who="draw_line_graph")
+        return False, input_value
+
     src = input_value
     cuda_lines = None
     img_origin = imgui.get_cursor_screen_pos()   # the image draws here below

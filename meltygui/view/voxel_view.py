@@ -324,7 +324,13 @@ def _draw_voxels(input_value: object = None, gl_state: GLState = None, selectabl
         tex, mapping = src, None
         source_shape = tuple(getattr(src, "source_shape", src.shape))
     else:
-        import torch
+        try:
+            import torch
+        except ImportError:
+            _draw_voxel_error(draw_state, "Voxel rendering of arrays and tensors requires torch:\n"
+                                          "pip install meltygui[tensor]")
+            gl_state.drop("volume"); gl_state.drop("volume_cuda")
+            return False, input_value
         try:
             t = src if isinstance(src, torch.Tensor) else torch.from_numpy(np.asarray(src))
         except (TypeError, ValueError, RuntimeError) as e:

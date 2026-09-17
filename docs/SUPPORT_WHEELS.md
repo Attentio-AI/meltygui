@@ -17,7 +17,13 @@ Linux x86-64, glibc 2.28 or newer, with one wheel each for CPython 3.11, 3.12
 and 3.13. Builds use a pinned manylinux image and pinned build dependencies.
 auditwheel also certifies older compatible tags for these artifacts; 2.28 remains
 the tested build target. The 3.13 ImGui binding is generated with Cython 3.2;
-3.11 and 3.12 keep Cython 0.29. Other platforms have not been validated.
+3.11 and 3.12 keep Cython 0.29.
+
+`meltygui-imgui` 2.0.0.post3 adds Windows x86-64 wheels for the same CPythons,
+built with MSVC from the same source archive; delvewheel bundles the C++ runtime.
+`meltygui-pycuda` has no Windows build, so the `tensor` extra installs torch
+alone there and tensors render through the GL/CPU path. Other platforms have
+not been validated.
 
 ## When no wheel matches
 

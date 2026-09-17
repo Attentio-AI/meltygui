@@ -102,17 +102,31 @@ _gl_limits = _persistent("_gl_limits", dict)
 # GL_NVX_gpu_memory_info enums (absent from many PyOpenGL builds' namespace).
 _GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX = 0x9048
 _GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX = 0x9049
+# GL_RENDERER substrings of CPU rasterizers, whose memory figures are not VRAM.
+_SOFTWARE_RENDERERS = (b"llvmpipe", b"softpipe", b"swrast")
+
+
+def _has_extension(name):
+    """Whether the current core-profile context lists `name`. An unsupported
+    glGet enum leaves the result unwritten (garbage, not an exception, once
+    error checking is off), so optional queries ask here first."""
+    try:
+        count = _scalar(gl.glGetIntegerv(gl.GL_NUM_EXTENSIONS))
+        return any(gl.glGetStringi(gl.GL_EXTENSIONS, i) == name.encode() for i in range(count))
+    except Exception:
+        return False
 
 
 def gl_limits():
-    """{'max_3d': int, 'max_2d': int, 'total_vram_kb': int|None} — the
+    """{'max_3d': int, 'max_2d': int, 'total_vram_kb': int|None,
+    'vram_info': bool (GL_NVX_gpu_memory_info is present)} — the
     context's texture-size limits (GL_MAX_3D_TEXTURE_SIZE et al). Cached
     after the first successful query; off the GL thread (or before any
     context exists) returns conservative spec minimums WITHOUT caching, so
     a real query still lands once the render thread asks."""
-    if _gl_limits:
+    if "vram_info" in _gl_limits:      # a pre-hotswap cache without it is queried again
         return _gl_limits
-    limits = {"max_3d": 2048, "max_2d": 16384, "total_vram_kb": None}
+    limits = {"max_3d": 2048, "max_2d": 16384, "total_vram_kb": None, "vram_info": False}
     if not is_gl_thread():
         return limits
     try:
@@ -123,11 +137,17 @@ def gl_limits():
     if max_3d <= 0 or max_2d <= 0:
         return limits          # no current context: glGet returns 0 silently
     limits["max_3d"], limits["max_2d"] = max_3d, max_2d
-    try:
-        limits["total_vram_kb"] = _scalar(
-            gl.glGetIntegerv(_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX))
-    except Exception:
-        limits["total_vram_kb"] = None
+    # Mesa's software rasterizers list the extension too, but have no VRAM:
+    # llvmpipe on Windows reports a few hundred KiB free, which refused every volume.
+    renderer = (gl.glGetString(gl.GL_RENDERER) or b"").lower()
+    software = any(name in renderer for name in _SOFTWARE_RENDERERS)
+    limits["vram_info"] = not software and _has_extension("GL_NVX_gpu_memory_info")
+    if limits["vram_info"]:
+        try:
+            limits["total_vram_kb"] = _scalar(
+                gl.glGetIntegerv(_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX))
+        except Exception:
+            limits["total_vram_kb"] = None
     _gl_limits.update(limits)
     return _gl_limits
 
@@ -136,7 +156,7 @@ def gl_free_vram_kb():
     """Currently free VRAM in KiB via GL_NVX_gpu_memory_info, or None when
     the extension is unavailable. Cheap (one glGet) but only meaningful on
     the GL thread."""
-    if not is_gl_thread():
+    if not is_gl_thread() or not gl_limits()["vram_info"]:
         return None
     try:
         return _scalar(gl.glGetIntegerv(_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX))

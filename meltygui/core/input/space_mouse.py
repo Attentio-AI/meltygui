@@ -151,6 +151,9 @@ class _Reader:
             self._feed(data)
 
     def _connect(self):
+        if not hasattr(socket, "AF_UNIX"):        # Windows: spacenavd is unix-socket only
+            self.error = "spacenavd needs unix sockets, which this platform lacks"
+            return False
         try:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.settimeout(1.0)
