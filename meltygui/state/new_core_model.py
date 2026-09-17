@@ -1514,12 +1514,9 @@ class DrawState(DictConversion):
         return max(min(pos, hi), lo)
 
     def _abs_left(self):
-        # Recursive parent walks go through the cached `parent_window.abs_left`
-        # property - once an ancestor's value is cached for the current key, the
-        # walk short-circuits, reducing what was O(depth * widgets) per frame
-        # back to O(widgets). The if `depth > 10` print_stack_trace guard is no
-        # longer needed: abs_left marks its key BEFORE recursing, so any cycle
-        # returns the cached (last-set) value instead of recursing forever.
+        # Parent-relative placement reads the dependency-checked absolute
+        # origin. The cache marks evaluation before recursing, so a malformed
+        # parent cycle returns the last position instead of recursing forever.
         parent_left = 0
         if self.parent_window is not None and self.parent_window is not self:
             parent_left = self.parent_window.abs_left
@@ -1821,45 +1818,54 @@ class DrawState(DictConversion):
             return False
         return cache._tile_fully_filled(cache._tiles.get(self._tile_id))
 
+    def _cached_absolute_position(self, axis):
+        # Pins already resolve their target live. For ordinary placement,
+        # validate the parent origin and selected corner before accepting a
+        # cached value: solve() may have read us before a parent hand resize
+        # or native rebase later in this same frame.
+        if self.pin_to_clip:
+            return self._abs_left() if axis == 0 else self._abs_top()
+        previous = self._abs_left_key if axis == 0 else self._abs_top_key
+        cached = self._abs_left_cache if axis == 0 else self._abs_top_cache
+        if previous is False:
+            return cached  # malformed parent cycles retain the last position
+        if axis == 0:
+            self._abs_left_key = False
+        else:
+            self._abs_top_key = False
+        key = None
+        try:
+            parent = self.parent_window
+            parent_origin = 0
+            if parent is not None and parent is not self:
+                parent_origin = parent.abs_left if axis == 0 else parent.abs_top
+            scroll = self._ancestor_scroll()[axis]
+            key = (Core.melty.frame_count,
+                   self.left_offset if axis == 0 else self.top_offset,
+                   self.window_pos, self.anchor_pos, self.parent_anchor_pos,
+                   self.width if axis == 0 else self.height, scroll,
+                   parent_origin, self.parent_anchor_offset[axis])
+            if previous == key:
+                return cached
+            value = self._abs_left() if axis == 0 else self._abs_top()
+            if axis == 0:
+                self._abs_left_cache = value
+            else:
+                self._abs_top_cache = value
+            return value
+        finally:
+            if axis == 0:
+                self._abs_left_key = key
+            else:
+                self._abs_top_key = key
+
     @property
     def abs_left(self):
-        # Pinned floats resolve their target (parent/grandparent/window) live.
-        # The target can resize after apply_rebase read this float earlier
-        # in the same frame. Its geometry is not in our local cache key.
-        if self.pin_to_clip:
-            return self._abs_left()
-        # The key covers everything the wrapper writes per-draw_state mid-frame
-        # that abs_left's value depends on: left_offset / window_pos (the
-        # columns branch and the wrapper re-set these), and anchor_pos /
-        # parent_anchor_pos. _ancestor_scroll is in the key so mid-frame scroll
-        # deltas to an ancestor invalidate the cache (the non-pinned path
-        # subtracts it in _abs_left). Parent-side changes propagate via the
-        # cached parent.abs_left.
-        f = Core.melty.frame_count
-        ancestor_sx, _ = self._ancestor_scroll()
-        key = (f, self.left_offset, self.window_pos,
-               self.anchor_pos, self.parent_anchor_pos, self.width, ancestor_sx)
-        if self._abs_left_key == key:
-            return self._abs_left_cache
-        self._abs_left_key = key
-        val = self._abs_left()
-        self._abs_left_cache = val
-        return val
+        return self._cached_absolute_position(0)
 
     @property
     def abs_top(self):
-        if self.pin_to_clip:
-            return self._abs_top()
-        f = Core.melty.frame_count
-        _, ancestor_sy = self._ancestor_scroll()
-        key = (f, self.top_offset, self.window_pos,
-               self.anchor_pos, self.parent_anchor_pos, self.height, ancestor_sy)
-        if self._abs_top_key == key:
-            return self._abs_top_cache
-        self._abs_top_key = key
-        val = self._abs_top()
-        self._abs_top_cache = val
-        return val
+        return self._cached_absolute_position(1)
 
     @property
     def abs_top_true(self):

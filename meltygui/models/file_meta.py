@@ -281,7 +281,16 @@ class FileMetaProxy(dict):
             keep = {p: dict.__getitem__(self, p) for p in self._dirty
                     if dict.__contains__(self, p)}
             before = {p: dict(dict.items(e)) for p, e in dict.items(self)}
-            merged = {p: self._adopt(FileMeta(v), p) for p, v in fresh.items()}
+            merged = {}
+            for path, values in fresh.items():
+                if path in self._dirty:
+                    continue  # Includes locally deleted entries, absent from keep.
+                entry = dict.get(self, path)
+                if not isinstance(entry, FileMeta):
+                    entry = self._adopt(FileMeta(), path)
+                dict.clear(entry)
+                dict.update(entry, values)
+                merged[path] = entry
             merged.update(keep)
             after = {p: dict(dict.items(e)) for p, e in merged.items()}
             if after == before:

@@ -282,15 +282,10 @@ def draw_claude_terminals(input_value, draw_state,  **kwargs):
     if windows is None:
         windows = {}
 
-    # Each Terminal mutates in place (stable identity), so the wrapper's cache won't
-    # see new output on its own - the terminal's reader thread must invalidate THIS
-    # window. Point them at our draw_state, and stash it so the poller can wake us
-    # when a session appears/vanishes. See [[project_live_views_stable_identity]].
-
+    # Keep the collection owner for session-list changes; each screen subscribes
+    # independently to PTY output through its injected runtime service.
     global _window_ds
     _window_ds = draw_state
-    for term in windows.values():
-        term._ds = draw_state
 
 
     # draw_collection makes each terminal a value-key draw_state; view_func renders each

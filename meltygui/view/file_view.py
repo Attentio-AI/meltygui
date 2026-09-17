@@ -1,5 +1,6 @@
 """Reusable file presentation; values and view state are supplied by callers."""
 from pathlib import Path
+from meltygui.core.files.file_explorer_core import _trace_browser_size
 from meltygui.core.rendering.modes import Modes
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.render_funcs import RenderFuncs
@@ -315,7 +316,7 @@ def draw_pending_saves():
 
 
 def paint_breadcrumbs(draw_state, path, click=None, crumb_height=24.0, left_pad=6.0,
-                      folder_bg_boost=-0.12, text_mix=0.5, width=None):
+                      folder_bg_boost=-0.12, text_mix=0.5, width=None, file_metadata=None):
     """The path strip: every segment of `path` a crumb on the window draw
     list at the cursor, the last one bright (the current directory / the
     file), the rest dim, a painted folder wearing its file-meta tint, the
@@ -327,7 +328,6 @@ def paint_breadcrumbs(draw_state, path, click=None, crumb_height=24.0, left_pad=
     from meltygui.files.fast_file_explorer import row_tint_bg
     from meltygui.files.fast_file_explorer import tinted_text
     from meltygui.models.file_meta import FileMeta
-    from meltygui.models.file_meta import file_meta_store
 
     # [tint=(0.55, 0.72, 0.95)]
     crumb_separator = "  /  "
@@ -339,7 +339,7 @@ def paint_breadcrumbs(draw_state, path, click=None, crumb_height=24.0, left_pad=
     px = Melty.px
     pad, crumb_h = px(left_pad), px(crumb_height)
     parts = Path(path).parts
-    meta = file_meta_store()
+    meta = file_metadata
     row_bg = row_tint_bg()
     draw_list = imgui.get_window_draw_list()
     content_w = width if width is not None else (draw_state.content_width or draw_state.width or 240)
@@ -384,7 +384,7 @@ def paint_breadcrumbs(draw_state, path, click=None, crumb_height=24.0, left_pad=
              show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
 def draw_breadcrumbs(input_value: str, draw_state, left_mouse_clicked=False,
                      crumb_height=24.0, left_pad=6.0, folder_bg_boost=-0.12,
-                     text_mix=0.5, **kwargs):
+                     text_mix=0.5, file_metadata=None, **kwargs):
     """The file browser's path strip on its own (`paint_breadcrumbs`) for a
     host that shows one path — the code editor draws it along the top of
     the selected file's column (``show_breadcrumbs=True``), the mirror of
@@ -398,7 +398,8 @@ def draw_breadcrumbs(input_value: str, draw_state, left_mouse_clicked=False,
              if (left_mouse_clicked and hasattr(left_mouse_clicked, "x")) else None)
     target = paint_breadcrumbs(draw_state, input_value, click=click,
                                crumb_height=crumb_height, left_pad=left_pad,
-                               folder_bg_boost=folder_bg_boost, text_mix=text_mix)
+                               folder_bg_boost=folder_bg_boost, text_mix=text_mix,
+                               file_metadata=file_metadata)
     if target is not None:
         from meltygui.core.windowing.glfw_utils import request_render
         request_render()
@@ -408,7 +409,7 @@ def draw_breadcrumbs(input_value: str, draw_state, left_mouse_clicked=False,
 
 @render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=False,
              show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
-def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorerState,
+def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorerState, file_metadata=None,
                       left_mouse_down=False, left_mouse_double_clicked=False,
                       right_mouse_down=False,
                       ctrl_up_key_pressed=False, up_key_pressed=False, down_key_pressed=False,
@@ -440,24 +441,24 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     the matched letters and the pill, the non-matching rows' text fades to
     `search_dim` of its alpha while there are matches, and the flash on the
     row a keystroke lands on fades over `search_flash_frames` frames."""
-    from meltygui.files.fast_file_explorer import _dir_mtime_ns
+    from meltygui.model.file_model import _dir_mtime_ns
     from meltygui.files.fast_file_explorer import _scroll_row_into_view
-    from meltygui.files.fast_file_explorer import apply_row_drop
+    from meltygui.model.file_metadata_model import apply_row_drop
     from meltygui.files.fast_file_explorer import chip_swatch
     from meltygui.files.fast_file_explorer import claim_keyboard
-    from meltygui.files.fast_file_explorer import list_directory
-    from meltygui.files.fast_file_explorer import ordered_rows
+    from meltygui.model.file_model import list_directory
+    from meltygui.model.file_metadata_model import ordered_rows
     from meltygui.files.fast_file_explorer import row_icon
     from meltygui.files.fast_file_explorer import row_tint_bg
     from meltygui.files.fast_file_explorer import search_hits
     from meltygui.files.fast_file_explorer import search_keys
     from meltygui.files.fast_file_explorer import search_typed
-    from meltygui.files.fast_file_explorer import set_row_order
+    from meltygui.model.file_metadata_model import set_row_order
     from meltygui.files.fast_file_explorer import tint_control
+    from meltygui.model.file_metadata_model import set_row_tint
     from meltygui.files.fast_file_explorer import tinted_text
-    from meltygui.files.fast_file_explorer import watch_directory
+    from meltygui.core.files.file_explorer_core import watch_directory
     from meltygui.models.file_meta import FileMeta
-    from meltygui.models.file_meta import file_meta_store
     from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.core.cache.tile_cache import add_shadow
     from meltygui.core.cache.tile_cache import clear_glows
@@ -500,7 +501,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
                     if (left_mouse_double_clicked and hasattr(left_mouse_double_clicked, "x")) else None)
     right_press = ((right_mouse_down.x, right_mouse_down.y)
                    if (right_mouse_down and hasattr(right_mouse_down, "x")) else None)
-    meta = file_meta_store()
+    meta = file_metadata
     row_bg = row_tint_bg()
 
     def navigate(target):
@@ -533,6 +534,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     if show_crumbs:
         target = paint_breadcrumbs(draw_state, directory, click=click,
                                    crumb_height=crumb_height, left_pad=left_pad,
+                                   file_metadata=file_metadata,
                                    folder_bg_boost=folder_bg_boost, text_mix=text_mix)
         if target is not None:
             return navigate(target)
@@ -768,6 +770,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
                 swatch = chip_swatch(tint, row_bg.rgb(tint, boost), chip_mix)
             tint_control(draw_state, key, tint, chip_x, ry0 + (row_h - chip) * 0.5, chip,
                          ry0 + text_y_pad, row_hovered, default_tint, swatch=swatch,
+                         setter=lambda value, path=key: set_row_tint(meta, path, value),
                          show_brush=i == selected_index)
 
     # ── the search pill: the query and "n of m", bottom right of the view ──
@@ -808,7 +811,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
         drop = DragDrop.on_drop(draw_state=draw_state)
         order = apply_row_drop(rows, drag_keys, first_visible, drop)
         if order is not None:
-            set_row_order(order)
+            set_row_order(meta, order)
             draw_state.invalidate()
             request_render()
 
@@ -817,7 +820,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
 
 @render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=True,
              show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
-def draw_shortcuts(input_value: str, draw_state, left_mouse_clicked=False,
+def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_clicked=False,
                    shortcut_state: ShortcutState = None, row_height=22.0,
                    show_tint_chips=True, chip_size=17.0, default_tint=(0.32, 0.42, 0.54, 1.0),
                    show_projects=True, **kwargs):
@@ -838,9 +841,9 @@ def draw_shortcuts(input_value: str, draw_state, left_mouse_clicked=False,
     from meltygui.files.fast_file_explorer import row_tint_bg
     from meltygui.files.fast_file_explorer import shortcut_directories
     from meltygui.files.fast_file_explorer import tint_control
+    from meltygui.model.file_metadata_model import set_row_tint
     from meltygui.files.fast_file_explorer import tinted_text
     from meltygui.models.file_meta import FileMeta
-    from meltygui.models.file_meta import file_meta_store
     from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.core.cache.tile_cache import add_shadow
     from meltygui.core.cache.tile_cache import clear_glows
@@ -876,7 +879,7 @@ def draw_shortcuts(input_value: str, draw_state, left_mouse_clicked=False,
              if (left_mouse_clicked and hasattr(left_mouse_clicked, "x")) else None)
     chip = px(chip_size) if show_tint_chips else 0.0
     text_x = px(left_pad) + (chip + px(6) if show_tint_chips else 0.0)
-    meta = file_meta_store()
+    meta = file_metadata
     row_bg = row_tint_bg()
     x, y = imgui.get_cursor_screen_pos()
     width = float(draw_state.content_width or draw_state.width or px(190))
@@ -950,6 +953,7 @@ def draw_shortcuts(input_value: str, draw_state, left_mouse_clicked=False,
                     swatch = chip_swatch(tint, row_bg.rgb(tint, boost))
                 tint_control(draw_state, key, tint, chip_x, ry0 + (row_h - chip) * 0.5, chip,
                              ry0 + text_y_pad, row_hovered, default_tint, swatch=swatch,
+                             setter=lambda value, path=key: set_row_tint(meta, path, value),
                              show_brush=path == current)
         return picked
 
@@ -974,45 +978,9 @@ def draw_shortcuts(input_value: str, draw_state, left_mouse_clicked=False,
     return False, input_value
 
 
-def _trace_browser_size(stage, draw_state, **details):
-    """File browser size diagnostics (the nested-OS-window resize glitch):
-    one line per CHANGE of the view's box / content rect / the surface's
-    GLFW window and framebuffer size, to the bounded resize trace
-    (.melty cache root, resize-<pid>.log) and stderr. Never raises."""
-    try:
-        import sys
-        import meltygui.core.diagnostics.resize_trace as resize_trace
-        from meltygui import window_api as glfw
-        window = getattr(Melty, "glfw_window", None)
-        window_size = fb_size = None
-        if window is not None:
-            window_size = tuple(glfw.get_window_size(window))
-            fb_size = tuple(glfw.get_framebuffer_size(window))
-        try:
-            import meltygui.core.windowing.geometry_feed as geometry_feed
-            frame = geometry_feed._current_frame()
-            details["feed"] = (geometry_feed.backend(), geometry_feed._hypr_selector(),
-                               geometry_feed.hypr_honors_geometry(),
-                               None if frame is None else (frame.get("at"), frame.get("size")))
-        except Exception as error:
-            details["feed"] = f"error {error!r}"
-        stamp = (draw_state.width, draw_state.height, draw_state.abs_left, draw_state.abs_top,
-                 window_size, fb_size, tuple(sorted(details.items())))
-        if getattr(draw_state, "_browser_size_trace", None) == stamp:
-            return
-        draw_state._browser_size_trace = stamp
-        resize_trace.record(stage, draw_state, window_size=window_size, fb_size=fb_size,
-                            gesture=bool(Melty.resize_gesture_live()), **details)
-        print(f"[{stage}] f{Melty.frame_count} view {draw_state.width}x{draw_state.height} "
-              f"at ({draw_state.abs_left}, {draw_state.abs_top}) window {window_size} "
-              f"fb {fb_size} {details}", file=sys.stderr, flush=True)
-    except Exception:
-        pass
-
-
 @render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=True,
              show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
-def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
+def draw_fast_file_explorer(input_value: str, draw_state, file_metadata=None, column_edges=None,
                             left_mouse_clicked=False, ctrl_up_key_pressed=False,
                             shortcuts_width=190.0, shortcut_row_height=22.0, column_gap=6.0,
                             show_tint_chips=True, chip_size=17.0, default_tint=(0.32, 0.42, 0.54, 1.0),
@@ -1040,7 +1008,6 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
                         content_width=draw_state.content_width,
                         size_change=getattr(draw_state, "size_change", None))
     from meltygui.files.fast_file_explorer import row_tint_bg
-    from meltygui.models.file_meta import file_meta_store
     from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.core.cache.tile_cache import clear_glows
     from meltygui.core.layout.column_core import ColumnLayout
@@ -1075,7 +1042,7 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
              if (left_mouse_clicked and hasattr(left_mouse_clicked, "x")) else None)
     chip = px(chip_size) if show_tint_chips else 0.0
     text_x = px(left_pad) + (chip + px(6) if show_tint_chips else 0.0)
-    meta = file_meta_store()
+    meta = file_metadata
     row_bg = row_tint_bg()
     # The listing writes what the right-click landed on here each run; the
     # menu item callables (built here, run by the wrapper's items menu with no
@@ -1098,7 +1065,7 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
     picked = None
     with columns.cell(0, height=body_height) as width:
         changed_s, picked_s = draw_shortcuts(
-            str(directory), name="shortcuts", width=width, height=body_height,
+            str(directory), name="shortcuts", file_metadata=file_metadata, width=width, height=body_height,
             row_height=shortcut_row_height, show_tint_chips=show_tint_chips,
             chip_size=chip_size, default_tint=default_tint, disable_scroll=True,
             left_mouse_clicked=left_mouse_clicked)
@@ -1106,7 +1073,7 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
     with columns.cell(1, height=body_height) as width:
         if layout_out is not None:
             layout_out["listing_left"] = imgui.get_cursor_screen_pos()[0]
-        changed, value = draw_file_listing(str(directory), name="listing", width=width,
+        changed, value = draw_file_listing(str(directory), name="listing", file_metadata=file_metadata, width=width,
                                            height=body_height, disable_scroll=False,
                                            context_menu=menu_items, menu_target=menu_target,
                                            drag_rows=drag_rows, folder_bg_boost=folder_bg_boost,
@@ -1134,7 +1101,7 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
 def draw_file_selector(input_value: str | None = None, draw_state=None,
                        selector_state: FileSelectorState = None,
                        escape_key_pressed=False, choose_folder=False,
-                       context_menu=None, browse=None, show_hidden=None):
+                       context_menu=None, browse=None, show_hidden=None, file_metadata=None):
     """Return (True, absolute_path) once when a file is activated.
 
     Navigation stays here. input_value seeds the initial directory (home
@@ -1176,6 +1143,7 @@ def draw_file_selector(input_value: str | None = None, draw_state=None,
                         explorer=(right - left, max(120, bottom - top - 35)))
     changed, picked = draw_fast_file_explorer(
         selector_state.directory, name='files', width=right - left,
+        file_metadata=file_metadata,
         height=max(120, bottom - top - 35),
         folder_bg_boost=-0.23, folder_bg_rounding=10.0, context_menu=context_menu,
         show_hidden=show_hidden)
@@ -1316,7 +1284,7 @@ def file_watch_debug(draw_state=None):
 
 @render_func(tint=(0.32, 0.42, 0.54), auto_resize=False, selectable=False)
 def render_file_tree(input_value=None, draw_state=None,
-                     file_tree_state: FileTreeState = None, root=ROOT,
+                     file_tree_state: FileTreeState = None, root=ROOT, file_metadata=None,
                      left_mouse_down=False, left_mouse_double_clicked=False,
                      escape_key_pressed=False, **kwargs):
     # Geometry authored at ui_scale 1.0 — scaled through Melty.px per frame.
@@ -1329,7 +1297,6 @@ def render_file_tree(input_value=None, draw_state=None,
     from meltygui.model.import_graph_model import start_build
     from meltygui.core.files.file_tree_core import _apply_row_drop
     from meltygui.core.files.file_tree_core import _flatten_ordered
-    from meltygui.core.files.file_tree_core import _meta
     from meltygui.core.files.file_tree_core import _tint_of
     import meltygui.model.import_graph_model as file_graph
 
@@ -1440,7 +1407,7 @@ def render_file_tree(input_value=None, draw_state=None,
 
     # Row order comes from the file_meta dict: a path's key position is its
     # rank among its siblings (drag-reorder rewrites those positions).
-    meta = _meta()
+    meta = file_metadata
     position = ({k: i for i, k in enumerate(meta)} if meta is not None else {})
     rows = _flatten_ordered(Path(root), state.expanded, meta, position)
     # One dummy reports the total height so the container scrolls normally.

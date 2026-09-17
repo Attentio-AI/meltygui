@@ -1,4 +1,4 @@
-"""cuda_march: the in-place CUDA raymarcher behind draw_voxels(cuda_march=True).
+"""cuda_march: the in-place CUDA raymarcher behind draw_voxels_cuda.
 Kernel equivalence (strided view vs materialized volume, neural flow,
 normalize, any dtype) and a real-GL check that the CUDA image blitted into
 the FBO matches the GL voxel_pass on the same volume."""
@@ -12,7 +12,7 @@ torch = pytest.importorskip("torch")
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 
-import meltygui.tensor.cuda_march as cm
+import meltygui.view.voxel_cuda_view as cm
 from meltygui.model.tensor_model import TensorDim
 from meltygui.model.tensor_model import slice_volume
 from meltygui.model.tensor_model import slice_volume_view

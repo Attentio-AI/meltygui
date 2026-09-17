@@ -23,7 +23,7 @@ assert 'meltygui.core.graphics.graph_core' not in sys.modules
 def test_cuda_errors_belong_to_each_view_and_clear_on_recovery(monkeypatch):
     import torch
     from meltygui.view import voxel_view
-    from meltygui.tensor import cuda_march
+    from meltygui.view import voxel_cuda_view as cuda_march
 
     class Resources:
         error = None

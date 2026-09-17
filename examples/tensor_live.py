@@ -17,7 +17,7 @@ def wave(size=24, phase=0.0):
 @meltygui.glfw_window(name='Standalone CUDA tensor', width=850, height=700, app_id='meltygui-validation')
 @meltygui.render_func(use_cache=False)
 def tensor_window(input_value=None, draw_state=None):
-    meltygui.draw_voxels(volume, name='CUDA torus', cuda_march=True, width=800, height=630)
+    meltygui.draw_voxels(volume, name='CUDA torus', width=800, height=630)
     return False, input_value
 
 

@@ -1,4 +1,5 @@
 """Chat studio: draw-list navigation/transcript over provider-owned dictionaries."""
+from meltygui.view.chat_decoration_view import _color
 import colorsys
 from bisect import bisect_right
 import dataclasses
@@ -33,7 +34,7 @@ from meltygui.chat.messages import input_text
 import meltygui.chat.images as chat_images
 from meltygui.models.file_meta import FileMeta
 from meltygui.models.file_meta import file_meta_store
-from meltygui.files.fast_file_explorer import set_row_tint
+from meltygui.model.file_metadata_model import set_row_tint
 from meltygui.core.runtime.toggles import Tint
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.styling.fonts import Font
@@ -80,67 +81,11 @@ def image_box(entry, max_width, size=None):
 # its session was written within this many seconds by anyone - a provider's
 # Claude Code or another window; the window asks each backend to look every
 # REFRESH_S seconds.
-ACTIVE_WINDOW_S = 30
 REFRESH_S = 5
-
-
-def is_active(chat, now=None):
-    return bool(chat["running"] or chat.get("external_busy")) or ((now if now is not None else time.time())
-                                     - (chat.get("updated") or 0.0)) < ACTIVE_WINDOW_S
 
 
 # The sidebar's age filter chips: label → hours (0 = every conversation).
 AGE_FILTERS = (("1h", 1), ("2h", 2), ("Day", 24), ("2 days", 48), ("All", 0))
-
-
-def age_cutoff(hours, now=None):
-    """The epoch second before which a conversation is out of the filter,
-    or None for no filter."""
-    return None if not hours else (now if now is not None else time.time()) - hours * 3600
-
-
-def recent_chat_time(chat):
-    # Unsent drafts have no user message yet. The fixed creation time keeps
-    # them visible at the top without allowing response activity to reorder them.
-    return chat.get("last_user_at") or chat.get("created_at") or 0.0
-
-
-def sidebar_visible(key, chat, cutoff, selected=None):
-    """Whether a conversation stays in the filtered sidebar: recent enough,
-    running (active now), or the open one (its transcript is showing)."""
-    return (cutoff is None or is_active(chat) or key == selected
-            or (chat.get("updated") or 0.0) >= cutoff)
-
-
-def _running_dot(x, y, tint):
-    """A steady green activity indicator, independent of conversation paint."""
-    draw_list = imgui.get_window_draw_list()
-    if Melty.channels_split:
-        draw_list.channels_set_current(Melty.get_channel())
-    draw_list.add_circle_filled(x, y, Melty.px(3.5), _color((0.12, 0.75, 0.28)), 16)
-
-
-def _color(tint, alpha=1):
-    return pack_color(*tint[:3], alpha)
-
-
-def _button(draw_state, key, label, x, y, width, tint, enabled=True, height=None,
-            selected=False, background=True, shadow=True, event="left_mouse_clicked", text_color=None, dimmed=False):
-    cursor = imgui.get_cursor_screen_pos()
-    try:
-        imgui.set_cursor_screen_pos((x, y))
-        return flat_button(label, draw_state if enabled else None, key,
-            pos=(x, y), width=width, height=height or Melty.px(25), event=event, text_color=text_color,
-            color=tint, alpha=(1 if enabled and not dimmed else 0.4) if background else 0,
-            tint_value=0.23 if selected else 0.16,
-            # A backgroundless button casts no shadow: the shadow pass would
-            # paint its lit plate over whatever block the label sits in.
-            # Shadow=False: only the selected one lifts (the source tabs).
-            shadow=background and (shadow or selected),
-            shadow_offset=(Toggles.Chat.selected_shadow_offset if selected else Toggles.Chat.shadow_offset)
-                          if background and (shadow or selected) else 0, hovered=None if enabled else False)
-    finally:
-        imgui.set_cursor_screen_pos(cursor)
 
 
 def _tint_chip(meta, draw_state, key, x, y):
@@ -152,28 +97,10 @@ def _tint_chip(meta, draw_state, key, x, y):
     return changed
 
 
-def project_tint(project):
-    """The tint painted on the project's directory in the shared file-meta
-    store (what the file browser and the studio paint), or None."""
-    if not project:
-        return None
-    return FileMeta.painted_tint(file_meta_store().get(str(project)))
 
 
-def conversation_folder_tint(project):
-    """Header folder color; apps may supply a color for unpainted folders."""
-    return project_tint(project)
 
 
-def conversation_tint_setter(meta):
-    """A writer for a conversation's own tint in the chat metadata: a tuple
-    paints it, None (the picker's clear) unpaints it."""
-    def write(value):
-        if value is None:
-            meta.pop("tint", None)
-        else:
-            meta["tint"] = tuple(value)
-    return write
 
 
 def _tint_slot(draw_state, key, tint, x, y, hovered, default_tint, setter, show_brush=True, brush_tint=None):
@@ -190,26 +117,6 @@ def _tint_slot(draw_state, key, tint, x, y, hovered, default_tint, setter, show_
                         brush_color=tuple(c * 0.55 * float(Toggles.Melty.arrow_brightness) for c in
                             _tint_style(tuple(brush_tint or default_tint)).make_color_style_value(input={
                                 "value": 7.788, "saturation": 1.559, "max_value": 1.601})[:3]))
-
-
-def _hovering(x, y, width, height):
-    mouse_x, mouse_y = imgui.get_mouse_pos()
-    return x <= mouse_x < x + width and y <= mouse_y < y + height
-
-
-def _reorder(chats, key, direction):
-    keys = list(chats)
-    index = keys.index(key)
-    # Move within this project's group; keep other projects untouched.
-    project = dict.__getitem__(chats, key)["project"]
-    candidates = [other for other in keys if dict.__getitem__(chats, other)["project"] == project]
-    position = candidates.index(key) + direction
-    if not 0 <= position < len(candidates):
-        return
-    other_index = keys.index(candidates[position])
-    keys[index], keys[other_index] = keys[other_index], keys[index]
-    for item in keys:
-        chats[item] = chats.pop(item)
 
 
 from meltygui.view.chat_view import _soft_wrap
@@ -302,29 +209,10 @@ def _viewport(draw_state, state, key, width, height, content_height, follow=Fals
 from meltygui.view.chat_view import _visible
 
 
-from meltygui.view.chat_view import _tint_style
+from meltygui.view.chat_decoration_view import _tint_style
 
 
-from meltygui.view.chat_view import _text_tint
-
-
-def _card(x, y, width, height, tint, selected=False, max_bg_value=None, shadow_offset=None, shadow=True):
-    # Fills paint on the BODY channel (as flat_button does): a fill one channel
-    # below sits under the compositor's mask for this rank and its lit rim /
-    # specular is masked out - the card showed with no highlight at all.
-    draw_list = imgui.get_window_draw_list()
-    if Melty.channels_split:
-        draw_list.channels_set_current(Melty.get_channel())
-    if shadow:
-        add_shadow((x, y, width, height),
-                   offset=shadow_offset if shadow_offset is not None else (Toggles.Chat.selected_shadow_offset if selected else Toggles.Chat.shadow_offset),
-                   corner_radius=Melty.px(6))
-    _, color = draw_bg(left=x, top=y, width=width, height=height,
-            style_manager=_tint_style(tuple(tint)), opacity=1, outline=False,
-            rounding=Melty.px(6), max_bg_depth=1 if selected else 0,
-            max_bg_value=(0.23 if selected else 0.18) if max_bg_value is None else max_bg_value,
-            selected=selected)
-    return color
+from meltygui.view.chat_decoration_view import _text_tint
 
 
 _LABEL_WIDTHS = {}
@@ -360,16 +248,6 @@ def _prose_metrics():
     finally:
         if font is not None:
             imgui.pop_font()
-
-
-def prose_offset(text, x, y, mouse, line_px, char_w):
-    """The character offset in the pre-wrapped `text` (drawn at x, y, one
-    line per `line_px`, `char_w` per character after the 4 px inset) that
-    the pointer at `mouse` is on: rows and columns clamp to the text."""
-    lines = str(text).split("\n")
-    row = max(0, min(len(lines) - 1, int((mouse[1] - y) // line_px)))
-    col = max(0, min(len(lines[row]), int(round((mouse[0] - x - Melty.px(4)) / char_w))))
-    return sum(len(line) + 1 for line in lines[:row]) + col
 
 
 def _draw_prose(text, x, y, width, height, tint, clip=None, selected=None, **_):
@@ -427,27 +305,6 @@ def _icon_chip(icon, x, y, width, height, color):
     return x + max(0, (width - _label_width(icon)) / 2)
 
 
-def _caret(draw_state, key, x, y, width, height, expanded, tint, brightness=1.0):
-    """A draw-list expand chevron with its own click subscription.
-
-    Not an imgui button: the transcript is a cached tile, and an imgui item
-    only exists on the frames its body runs, so clicks on it were lost. An
-    on_action click is replayed on cache-served frames like every body action.
-    """
-    color = _tint_style(tuple(tint)).make_color_style_value(input={
-        "value": 7.788, "saturation": 1.559, "max_value": 1.601})[:3]
-    color = _color(tuple(c * brightness * float(Toggles.Melty.arrow_brightness) for c in color))
-    cx, cy, radius = x + width / 2, y + height / 2, Melty.px(3)
-    points = ((cx - radius, cy - radius / 2), (cx, cy + radius / 2),
-              (cx + radius, cy - radius / 2)) if expanded else (
-              (cx - radius / 2, cy - radius), (cx + radius / 2, cy), (cx - radius / 2, cy + radius))
-    dl = imgui.get_window_draw_list()
-    dl.add_line(*points[0], *points[1], color, Melty.px(1.5))
-    dl.add_line(*points[1], *points[2], color, Melty.px(1.5))
-    return draw_state.on_action("left_mouse_clicked", view_id=key, priority_delta=3,
-                                rect=(x, y, x + width, y + height)) is not None
-
-
 _ELLIPSIS_MEMO = {}
 
 
@@ -493,26 +350,6 @@ def _title(text, x, y, width, height, tint, brightness=1.0, ellipsis=False, text
         Melty.pop_clip()
         if font is not None:
             imgui.pop_font()
-
-
-def _apply_chat_drop(chats, keys, drop):
-    """Dock drop indices refer to registered rows, including offscreen rows."""
-    if drop is None or drop.kind != "reorder" or drop.key not in keys:
-        return False
-    project = chats.get(drop.key)["project"]
-    group = [i for i, key in enumerate(keys) if chats.get(key)["project"] == project]
-    if not min(group) <= drop.insert_index <= max(group) + 1:
-        return False
-    rows = {key: chats.get(key) for key in keys}
-    if not drop.apply(rows):
-        return False
-    # Collapsed projects retain their order. Mutations are dict-only;
-    # the proxy records order without archiving deleted-and-reinserted rows.
-    reordered = iter(rows)
-    order = [next(reordered) if key in rows else key for key in chats]
-    for key in order:
-        chats[key] = chats.pop(key)
-    return True
 
 
 def chat_sources(accounts):

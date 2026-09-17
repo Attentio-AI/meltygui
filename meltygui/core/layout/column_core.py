@@ -613,8 +613,10 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
     # edge along restored it, the push doubled frame after frame and the app
     # grew to the whole display in four frames (Lukas 09-13). A nested
     # window under a FREE root is parent-relative and restores plainly.
-    # An explicit ordinary-view parent is a layout anchor, not a re base.
-    rides_surface = is_root or bool(getattr(parent, "_frame_pinned", False))
+    # Caller-controlled workspace frames also follow native layout. Their
+    # descendants restore against the measured anchor, so sticky replay does
+    # not undo the compensation applied after that layout changes.
+    rides_surface = is_root or os_frame._native_layout_parent(window) is not None
     # The CORNER the window's coordinates hang from, in SCREEN terms: the
     # surface's applied origin (os_ctx.base is near - unapplied + the
     # window's screen position, os_frame.attach - shift through it; never
@@ -1141,10 +1143,8 @@ def _frame_pass(window, axis):
     specs[window.id] = ([max(_axis_min(axis), declared)], [None])
     near, far = fe
 
-    # A surface root can start BELOW its native chrome (file selectors),
-    # unlike roots whose own header occupies that row. Keep that fixed
-    # gap in the frame graph; a zero-cap gap would pull the body to y=0
-    # on a near-edge resize, then the wrapper pins it back next frame.
+    # Headerless native bodies begin below the control row. Preserve that
+    # placement gap through a solve; a zero-cap gap pulls the body to y=0.
     inset = (float((window.window_pos or (0, 0))[0 if axis == "x" else 1])
              if getattr(window, "_frame_pinned", False) else 0.0)
     near["surface_inset"] = inset
@@ -1246,19 +1246,32 @@ def _frame_pass(window, axis):
     # the OS graph (which contains its floating children), then pack this
     # root's columns into the resulting size. A local solve alone let the
     # root push the same OS edge back out in its own pass.
-    if (getattr(window, "_frame_pinned", False) and os_frame._enabled()
-            and os_frame._STATE["frame"] == Melty.frame_count):
+    surface_layout = os_frame._native_layout_frame(window)
+    if ((getattr(window, "_frame_pinned", False) or surface_layout)
+            and os_frame._enabled() and os_frame._STATE["frame"] == Melty.frame_count):
         pending = _pending(window, axis)
         frame_drags = [item for item in pending
                        if len(item) > 2 and item[2] and any(item[0] is e for e in fe)]
         if frame_drags:
+            # A caller-sized workspace cannot retain a frame resize of its
+            # own. Its outer-edge gesture belongs to the native frame, while
+            # interior divider gestures stay on its local layout graph.
+            os_near, os_far = os_frame.edges(axis)
+            surface_gap = os_far[axis] - os_near[axis] - size if surface_layout else inset
+            if surface_layout:
+                root = os_frame._native_layout_parent(window)
+                minimum = "min_width" if axis == "x" else "min_height"
+                setattr(root, minimum, max(getattr(root, minimum) or 0,
+                                          getattr(window, minimum) + surface_gap))
             for edge, target, _cursor in frame_drags:
                 target = _cap_frame_target(window, edge, target, axis)
                 os_frame.queue_drag(axis, 0 if edge is near else 1, target - edge[axis])
             pending[:] = [item for item in pending if not any(item is drag for drag in frame_drags)]
             os_frame.solve()
+            if surface_layout:
+                window.window_pos = tuple(window._kwargs["window_pos"])
             os_near, os_far = os_frame.edges(axis)
-            size = os_far[axis] - os_near[axis] - inset
+            size = os_far[axis] - os_near[axis] - surface_gap
             if axis == "x":
                 window.width = snap_int(size)
             else:
@@ -1319,8 +1332,12 @@ def _frame_pass(window, axis):
     d_near = near[axis]
     if d_near:
         pos = window.window_pos or (0, 0)
-        window.window_pos = ((pos[0] + d_near, pos[1]) if axis == "x"
-                             else (pos[0], pos[1] + d_near))
+        # The native body stays at its surface content inset. Its native
+        # frame carries the near-edge motion; only local layout edges need
+        # rebasing here. Moving the body too makes content jump until ack.
+        if not getattr(window, "_frame_pinned", False):
+            window.window_pos = ((pos[0] + d_near, pos[1]) if axis == "x"
+                                 else (pos[0], pos[1] + d_near))
         if axis == "x":
             window.width = snap_int(window.width - d_near)
         else:
@@ -1494,7 +1511,7 @@ def edge_under_cursor(window, cursor_x_window, cursor_y_abs, left=False):
     Returns the nearest edge dict strictly to the RIGHT of the cursor among
     the rows whose visible band vertically contains the cursor — i.e. the
     right edge of the INNERMOST column under the cursor. With ``left=True``
-    (the left+right-drag top-left corner resize) it's the nearest edge
+    (the double-right-drag top-left corner resize) it's the nearest edge
     strictly to the LEFT instead. Every window registers its own frame edges
     (``window.id`` entry, full-window span), so a window with NO columns — or
     a drag in the outermost column — lands on the window's frame edge on

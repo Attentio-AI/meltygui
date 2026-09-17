@@ -1,4 +1,4 @@
-"""Demo for the tiled window manager (view/core_views/tile_manager.py).
+"""Demo for the tiled window manager (core/layout/tile_manager_core.py).
 
 A Blender-style area layout drawn flat on one draw_state: every divider —
 the window's frame edges, the column edges of the root split, the row
@@ -6,29 +6,57 @@ edges inside each column — is a shared edge object in the window's
 collision solve, so dragging any of them pushes and pulls the rest and
 out through the window frame, exactly like the columns playground.
 """
+from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.window_decoration import window
-from meltygui.core.layout.tile_manager_core import Split
-from meltygui.core.layout.tile_manager_core import Tile
+from meltygui.model.tile_model import Split
+from meltygui.model.tile_model import Tile
 from meltygui.core.layout.tile_manager_core import TileManagerState
 from meltygui.core.layout.tile_manager_core import draw_tiles
 
-# Module-level so hotswap re-exec reuses it and the seeded edges survive
-# edits while iterating in draw_tiles. Blender's default screen, roughly:
-# a tall outliner column on the left, the viewport over the timeline in
-# the middle, and a properties column split three ways on the right.
-tiles_demo = Split("x", [
-    Tile("outliner", tint=(0.20, 0.36, 0.52)),
-    Split("y", [
-        Tile("viewport", tint=(0.28, 0.28, 0.30)),
-        Tile("timeline", tint=(0.42, 0.30, 0.18)),
-    ]),
-    Split("y", [
-        Tile("properties", tint=(0.22, 0.44, 0.30)),
-        Tile("modifiers", tint=(0.36, 0.24, 0.44)),
-        Tile("materials", tint=(0.50, 0.22, 0.24)),
-    ]),
-])
+
+class CounterState(DictConversion):
+    def __init__(self):
+        super().__init__()
+        self.count = 0
+
+
+@render_func(multi_instance=True, tint=(0.20, 0.36, 0.52))
+def draw_tile_counter(input_value: object, draw_state,
+                      counter_state: CounterState = None, style_manager=None):
+    """Choose in two tiles to exercise independent, persisted view state."""
+    from meltygui.view.header_view import flat_button
+    clicked = flat_button(f"Count: {counter_state.count} — add one", draw_state,
+                          "increment", width=180, style_manager=style_manager)
+    if clicked:
+        counter_state.count += 1
+    return clicked, input_value
+
+
+@render_func(multi_instance=True, tint=(0.22, 0.44, 0.30))
+def draw_tile_notes(input_value: object):
+    from meltygui.view.text_view import draw_text
+    changed, value = draw_text("" if input_value is None else input_value)
+    return changed, value if changed else input_value
+
+
+class TileManagerDemoModel(DictConversion):
+    """The demo app owns the layout, including each tile's selected function."""
+
+    def __init__(self):
+        super().__init__()
+        self.tree = Split("x", [
+            Tile("outliner", tint=(0.20, 0.36, 0.52), render_func=draw_tile_counter),
+            Split("y", [
+                Tile("viewport", tint=(0.28, 0.28, 0.30), render_func=draw_tile_counter),
+                Tile("timeline", tint=(0.42, 0.30, 0.18)),
+            ]),
+            Split("y", [
+                Tile("properties", tint=(0.22, 0.44, 0.30)),
+                Tile("modifiers", tint=(0.36, 0.24, 0.44)),
+                Tile("materials", tint=(0.50, 0.22, 0.24)),
+            ]),
+        ])
 
 
 # auto_resize=False: a fixed-size window gives the tree a stable frame;
@@ -36,7 +64,11 @@ tiles_demo = Split("x", [
 @window
 @render_func(tint=(0.24, 0.30, 0.20), auto_resize=False, min_width=720,
              min_height=420, show_bg=True)
-def draw_tiled_window_manager_demo(input_value, draw_state, tile_state: TileManagerState = None):
-    tree = tiles_demo if input_value is None else input_value
-    changed = draw_tiles(tree, draw_state, tile_state=tile_state)
-    return changed, tree
+def draw_tiled_window_manager_demo(input_value: object, draw_state,
+                                   tile_state: TileManagerState = None,
+                                   app_model: TileManagerDemoModel = None,
+                                   multi_instance_renderers=()):
+    tree = app_model.tree if input_value is None else input_value
+    changed = draw_tiles(tree, draw_state, tile_state=tile_state,
+                         multi_instance_renderers=multi_instance_renderers)
+    return changed, input_value

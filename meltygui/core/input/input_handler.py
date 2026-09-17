@@ -133,8 +133,8 @@ class _InputState:
     # True when this press is a CHORD - a mouse button pressed while the other
     # button is still held (see feed_down). A chorded press is level state
     # only: is_down() reads it, nothing is dispatched for it (no DOWN, no drag
-    # events, no HELD, no CLICKED/UP on release). Panel window resize reads
-    # is_down("left_mouse") during a right-drag to pick the corner.
+    # events, no HELD, no CLICKED/UP on release). Consumers can inspect
+    # button level state without dispatching a competing gesture.
     chord: bool = False
 
 
@@ -484,12 +484,10 @@ class InputHandler:
         state = self._state(input_id)
         state.chord = False
 
-        # MOUSE BUTTON CHORDS. The default resize is a right-drag; holding the
-        # LEFT button too switches it to the top-left corner (core_render's
-        # corner_drag_mode reads is_down("left_mouse") per frame). For that
-        # handoff to be seamless the second button must be inert as an event
-        # source - a left press landing mid-right-drag would otherwise start
-        # a text selection / item pickup / window move under the cursor:
+        # Suppress competing mouse-button gestures. A left press during
+        # right-drag must not start selection, pickup or window movement.
+        # This preserves button level state; it does not select a resize
+        # corner. Plain/double right-drag select bottom-right/top-left:
         #  - left pressed while right is held → the left press is a chord:
         #    level state only, nothing dispatched for it, its release silent.
         #  - right pressed while left is held but NOT yet dragging (both

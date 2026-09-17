@@ -1,6 +1,7 @@
 """Keep saved objects readable and re-saveable after their class is deleted."""
 import importlib
 import logging
+import types
 from functools import lru_cache
 
 from meltygui.core.conversion.dict_conversion import DictConversion
@@ -17,8 +18,10 @@ def missing_saved_class(class_path):
 
 
 def restore_saved_class(class_path):
-    # Try the original path again on every load, so restoring the source also
-    # restores real instances from a session saved with placeholders.
+    # The unpickler's find_class also resolves function globals. A missing
+    # renderer can therefore have been preserved as this placeholder too.
+    # Recover its original function when available, rather than keeping a
+    # class that crashes when the renderer is called with view arguments.
     from meltygui.core.module_names import canonical_name
     class_path = canonical_name(class_path)
     parts = class_path.split(".")
@@ -31,6 +34,6 @@ def restore_saved_class(class_path):
             # A syntax error or import-time exception in today's code says
             # nothing about the validity of the saved object's type.
             continue
-        if isinstance(value, type):
+        if isinstance(value, (type, types.FunctionType, types.BuiltinFunctionType)):
             return value
     return missing_saved_class(class_path)

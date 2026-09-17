@@ -6,7 +6,7 @@ that meet on it. Lines move independently and only carry a neighbour on
 physical contact (MIN_COLUMN_WIDTH along x, MIN_ROW_HEIGHT along y);
 pushed through the pile, an interior line moves the window frame itself.
 A right-drag anywhere latches the column edge to the cursor's right AND
-the row edge below it (left+right-drag: the edges to its left / above)
+the row edge below it (double-right-drag: the edges to its left / above)
 and drives both through the same solve.
 """
 import meltygui_imgui as imgui

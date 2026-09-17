@@ -4,9 +4,11 @@ Only per-line range metadata and the final RGBA image are allocated. Source
 samples are read in place, in their original dtype; no packed series texture.
 """
 import numpy as np
-from meltygui.tensor import cuda_march as kernels
+from meltygui.core.graphics.cuda_context_core import using_device
+from meltygui.core.graphics.cuda_kernel_core import kernel_functions
+from meltygui.model.cuda_tensor_model import CUDA_LOAD_SOURCE, dtype_code
 
-_SOURCE = kernels.KERNEL.split('struct Vol {', 1)[0] + r'''
+_SOURCE = CUDA_LOAD_SOURCE + r'''
 extern "C" __global__ void line_ranges(const unsigned char *data, int dtype,
     int nl, int ns, long long sl, long long ss, float *ranges) {
     int l = blockIdx.x * blockDim.x + threadIdx.x;
@@ -64,31 +66,19 @@ extern "C" __global__ void lines_image(const unsigned char *data, int dtype,
     out[o+2]=__float2half(b); out[o+3]=__float2half(a);
 }
 '''
-# Keep compiled CUDA modules alive across hotswap, like the volume kernels.
-import sys
-_CACHE = sys.__dict__.setdefault('_melty_cuda_line_kernels', {})
-
-
 def _functions(device):
-    entry = _CACHE.get(device)
-    if entry is None or entry[0] != _SOURCE:
-        import meltygui_pycuda.driver as cuda
-        from meltygui_pycuda.compiler import SourceModule
-        cc = cuda.Device(device).compute_capability()
-        module = SourceModule(_SOURCE, no_extern_c=True, arch='sm_%d%d' % cc,
-                              options=['-O3'] + kernels._host_compiler_flags())
-        entry = (_SOURCE, module, module.get_function('line_ranges'), module.get_function('lines_image'))
-        _CACHE[device] = entry
-    return entry[2:]
+    functions = kernel_functions("lines", device, _SOURCE,
+                                 ("line_ranges", "lines_image"))
+    return functions["line_ranges"], functions["lines_image"]
 
 
 def ranges(lines):
     """Small range metadata, calculated without masking/copying input values."""
     import torch
     result = torch.empty((lines.shape[0], 2), dtype=torch.float32, device=lines.device)
-    with kernels._Pushed(lines.device.index or 0):
+    with using_device(lines.device.index or 0):
         function, _ = _functions(lines.device.index or 0)
-        function(np.uintp(lines.data_ptr()), np.int32(kernels.dtype_code(lines)),
+        function(np.uintp(lines.data_ptr()), np.int32(dtype_code(lines)),
                  np.int32(lines.shape[0]), np.int32(lines.shape[1]),
                  np.int64(lines.stride(0)), np.int64(lines.stride(1)),
                  np.uintp(result.data_ptr()), block=(128, 1, 1),
@@ -102,9 +92,9 @@ def render(lines, stats, out, lut, *, normalize=False, zoom_x=1., zoom_y=1.,
     """Read original CUDA samples directly; write only the output image."""
     h, w = out.shape[:2]
     i, f = np.int32, np.float32
-    with kernels._Pushed(lines.device.index or 0):
+    with using_device(lines.device.index or 0):
         _, function = _functions(lines.device.index or 0)
-        function(np.uintp(lines.data_ptr()), i(kernels.dtype_code(lines)),
+        function(np.uintp(lines.data_ptr()), i(dtype_code(lines)),
                  i(lines.shape[0]), i(lines.shape[1]),
                  np.int64(lines.stride(0)), np.int64(lines.stride(1)),
                  np.uintp(stats.data_ptr()), i(normalize), np.uintp(out.data_ptr()), i(w), i(h),

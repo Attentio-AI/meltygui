@@ -83,13 +83,6 @@ def draw_voxels(input_value: object = None, gl_state: GLState = None, selectable
                 mean_dims=TensorDims(()), sort_dim=TensorDim(-1),
                 normalize=False, nf_on=False, nf_chop=TensorDim(-1),
                 nf_along=TensorDim(-1), nf_chunk=128,
-                # ── experimental: raymarch IN CUDA on the value's own GPU,
-                # reading the tensor's memory through its strides (no volume
-                # copy, no 3-D texture, any device); only the 2-D image
-                # crosses to the display GPU. Colour march is nearest-only;
-                # shading taps (normals, light marches, floor shadow) read a
-                # trilinear field like the GL version (see cuda_march.py). ──
-                cuda_march=True,
                 # ── volume furniture (screen px) ──
                 name_size=17.0, name_padding=30.1, name_opacity=1.1,
                 num_size=17.1, num_padding=5.5, num_opacity=0.8,
@@ -102,6 +95,142 @@ def draw_voxels(input_value: object = None, gl_state: GLState = None, selectable
                 kp_decimal_pressed=None, font_manager=None,
                 luts: LutPalette = None, voxel_state: VoxelState = None,
                 keyboard_available=True, pointer_buttons_down=False, **kwargs):
+    """Render voxels using CUDA for CUDA tensors and OpenGL for other inputs."""
+    parameters = locals()
+    extra = parameters.pop("kwargs")
+    return _draw_voxels(**(extra | parameters | {"backend": "auto"}))
+
+
+@render_func(show_bg=True, selectable=True,
+             auto_resize=False, min_width=269, with_header=draw_header,
+             bg_offset=0, min_height=293, disable_scroll=True, use_cache=True,
+             on_cleanup=_voxels_cleanup)
+def draw_voxels_opengl(input_value: object = None, gl_state: GLState = None, selectable=False,
+                draw_state=None,
+                tilt=0.283, spin=0.724, roll=0.0, cam_zoom=3.4,
+                pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False,
+                cam_brightness=1.332, cam_contrast=1.0,
+                density=0.7, threshold=0.297, centered=False,
+                nearest=True, lut=Lut("jet"), step_size=0.0005, max_steps=4096,
+                draw_plane=True, shadow_opacity=1.0, shadow_softness=0.15,
+                draw_shading=True, self_shading=True,
+                light_pos=(50.0, -50.0, 200.0), light_tint=(1.0, 1.0, 1.0),
+                light_brightness=1.622, ambient_light=0.3, shading_strength=0.7,
+                dim_names=("layer", "batch", "token", "feature"),
+                x_dim=TensorDim(0), y_dim=TensorDim(2), z_dim=TensorDim(2),
+                slices=(),
+                mean_dims=TensorDims(()), sort_dim=TensorDim(-1),
+                normalize=False, nf_on=False, nf_chop=TensorDim(-1),
+                nf_along=TensorDim(-1), nf_chunk=128,
+                name_size=17.0, name_padding=30.1, name_opacity=1.1,
+                num_size=17.1, num_padding=5.5, num_opacity=0.8,
+                num_spacing=1.0, num_angle=0.0, z_offset=1,
+                middle_mouse_drag=None, double_right_mouse_drag=None,
+                scroll_y_changed=None, space_mouse_changed=None,
+                left_mouse_double_clicked=None,
+                kp_7_pressed=None, kp_1_pressed=None, kp_3_pressed=None,
+                kp_5_pressed=None, slash_pressed=None, kp_divide_pressed=None,
+                kp_decimal_pressed=None, font_manager=None,
+                luts: LutPalette = None, voxel_state: VoxelState = None,
+                keyboard_available=True, pointer_buttons_down=False, **kwargs):
+    """Raymarch tensors, NumPy arrays or GLTexture values with OpenGL."""
+    parameters = locals()
+    extra = parameters.pop("kwargs")
+    return _draw_voxels(**(extra | parameters | {"backend": "opengl"}))
+
+
+@render_func(show_bg=True, selectable=True,
+             auto_resize=False, min_width=269, with_header=draw_header,
+             bg_offset=0, min_height=293, disable_scroll=True, use_cache=True,
+             on_cleanup=_voxels_cleanup)
+def draw_voxels_cuda(input_value: object = None, gl_state: GLState = None, selectable=False,
+                draw_state=None,
+                tilt=0.283, spin=0.724, roll=0.0, cam_zoom=3.4,
+                pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False,
+                cam_brightness=1.332, cam_contrast=1.0,
+                density=0.7, threshold=0.297, centered=False,
+                nearest=True, lut=Lut("jet"), step_size=0.0005, max_steps=4096,
+                draw_plane=True, shadow_opacity=1.0, shadow_softness=0.15,
+                draw_shading=True, self_shading=True,
+                light_pos=(50.0, -50.0, 200.0), light_tint=(1.0, 1.0, 1.0),
+                light_brightness=1.622, ambient_light=0.3, shading_strength=0.7,
+                dim_names=("layer", "batch", "token", "feature"),
+                x_dim=TensorDim(0), y_dim=TensorDim(2), z_dim=TensorDim(2),
+                slices=(),
+                mean_dims=TensorDims(()), sort_dim=TensorDim(-1),
+                normalize=False, nf_on=False, nf_chop=TensorDim(-1),
+                nf_along=TensorDim(-1), nf_chunk=128,
+                name_size=17.0, name_padding=30.1, name_opacity=1.1,
+                num_size=17.1, num_padding=5.5, num_opacity=0.8,
+                num_spacing=1.0, num_angle=0.0, z_offset=1,
+                middle_mouse_drag=None, double_right_mouse_drag=None,
+                scroll_y_changed=None, space_mouse_changed=None,
+                left_mouse_double_clicked=None,
+                kp_7_pressed=None, kp_1_pressed=None, kp_3_pressed=None,
+                kp_5_pressed=None, slash_pressed=None, kp_divide_pressed=None,
+                kp_decimal_pressed=None, font_manager=None,
+                luts: LutPalette = None, voxel_state: VoxelState = None,
+                keyboard_available=True, pointer_buttons_down=False, **kwargs):
+    """Raymarch a CUDA tensor in place on its own GPU."""
+    parameters = locals()
+    extra = parameters.pop("kwargs")
+    return _draw_voxels(**(extra | parameters | {"backend": "cuda"}))
+
+
+def _draw_voxels(input_value: object = None, gl_state: GLState = None, selectable=False,
+                draw_state=None,
+                # ── camera + shading: cam_* names dodge the legacy DrawState
+                # zoom/brightness/contrast fields (name-colliding params are
+                # excluded from auto-state). Gestures/panel write
+                # draw_state.<name>; diverged values persist. ──
+                tilt=0.283, spin=0.724, roll=0.0, cam_zoom=3.4,
+                # [tint=(0.084, 0.472, 0.148, 1.0)]
+                pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False,
+                cam_brightness=1.332, cam_contrast=1.0,
+                # density = the old densityScale (haze gain over the opacity
+                # gate); threshold = the old opacityThreshold (higher → lower
+                # gate → more opaque)
+                density=0.7, threshold=0.297, centered=False,
+                nearest=True, lut=Lut("jet"), step_size=0.0005, max_steps=4096,
+                # ── shadow catcher: the invisible plane the box rests on -
+                # it renders nothing but the volume's cast shadow (one-sided:
+                # no shadow from below). shadow_opacity scales how dark the
+                # caught shadow composites; shadow_softness scales the
+                # screen-space penumbra blur (radius grows with occluder
+                # height) - 0 = hard edge, bigger = wider penumbra. ──
+                draw_plane=True, shadow_opacity=1.0, shadow_softness=0.15,
+                # ── lighting: draw_shading lights the floor (per-s., the
+                # raymarched cast shadow) and the volume (gradient-normal
+                # Lambert); self_shading adds the per-sample transmittance
+                # march inside the volume - the expensive tier. ambient_light
+                # is the shadow floor: how much light survives everywhere.
+                # shading_strength scales how much the volume's cast normal
+                # may darken its LUT color (0 = shading off, plane still
+                # catches). ──
+                draw_shading=True, self_shading=True,
+                light_pos=(50.0, -50.0, 200.0), light_tint=(1.0, 1.0, 1.0),
+                light_brightness=1.622, ambient_light=0.3, shading_strength=0.7,
+                # ── axis mapping: dims by index OR NAME. The first three dims
+                # by default; None still means "derive" (last three → z/y/x)
+                # for anything that clears one. ──
+                dim_names=("layer", "batch", "token", "feature"),
+                x_dim=TensorDim(0), y_dim=TensorDim(2), z_dim=TensorDim(2),
+                slices=(),
+                mean_dims=TensorDims(()), sort_dim=TensorDim(-1),
+                normalize=False, nf_on=False, nf_chop=TensorDim(-1),
+                nf_along=TensorDim(-1), nf_chunk=128,
+                # ── volume furniture (screen px) ──
+                name_size=17.0, name_padding=30.1, name_opacity=1.1,
+                num_size=17.1, num_padding=5.5, num_opacity=0.8,
+                num_spacing=1.0, num_angle=0.0, z_offset=1,
+                middle_mouse_drag=None, double_right_mouse_drag=None,
+                scroll_y_changed=None, space_mouse_changed=None,
+                left_mouse_double_clicked=None,
+                kp_7_pressed=None, kp_1_pressed=None, kp_3_pressed=None,
+                kp_5_pressed=None, slash_pressed=None, kp_divide_pressed=None,
+                kp_decimal_pressed=None, font_manager=None,
+                luts: LutPalette = None, voxel_state: VoxelState = None,
+                keyboard_available=True, pointer_buttons_down=False, backend="auto", **kwargs):
     """The voxel renderer — owner of every render and mapping decision.
     Input is a tensor/ndarray (sliced + uploaded HERE, re-keyed by gl_state
     deps on source identity/_version/mapping) or an already-uploaded
@@ -187,6 +316,10 @@ def draw_voxels(input_value: object = None, gl_state: GLState = None, selectable
     # ── source → display volume → GPU, parameter-driven and stateless:
     # slice_volume is a pure function of the params, the upload re-runs
     # exactly when its deps change, and tensor metadata rides the buffer.
+    if backend == "cuda" and not bool(getattr(src, "is_cuda", False)):
+        _draw_voxel_error(draw_state, "CUDA voxel rendering requires a CUDA tensor.")
+        gl_state.drop("volume"); gl_state.drop("volume_cuda"); gl_state.drop("cuda_view")
+        return False, input_value
     if isinstance(src, GLTexture):
         tex, mapping = src, None
         source_shape = tuple(getattr(src, "source_shape", src.shape))
@@ -212,11 +345,10 @@ def draw_voxels(input_value: object = None, gl_state: GLState = None, selectable
         # user's params stay untouched; the labels below use the effective
         # values and show e.g. "vocab % 180" or "batch - vocab"). ───────────
         nf_pad = False
-        # The CUDA path needs pycuda + a CUDA tensor; anything else (CPU
-        # tensors, no pycuda) silently takes the GL path.
-        # A CUDA input must stay in its allocation. Never silently switch to
-        # the texture-upload path (which copies/reformats the whole tensor).
-        use_cuda = bool(getattr(t, "is_cuda", False))
+        # Explicit OpenGL selection uploads the sliced tensor to a 3-D
+        # texture, including CUDA tensors. Automatic selection keeps CUDA
+        # sources in place; the CUDA renderer never silently falls back.
+        use_cuda = backend != "opengl" and bool(getattr(t, "is_cuda", False))
         if use_cuda and not _cuda_march_ready():
             _draw_voxel_error(draw_state, "CUDA tensor rendering requires meltygui[tensor]; "
                               "the tensor was not copied to the CPU.")
@@ -648,7 +780,7 @@ def draw_voxels(input_value: object = None, gl_state: GLState = None, selectable
             # the tensor's GPU, hopped to a display-GPU RGBA16F texture);
             # blit it into the FBO under the same blend state so labels,
             # outline and the rest of the view are untouched.
-            import meltygui.tensor.cuda_march as _cm
+            from meltygui.view import voxel_cuda_view
             img_tex = _cuda_render(
                 gl_state, tex, width, height, voxel_state, lut=lut, tilt=tilt, spin=spin,
                 lut_texture=lut_tex,
@@ -658,7 +790,7 @@ def draw_voxels(input_value: object = None, gl_state: GLState = None, selectable
                 threshold=float(threshold), brightness=float(cam_brightness),
                 contrast=float(cam_contrast), gamma=float(Toggles.Voxels.gamma),
                 centered=bool(centered),
-                shade=_cm.shade_params(
+                shade=voxel_cuda_view.shade_params(
                     draw_plane=bool(draw_plane), shadow_opacity=float(shadow_opacity),
                     shadow_softness=float(shadow_softness),
                     shadow_tint=tuple(float(c) for c in Toggles.Voxels.floor_shadow_color)[:3],
@@ -1633,8 +1765,8 @@ def voxel_pass(gl_state: GLState = None, tilt=0.5, spin=0.8, roll=0.0, zoom=3.4,
 
 def _cuda_march_ready():
     try:
-        import meltygui.tensor.cuda_march as cuda_march
-        return cuda_march.available()
+        from meltygui.core.graphics.cuda_kernel_core import available
+        return available()
     except Exception:
         return False
 
@@ -1650,7 +1782,7 @@ def _cuda_render(gl_state, cv, width, height, voxel_state: VoxelState, lut="jet"
     is the GL texture it lands in (all re-made only when size/device/LUT
     change)."""
     import torch
-    import meltygui.tensor.cuda_march as cuda_march
+    from meltygui.view import voxel_cuda_view
     dev = cv.view.device
     W, H = int(width), int(height)
     try:
@@ -1664,7 +1796,7 @@ def _cuda_render(gl_state, cv, width, height, voxel_state: VoxelState, lut="jet"
         lut_t = lut_texture.cuda(dev)
         # shading params ride one small device array, re-uploaded only when
         # a value changes (deps = the values themselves)
-        shade_list = list(shade) if shade is not None else cuda_march.shade_params()
+        shade_list = list(shade) if shade is not None else voxel_cuda_view.shade_params()
         shade_t = gl_state.get("cuda_shade",
                                lambda: torch.tensor(shade_list, dtype=torch.float32, device=dev),
                                deps=(tuple(shade_list), str(dev)))
@@ -1680,7 +1812,7 @@ def _cuda_render(gl_state, cv, width, height, voxel_state: VoxelState, lut="jet"
         # includes it. Always baked on the cuda path.
         mip = gl_state.get(
             "cuda_mip",
-            lambda: cuda_march.build_mip(
+            lambda: voxel_cuda_view.build_mip(
                 cv.view, display_shape=cv.shape, nf=cv.nf, norm=cv.norm,
                 threshold=_transfer[0], density=_transfer[1],
                 brightness=_transfer[2], contrast=_transfer[3],
@@ -1695,10 +1827,10 @@ def _cuda_render(gl_state, cv, width, height, voxel_state: VoxelState, lut="jet"
         if shade_list[0] > 0.5 and shade_list[7] > 0.5:    # draw_floor
             _light = (tuple(shade_list[9:12]), float(shade_list[6]))  # pos, side
             vsc = cam["volume_scale"]
-            floor_R = cuda_march.floor_map_extent(vsc)
+            floor_R = voxel_cuda_view.floor_map_extent(vsc)
             floor_map = gl_state.get(
                 "cuda_floor",
-                lambda: cuda_march.build_floor_map(
+                lambda: voxel_cuda_view.build_floor_map(
                     cv.view, display_shape=cv.shape, volume_scale=vsc,
                     nf=cv.nf, norm=cv.norm,
                     threshold=_transfer[0], density=_transfer[1],
@@ -1707,7 +1839,7 @@ def _cuda_render(gl_state, cv, width, height, voxel_state: VoxelState, lut="jet"
                     light_pos=_light[0], plane_side=_light[1]),
                 deps=(cv._vol_key, cv.shape, str(dev), _transfer, _light,
                       tuple(round(float(v), 5) for v in vsc)))
-        cuda_march.march(cv.view, out, lut_t, display_shape=cv.shape, nf=cv.nf,
+        voxel_cuda_view.march(cv.view, out, lut_t, display_shape=cv.shape, nf=cv.nf,
                          norm=cv.norm, aspect=W / H, shade=shade_t, mip=mip,
                          floor_map=floor_map, floor_extent=floor_R, **cam)
         img = _upload_cuda_image(gl_state, out)

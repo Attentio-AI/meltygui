@@ -21,7 +21,7 @@ path. Worth it exactly when the data moves.
 
 Mechanics: PyCUDA SourceModule, compiled once per DEVICE (its primary
 context is retained and pushed around the launch only — never around GL
-calls, see core/graphics/cuda_interop_core.py), launched on the legacy default
+calls, see core/graphics/cuda_context_core.py), launched on the legacy default
 stream, which orders after torch's default-stream producers without an
 explicit sync. The output image is a torch float16 (H, W, 4) tensor on the
 tensor's device (premultiplied LINEAR RGBA, the same light the GL pass writes
@@ -32,56 +32,12 @@ caller moves it to wherever it's displayed.
 import math
 
 import numpy as np
+from meltygui.core.graphics.cuda_context_core import using_device
 
-# Per-device compiled kernels and retained primary contexts, parked on sys so
-# they are PROCESS-lifetime: globals().get would survive a hotswap re-exec
-# but not the in-place restart (studio_server purges src.*), and the old
-# module dict then became cyclic garbage that the next session's boot
-# gc collector freed with no CUDA context current - PyCUDA's "Resources in
-# out-of-thread context could not be cleaned up" warning, printed by the
-# studio.py warning hook as a full stack trace. Same dedupe pattern as the
-# other sys._lsd_* roots (see lifecycle.py); also spares the recompile.
-import sys as _sys
-_KERNELS = _sys.__dict__.setdefault("_lsd_cuda_march_kernels", {})
-_CONTEXTS = _sys.__dict__.setdefault("_lsd_cuda_march_contexts", {})
-_last_logged = globals().get("_last_logged")
+from meltygui.core.graphics.cuda_kernel_core import kernel_functions
+from meltygui.model.cuda_tensor_model import CUDA_LOAD_SOURCE, dtype_code
 
-
-def _log_once(msg):
-    global _last_logged
-    if msg != _last_logged:
-        print(f"[cuda_march] {msg}")
-        _last_logged = msg
-
-
-# torch.dtype → load switch case in the kernel
-DTYPE_CODES = {
-    "torch.float32": 0, "torch.float16": 1, "torch.bfloat16": 2,
-    "torch.float64": 3, "torch.int8": 4, "torch.uint8": 5, "torch.bool": 5,
-    "torch.int16": 6, "torch.int32": 7, "torch.int64": 8,
-}
-
-KERNEL = r"""
-#include <cuda_fp16.h>
-
-__device__ __forceinline__ float load_at(const unsigned char* __restrict__ d,
-                                         int dtype, long long e) {
-    switch (dtype) {
-        case 0: return ((const float*)d)[e];
-        case 1: return __half2float(((const __half*)d)[e]);
-        case 2: { unsigned short u = ((const unsigned short*)d)[e];
-                  return __uint_as_float(((unsigned)u) << 16); }
-        case 3: return (float)((const double*)d)[e];
-        case 4: return (float)((const signed char*)d)[e];
-        case 5: return (float)d[e];
-        case 6: return (float)((const short*)d)[e];
-        case 7: return (float)((const int*)d)[e];
-        case 8: return (float)((const long long*)d)[e];
-    }
-    return 0.0f;
-}
-
-struct Vol {
+KERNEL = CUDA_LOAD_SOURCE + r"""struct Vol {
     const unsigned char* data; int dtype;
     int nz, ny, nx;          // DISPLAYED extents (after neural flow)
     int snz, sny, snx;       // source view extents
@@ -670,84 +626,9 @@ extern "C" __global__ void bake_floor(
 """
 
 
-def available():
-    try:
-        import meltygui_pycuda.driver
-        import meltygui_pycuda as pycuda  # noqa: F401
-        return True
-    except Exception:
-        return False
-
-
-def _context_for(dev_index):
-    """The retained PRIMARY context of CUDA device `dev_index` — the same
-    context torch uses there, so torch pointers are valid in it."""
-    ctx = _CONTEXTS.get(dev_index)
-    if ctx is None:
-        import meltygui_pycuda.driver as cuda
-        cuda.init()
-        ctx = cuda.Device(int(dev_index)).retain_primary_context()
-        _CONTEXTS[dev_index] = ctx
-    return ctx
-
-
-class _Pushed:
-    """Push a device's primary context for the duration (no-op when it is
-    already the current context — the render thread's display device)."""
-
-    def __init__(self, dev_index):
-        self.dev_index = dev_index
-        self.pushed = False
-
-    def __enter__(self):
-        import meltygui_pycuda.driver as cuda
-        cuda.init()                      # idempotent; get_current needs it
-        cur = cuda.Context.get_current()
-        ctx = _context_for(self.dev_index)
-        if cur is None or cur.handle != ctx.handle:
-            ctx.push()
-            self.pushed = True
-        return self
-
-    def __exit__(self, *exc):
-        if self.pushed:
-            import meltygui_pycuda.driver as cuda
-            cuda.Context.pop()
-        return False
-
-
-def _host_compiler_flags():
-    """nvcc 12.1 refuses gcc > 12 as host compiler; point it at the newest
-    supported gcc on the box when the default is too new."""
-    import shutil
-    # Needs the C++ front end too (gcc-12 without g++-12 has no cc1plus).
-    for g in ("12", "11", "10"):
-        if shutil.which("gcc-" + g) and shutil.which("g++-" + g):
-            return ["-ccbin", "g++-" + g]
-    return ["-allow-unsupported-compiler"]
-
-
 def _kernel_for(dev_index, name="march"):
-    """Compile (once per device, nvcc-cached on disk by pycuda) and return
-    the named kernel. Must be called with that device's context pushed."""
-    fns = _KERNELS.get(dev_index)
-    if not isinstance(fns, dict) or fns.get("__source__") != hash(KERNEL):
-        import meltygui_pycuda.driver as cuda
-        from meltygui_pycuda.compiler import SourceModule
-        cc = cuda.Device(int(dev_index)).compute_capability()
-        mod = SourceModule(KERNEL, no_extern_c=True, arch="sm_%d%d" % cc,
-                           options=["-O3"] + _host_compiler_flags())
-        fns = {n: mod.get_function(n) for n in ("march", "bake_mip", "bake_floor")}
-        fns["__source__"] = hash(KERNEL)
-        _KERNELS[dev_index] = fns
-    return fns[name]
-
-
-def dtype_code(t):
-    code = DTYPE_CODES.get(str(t.dtype))
-    if code is None:
-        raise ValueError(f"cuda_march: unsupported dtype {t.dtype}")
-    return code
+    return kernel_functions("voxels", dev_index, KERNEL,
+                            ("march", "bake_mip", "bake_floor"))[name]
 
 
 SHADE_N = 18
@@ -805,7 +686,7 @@ def march(view, out, lut, *, display_shape, nf=(-1, -1, 0), norm=(0.0, 1.0, 0),
     chop, along, chunk = nf
     f32, i32, i64 = np.float32, np.int32, np.int64
     vsx, vsy, vsz = volume_scale
-    with _Pushed(dev):
+    with using_device(dev):
         fn = _kernel_for(dev)
         block = (16, 16, 1)
         grid = ((W + 15) // 16, (H + 15) // 16, 1)
@@ -890,7 +771,7 @@ def build_floor_map(view, *, display_shape, volume_scale, nf=(-1, -1, 0),
     chop, along, chunk = nf
     Rx, Ry = floor_map_extent(volume_scale)
     f32, i32, i64 = np.float32, np.int32, np.int64
-    with _Pushed(dev):
+    with using_device(dev):
         fn = _kernel_for(dev, "bake_floor")
         fn(np.uintp(view.data_ptr()), i32(dtype_code(view)),
            i32(nz), i32(ny), i32(nx), i32(snz), i32(sny), i32(snx),
@@ -929,7 +810,7 @@ def build_mip(view, *, display_shape, nf=(-1, -1, 0), norm=(0.0, 1.0, 0),
     chop, along, chunk = nf
     f32, i32, i64 = np.float32, np.int32, np.int64
     total = mz * my * mx
-    with _Pushed(dev):
+    with using_device(dev):
         fn = _kernel_for(dev, "bake_mip")
         fn(np.uintp(view.data_ptr()), i32(dtype_code(view)),
            i32(nz), i32(ny), i32(nx), i32(snz), i32(sny), i32(snx),

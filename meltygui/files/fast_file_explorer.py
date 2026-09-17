@@ -68,97 +68,12 @@ import meltygui_imgui as imgui
 
 from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
-from meltygui.core.melty import FileWatch
-from meltygui.core.conversion.dict_conversion import DictConversion
-from meltygui.models.file_meta import FileMeta
-from meltygui.models.file_meta import file_meta_store
-from meltygui.core.runtime.extensions import source_folders as project_roots
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.windowing.glfw_utils import request_render
 from meltygui.code.new_codecs import extension_to_codec
 from meltygui.core.cache.tile_cache import add_shadow
 from meltygui.core.cache.tile_cache import clear_glows
-from meltygui.core.layout.column_core import ColumnLayout
-from meltygui.core.core_render import render_func
-from meltygui.core.rendering.core_decoration import no_save
-from meltygui.core.input.drag_drop_core import DragDrop
 from meltygui.core.layout.header_runtime import _brightness_clamp_fn
-
-
-# ── the directory watch ─────────────────────────────────────────────────────
-# directory (str) -> the listing draw_states showing it. One FileWatch emitter per
-# dir in this map; a listing moves its emitter on navigation (watch_directory)
-# and the observer-thread listener posts an invalidate to the render thread.
-_WATCHERS = globals().get("_WATCHERS", {})
-
-
-def _on_file_event(src_path):
-    """FileWatch global listener (observer thread): an entry of a watched
-    directory changed — created, modified, moved, deleted — repaint the
-    listings showing that directory. Bumps nothing else; the listing's
-    mtime memo notices what changed."""
-    directory = os.path.dirname(src_path)
-    watchers = _WATCHERS.get(directory) or _WATCHERS.get(src_path)
-    if not watchers:
-        return
-
-    def repaint(draw_states=tuple(watchers)):
-        for draw_state in draw_states:
-            draw_state.invalidate()
-    Melty.post_to_render(repaint)
-
-
-def watch_directory(draw_state, state, dir_key):
-    """Point this listing's emitter at `dir_key`: the previous directory's
-    emitter is retired when no other listing shows it (the inotify instance
-    cap is per user), the new one scheduled through FileWatch.watch_dir."""
-    if state._watched == dir_key:
-        return
-    if _on_file_event not in FileWatch.global_listeners:
-        # Hotswap-safe: an older copy of this function is replaced by itself.
-        FileWatch.global_listeners[:] = [f for f in FileWatch.global_listeners
-                                         if getattr(f, "__name__", "") != "_on_file_event"]
-        FileWatch.global_listeners.append(_on_file_event)
-    FileWatch.start()
-    previous = state._watched
-    if previous is not None:
-        holders = _WATCHERS.get(previous)
-        if holders is not None:
-            holders.discard(draw_state)
-            if not holders:
-                del _WATCHERS[previous]
-                FileWatch.unwatch_dir(previous)
-    _WATCHERS.setdefault(dir_key, set()).add(draw_state)
-    FileWatch.watch_dir(dir_key)
-    state._watched = dir_key
-
-
-def list_directory(directory, show_hidden=False):
-    """The rows of `directory`: [(Path, is_dir)] — folders first, then files,
-    each case-insensitive by name. An unreadable directory lists empty."""
-    try:
-        entries = list(os.scandir(directory))
-    except OSError:
-        return []
-    folders, files = [], []
-    for entry in entries:
-        if not show_hidden and entry.name.startswith("."):
-            continue
-        try:
-            is_dir = entry.is_dir()
-        except OSError:
-            is_dir = False
-        (folders if is_dir else files).append(entry.name)
-    key = str.casefold
-    return ([(Path(directory) / n, True) for n in sorted(folders, key=key)]
-            + [(Path(directory) / n, False) for n in sorted(files, key=key)])
-
-
-def _dir_mtime_ns(directory):
-    try:
-        return os.stat(directory).st_mtime_ns
-    except OSError:
-        return -1
 
 
 def row_icon(path, is_dir, entry, folder_icon, file_icon):
@@ -173,77 +88,6 @@ def row_icon(path, is_dir, entry, folder_icon, file_icon):
     codec = extension_to_codec.get(path.suffix.lower())
     codec_icon = getattr(codec, "icon", None) if codec is not None else None
     return codec_icon or file_icon
-
-
-def set_row_tint(path, value):
-    """Write `value` (an rgb(a) tuple) as the tint of `path` in the shared
-    file-meta store, creating the entry only now — the listing never
-    setdefault()s entries for the files it merely shows. None (the picker's
-    clear) removes the tint, and the entry too when it holds nothing else,
-    so an unpainted file leaves no trace in file_meta.pkl."""
-    meta = file_meta_store()
-    key = str(path)
-    entry = meta.get(key)
-    if value is None:
-        if isinstance(entry, dict) and dict.__contains__(entry, "tint"):
-            del entry["tint"]
-            if dict.__len__(entry) == 0:
-                del meta[key]
-        return
-    if not isinstance(entry, dict):
-        entry = meta[key] = FileMeta()
-    entry["tint"] = tuple(value)
-
-
-def ordered_rows(rows, meta):
-    """`rows` ([(Path, is_dir)], natural order) sorted by the `order` stamps
-    in the meta store, the studio's rule (folder_files._apply_meta):
-    stamped rows first by their number, unstamped ones after in natural
-    order. No stamps at all: `rows` itself."""
-    if meta is None:
-        return rows
-    orders = {}
-    for i, (path, _is_dir) in enumerate(rows):
-        entry = meta.get(str(path))
-        if isinstance(entry, dict):
-            order = entry.get("order")
-            if isinstance(order, (int, float)):
-                orders[i] = order
-    if not orders:
-        return rows
-    indexed = sorted(range(len(rows)), key=lambda i: (orders.get(i, float("inf")), i))
-    return [rows[i] for i in indexed]
-
-
-def set_row_order(paths):
-    """Stamp `order` = position into the meta entry of every path of a
-    directory (created for the rows that have none — a reorder is the
-    user's explicit edit of the folder, like painting it)."""
-    meta = file_meta_store()
-    for i, path in enumerate(paths):
-        key = str(path)
-        entry = meta.get(key)
-        if not isinstance(entry, dict):
-            entry = meta[key] = FileMeta()
-        if entry.get("order") != i:
-            entry["order"] = i
-
-
-def apply_row_drop(rows, drag_keys, first_visible, drop):
-    """The directory's new order after `drop` (a DropEvent from on_drop, or
-    None): `drag_keys` are the rows that registered a drag handle this run
-    — the visible ones, a contiguous slice of `rows` starting at
-    `first_visible` — and the event's indices count in that slice. Returns
-    the complete [Path] order to stamp, or None when nothing moved (no
-    drop, a drop back in place, a cross-collection kind: rows only reorder
-    here)."""
-    if drop is None or drop.kind != "reorder" or not drag_keys:
-        return None
-    keys = list(drag_keys)
-    if not drop.apply(keys):
-        return None
-    paths = [path for path, _is_dir in rows]
-    return paths[:first_visible] + keys + paths[first_visible + len(drag_keys):]
 
 
 def row_tint_bg():
@@ -334,7 +178,9 @@ def tint_control(draw_state, key, tint, x, y, size, text_y, hovered, default_tin
     other than the file-meta store (the chat window's conversations); None
     clears. `brush_color` optionally supplies the exact icon RGB (the chat
     sidebar matches its expand arrow). Returns True when the store was written."""
-    write = setter or (lambda value, _k=key: set_row_tint(_k, value))
+    if setter is None:
+        raise TypeError("tint_control requires a supplied value setter")
+    write = setter
     # [tint=(0.55, 0.72, 0.95)]
     brush_icon = f"\uf1fc"
     brush_col = pack_color(*brush_color, 1.0) if brush_color is not None else pack_color(1.0, 1.0, 1.0, 0.22)

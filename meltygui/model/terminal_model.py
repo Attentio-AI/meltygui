@@ -4,6 +4,7 @@ import os
 import select
 import threading
 import time
+import weakref
 
 
 @defaults(tint=(0.31, 0.37, 0.66))
@@ -41,15 +42,51 @@ class Terminal:
         self.started = False
         self.size = (0, 0)         # (cols, rows) currently applied to the PTY
         self.error = None
-        self._ds = None            # this terminal's window draw_state (set by render)
-                                   # so the reader thread can invalidate it on new output
+        self._listeners = []      # weak bound callbacks; the model never owns views
         self._last_sig = None      # content signature at the last render - the reader
                                    # only invalidates/wakes when this actually changes
         self._reader_alive = False  # True while the reader thread runs; is_dead() reads it
         # For a brand-new OWNED terminal: the session the PTY creates, handed off to its
         # own gnome-terminal window once the PTY is up (in start()). None = attach-only.
         self._owned_session = tmux_session if owned else None
-        self._appeared = False     # set text focus once, on the terminal's first render
+
+    def subscribe(self, callback):
+        """Observe output without retaining the owning view or runtime service."""
+        listener = weakref.WeakMethod(callback)
+        with self.lock:
+            # Existing PTYs keep their instances across hotswap; __init__ is
+            # deliberately not rerun when observer storage is introduced.
+            self._listeners = [item for item in vars(self).setdefault('_listeners', [])
+                               if item() is not None]
+            if listener not in self._listeners:
+                self._listeners.append(listener)
+
+    def unsubscribe(self, callback):
+        with self.lock:
+            self._listeners = [item for item in vars(self).setdefault('_listeners', [])
+                               if item() is not None and item() != callback]
+
+    def _notify_changed(self):
+        with self.lock:
+            callbacks = [item() for item in vars(self).setdefault('_listeners', [])]
+            self._listeners = [item for item in self._listeners if item() is not None]
+        for callback in callbacks:
+            if callback is not None:
+                callback()
+
+    def snapshot(self):
+        """Copy screen rows under the PTY lock for a consistent render snapshot."""
+        with self.lock:
+            screen = self.screen
+            if screen is None:
+                return None
+            def row_cells(line):
+                return tuple(line.get(x, screen.default_char) for x in range(screen.columns))
+
+            return (screen.lines, screen.columns,
+                    (screen.cursor.x, screen.cursor.y, screen.cursor.hidden),
+                    set(screen.mode), [row_cells(line) for line in screen.history.top],
+                    [row_cells(screen.buffer[y]) for y in range(screen.lines)])
 
     def is_dead(self):
         """True once the reader thread has exited — the PTY (and thus its tmux session)
@@ -84,7 +121,9 @@ class Terminal:
         except ImportError:
             self.error = "pyte not installed — run: pip install pyte"
             self._reader_alive = False
+            self._notify_changed()
             return
+        master = slave = None
         try:
             screen = _make_history_screen(pyte, cols, rows)
             stream = pyte.ByteStream(screen)
@@ -100,6 +139,7 @@ class Terminal:
             # its own by then - posix_spawn resumes here only after the exec).
             pid = _spawn_in_pty(self.launch_cmd, slave, env)
             os.close(slave)
+            slave = None
             # Publish the live objects under the lock so the render thread either sees a
             # fully-wired terminal or still-None (placeholder), never a half-built one.
             with self.lock:
@@ -115,8 +155,13 @@ class Terminal:
             if self.tmux_session and self.tmux_session.startswith(_OWNED_SESSION_PREFIX):
                 _disable_mouse(self.tmux_session)
         except Exception as e:  # surface a spawn failure in the render
+            for fd in (master, slave):
+                if fd is not None:
+                    os.close(fd)
+            self.master_fd = None
             self.error = f"pty start failed: {e}"
             self._reader_alive = False
+            self._notify_changed()
             return
         self._read_loop()
 
@@ -135,16 +180,8 @@ class Terminal:
         return hash((rows, sc.cursor.x, sc.cursor.y, sc.cursor.hidden, len(sc.history.top)))
 
     def _read_loop(self):
-        from meltygui.core.windowing.glfw_utils import request_render
-
         fd = self.master_fd
-        # Force a first paint. Guarded: this runs BEFORE the try below, so a None _ds
-        # (a brand-new terminal whose screen hasn't rendered yet) would raise here and
-        # kill the thread without the finally clearing _reader_alive, leaving a frozen,
-        # never-drawn terminal. draw_terminal_screen sets _ds before start(), so it's
-        # normally set, but stay defensive.
-        if self._ds is not None:
-            self._ds.invalidate()
+        self._notify_changed()
 
         try:
           while True:
@@ -187,31 +224,21 @@ class Terminal:
             # Only invalidate + wake the loop if this read actually CHANGED what we
             # draw. The session pane (the studio's own console) dribbles bytes that
             # don't alter the visible output; invalidating per read re-rendered the app
-            # every frame. The signature is computed once per read burst, so it's
-            # cheap, and it's the only thing that calls request_render here - no data
-            # change, no wake. (invalidate is the tile cache; request_render wakes
-            # the render thread; both gated on a real change.)
+            # every frame. Only notify subscribers when the screen changes.
             with self.lock:
                 sig = self._screen_signature()
             if sig != self._last_sig:
-                ds = self._ds
-                if ds is not None:
-                    ds.invalidate()
-                try:
-                    request_render()
-                    self._last_sig = sig          # commit only after a successful wake
-                except Exception:
-                    # GLFW not initialized yet (a reader can fire during studio startup,
-                    # before the window exists). request_render()'s get_current_context()
-                    # raises then, which would otherwise kill this thread → frozen
-                    # terminal. Swallow here and leave _last_sig stale so the next read
-                    # retries once GLFW is up.
-                    pass
+                self._notify_changed()
+                self._last_sig = sig
             if ended:
                 break
         finally:
             self._reap()
+            with self.lock:
+                self.master_fd = None
+            os.close(fd)
             self._reader_alive = False   # reader exited -> is_dead = True -> io drops us
+            self._notify_changed()
 
     def _reap(self):
         """Collect the PTY child's exit status so it doesn't linger as a zombie. The

@@ -3,6 +3,7 @@
 These operations do not own windows, pollers, or render state. The core host
 coordinates when disk snapshots and edits pass through them.
 """
+import os
 import shutil
 from pathlib import Path
 
@@ -258,3 +259,31 @@ def initialize_file_metadata(vis, root):
             continue
         meta.setdefault(str(p), FileMeta())
 
+
+
+def list_directory(directory, show_hidden=False):
+    """The rows of `directory`: [(Path, is_dir)] — folders first, then files,
+    each case-insensitive by name. An unreadable directory lists empty."""
+    try:
+        entries = list(os.scandir(directory))
+    except OSError:
+        return []
+    folders, files = [], []
+    for entry in entries:
+        if not show_hidden and entry.name.startswith("."):
+            continue
+        try:
+            is_dir = entry.is_dir()
+        except OSError:
+            is_dir = False
+        (folders if is_dir else files).append(entry.name)
+    key = str.casefold
+    return ([(Path(directory) / n, True) for n in sorted(folders, key=key)]
+            + [(Path(directory) / n, False) for n in sorted(files, key=key)])
+
+
+def _dir_mtime_ns(directory):
+    try:
+        return os.stat(directory).st_mtime_ns
+    except OSError:
+        return -1

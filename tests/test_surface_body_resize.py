@@ -49,7 +49,8 @@ def test_surface_body_frame_contacts_preserve_chrome(studio, hand, top, index):
         native_near, native_far = os_frame.edges('y')
         assert (native_near['y'], native_far['y']) == pytest.approx(
             (expected[0]['y'] - top, expected[2]['y']))
-        assert root.window_pos[1] - os_frame._STATE['unapplied'][1] == pytest.approx(top)
+        # Native bodies stay at their content inset even before a move is acknowledged.
+        assert root.window_pos[1] == pytest.approx(top)
         assert root.height == pytest.approx(expected[2]['y'] - expected[0]['y'])
         assert [e['y'] for e in (near, divider, far)] == pytest.approx(
             [e['y'] - expected[0]['y'] for e in expected])
@@ -61,7 +62,8 @@ def test_surface_body_frame_contacts_preserve_chrome(studio, hand, top, index):
         body_frame(studio, root, top)
         native_near, native_far = os_frame.edges('y')
         assert root.height == pytest.approx(native_far['y'] - native_near['y'] - top)
-        assert root.window_pos[1] - os_frame._STATE['unapplied'][1] == pytest.approx(top)
+        # Native bodies stay at their content inset even before a move is acknowledged.
+        assert root.window_pos[1] == pytest.approx(top)
         assert divider['y'] >= 120.
         assert far['y'] - divider['y'] >= 200.
     assert root.height == 720. - top

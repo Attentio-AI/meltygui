@@ -1,8 +1,9 @@
 """Tiled window manager: a Blender-style tree of splits drawn flat.
 
 The layout is a TREE of ``Split`` nodes (an axis + children) ending in
-``Tile`` leaves, rendered by plain functions — no render_func per node, no
-draw_state per tile. One ``Split`` is ONE ``ColumnLayout`` (axis "x") or
+``Tile`` leaves. Plain functions lay out the split tree on one host draw_state;
+each leaf's editor is a normal render_func with independent injected state.
+One ``Split`` is ONE ``ColumnLayout`` (axis "x") or
 ``RowLayout`` (axis "y") call over its children; a child of the OPPOSITE
 axis is the only thing that recurses, and a Split never holds a Split of
 its own axis (``normalize`` keeps that invariant, mirroring Blender's
@@ -12,7 +13,7 @@ Every node renders into a FRAME of four shared edge dicts
 ``(left, right, top, bottom)`` — the enclosing cell's pair on the split's
 axis and the pass-through pair on the other — so a Rows in a Columns cell
 collides with the outer rows exactly like draw_columns / draw_rows do.
-The interior edges of a Split live IN THE TREE (``node["edges"]``, the
+The interior edges of a Split live IN THE TREE (``node.edges``, the
 n-1 dicts between its children, window coords); its far edges are never
 stored, they are adopted by reference from the frame every frame. The
 layouts register on the host window with ``key=path`` and ``band=`` (see
@@ -34,6 +35,9 @@ that neighbour and expands the dragged-from tile. Returning inside the
 source or leaving the neighbour cancels the join.
 """
 import meltygui_imgui as imgui
+
+from meltygui.model.tile_model import Tile
+from meltygui.model.tile_model import Split
 
 import meltygui.core.input.mouse_cursor as mouse_cursor
 from meltygui.hdr_color import pack_color
@@ -75,25 +79,6 @@ CORNERS = (("nw", True, True), ("ne", False, True),
            ("sw", True, False), ("se", False, False))
 
 
-class Tile(dict):
-    """Leaf of the tile tree: ``{"name": str, "tint": (r, g, b)}`` — for
-    now a coloured rectangle; later the window / value it hosts."""
-
-    def __init__(self, name="tile", tint=(0.3, 0.3, 0.3)):
-        super().__init__(name=name, tint=tint)
-
-
-class Split(dict):
-    """A run of same-axis cells: ``{"axis": "x" | "y", "children": [...],
-    "edges": [{axis: px}, ...]}``. ``"x"`` lays the children side by side
-    (columns), ``"y"`` stacks them (rows). ``edges`` are the n-1 INTERIOR
-    edge dicts in window coords, seeded by the first render when empty."""
-
-    def __init__(self, axis="x", children=None, edges=None):
-        super().__init__(axis=axis, children=list(children or []),
-                         edges=list(edges or []))
-
-
 def other_axis(axis):
     return "y" if axis == "x" else "x"
 
@@ -116,15 +101,15 @@ def child_frame(frame, axis, near, far):
 def full_edges(node, frame):
     """A Split's complete edge list — far edges from the frame, interior
     edges from the tree — the list its layout is built over."""
-    near, far = frame_pair(frame, node["axis"])
-    return [near, *node["edges"], far]
+    near, far = frame_pair(frame, node.axis)
+    return [near, *node.edges, far]
 
 
 def node_at(tree, path):
     """The node at ``path`` (a tuple of child indices from the root)."""
     node = tree
     for index in path:
-        node = node["children"][index]
+        node = node.children[index]
     return node
 
 
@@ -133,7 +118,7 @@ def walk(tree, path=()):
     or not."""
     yield path, tree
     if isinstance(tree, Split):
-        for index, child in enumerate(tree["children"]):
+        for index, child in enumerate(tree.children):
             yield from walk(child, path + (index,))
 
 
@@ -146,12 +131,12 @@ def resolve_frames(tree, root_frame, path=()):
     yield path, tree, root_frame
     if not isinstance(tree, Split):
         return
-    children = tree["children"]
-    if len(tree["edges"]) != max(len(children) - 1, 0):
+    children = tree.children
+    if len(tree.edges) != max(len(children) - 1, 0):
         return
     edges = full_edges(tree, root_frame)
     for index, child in enumerate(children):
-        frame = child_frame(root_frame, tree["axis"], edges[index], edges[index + 1])
+        frame = child_frame(root_frame, tree.axis, edges[index], edges[index + 1])
         yield from resolve_frames(child, frame, path + (index,))
 
 
@@ -196,27 +181,19 @@ def corner_rect(rect, on_left, on_top, size):
 def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
               tile_state=None, gap=4.0):
     """Paint one leaf — its tint as a filled rect inset by ``gap`` / 2 on
-    every side (so the dividers read as gaps), its name, and a corner grip
+    every side (so the dividers read as gaps), and a corner grip
     where hovered — and run the corner split gesture when ``tree`` /
     ``root_frame`` / ``tile_state`` are given (``draw_tiles`` passes
     them). Returns True when the gesture changed the tree."""
     # [tint=(1.0, 0.8, 0.3)]
-    label_inset = 6.0
-    # [tint=(1.0, 0.8, 0.3)]
     corner_size = 14.0
-    label_color = (1.0, 1.0, 1.0, 0.9)
     corner_hover_color = (1.0, 1.0, 1.0, 0.35)
 
     rect = tile_rect(frame, draw_state, gap=gap)
     if rect is None:
         return False
-    x0, y0, _x1, _y1 = rect
     draw_list = imgui.get_window_draw_list()
-    draw_list.add_rect_filled(*rect, pack_color(*tile["tint"], 1.0))
-    draw_list.push_clip_rect(*rect, intersect_with_current_clip_rect=True)
-    draw_list.add_text(x0 + label_inset, y0 + label_inset,
-                       pack_color(*label_color), str(tile["name"]))
-    draw_list.pop_clip_rect()
+    draw_list.add_rect_filled(*rect, pack_color(*tile.tint, 1.0))
 
     changed = False
     for name, on_left, on_top in CORNERS:
@@ -308,7 +285,8 @@ def tile_corner_gesture(tile, frame, draw_state, path, tree, root_frame,
     new_node = node_at(tree, new_path[:-1])
     edge_index = new_path[-1] if before else new_path[-1] - 1
     tile_state.gesture = {"corner": view_id, "axis": axis,
-                          "edge": new_node["edges"][edge_index]}
+                          "edge": new_node.edges[edge_index],
+                          "new_tile": node_at(tree, new_path)}
     _drag_inc(draw_state, view_id, drag,
               total="total_dx" if axis == "x" else "total_dy")
     return True
@@ -326,9 +304,9 @@ def join_target(tree, path, root_frame, window, drag):
     frames = {path: frame for path, _node, frame in resolve_frames(tree, root_frame)}
     for direction in (-1, +1):
         neighbour = path[-1] + direction
-        if not 0 <= neighbour < len(parent["children"]):
+        if not 0 <= neighbour < len(parent.children):
             continue
-        candidate = parent["children"][neighbour]
+        candidate = parent.children[neighbour]
         if isinstance(candidate, Split):
             continue
         frame = frames.get(path[:-1] + (neighbour,))
@@ -370,10 +348,10 @@ def draw_tile_node(node, frame, draw_state, path=(), tree=None,
     if not isinstance(node, Split):
         return draw_tile(node, frame, draw_state, path=path, tree=tree,
                          root_frame=root_frame, tile_state=tile_state, gap=gap)
-    children = node["children"]
+    children = node.children
     if not children:
         return False
-    axis = node["axis"]
+    axis = node.axis
     near, far = frame_pair(frame, axis)
     across = frame_pair(frame, other_axis(axis))
     stored = full_edges(node, frame)
@@ -389,9 +367,9 @@ def draw_tile_node(node, frame, draw_state, path=(), tree=None,
                            border_color=None)
     if layout.seed_valid:
         interior = layout.edges[1:-1]
-        if any(a is not b for a, b in zip(node["edges"], interior)) \
-                or len(node["edges"]) != len(interior):
-            node["edges"] = interior
+        if any(a is not b for a, b in zip(node.edges, interior)) \
+                or len(node.edges) != len(interior):
+            node.edges = interior
     edges = layout.edges
     changed = False
     for index, child in enumerate(list(children)):
@@ -403,13 +381,16 @@ def draw_tile_node(node, frame, draw_state, path=(), tree=None,
     return changed
 
 
-def draw_tiles(tree, draw_state, tile_state=None, gap=4.0):
+def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
+               multi_instance_renderers=()):
     """Render a whole tile tree over the host window's frame: the root
     adopts the window's four frame edges (``frame_edges``), so the window
     frame and every divider move through one collision solve. Call from a
     render_func body with its injected ``tile_state`` (without one the
     tiles draw and their edges drag, but corners don't split). Returns
-    True when a gesture changed the tree this frame."""
+    True when the layout, editor selection or editor content changed.
+    ``multi_instance_renderers`` is supplied by the hosting render_func's
+    injected parameter of the same name. The root must be a Split."""
     window = layout_window(draw_state)
     root_frame = frame_edges(window)
     changed = draw_tile_node(tree, root_frame, draw_state, (), tree=tree,
@@ -423,6 +404,36 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0):
                     del _views(window, axis)[key]
                     _specs(window, axis).pop(key, None)
                     _bands(window, axis).pop(key, None)
+    # Render content after topology edits, using the final leaf frames. The
+    # conversion's existing identity scopes views independently of tree paths.
+    from meltygui.view.tile_view import draw_tile_content
+    cursor = imgui.get_cursor_screen_pos()
+    for _path, tile, frame in resolve_frames(tree, root_frame):
+        if isinstance(tile, Split):
+            continue
+        if (tile_state is not None and tile_state.gesture is not None
+                and tile_state.gesture.get("new_tile") is tile):
+            # Instantiate the new editor at the committed split size, not the
+            # tiny first drag frame; otherwise its own column widths persist
+            # that transient geometry while the corner is still moving.
+            continue
+        rect = tile_rect(frame, draw_state, gap)
+        if rect is None:
+            continue
+        left, top, right, bottom = rect
+        # Leave the corner grips free to receive split/join gestures.
+        grip_inset = 14.0
+        if right - left <= 2 * grip_inset or bottom - top <= 2 * grip_inset:
+            continue
+        imgui.set_cursor_screen_pos((left + grip_inset, top + grip_inset))
+        content_changed, _ = draw_tile_content(
+            tile, key=tile.id, width=right - left - 2 * grip_inset,
+            height=bottom - top - 2 * grip_inset,
+            multi_instance_renderers=multi_instance_renderers,
+            layout_frame=frame,
+        )
+        changed |= content_changed
+    imgui.set_cursor_screen_pos(cursor)
     if tile_state is not None:
         draw_join_preview(tree, root_frame, draw_state, tile_state)
     left, right, top, bottom = root_frame
@@ -447,28 +458,26 @@ def split_tile(tree, path, axis, root_frame, new_tile=None, at=None,
     ``resolve_frames`` over ``root_frame``). Same axis as the parent: a
     new sibling in the parent's flat list. Otherwise the leaf becomes a
     two-child Split of ``axis``. Returns the new tile's path."""
+    if not path:
+        raise ValueError("tile layouts require a Split root containing the leaf")
     frames = {p: f for p, _n, f in resolve_frames(tree, root_frame)}
     frame = frames[path]
     near, far = frame_pair(frame, axis)
     edge = midpoint(near, far, axis) if at is None else {axis: float(at)}
     tile = node_at(tree, path)
     if new_tile is None:
-        new_tile = Tile(name=f"{tile['name']}'", tint=tile["tint"])
+        new_tile = Tile(name=f"{tile.name}'", tint=tile.tint,
+                        render_func=tile.render_func, input_value=tile.input_value)
     pair = [new_tile, tile] if before else [tile, new_tile]
     new_offset = 0 if before else 1
     parent = node_at(tree, path[:-1]) if path else None
-    if parent is not None and parent["axis"] == axis:
+    if parent is not None and parent.axis == axis:
         index = path[-1]
-        parent["children"][index:index + 1] = pair
-        parent["edges"].insert(index, edge)
+        parent.children[index:index + 1] = pair
+        parent.edges.insert(index, edge)
         return path[:-1] + (index + new_offset,)
     split = Split(axis=axis, children=pair, edges=[edge])
-    if parent is None:
-        # The root is replaced IN PLACE (the caller holds the object).
-        tree.clear()
-        tree.update(split)
-        return (new_offset,)
-    parent["children"][path[-1]] = split
+    parent.children[path[-1]] = split
     return path + (new_offset,)
 
 
@@ -484,16 +493,16 @@ def join_tiles(tree, path, direction=+1):
     parent = node_at(tree, path[:-1])
     index = path[-1]
     neighbour = index + direction
-    if not 0 <= neighbour < len(parent["children"]):
+    if not 0 <= neighbour < len(parent.children):
         raise ValueError("no neighbour to join into")
-    if isinstance(parent["children"][index], Split) or isinstance(parent["children"][neighbour], Split):
+    if isinstance(parent.children[index], Split) or isinstance(parent.children[neighbour], Split):
         raise ValueError("join requires two leaf tiles sharing a whole edge")
-    seeded = len(parent["edges"]) == len(parent["children"]) - 1
-    parent["children"].pop(index)
+    seeded = len(parent.edges) == len(parent.children) - 1
+    parent.children.pop(index)
     if seeded:
-        parent["edges"].pop(min(index, neighbour))
+        parent.edges.pop(min(index, neighbour))
     kept = neighbour if neighbour < index else index
-    kept_node = parent["children"][kept]
+    kept_node = parent.children[kept]
     normalize(tree)
     return locate(tree, kept_node)
 
@@ -517,27 +526,28 @@ def normalize(tree):
         for _path, node in list(walk(tree)):
             if not isinstance(node, Split):
                 continue
-            children = node["children"]
+            children = node.children
             for index, child in enumerate(list(children)):
                 if not isinstance(child, Split):
                     continue
-                if len(child["children"]) == 1:
-                    children[index] = child["children"][0]
+                if len(child.children) == 1:
+                    children[index] = child.children[0]
                     changed = True
-                elif child["axis"] == node["axis"]:
-                    children[index:index + 1] = child["children"]
+                elif child.axis == node.axis:
+                    children[index:index + 1] = child.children
                     # The child's interior edges join the node's list at
                     # the slot before this cell's far edge.
-                    node["edges"][index:index] = child["edges"]
+                    node.edges[index:index] = child.edges
                     changed = True
                 if changed:
                     break
             if changed:
                 break
     # The root itself: one Split child of the root collapses into it.
-    if isinstance(tree, Split) and len(tree["children"]) == 1 \
-            and isinstance(tree["children"][0], Split):
-        only = tree["children"][0]
-        tree.clear()
-        tree.update(only)
+    if isinstance(tree, Split) and len(tree.children) == 1 \
+            and isinstance(tree.children[0], Split):
+        only = tree.children[0]
+        tree.axis = only.axis
+        tree.children = only.children
+        tree.edges = only.edges
     return tree

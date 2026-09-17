@@ -923,6 +923,16 @@ def _recompile_module(module: types.ModuleType, source: str,
             and ((isinstance(old, types.FunctionType) and isinstance(new_attrs[name], types.FunctionType))
                  or (isinstance(old, type) and isinstance(new_attrs[name], type)))
         }
+        # Enum members are also identity-bearing definitions. Module tuples
+        # such as LEFT_ANCHORS are evaluated with the throwaway enum during
+        # exec; rebinding only the class leaves live window anchors outside
+        # every classification tuple after a state-module hotswap.
+        for new_definition, live_definition in list(replacements.values()):
+            if isinstance(new_definition, EnumMeta) and isinstance(live_definition, EnumMeta):
+                for member_name, member in new_definition.__members__.items():
+                    live_member = live_definition.__members__.get(member_name)
+                    if live_member is not None:
+                        replacements[id(member)] = (member, live_member)
         canonicalize_definitions(replacements)
 
         for name, old_obj in old_attrs.items():
@@ -1017,6 +1027,22 @@ def _recompile_module(module: types.ModuleType, source: str,
                     module.__dict__[name] = old_obj
 
         _stamp_attr_src(module, src_map.get("", {}))
+        # Canonicalize immutable module constants too. The general definition
+        # pass visits exports and function metadata, deliberately not arbitrary
+        # runtime containers; classification tuples need this narrow pass.
+        def live_constant(value):
+            replacement = replacements.get(id(value))
+            if replacement is not None and replacement[0] is value:
+                return replacement[1]
+            if isinstance(value, tuple):
+                items = tuple(live_constant(item) for item in value)
+                if any(old is not new for old, new in zip(value, items)):
+                    return items
+            return value
+
+        for name, value in tuple(module.__dict__.items()):
+            if isinstance(value, tuple):
+                module.__dict__[name] = live_constant(value)
         _repoint_attribute_bindings(module, source, live_by_name)
     except Exception as e:
         # Roll back to old attributes on error
@@ -1843,7 +1869,7 @@ def _transfer_wrapper_state(live_wrapper, new_wrapper, new_raw) -> None:
     # search flag, header defaults. Copy fresh values; drop ones the edit
     # removed. NEVER __wrapped__ - it must keep pointing at the live raw.
     for attr in ("_load_data", "_save_data", "_searchable",
-                 "__header_defaults__", "__params__"):
+                 "__header_defaults__", "__params__", "multi_instance"):
         if hasattr(new_wrapper, attr):
             try:
                 setattr(live_wrapper, attr, getattr(new_wrapper, attr))

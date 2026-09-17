@@ -1,31 +1,18 @@
-"""The OS window as a meltygui window: its four edges are collision edges in
-the columns edge system, one level outside the root meltygui windows, and the
-screen's work area is the wall outside it.
+"""Native-frame and contained Melty-window edge coordination.
 
-Per axis the OS window owns a frame pair of edge dicts in SCREEN
-coordinates (``_STATE["edges"]``) and the work area a wall pair
-(``_STATE["screen"]``). Every ROOT meltygui window's frame pass
-(columns._frame_pass) solves against them: the root's edges are shifted
-into screen coordinates for the solve, and two zero-floor GAP cells —
-[os_near, W_near] and [W_far, os_far] — link its frame to the OS frame,
-exactly as a nested layout's cells link it to the enclosing window. So a
-drag that pushes a root's edge into the OS edge moves the OS edge (the
-surface grows, or the window moves through the attach-offset — see flush),
-the OS edge pushed into the screen is clamped there (a wall), and a
-cursor-driven drag whose owner is blocked by a wall grows that window on
-the OPPOSITE side instead (the flip in columns._solve_collisions — the one
-rule meltygui windows always had against the display, now for both). Nothing
-else: no caps, no inference, no sticky bookkeeping — edges move when a
-hand drags them or when something pushes them.
+The native frame and participating Melty frames meet in screen coordinates;
+the display supplies the final resize barriers. Local Melty drags can push a
+native boundary where supported. Window-to-window collision is confined to
+native containment, not general sibling overlap avoidance.
 
-The position comes from the GNOME extension's feed (geometry_feed.py; X11
-reads glfw). A change we did NOT request — the compositor's move / resize —
-is folded into each root's next pass as a drag of the OS edge from where
-that root last saw it (``window._os_seen``): a near-edge RESIZE holds the
-roots on screen (re-base) and pushes the ones it reaches; a MOVE carries
-them along. Without a position (extension not installed, no bus) the OS
-edges are immovable walls at the display's edges and the old in-display
-pin-and-slide is what remains. Gate: Toggles.Melty.push_os_window_edges.
+Native resize solves child edge order, minimum spans and existing overlap.
+Parent-relative nested positions must be accounted for when applying results;
+driving-edge phases below are an implementation strategy, not product rules.
+Hand-drag replay restores displaced geometry when the gesture reverses.
+
+Geometry/position availability determines whether the native frame can move.
+The GLFW and Wayland adapters must honor those capabilities. See
+``docs/WINDOW_COLLISION_COLUMNS.md`` for the authoritative behavior contract.
 """
 import meltygui.core.windowing.window_api as glfw
 
@@ -296,9 +283,51 @@ def _has_pin_anchor(ds):
     return getattr(ds, "_pin_target", None) is not None
 
 
+def _caller_owns_frame(ds):
+    kwargs = getattr(ds, "_kwargs", {})
+    return all(kwargs.get(key) is not None for key in ("window_pos", "width", "height"))
+
+
+def _native_layout_parent(ds):
+    """Native root reached through windows whose caller owns their geometry.
+
+    A fixed workspace can be closable without being the surface root. Its
+    next layout may follow a native resize, carrying a far-anchored inspector
+    a second time. Stop at freely placed/sized windows: their hand movement
+    must still carry descendants normally.
+    """
+    parent = _frame_parent(ds)
+    for _ in range(64):
+        if parent is None or _frame_pinned(parent):
+            return parent
+        if not _caller_owns_frame(parent):
+            return None
+        ancestor = _frame_parent(parent)
+        if ancestor is parent:
+            return None
+        parent = ancestor
+    return None
+
+
+def _native_layout_frame(ds):
+    """An explicitly pinned layout body inside a native surface.
+
+    Width/height/position alone also describe fixed popovers. Only a body
+    marked frame_pinned participates in the native frame's background
+    gestures; it still owns its local columns and rows.
+    """
+    return (bool(getattr(ds, "_kwargs", {}).get("frame_pinned", False))
+            and _caller_owns_frame(ds) and _native_layout_parent(ds) is not None)
+
+
 def _has_measured_anchor(ds):
+    if _caller_owns_frame(ds):
+        return False
+    parent = _frame_parent(ds)
     return (_has_pin_anchor(ds)
-            or getattr(ds, "parent_window", None) is not _frame_parent(ds))
+            or getattr(ds, "parent_window", None) is not parent
+            or (parent is not None and not _frame_pinned(parent)
+                and _native_layout_parent(ds) is not None))
 
 
 def _anchor_base(ds):
@@ -334,14 +363,18 @@ def pin_origin(ds):
 
 
 def _book_pin_rebases():
-    """Remember drawn anchors before an own surface request. Only numbers
-    are retained; closed windows drop out on the next request.
+    """Remember placement origins before native containment changes layout.
+
+    Surface-root anchors, including those reached through caller-controlled
+    workspace geometry, await a native request. Movable-frame anchors
+    are booked separately by solve() when containment actually changes that
+    frame; otherwise the next hand resize would be mistaken for feedback.
     """
     pending = _STATE["pin_rebases"]
     _STATE["pin_rebases"] = {
         id(ds): pending.get(id(ds), pin_origin(ds))
         for ds in _all_windows()
-        if _open(ds) and _frame_pinned(_frame_parent(ds))
+        if _open(ds) and _native_layout_parent(ds) is not None
         and _has_measured_anchor(ds)
     }
 
@@ -822,8 +855,7 @@ def gap_lists(ctx, window_near, window_far, rigid=False):
     a capped column at its maximum PULLS it in, a right-drag on the
     frame edge shrinks the window — exactly what a studio window's own
     frame does, with no special handling on the drags (Lukas 09-13).
-    A body below native chrome has a fixed near gap instead of zero;
-    both its floor and cap preserve that inset when either edge moves."""
+    A headerless body reserves its fixed near gap below native chrome."""
     near, far = _STATE["edges"][ctx.axis]
     inset = float(window_near.get("surface_inset", 0.0)) if rigid else 0.0
     cap = 0.0 if rigid else None
@@ -1120,21 +1152,13 @@ def solve():
     a hand move solve in the window's own pass (attach). A frame-pinned
     app root sends its frame-handle drags here too: it IS the GLFW frame.
 
-    NESTED windows in two phases (Lukas 08-27: "child windows collide
-    normally, only revert to adjusting the parent when the collision
-    cascades into the parent"). Phase A solves everything as independent
-    objects with the PARENTS' edges as walls: a child compresses and
-    slides inside its parent, pushes its siblings and the OS edge, but
-    nothing can move a parent — a child's position is a function of its
-    parent's, and a push that cascades into the parent re-lays the parent
-    out and moves the child again (the feedback loop). Whatever the drag
-    could not do against those walls — a child pinned against its parent,
-    the OS edge on a parent itself — is phase B: the parents as EXTENTS
-    (their frame ∪ their children where phase A left them, _extent_of),
-    pushed as blocks; the children ride and are never written for it.
-    Pushed windows get position / size written back; their own pass packs
-    their columns as a foreign size write. The OS near edge's motion is
-    booked for apply_rebase like any other."""
+    Nested parent-relative geometry is handled in two phases below. Driver
+    walls prevent counting parent-induced child motion twice; residual motion
+    is then solved using parent extents. This is implementation machinery,
+    not a rule that children must stay inside their Melty parent. Ordinary
+    placement views are skipped for collision ancestry; their actual origin
+    displacement is reconciled after layout by rebase_pin. Pushed geometry
+    is written back and native origin changes go through apply_rebase."""
     from meltygui.core.melty import Melty
     from meltygui.core.layout.column_core import _cells_from_lists
     from meltygui.core.layout.column_core import _EdgeGraph
@@ -1175,8 +1199,8 @@ def solve():
         window_ids = {id(ds) for ds in windows}
 
         def collision_root(ds):
-            while id(getattr(ds, "parent_window", None)) in window_ids:
-                ds = ds.parent_window
+            while id(_frame_parent(ds)) in window_ids:
+                ds = _frame_parent(ds)
             return ds
 
         children_of = {}
@@ -1186,6 +1210,9 @@ def solve():
                 children_of.setdefault(id(root), []).append(ds)
         frames = {id(ds): _frame_of(ds, axis, applied) for ds in windows}
         start = {wid: (n[axis], f[axis]) for wid, (n, f, _fl, _sz) in frames.items()}
+        placement_origins = {id(ds): pin_origin(ds) for ds in windows
+                             if id(_frame_parent(ds)) in frames
+                             and _has_measured_anchor(ds)}
         gesture = gestures.get(axis)
         if own:
             from meltygui.core.layout.column_core import snapshot_edges
@@ -1202,8 +1229,6 @@ def solve():
                 frames[identity] = n, f, floor, size
                 for edge, value in saved_edges:
                     edge[axis] = value
-        # A pinned body's minimum excludes native chrome above it. The
-        # OS frame must reserve that fixed gap as well as the body pile.
         from meltygui.core.layout.column_core import _frame
         os_floor = max([MIN_SIZE[i]] + [
             _window_floor(ds, axis) + ((_frame(ds, axis) or [{}])[0].get("surface_inset", 0.0))
@@ -1284,7 +1309,7 @@ def solve():
         cells_a = [(ds, n, f, floor, size) for ds, (n, f, floor, size) in ((ds, frames[id(ds)]) for ds in windows)]
         driving_walls, parent_near, parent_far = set(), set(), set()
         for ds in windows:
-            parent = getattr(ds, "parent_window", None)
+            parent = _frame_parent(ds)
             if parent is None:
                 continue
             node = parent
@@ -1293,7 +1318,7 @@ def solve():
                 driving_walls.add(id(pn) if _driver_of(ds, axis) == "near" else id(pf))
                 parent_near.add(id(pn))
                 parent_far.add(id(pf))
-                node = getattr(node, "parent_window", None)
+                node = _frame_parent(node)
         graph_a = graph_of(cells_a)
         residual = []
         for edge, target, cursor in drags:
@@ -1342,12 +1367,37 @@ def solve():
             n0, f0 = start[wid]
             n_a, f_a = after_a[wid]
             delta, new_size = n_a - n0, f_a - n_a
-            parent = getattr(ds, "parent_window", None)
-            if id(parent) in after_a:
+            parent = _frame_parent(ds)
+            root = collision_root(ds)
+            block = extents.get(id(root))
+            block_moved = block is not None and (
+                block[0][axis] != block[2] or block[1][axis] != block[3])
+            if (wid in placement_origins and placement_origins[wid] is not None
+                    and (after_a[id(parent)] != start[id(parent)] or block_moved)):
+                # Only solver-induced parent changes need compensation.
+                # Merely accepting last frame's native request must leave the
+                # next intentional hand resize free to carry this child.
+                _STATE["pin_rebases"].setdefault(wid, placement_origins[wid])
+            if id(parent) in after_a and id(ds) not in _STATE["pin_rebases"]:
                 # A parent's solved anchor edge already carries its child.
                 # Write back the child's remaining motion in parent coordinates.
                 anchor = 0 if _driver_of(ds, axis) == "near" else 1
                 delta -= after_a[id(parent)][anchor] - start[id(parent)][anchor]
+            if id(ds) in _STATE["pin_rebases"] and id(parent) in after_a:
+                # An ordinary placement view may reflow when its containing
+                # frame resizes. Keep the screen-space result until layout,
+                # then rebase_pin subtracts that actual anchor displacement.
+                # Phase B carries the whole family, so carry the measured
+                # origin along with its root instead of cancelling that ride.
+                # Caller-owned layout rewrites its frame next draw. A
+                # temporary block shift of that stale frame is not a lasting
+                # family move; carrying it would offset the child on reversal.
+                if id(root) in extents and not _caller_owns_frame(root):
+                    n_b, f_b, nb0, fb0 = extents[id(root)]
+                    shift = n_b[axis] - nb0
+                    origin = list(_STATE["pin_rebases"][id(ds)])
+                    origin[i] += shift
+                    _STATE["pin_rebases"][id(ds)] = tuple(origin)
             if wid in extents:
                 n_b, f_b, nb0, fb0 = extents[wid]
                 delta += n_b[axis] - nb0

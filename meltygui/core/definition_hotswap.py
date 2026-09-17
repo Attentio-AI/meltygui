@@ -1,9 +1,48 @@
 """Keep live definitions canonical when their source moves between modules."""
 import inspect
+import gc
 import sys
 import types
 
 from meltygui.core.melty import Melty
+
+
+def _patch_nested_functions(previous, replacement, namespace):
+    """Update existing factory-created callbacks without recreating closures."""
+    def nested_codes(code):
+        result = {}
+        for child in code.co_consts:
+            if isinstance(child, types.CodeType):
+                if not child.co_name.startswith("<"):
+                    result[child.co_qualname] = child
+                result.update(nested_codes(child))
+        return result
+
+    fresh = nested_codes(replacement)
+    if not fresh:
+        return lambda: None
+    edits = []
+    # Earlier factory-only swaps can leave callbacks more than one code
+    # generation behind. Match their defining namespace, source and qualified
+    # local name rather than only referrers of the immediately previous code.
+    for function in gc.get_objects():
+        if type(function) is not types.FunctionType or function.__globals__ is not namespace:
+            continue
+        old_code = function.__code__
+        new_code = fresh.get(old_code.co_qualname)
+        if (new_code is None or new_code is old_code
+                or old_code.co_filename != previous.co_filename):
+            continue
+        if old_code.co_freevars != new_code.co_freevars:
+            raise ValueError(f"cannot preserve live closure for {old_code.co_qualname}: free variables changed")
+        edits.append((function, old_code, new_code))
+    for function, _old_code, new_code in edits:
+        function.__code__ = new_code
+
+    def restore():
+        for function, old_code, _new_code in edits:
+            function.__code__ = old_code
+    return restore
 
 
 def patch_function(live, replacement, *, force=False):
@@ -29,7 +68,9 @@ def patch_function(live, replacement, *, force=False):
         live.__dict__.pop('__melty_relocated__', None)
         Melty.relocated_functions.pop(id(live), None)
 
+    restore_nested = None
     if target.__globals__ is replacement.__globals__:
+        restore_nested = _patch_nested_functions(target.__code__, replacement.__code__, target.__globals__)
         target.__code__ = replacement.__code__
         target.__defaults__ = replacement.__defaults__
         target.__kwdefaults__ = replacement.__kwdefaults__
@@ -72,6 +113,8 @@ def patch_function(live, replacement, *, force=False):
     live.__qualname__ = replacement.__qualname__
 
     def restore():
+        if restore_nested is not None:
+            restore_nested()
         (live.__code__, live.__defaults__, live.__kwdefaults__, annotations,
          live.__doc__, live.__module__, live.__qualname__, attributes) = previous
         live.__annotations__ = annotations

@@ -13,8 +13,6 @@ just a PTY pump + a screen renderer + a key encoder, plus selection/copy on top.
 """
 import fcntl
 import os
-import re
-import select
 import shlex
 import shutil
 import signal
@@ -27,36 +25,18 @@ import uuid
 
 import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 
-from meltygui.core.styling.fonts import Font
 from meltygui.core.melty import Melty
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.windowing.glfw_utils import request_render
-from meltygui.core.core_render import render_func
 from meltygui.core.rendering.window_decoration import window
 # Reuse the editor's GLFW-key -> character map (covers letters, digits, punctuation
 # with shift pairs) to turn key events into the bytes the shell expects.
 from meltygui.editor.text_editor import _KEY_CHAR_MAP
-from meltygui.core.rendering.core_decoration import defaults
 
-
-_COL_ERR = (1.0, 0.45, 0.40)
 
 # 16-colour ANSI palette (pyte hands us names for the basic colours, 6-hex strings
 # for 256/true-colour). Tuned to read well on the dark window background.
-_PALETTE = {
-    'black': (0.0, 0.0, 0.0), 'red': (0.86, 0.30, 0.30), 'green': (0.34, 0.78, 0.40),
-    'brown': (0.80, 0.66, 0.28), 'blue': (0.38, 0.56, 0.94), 'magenta': (0.83, 0.46, 0.83),
-    'cyan': (0.33, 0.80, 0.86), 'white': (0.85, 0.85, 0.85),
-    'brightblack': (0.46, 0.48, 0.52), 'brightred': (1.0, 0.46, 0.43),
-    'brightgreen': (0.52, 0.92, 0.54), 'brightbrown': (0.96, 0.86, 0.42),
-    'brightblue': (0.56, 0.70, 1.0), 'brightmagenta': (0.96, 0.62, 0.96),
-    'brightcyan': (0.56, 0.93, 0.96), 'brightwhite': (1.0, 1.0, 1.0),
-}
-_DEFAULT_FG = (0.85, 0.85, 0.85)
-_DEFAULT_BG = None  # None == transparent, let the window background show through
-_SEL_COLOR = pack_color(51 / 255, 102 / 255, 204 / 255, 102 / 255)   # pale blue wash
 
 # Special keys -> the escape sequences an xterm-based terminal sends for them.
 _PTY_KEYS = {
@@ -295,43 +275,10 @@ from meltygui.model.terminal_model import Terminal
 # Color helpers
 # --------------------------------------------------------------------------- #
 
-def _pack(rgb, alpha=255):
-    return pack_color(rgb[0], rgb[1], rgb[2], alpha / 255.0)
-
-
-def _resolve(name, default, bold=False):
-    if name in (None, 'default'):
-        rgb = default
-    elif name in _PALETTE:
-        rgb = _PALETTE[name]
-    elif isinstance(name, str) and len(name) == 6:
-        try:
-            rgb = (int(name[0:2], 16) / 255, int(name[2:4], 16) / 255, int(name[4:6], 16) / 255)
-        except ValueError:
-            rgb = default
-    else:
-        rgb = default
-    if bold and rgb is not None:
-        rgb = tuple(min(1.0, c * 1.25 + 0.08) for c in rgb)
-    return rgb
-
 
 # --------------------------------------------------------------------------- #
 # View
 # --------------------------------------------------------------------------- #
-
-
-def _push_mono():
-    handle = Melty.font_mgr.get(Font.JETBRAINS_MONO_19) if Melty.font_mgr else None
-    if handle is not None:
-        imgui.push_font(handle)
-    return handle is not None
-
-
-def _norm(a, b):
-    if a is None or b is None:
-        return None, None
-    return (a, b) if a <= b else (b, a)
 
 
 # pyte reports private DEC modes shifted left by 5; the alternate-screen modes
@@ -344,20 +291,6 @@ _SGR_MOUSE = 1006 << 5
 # tmux's copy-mode WheelUpPane scrolls this many lines per forwarded wheel escape
 # (its `bind-keys -X -N 5 scroll-up` default), with a smaller line count between escapes.
 _TMUX_WHEEL_LINES = 5
-
-
-def _wheel_lines(visible_px, line_px):
-    """Lines to scroll per wheel tick, from the global Toggles scroll settings — the
-    same pixel model core_render uses (`scroll_speed` px, capped to a fraction of the
-    visible height so small views don't overshoot), converted to lines."""
-    px = min(Toggles.ScrollSettings.scroll_speed,
-             Toggles.ScrollSettings.max_increment_fraction
-             * max(1.0, visible_px))
-    return max(1, int(round(px / max(1.0, line_px))))
-
-
-def _row_blank(line, ncols):
-    return all(line[x].data in (' ', '', '\x00') for x in range(ncols))
 
 
 def _mouse_seq(modes, btn, col0, row0):
@@ -373,11 +306,6 @@ def _mouse_seq(modes, btn, col0, row0):
 from meltygui.core.runtime.paths import application_root
 _PROJECT_ROOT = str(application_root())
 # Python traceback `File "path", line N`, or an absolute/~/./relative `path.ext:line`.
-_LINK_RE = re.compile(
-    r'File "(?P<p1>[^"\n]+)", line (?P<l1>\d+)'
-    r'|(?<![\w./~-])(?P<p2>(?:/|~/|\./|\.\./)[^\s:"\'\)\],]+\.[A-Za-z0-9_]+):(?P<l2>\d+)')
-_LINK_COLOR = pack_color(110 / 255, 180 / 255, 1.0, 200 / 255)      # underline (cyan-blue)
-_LINK_HOVER_COLOR = pack_color(170 / 255, 235 / 255, 1.0, 1.0)      # brighter on hover
 
 
 def _resolve_path(p):
@@ -386,42 +314,6 @@ def _resolve_path(p):
         return p
     cand = os.path.join(_PROJECT_ROOT, p)   # resolve relatives against the project
     return cand if os.path.exists(cand) else p
-
-
-def _find_links(grid, scols):
-    """Scan the visible grid for file:line references, joining wrapped rows so a path
-    split across the terminal width still matches. Returns [(path, line, segments)]
-    where segments is [(row, col_start, col_end)] (a link can span wrapped rows)."""
-    if not grid:
-        return []
-    # Flatten visible rows into one string + a char ->-(row,col) origin map, NOT
-    # inserting a newline where a row wrapped (pyte fills the next row when it wraps).
-    parts, origins = [], []
-    for r, row in enumerate(grid):
-        text = "".join((c[0] or ' ') for c in row)
-        end = len(text.rstrip())
-        for c in range(end):
-            parts.append(text[c])
-            origins.append((r, c))
-        wrapped = scols > 0 and row[scols - 1][0] not in (' ', '', '\x00')
-        if not wrapped:
-            parts.append('\n')
-            origins.append((r, end))
-    text = "".join(parts)
-
-    links = []
-    for m in _LINK_RE.finditer(text):
-        if m.group('p1') is not None:
-            path, line = m.group('p1'), int(m.group('l1'))
-        else:
-            path, line = m.group('p2'), int(m.group('l2'))
-        by_row = {}
-        for (r, c) in origins[m.start():m.end()]:
-            lo, hi = by_row.get(r, (c, c))
-            by_row[r] = (min(lo, c), max(hi, c))
-        segments = [(r, lo, hi + 1) for r, (lo, hi) in sorted(by_row.items())]
-        links.append((path, line, segments))
-    return links
 
 
 from meltygui.view.terminal_view import draw_terminal_screen
@@ -506,6 +398,7 @@ def _forward_keys(term, vs):
 
 
 def _copy_selection(term, vs):
+    from meltygui.state.terminal_state import _norm
     lo, hi = _norm(vs.sel_anchor, vs.sel_active)
     if lo is None or lo == hi:
         return
@@ -545,10 +438,6 @@ test_instance = terminal_instance
 
 
 def _draw_terminal_window(term, ds, name):
-    # Stash the window draw_state so the reader thread (and the focused-blink path)
-    # can invalidate() THIS tile on demand, replacing the old blanket live=True.
-    # draw_terminal_screen has use_cache=False, so re-running the window re-runs it.
-    term._ds = ds
     # get_content_rect() is the body below the window header (and above any footer);
     # abs_window_rect starts at the very top, so using it would paint under the title.
     left, top, right, bottom = ds.get_content_rect()
@@ -558,10 +447,7 @@ def _draw_terminal_window(term, ds, name):
     return False, term
 
 
-# No live=True: the terminal re-renders only when it has something new. The reader
-# thread invalidate()s the window on PTY output; the render below invalidate()s whe
-# focused (for the blinking cursor + input responsiveness). Idle/unfocused terminals
-# cost nothing.
+# Output subscribers and declared input events invalidate the affected screens.
 from meltygui.view.terminal_view import draw_terminal
 draw_terminal = window(tint=(0.05, 0.06, 0.07), bg_offset=-1, max_bg_value=0.08, disable_scroll=True, input_value=terminal_instance)(draw_terminal)
 

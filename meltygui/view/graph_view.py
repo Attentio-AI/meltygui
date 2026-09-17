@@ -117,8 +117,9 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
                    bool(normalize), int(max_lines))
         if t.is_cuda:
             from types import SimpleNamespace
-            from meltygui.tensor import cuda_march as kernels, line_kernels
-            if not kernels.available():
+            from meltygui.view import graph_cuda_view
+            from meltygui.core.graphics.cuda_kernel_core import available
+            if not available():
                 _draw_voxel_error(draw_state, "CUDA line rendering requires meltygui[tensor]; "
                                   "the tensor was not copied to the CPU.", who="draw_line_graph")
                 return False, None
@@ -127,7 +128,7 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
                     t, dim_names, x_dim, line_dim, slices, mean_dims, False, materialize=False)
                 cuda_lines = cuda_lines[:max(1, int(max_lines))]
                 n_lines, n_samples = map(int, cuda_lines.shape)
-                stats = gl_state.get('line_ranges', lambda: line_kernels.ranges(cuda_lines), deps=vol_key)
+                stats = gl_state.get('line_ranges', lambda: graph_cuda_view.ranges(cuda_lines), deps=vol_key)
                 if normalize:
                     y_range = (0., 1.)
                 else:
@@ -321,12 +322,12 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
         if cuda_lines is not None:
             from meltygui.model.texture_model import _upload_cuda_image
             from meltygui.view.texture_view import image_blit_pass
-            from meltygui.tensor import line_kernels
+            from meltygui.view import graph_cuda_view
             out = gl_state.get('cuda_line_image',
                 lambda: torch.empty((height, width, 4), device=cuda_lines.device, dtype=torch.float16),
                 deps=(height, width, str(cuda_lines.device)))
             cuda_lut = lut_tex.cuda(cuda_lines.device)
-            line_kernels.render(cuda_lines, stats, out, cuda_lut, normalize=normalize,
+            graph_cuda_view.render(cuda_lines, stats, out, cuda_lut, normalize=normalize,
                 zoom_x=zoom_x, zoom_y=zoom_y, pan_x=pan_x, pan_y=pan_y,
                 y_range=y_range, margin=margin, unit=unit, line_width=max(.5, float(line_width)),
                 line_opacity=max(0., min(1., float(line_opacity))), single_color=single_color)

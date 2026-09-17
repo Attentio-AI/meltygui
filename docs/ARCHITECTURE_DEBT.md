@@ -8,8 +8,8 @@ they do not imply that every listed feature is visibly broken.
 
 Tensor data operations and camera math now live in models. Shared presentation,
 dimension pickers and axis drawing live with tensor views, with runtime scale,
-styling and fonts injected. Shared runtime ownership and demo separation remain
-open. The text-editor refactor remains explicitly deferred.
+styling and fonts injected. CUDA contexts and compilation caches now have core owners; feature CUDA
+presentation and demos have separate homes. The text-editor refactor remains explicitly deferred.
 
 ## What the migrations have established
 
@@ -31,7 +31,7 @@ These are placement and infrastructure milestones. Many functions in `view/`
 still access shared runtime state directly, and some feature helpers moved into
 core still need a responsibility split.
 
-As a layout snapshot, legacy folders contain 79 non-`__init__` Python modules,
+As a layout snapshot, legacy folders contain 77 non-`__init__` Python modules,
 with four more implementation modules at the package root. This includes the
 15 deferred editor modules. Examples, resources and the GNOME extension are
 excluded. This count is not a compliance score: correctly named files can still
@@ -83,7 +83,8 @@ CUDA-to-GL uploads now live in [cuda_texture_model.py](../meltygui/model/cuda_te
 versioned tensors become `GLTexture` values, with each texture/PBO/registration
 owned by the supplied `GLState`. Shared context selection, registration, copying
 and diagnostics live in [cuda_interop_core.py](../meltygui/core/graphics/cuda_interop_core.py),
-with retained runtime state on `Melty`. Standalone uploads initialize the GL
+with context ownership now shared through `core/graphics/cuda_context_core.py`
+and retained runtime state on `Melty.cuda_interop`. Standalone uploads initialize the GL
 device lazily; unsupported or incompatible contexts return the existing fallback
 signal. Torch and CUDA-library imports remain optional until the adapter is used.
 
@@ -96,11 +97,17 @@ adapter is also usable explicitly by passing its `GLTexture` to a view.
 
 Remaining work:
 
-- Classify CUDA marching and line kernels still in `tensor/`:
-  separate feature computation from shared context and synchronization machinery.
-  Preserve GPU residency, device behavior, output, resource lifetime and hotswap.
-  The old `cuda_march` view parameter currently does not choose the backend;
-  reconcile that control with the intentional CUDA-residency policy separately.
+- CUDA feature code now lives in `view/voxel_cuda_view.py` and
+  `view/graph_cuda_view.py`; shared compilation/cache ownership lives in
+  `core/graphics/cuda_kernel_core.py`, and dtype decoding in
+  `model/cuda_tensor_model.py`. `tensor/` is removed.
+- The mutation notification bug is fixed: core now honors caller `changed=True`
+  before the cache decision even when the view does not declare a `changed`
+  parameter. Live H100 voxels and RTX lines refresh immediately after mutation,
+  then resume cache hits with the same kernels and contexts. This is explicit
+  change notification, not polling or hashing tensor contents.
+- The old `cuda_march` view parameter still does not choose the backend; reconcile
+  that control with the intentional CUDA-residency policy separately.
 - Review the controls popover's gesture-time lifecycle separately. This extraction
   preserves its existing behavior; it does not claim every interaction follows
   the final native-window lifecycle pattern.
@@ -108,56 +115,58 @@ Remaining work:
   positions and partial updates appeared despite correct GPU readback. The
   stacked layout passed on both backends.
 
-## Terminal rendering still owns runtime integration
+## Terminal: runtime separated; remaining behavior checks
 
-In [terminal_view.py](../meltygui/view/terminal_view.py), `draw_terminal_screen`
-wires the model's invalidation target through `term._ds`, manages first-appearance
-focus through `Melty.text_focused_ds`, starts/resizes the terminal and reads imgui
-input state. Rendering, process lifecycle, focus and input delivery are coupled.
-It also imports many helpers and configuration values from
-[terminal_core.py](../meltygui/core/services/terminal_core.py).
+`core/services/terminal_runtime.py` is injected per screen and owns focus,
+startup/resize, input forwarding and output invalidation. The terminal model
+publishes to weak subscribers so multiple views no longer overwrite a single
+`term._ds` pointer. Rendering uses immutable screen snapshots and local
+`DictConversion` selection/scroll state. Pointer/wheel inputs are declared.
+Formatting and link geometry live in `view/terminal_view.py`. A narrow weak
+notification bridge preserves already-running legacy reader frames while new
+terminals have no `_ds` field. Live migration tests retain the real PTY, screen,
+lock, observers and local state while held callbacks adopt edited source.
 
-Keep the terminal model's PTY/screen behavior behind its value interface. Let core
-own subscription, focus, invalidation and lifecycle integration, and supply the
-screen view with its local selection state and input. Pure terminal formatting
-and link handling should be classified separately from process/session wiring.
-This needs behavioral checks for cached redraws and input; a rename alone is
-insufficient.
+Native and GLFW direct-root windows pass typing and PTY output. The inline test
+harness exposed a separate clipping/layout issue; scrollback-copy behavior also
+remains outside this pass. These are not claims that every terminal interaction
+has been revalidated.
 
-## File views still acquire shared services themselves
+## Files: injected metadata; persistence workers remain coupled
 
-[file_model.py](../meltygui/model/file_model.py) already separates filesystem
-reconciliation and metadata adaptation from drawing. However,
-[file_view.py](../meltygui/view/file_view.py) still calls `file_meta_store()` inside
-renderers and reaches into Melty's code cache, channels and style machinery.
-The diagnostics in that module also combine collection of runtime information
-with its presentation.
+File renderers receive `file_metadata`, supplied by core only when declared;
+explicit dictionaries, including empty dictionaries, override the shared store.
+Nested listings, breadcrumbs and selectors pass that value through. Directory
+scanning belongs to `model/file_model.py`; tint/order/drop operations over plain
+mappings belong to `model/file_metadata_model.py`; watcher ownership and resize
+diagnostics belong to `core/files/file_explorer_core.py`. Watch subscriptions
+survive transfer from the old module registry.
 
-Supply metadata/model values and rendering services through the reusable
-framework interface. Keep scanning, reconciliation and applying file changes in
-the model, and subscriptions/shared ownership in core. The dict-like
-[file metadata store](../meltygui/models/file_meta.py) is a useful adapter but
-still combines its value behavior with persistence workers and global repaint
-coordination. Preserve its shared object identity and saved-data behavior while
-separating those responsibilities.
+`models/file_meta.py` retains its dict-like adapters, shared store and persistence
+workers. Its legacy polling loop cannot stop cooperatively, so moving worker
+ownership would strand an already-active frame during hotswap. That extraction
+was deliberately deferred. Reload now preserves held entry identities and local
+deletions when merging an external writer.
+
+Remaining file helpers still mix focus, popovers, styles and keyboard handling;
+file-tree service lookup and runtime diagnostics need further separation. Moving
+these entry points does not complete the feature's architecture.
 
 ## Chat presentation still lives partly in the chat service package
 
-Fourteen local presentation helpers now live with chat views: wrapping, selection,
-message labels/previews, tint calculation, row geometry and scroll anchoring.
-Account field rendering also lives in `account_view.py` and receives its backing
-store explicitly.
+Local wrapping, selection, previews and layout helpers live with chat views.
+`view/chat_decoration_view.py` now owns buttons, cards, carets, activity dots,
+hit testing and tint helpers. Scale, pointer position and drawing channel are
+supplied by the caller. `model/chat_model.py` owns conversation ordering/activity
+operations and tint access over supplied metadata. Chat navigation and transcripts
+receive the same explicitly supplied metadata as file views.
 
-[chat_view.py](../meltygui/view/chat_view.py) imports drawing helpers such as
-`_button`, `_card`, `_caret` and `_hovering` from
-[chat/chat_interface.py](../meltygui/chat/chat_interface.py). The old module also
-imports shared file metadata and runtime/layout facilities.
-
-Keep reusable message/card presentation with the chat views. Put message/value
-adaptation and provider behavior behind the model interface, per-view interaction
-state with the chat state, and shared session/task integration in core. Review the
-remaining `chat/`, `accounts/` and `completion/` modules by role; they are not all
-views or all core merely because the feature uses asynchronous services.
+`chat/chat_interface.py` still owns text measurement caches, title/prose/image
+presentation, viewport behavior and other mixed helpers. Higher-level chat views
+still discover focus, input and runtime services through Melty. Provider/session
+integration and remaining `chat/`, `accounts/` and `completion/` modules need
+further classification. Offline sidebar painting, selection and folder folding
+pass; no provider/network conversation was started for verification.
 
 ## Shared state and code conversion remain mixed
 
@@ -206,8 +215,7 @@ Folder organization does not resolve the mixed ownership above.
 
 ## Order and evidence for the next contributions
 
-Continue with the remaining tensor backend ownership and app-coupled presentation
-in terminal, file and chat features
+Continue with metadata worker lifecycle and remaining app-coupled presentation
 in bounded changes. Keep the editor/state redesign separate. Use the
 [core guide](../meltygui/core/README.md) to find existing mechanisms before adding
 new plumbing.
@@ -218,3 +226,14 @@ backing model, and multiple views have independent local state. Verify cached
 interaction, cleanup, saved values, source navigation and live hotswap as affected.
 Report any remaining coupling explicitly instead of marking a directory move as
 full architectural compliance.
+
+## Latest integrated verification
+
+The CUDA, terminal, files/metadata and chat passes were checked together:
+657 library tests and 402 subtests passed; Pro passed 212 tests with one skip.
+A built wheel installed into a fresh environment outside the checkout imports
+all migrated features without eagerly initializing optional CUDA support.
+Native offline chat selection/folder folding and file navigation passed. Terminal
+keyboard/output passed native and GLFW; live migration retains a running PTY.
+CUDA kernels passed on all three GPUs; the subsequently fixed mutation
+notification path is described above. Shared metadata polling was retained to preserve active stores.

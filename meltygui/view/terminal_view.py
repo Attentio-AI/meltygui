@@ -1,62 +1,142 @@
 """Terminal view functions and supporting definitions."""
-from meltygui.core.melty import Melty
+from meltygui.core.services.terminal_runtime import TerminalRuntime
 from meltygui.model.terminal_model import Terminal
 from meltygui.core.core_render import render_func
 from meltygui.state.terminal_state import TerminalScreenState
 from meltygui.core.runtime.toggles import Toggles
 import meltygui_imgui as imgui
-import threading
+import re
+from meltygui.hdr_color import pack_color
+from meltygui.core.styling.fonts import Font
+from meltygui.state.terminal_state import _norm
+
+
+_COL_ERR = (1.0, 0.45, 0.40)
+
+
+_PALETTE = {
+    'black': (0.0, 0.0, 0.0), 'red': (0.86, 0.30, 0.30), 'green': (0.34, 0.78, 0.40),
+    'brown': (0.80, 0.66, 0.28), 'blue': (0.38, 0.56, 0.94), 'magenta': (0.83, 0.46, 0.83),
+    'cyan': (0.33, 0.80, 0.86), 'white': (0.85, 0.85, 0.85),
+    'brightblack': (0.46, 0.48, 0.52), 'brightred': (1.0, 0.46, 0.43),
+    'brightgreen': (0.52, 0.92, 0.54), 'brightbrown': (0.96, 0.86, 0.42),
+    'brightblue': (0.56, 0.70, 1.0), 'brightmagenta': (0.96, 0.62, 0.96),
+    'brightcyan': (0.56, 0.93, 0.96), 'brightwhite': (1.0, 1.0, 1.0),
+}
+
+
+_DEFAULT_FG = (0.85, 0.85, 0.85)
+
+
+_DEFAULT_BG = None  # None == transparent, let the window background show through
+
+
+_SEL_COLOR = pack_color(51 / 255, 102 / 255, 204 / 255, 102 / 255)   # pale blue wash
+
+
+def _pack(rgb, alpha=255):
+    return pack_color(rgb[0], rgb[1], rgb[2], alpha / 255.0)
+
+
+def _resolve(name, default, bold=False):
+    if name in (None, 'default'):
+        rgb = default
+    elif name in _PALETTE:
+        rgb = _PALETTE[name]
+    elif isinstance(name, str) and len(name) == 6:
+        try:
+            rgb = (int(name[0:2], 16) / 255, int(name[2:4], 16) / 255, int(name[4:6], 16) / 255)
+        except ValueError:
+            rgb = default
+    else:
+        rgb = default
+    if bold and rgb is not None:
+        rgb = tuple(min(1.0, c * 1.25 + 0.08) for c in rgb)
+    return rgb
+
+
+def _wheel_lines(visible_px, line_px):
+    """Lines to scroll per wheel tick, from the global Toggles scroll settings — the
+    same pixel model core_render uses (`scroll_speed` px, capped to a fraction of the
+    visible height so small views don't overshoot), converted to lines."""
+    px = min(Toggles.ScrollSettings.scroll_speed,
+             Toggles.ScrollSettings.max_increment_fraction
+             * max(1.0, visible_px))
+    return max(1, int(round(px / max(1.0, line_px))))
+
+
+def _row_blank(line, ncols):
+    return all(line[x].data in (' ', '', '\x00') for x in range(ncols))
+
+
+_LINK_RE = re.compile(
+    r'File "(?P<p1>[^"\n]+)", line (?P<l1>\d+)'
+    r'|(?<![\w./~-])(?P<p2>(?:/|~/|\./|\.\./)[^\s:"\'\)\],]+\.[A-Za-z0-9_]+):(?P<l2>\d+)')
+
+
+_LINK_COLOR = pack_color(110 / 255, 180 / 255, 1.0, 200 / 255)      # underline (cyan-blue)
+
+
+_LINK_HOVER_COLOR = pack_color(170 / 255, 235 / 255, 1.0, 1.0)      # brighter on hover
+
+
+def _find_links(grid, scols):
+    """Scan the visible grid for file:line references, joining wrapped rows so a path
+    split across the terminal width still matches. Returns [(path, line, segments)]
+    where segments is [(row, col_start, col_end)] (a link can span wrapped rows)."""
+    if not grid:
+        return []
+    # Flatten visible rows into one string + a char ->-(row,col) origin map, NOT
+    # inserting a newline where a row wrapped (pyte fills the next row when it wraps).
+    parts, origins = [], []
+    for r, row in enumerate(grid):
+        text = "".join((c[0] or ' ') for c in row)
+        end = len(text.rstrip())
+        for c in range(end):
+            parts.append(text[c])
+            origins.append((r, c))
+        wrapped = scols > 0 and row[scols - 1][0] not in (' ', '', '\x00')
+        if not wrapped:
+            parts.append('\n')
+            origins.append((r, end))
+    text = "".join(parts)
+
+    links = []
+    for m in _LINK_RE.finditer(text):
+        if m.group('p1') is not None:
+            path, line = m.group('p1'), int(m.group('l1'))
+        else:
+            path, line = m.group('p2'), int(m.group('l2'))
+        by_row = {}
+        for (r, c) in origins[m.start():m.end()]:
+            lo, hi = by_row.get(r, (c, c))
+            by_row[r] = (min(lo, c), max(hi, c))
+        segments = [(r, lo, hi + 1) for r, (lo, hi) in sorted(by_row.items())]
+        links.append((path, line, segments))
+    return links
+
 
 
 @render_func(is_default_for=(Terminal), show_bg=False, show_header=False, show_name=False, is_tree=False,
              selectable=False, disable_scroll=True, initial={"closed": False})
 def draw_terminal_screen(input_value: Terminal, draw_state, view_state: TerminalScreenState,
-                         left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False, 
-                         left_mouse_clicked=False):
+                         left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
+                         left_mouse_clicked=False, cursor_moved=None,
+                         cursor_hover_exit=None, scroll_y_changed=None,
+                         terminal_runtime: TerminalRuntime = None, font_manager=None):
     from meltygui.core.services.terminal_core import _ALT_SCREEN_MODES
-    from meltygui.core.services.terminal_core import _COL_ERR
-    from meltygui.core.services.terminal_core import _DEFAULT_BG
-    from meltygui.core.services.terminal_core import _DEFAULT_FG
-    from meltygui.core.services.terminal_core import _LINK_COLOR
-    from meltygui.core.services.terminal_core import _LINK_HOVER_COLOR
     from meltygui.core.services.terminal_core import _MOUSE_MODES
-    from meltygui.core.services.terminal_core import _SEL_COLOR
     from meltygui.core.services.terminal_core import _TMUX_WHEEL_LINES
-    from meltygui.core.services.terminal_core import _find_links
-    from meltygui.core.services.terminal_core import _forward_keys
     from meltygui.core.services.terminal_core import _mouse_seq
-    from meltygui.core.services.terminal_core import _norm
-    from meltygui.core.services.terminal_core import _pack
-    from meltygui.core.services.terminal_core import _push_mono
-    from meltygui.core.services.terminal_core import _resolve
-    from meltygui.core.services.terminal_core import _resolve_path
-    from meltygui.core.services.terminal_core import _row_blank
-    from meltygui.core.services.terminal_core import _wheel_lines
 
     term, ds, vs = input_value, draw_state, view_state
-    # Point the reader thread's invalidator at the tile that actually re-renders this
-    # terminal. In the claude-terminals path this screen IS the blit-cached child window
-    # (TERMINAL_WINDOW mode → closable=True), so THIS draw_state is what must be
-    # invalidated on new output - set it BEFORE term.start() so the reader (launched
-    # inside start()) always has the right target. In the main/lsd path
-    # draw_terminal_screen is nested inside draw_terminal's @window (not closable) and
-    # _draw_terminal_window already pointed term._ds at that window tile - don't clobber
-    # that with this non-cached text screen. Without this the claude reader invalidated
-    # the PARENT window while each child's cached blit was unchanged (terminals stopped
-    # refreshing on "+" or on characters typed in a gnome-side client).
-    if ds.closable:
-        term._ds = ds
-        # Grab text focus the first time this terminal appears, so a freshly-opened
-        # ("+" or just-discovered) terminal is typeable immediately without a click.
-        # Scoped to the closable (claude) tiles so the main/lsd ones don't steal
-        # focus on studio startup. Same mechanism as the click-to-focus below.
-        if not term._appeared:
-            term._appeared = True
-            Melty.text_focused_ds = ds
     left, top, right, bottom = ds.abs_left, ds.abs_top, ds.abs_left + ds.width, ds.abs_top+ ds.height
     pad = 4.0
 
-    pushed = _push_mono()
+    font = font_manager.get(Font.JETBRAINS_MONO_19) if font_manager else None
+    pushed = font is not None
+    if pushed:
+        imgui.push_font(font)
     try:
         char_w, line_px = max(1.0, imgui.calc_text_size("0").x), imgui.get_text_line_height() * 1.25
         x0, y0 = left + pad, top + pad
@@ -72,7 +152,7 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
         cols = max(2, int(avail_w / char_w))
         rows = max(2, int(avail_h / line_px))
 
-        term.start(cols, rows)
+        terminal_runtime.prepare(term, cols, rows)
         if term.error:
             imgui.set_cursor_screen_pos((x0, y0))
             imgui.text_colored(term.error, _COL_ERR[0], _COL_ERR[1], _COL_ERR[2], 1.0)
@@ -83,19 +163,18 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
             imgui.set_cursor_screen_pos((x0, y0))
             imgui.text_colored("starting…", 0.55, 0.55, 0.55, 1.0)
             return False, term
-        term.resize(cols, rows)   # immediate - applied every time the drag changes size
+        is_focused = terminal_runtime.focused
+        for event in (cursor_moved, scroll_y_changed, left_mouse_down,
+                      left_mouse_drag, left_mouse_held, left_mouse_clicked):
+            if event:
+                vs.pointer = (event.x, event.y)
+        if cursor_hover_exit:
+            vs.pointer = None
+        mouse_x, mouse_y = vs.pointer if vs.pointer is not None else (-1e9, -1e9)
+        wheel = scroll_y_changed.value if scroll_y_changed else 0
 
-        is_focused = Melty.text_focused_ds is ds
-        io = imgui.get_io()
-
-        # --- snapshot scrollback + live screen under the lock (reader feeds pyte) ---
-        with term.lock:
-            screen = term.screen
-            srows, scols = screen.lines, screen.columns
-            cur_x, cur_y, cur_hidden = screen.cursor.x, screen.cursor.y, screen.cursor.hidden
-            modes = set(screen.mode)
-            hist = list(screen.history.top)               # lines scrolled off the top
-            buf_rows = [screen.buffer[y] for y in range(srows)]
+        srows, scols, cursor, modes, hist, buf_rows = term.snapshot()
+        cur_x, cur_y, cur_hidden = cursor
 
         # When the grid is taller than the window body (window dragged below min_height,
         # so `rows` are frozen), crop from the TOP rather than the BOTTOM: shift the
@@ -129,8 +208,8 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
         if vs.last_total is not None and total > vs.last_total and vs.scroll > 0:
             vs.scroll += total - vs.last_total
         vs.last_total = total
-        over = left <= io.mouse_pos.x <= right and top <= io.mouse_pos.y <= bottom
-        if over and io.mouse_wheel:
+        over = left <= mouse_x <= right and top <= mouse_y <= bottom
+        if over and wheel:
             lines = _wheel_lines(bottom - top, line_px)   # speed = Toggles.ScrollSettings
             if (_MOUSE_MODES & modes) and (_ALT_SCREEN_MODES & modes):
                 # Forward the wheel to the program ONLY when it's an ALT-SCREEN program
@@ -142,16 +221,14 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
                 # branch and scrolls OUR pyte history instead (clipped, so a no-log
                 # terminal simply doesn't scroll). Button 64 = wheel up, 65 = wheel down;
                 # tmux scrolls _TMUX_WHEEL_LINES per escape, so send enough to hit `lines`.
-                col = max(0, min(int((io.mouse_pos.x - x0) / char_w), scols - 1))
-                row = max(0, min(int((io.mouse_pos.y - y0) / line_px), srows - 1))
-                btn = 64 if io.mouse_wheel > 0 else 65
-                ticks = abs(int(round(io.mouse_wheel))) or 1
+                col = max(0, min(int((mouse_x - x0) / char_w), scols - 1))
+                row = max(0, min(int((mouse_y - y0) / line_px), srows - 1))
+                btn = 64 if wheel > 0 else 65
+                ticks = abs(int(round(wheel))) or 1
                 for _ in range(ticks * max(1, round(lines / _TMUX_WHEEL_LINES))):
                     term.write(_mouse_seq(modes, btn, col, row))
             else:
-                vs.scroll += int(round(io.mouse_wheel * lines))
-                if term._ds is not None:   # our own scrollback moved - re-render it
-                    term._ds.invalidate()
+                vs.scroll += int(round(wheel * lines))
         vs.scroll = max(0, min(vs.scroll, max_scroll))
         at_bottom = vs.scroll == 0
 
@@ -165,14 +242,12 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
         links = _find_links(grid, scols)
         hovered_link = None
         if over:
-            hc = int((io.mouse_pos.x - x0) / char_w)
-            hr = int((io.mouse_pos.y - y0) / line_px)
+            hc = int((mouse_x - x0) / char_w)
+            hr = int((mouse_y - y0) / line_px)
             for i, (_p, _l, segs) in enumerate(links):
                 if any(r == hr and lo_c <= hc < hi_c for (r, lo_c, hi_c) in segs):
                     hovered_link = i
                     break
-            if links and term._ds is not None:
-                term._ds.invalidate()   # re-render so the hover highlight tracks the mouse
 
 
         # Per-row printed width (columns up to the last non-blank cell) and the last
@@ -190,34 +265,26 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
 
         # --- mouse: focus + drag select (selection is ours, not sent to the program) ---
         if left_mouse_down:
-            Melty.text_focused_ds = ds
+            terminal_runtime.focus()
             is_focused = True
-            vs.sel_anchor = vs.sel_active = xy_to_rc(io.mouse_pos.x, io.mouse_pos.y)
+            vs.sel_anchor = vs.sel_active = xy_to_rc(mouse_x, mouse_y)
         if (left_mouse_drag or left_mouse_held) and vs.sel_anchor is not None:
-            mx = left_mouse_drag.x if left_mouse_drag else io.mouse_pos.x
-            my = left_mouse_drag.y if left_mouse_drag else io.mouse_pos.y
+            mx = left_mouse_drag.x if left_mouse_drag else mouse_x
+            my = left_mouse_drag.y if left_mouse_drag else mouse_y
             vs.sel_active = xy_to_rc(mx, my)
 
         # A plain click (no drag) on a link -> jump to it in the IDE, off-thread like
         # draw_text's jump button. `left_mouse_clicked` fires only on click, not drag,
         # so this never fights with selection.
         if left_mouse_clicked:
-            cc = int((io.mouse_pos.x - x0) / char_w)
-            cr = int((io.mouse_pos.y - y0) / line_px)
+            cc = int((mouse_x - x0) / char_w)
+            cr = int((mouse_y - y0) / line_px)
             for path, line, segments in links:
                 if any(r == cr and lo <= cc < hi for (r, lo, hi) in segments):
-                    from meltygui.utils.jump_to_code import open_in_intellij
-                    threading.Thread(target=open_in_intellij, args=(_resolve_path(path),),
-                                     kwargs={"line_number": line}, daemon=True).start()
+                    terminal_runtime.open_link(path, line)
                     break
 
-        if is_focused:
-            _forward_keys(term, vs)
-            # Keep re-rendering THIS window while focused so the cursor blinks and
-            # typed input shows promptly (the echo also arrives via the reader). Only
-            # the focused terminal pays this; the rest stay idle until they get focus.
-            if term._ds is not None:
-                term._ds.invalidate()
+        terminal_runtime.forward_keys(term, vs)
 
         # --- render: per-row style runs, selection highlight, block cursor ---
         # Clip to the body rect: when the grid is frozen at the min-size (window dragged

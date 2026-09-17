@@ -20,7 +20,7 @@ Everything else is grouped by the runtime responsibility it serves:
 | `conversion/` | Dict-like objects, conversion graphs, hosting and persistence: `dict_conversion.py`, `render_host.py`, `load_save_v2.py` |
 | `cache/` | Drawing caches and invalidation: `tile_cache.py`, `invalidation_tracker.py` |
 | `windowing/` | Surface lifecycle, native windows, chrome and platform backends: `surface.py`, `window_api.py`, `backends/` |
-| `graphics/` | Shared GL resources, shaders, overlays, capture and tensor/graph integration: `gl_state.py`, `shader_func.py`, `lut_core.py`, `cuda_interop_core.py` |
+| `graphics/` | Shared GL resources, shaders, overlays, capture and tensor/graph integration: `gl_state.py`, `shader_func.py`, `lut_core.py`, `cuda_context_core.py`, `cuda_interop_core.py`, `cuda_kernel_core.py` |
 | `layout/` | Cursor, grid, column, header and dropdown plumbing |
 | `styling/` | Shared styles, colours, fonts and font warmup |
 | `files/` | Filesystem polling, metadata and file/import-tree integration |
@@ -58,12 +58,16 @@ selection and swatches belong in `view/lut_view.py`.
 
 ## CUDA interop ownership
 
-`cuda_interop_core.py` coordinates the GL device's CUDA context and registered
-buffer operations; retained runtime state lives on `Melty.cuda_interop`.
+`cuda_context_core.py` owns primary-context leases and scoped device activation
+for voxel kernels, line kernels and GL interop. Runtime state lives on
+`Melty.cuda_interop`; the existing field also holds the per-device context pool.
+`cuda_interop_core.py` selects the GL-compatible device and manages registered
+buffers, mapping and copies through that shared context manager.
 `model/cuda_texture_model.py` owns versioned tensor uploads as `GLTexture` values.
 Their composite allocations use the caller's `GLState`, including partial-allocation
 cleanup and deferred unregistration retries. Feature renderers do not own CUDA
-context setup. CUDA raymarching and line-kernel ownership remain a separate review.
+context setup. `cuda_kernel_core.py` owns compilation and cached modules. Voxel and line CUDA
+presentation live in `view/voxel_cuda_view.py` and `view/graph_cuda_view.py`.
 
 ## Why mode has three files
 

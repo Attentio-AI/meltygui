@@ -51,6 +51,8 @@ if TYPE_CHECKING:   # IDE / type checkers only; never executed
 _NCV = 'meltygui.core.rendering.render_dispatch'
 _VIEWS = {
     'draw_voxels': ('meltygui.view.voxel_view', 'draw_voxels'),
+    'draw_voxels_opengl': ('meltygui.view.voxel_view', 'draw_voxels_opengl'),
+    'draw_voxels_cuda': ('meltygui.view.voxel_view', 'draw_voxels_cuda'),
     'draw_tensor_slices': ('meltygui.view.tensor_view', 'draw_tensor_slices'),
     'draw_tensor_error': ('meltygui.view.tensor_view', 'draw_tensor_error'),
     'draw_line_graph': ('meltygui.view.graph_view', 'draw_line_graph'),

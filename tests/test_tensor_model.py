@@ -21,7 +21,7 @@ volume = slice_volume_view(torch.arange(24).reshape(2, 3, 4),
                            nf_on=True, nf_chunk=2)
 assert volume.shape == (4, 3, 2)
 basis(0.2, 0.4, 0.6)
-for module in ('meltygui.view.voxel_view', 'meltygui.tensor.cuda_march',
+for module in ('meltygui.view.voxel_view', 'meltygui.view.voxel_cuda_view',
                'meltygui.view.tensor_view', 'meltygui.view.graph_view'):
     assert module not in sys.modules, module
 '''],

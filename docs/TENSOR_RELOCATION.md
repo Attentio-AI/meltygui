@@ -172,3 +172,74 @@ reuse (including `None`), and hotswap preserving runtime and resource identities
 An isolated app rendered a GLTexture uploaded from H100 `cuda:2` to display
 GPU `cuda:1`; live tensor updates reused the same texture and PBO.
 The full library suite passed 623 tests plus 393 subtests.
+
+## Shared CUDA contexts
+
+Context ownership and activation now live in `core/graphics/cuda_context_core.py`.
+Voxel kernels and line kernels call `using_device`; GL interop calls the same
+`using_context` implementation. Both PyCUDA's stack and the native CUDA context
+are restored, including nested scopes, failures and Torch changing the native
+context independently. No tensor movement is introduced by context activation.
+
+`Melty.cuda_interop` retains its existing runtime identity and now owns the
+per-device kernel-context pool too. Existing leases from the old `sys` context
+cache are transferred on first use, preserving compiled-kernel references.
+Kernel leases have process lifetime; the standalone display stack entry has a
+separate primary-context lease so its teardown cannot invalidate cached kernels.
+This preserves the existing lifetimes while putting their ownership in one place.
+
+`cuda_interop_core.py` retains GL-device validation and registered-buffer work.
+The kernels, compiler configuration and compiled-module caches remain in the
+feature modules for the next pass. No forwarding imports were added; saved
+identifiers point to the moved definitions.
+
+Checks cover nested/exceptional scopes, native/PyCUDA disagreement, ownership
+transfer, standalone teardown with a cached kernel context, and hotswap retaining
+context and compiled-function identities. Voxel and line kernels run on all three
+local GPUs. A live window renders H100 voxels and RTX lines together; updates to
+both tensors preserve the shared pool's context handles.
+
+Validation: 64 focused CUDA tests; full library 632 tests and 396 subtests;
+built-wheel imports pass without initializing CUDA. Pro has 207 passing tests,
+one skip and one dependency-environment undo failure, reproduced alone without
+loading the CUDA context module.
+
+
+## CUDA feature kernels and compilation ownership
+
+`tensor/cuda_march.py` moved to `view/voxel_cuda_view.py`, and
+`tensor/line_kernels.py` to `view/graph_cuda_view.py`. Shared dtype decoding is in
+`model/cuda_tensor_model.py`; lines no longer extract private source from voxels.
+CUDA source and rendering computations are preserved. `tensor/` is removed.
+
+`core/graphics/cuda_kernel_core.py` owns compiler configuration, compilation and
+module/function caches on `Melty.cuda_interop`. Legacy cache entries are adopted
+without replacing held functions; failed compilation retains the last good
+entry. Context and module lifetimes remain explicit and imports stay lazy.
+
+84 focused GPU/runtime tests passed across three GPUs. Native UI showed H100
+voxels and RTX lines, and mutated pixels appeared after ordinary scroll events.
+The scratch harness also exposed a subsequently fixed redraw bug: in-place
+tensor edits change versions but cached views do not redraw solely from either
+`external_change=changed` or `changed=changed`. Earlier resource/identity checks
+are not evidence that this cached notification path works. No cache workaround
+was added.
+
+
+## Caller mutation notifications and tile caching
+
+The wrapper only forwarded `changed=True` to `_external_change` when the view's
+signature declared `changed`. Voxel and graph views do not need that argument,
+so a caller's notification was lost before the tile-cache decision. Core now
+records the notification independently of the view signature; views that consume
+`changed` retain their existing behavior. `external_change` is not the caller API.
+
+Regression tests reproduce the old lost notification, then verify a cached body
+refreshes for an edit and returns to cache hits afterward. Native UI verification
+zeros half an H100 volume and a segment of RTX line data with one button: both
+images update without scrolling or hovering, then serve cached tiles again.
+CUDA contexts and compiled functions keep their identities. No per-frame
+invalidation, tensor data hashing, new DrawState fields or view-specific patch.
+
+Post-fix validation: 659 library tests and 402 subtests passed. Pro passed 211
+with one skip; its previously observed dependency-environment undo test failed.

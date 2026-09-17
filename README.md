@@ -32,7 +32,7 @@ volume = torch.exp(-4 * ((torch.sqrt(x * x + y * y) - 0.85) ** 2 + z * z))
 @meltygui.glfw_window(name="CUDA tensor", width=850, height=700)
 def tensor_window(input_value=None):
     meltygui.draw_voxels(
-        volume, name="Torus", cuda_march=True, width=800, height=630
+        volume, name="Torus", width=800, height=630
     )
     return False, input_value
 ```
@@ -48,6 +48,21 @@ The window loop starts automatically after the module finishes defining its
 windows. The function runs each frame; create the tensor outside it to avoid
 reallocating the volume on every frame. The CUDA renderer reads the volume on
 its own GPU and transfers the rendered 2D image for display.
+
+`draw_voxels` chooses CUDA for CUDA tensors and OpenGL for CPU tensors, NumPy
+arrays and GL textures. Select a renderer explicitly with the framework's
+`view_func` override (or call either renderer directly):
+
+```python
+meltygui.draw_voxels(volume, view_func=meltygui.draw_voxels_opengl)
+meltygui.draw_voxels(volume, view_func=meltygui.draw_voxels_cuda)
+```
+
+`draw_voxels_opengl` accepts tensors directly, including CUDA tensors; it slices
+and uploads the displayed volume to a GL texture. `draw_voxels_cuda` requires a
+CUDA tensor and reads it in place. Both expose the same camera, mapping and
+shading controls. Backend selection no longer uses the obsolete `cuda_march`
+parameter.
 
 See [the tensor and live-code example](examples/tensor_live.py) for a tensor
 viewer alongside an editable function view.

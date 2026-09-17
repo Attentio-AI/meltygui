@@ -47,6 +47,47 @@ from meltygui.chat import draw_chat_interface, register_chat_backend
 addition to automatically retained view state. Keep an existing app's `app_id`
 when migrating so its session file remains the same.
 
+## Tiled editors
+
+Mark an editor with `@render_func(multi_instance=True)` to offer it in every
+tile's editor dropdown. Registration happens when its module is imported; the
+flag does not open a window. A `Tile` in the app model owns the selected function
+reference and its `input_value`. `Tile` and `Split` are `DictConversion` models,
+so the normal app/session persistence saves the layout and function references.
+
+```python
+from meltygui.model.tile_model import Split, Tile
+
+@render_func(multi_instance=True, tint=(0.2, 0.4, 0.6))
+def draw_scene(input_value: Scene, state: ViewportState = None):
+    ...
+    return changed, input_value
+
+# Store this on your app model. A layout always has a Split root.
+app_model.tiles = Split("x", [
+    Tile(render_func=draw_scene, input_value=scene),
+    Tile(render_func=draw_scene, input_value=scene),
+])
+```
+
+The host declares `multi_instance_renderers=()` to receive the eligible
+function references from core, and passes that parameter to `draw_tiles` along
+with its injected `TileManagerState`. The selected editor receives the tile's
+input unchanged: the app supplies a compatible value, or the editor accepts
+`None` and uses injected model/state. Choosing another editor does not construct
+or convert model data.
+
+Each tile has independent injected view state. Switching editors and switching
+back restores that tile's editor state. Splitting inherits the renderer and
+shares the input value, while creating a new view instance. See
+`examples/tile_manager.py` for a runnable demo with counters and notes.
+
+Hosted renderers can declare `instance` and `layout_frame` parameters. These
+receive the tile's existing conversion identity and its four shared frame edges,
+so instance-targeted commands and nested column layouts stay within that tile.
+An editor created by a corner split first renders when the drag ends, after its
+initial size is known.
+
 Files in an installed library are read-only to the live editor. App source roots
 are registered from the app's entry point and decorated functions. An editable
 framework checkout can also be edited; an ordinary wheel in site-packages cannot.

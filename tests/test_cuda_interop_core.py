@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from meltygui.core.graphics import cuda_interop_core
+from meltygui.core.graphics import cuda_interop_core, cuda_context_core
 from meltygui.core.graphics.gl_state import is_gl_thread, ResourceDeletionDeferred
 
 
@@ -42,7 +42,7 @@ def test_mapping_is_unmapped_on_failure(monkeypatch, failure):
     mapping = SimpleNamespace(device_ptr_and_size=lambda: (10, 2 if failure == 'capacity' else 100),
                               unmap=lambda: events.append('unmap'))
     registered = SimpleNamespace(map=lambda: mapping)
-    monkeypatch.setattr(cuda_interop_core, 'using_context', lambda context: nullcontext())
+    monkeypatch.setattr(cuda_context_core, 'using_context', lambda context: nullcontext())
 
     def copy(*args):
         events.append('copy')
@@ -55,7 +55,7 @@ def test_mapping_is_unmapped_on_failure(monkeypatch, failure):
 
 
 def test_unregister_failure_requests_deferred_cleanup(monkeypatch):
-    monkeypatch.setattr(cuda_interop_core, 'using_context', lambda context: nullcontext())
+    monkeypatch.setattr(cuda_context_core, 'using_context', lambda context: nullcontext())
     monkeypatch.setattr(cuda_interop_core, 'log_once', lambda message: None)
 
     def fail():

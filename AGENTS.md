@@ -55,6 +55,8 @@ never library dependencies. Fix ownership, not just filenames; avoid catch-all m
 - Report and fix framework gaps instead of hiding them with global lookups,
   disabled caches, per-frame invalidation or restart requirements.
 
+For window, column/row, resize or collision changes, read the [reconciled behavior rules](docs/WINDOW_COLLISION_COLUMNS.md). Historical reviews and stale source comments do not override them.
+
 ## Verification
 
 Preserve unrelated work/sessions; the editor refactor is deferred. Run focused

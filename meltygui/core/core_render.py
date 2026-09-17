@@ -430,7 +430,7 @@ _AUTO_PARAM_EXCLUDE = {
     'input_value', 'draw_state', 'name', 'unique', 'suffix', 'window_stack',
     'func', 'render_func', 'style_manager', 'vis', 'view_func', 'outer_func',
     'ui_scale', 'font_manager', 'keyboard_available', 'pointer_buttons_down',
-    'luts',
+    'luts', 'file_metadata', 'multi_instance_renderers',
     # signature plumbing
     'kwargs', 'args', 'o_kwargs', 'next_kwargs', 'changed',
     # per-call context / converter args, never view state
@@ -625,9 +625,9 @@ def _rebase_resize_baselines(draw_state, drag, from_top_left):
         pos  = init_pos  + (init_size - size)    (top-left: the far corner stays put)
         pos  = init_pos                          (bottom-right: sticky re-anchors hold it)
 
-    Used when the corner flips mid-drag (left button pressed / released
-    during a right-drag) and when a resize (re)activates with a non-zero
+    Used when resize state is initialized or re-latched with a non-zero
     total (press and first drag frame compressed together after a stall).
+    The plain/double right press selects the corner for the gesture.
     At a normal drag start total ≈ 0 and this is a no-op."""
     sign = -1 if from_top_left else 1
     draw_state._initial_window_size = (draw_state.width - sign * drag.total_dx,
@@ -650,6 +650,7 @@ def render_func(*args, **o_kwargs):
     # Session-teardown hook (see run_cleanup_callbacks): decorator-only, never
     # a render kwarg, so kick it out before o_kwargs merge into call kwargs.
     on_cleanup = o_kwargs.pop("on_cleanup", None)
+    multi_instance = o_kwargs.pop("multi_instance", False)
 
     sig = inspect.signature(func)
     params = sig.parameters
@@ -933,6 +934,11 @@ def render_func(*args, **o_kwargs):
         # seen; a caller-passed initial still wins (kwargs takes precedence).
         initial_values = kwargs.get("initial", {})
 
+        if "multi_instance_renderers" in params:
+            kwargs.setdefault("multi_instance_renderers", tuple(
+                renderer for renderer in Melty.render_funcs_by_name.values()
+                if getattr(renderer, "multi_instance", False)))
+
         # Object-attached params (OBJ_ATTR_PARAMS): a value object's own
         # whitelisted attrs (Loras.tint) feed in as ordinary kwargs. This
         # lives HERE, in the always-run prologue, NEVER in the cache-gated
@@ -1137,10 +1143,18 @@ def render_func(*args, **o_kwargs):
         # exposure-band lift) walked up the screen until the display cap
         # held it, and jittered whenever its spawner's body ran (09-10).
         explicit_parent = kwargs.get("parent_window") is not None
-        if _has_imgui and not deferred_entry and (len(Melty.melty_window_stack) > 0 or explicit_parent):
+        enclosing_view = Melty.draw_state_stack[-1] if Melty.draw_state_stack else None
+        if _has_imgui and not deferred_entry and (Melty.melty_window_stack or explicit_parent
+                                                 or enclosing_view is not None):
             draw_state.parent_window = kwargs.get("parent_window", None)
             if draw_state.parent_window is None:
-                draw_state.parent_window = Melty.melty_window_stack[-1]
+                if Melty.melty_window_stack:
+                    draw_state.parent_window = Melty.melty_window_stack[-1]
+                else:
+                    # Plain render-function hosts also own positioned children.
+                    # Their text, hit regions and clipping must use the same
+                    # cursor origin as the child backgrounds.
+                    draw_state.parent_window = enclosing_view.parent_window or enclosing_view
 
             # draw_state._cursor_start_pos = imgui.get_cursor_screen_pos()
             # if draw_state._parent is draw_state or draw_state._parent._cursor_start_pos is None:
@@ -1856,6 +1870,9 @@ def render_func(*args, **o_kwargs):
             # values they need. Explicit overrides remain useful for previews.
             kwargs.setdefault("ui_scale", Melty.ui_scale)
             kwargs.setdefault("font_manager", Melty.font_mgr)
+            if "file_metadata" in params and "file_metadata" not in kwargs:
+                from meltygui.models.file_meta import file_meta_store
+                kwargs["file_metadata"] = file_meta_store()
             if "keyboard_available" in params:
                 kwargs.setdefault("keyboard_available", Melty.text_focused_ds is None)
             if "pointer_buttons_down" in params:
@@ -2084,8 +2101,10 @@ def render_func(*args, **o_kwargs):
             # pushes the OS edge through the gap cell) - never a plain size
             # change the pin would break next frame.
             # Fixed popovers also pass width/height and draggable=False;
-            # only the surface root is coupled to the OS frame. Treating a
-            # popover as that root makes the OS solve overwrite its fixed size.
+            # only the surface root owns the OS frame pair. Explicitly pinned
+            # nested layout bodies delegate native background gestures through
+            # os_frame._native_layout_frame without becoming surface roots.
+            # Treating a popover as a root would overwrite its fixed size.
             draw_state._frame_pinned = bool(kwargs.get("frame_pinned", False)
                                             and draw_state.parent_window is None
                                             and closable and kwargs.get("draggable") is False
@@ -2187,6 +2206,7 @@ def render_func(*args, **o_kwargs):
                 # purpose), so it is never rescued; the rescue would land it
                 # on screen for its first frame and waste a cascade slot.
                 if (draw_state.frame_count == 0 and draw_state.parent_window is None
+                        and not draw_state._frame_pinned
                         and not kwargs.get("unmanaged", False)):
                     disp_w, disp_h = imgui.get_io().display_size
                     if disp_w > RESCUE_EDGE_MARGIN * 2 and disp_h > RESCUE_EDGE_MARGIN * 2:
@@ -2215,9 +2235,10 @@ def render_func(*args, **o_kwargs):
                 # the window actually renders, so this is "the first frames it
                 # is drawn" - re-opening a closed window doesn't re-trigger it.
                 # Later frames are untouched, so a window you drag low yourself
-                # stays there.
+                # stays there. Native bodies already fill their surface below
+                # its chrome; applying a floating-window margin would lift them.
                 if (draw_state.frame_count <= 1 and draw_state.parent_window is None
-                        and draw_state.height):
+                        and not draw_state._frame_pinned and draw_state.height):
                     disp_h = imgui.get_io().display_size[1]
                     edge_margin = Toggles.WindowSettings.edge_margin
                     win_top = draw_state.abs_top or 0
@@ -2239,30 +2260,25 @@ def render_func(*args, **o_kwargs):
             # plain right-drag drags the BOTTOM-RIGHT corner, a DOUBLE
             # right-drag (corner_double: press-press-drag in the handler's
             # right_mouse_double_dragged) drags the TOP-LEFT corner instead -
-            # decided at the press for the whole gesture (the left+right
-            # chord it replaced switched corners mid-drag, Lukas dropped it
-            # 08-25). Initialised to None so the
+            # decided at the press for the whole gesture.
+            # Initialised to None so the
             # window-move press latch further down can still check whether a
             # right-drag resize is in flight (auto-resize windows have no
             # resize handle, so corner_drag stays None for them).
             corner_drag = None
-            # A frame-pinned window (an app's root: width AND height fixed,
-            # never draggable) runs this block's A LATCH ONLY: its right-drag
-            # moves the column / row edge under the cursor (a divider, not the
-            # window's own top edge, which pushes the OS edge through the
-            # os_frame_width below), exactly as in a studio window; without this
-            # a right-drag on an app's columns fell through to the titlebar's
-            # background subscription and resized the OS window (09-13). The
-            # plain size / position fallbacks are skipped for it (the pin
-            # rubber-stamps both next frame) and it gets no corner handle.
-            frame_pinned = bool(getattr(draw_state, "_frame_pinned", False))
-            if not auto_resize and (passed_width is None or passed_height is None or frame_pinned):
+            # Caller-sized windows still own their interior column/row edges.
+            # Let their right-drag subscriptions route to those local layouts,
+            # including workspaces nested below the native frame. Only the
+            # shared edge solver may resize them; a plain size write would be
+            # overwritten by the caller on the next frame.
+            fixed_frame = passed_width is not None and passed_height is not None
+            if not auto_resize and (closable or not fixed_frame):
                 # Resolved through the module each call so columns.py hotswaps
                 # keep reaching the width-retargeting below (and to avoid a
                 # circular import at module load).
                 import meltygui.core.layout.column_core as _columns
                 corner_rect = get_resize_handle(draw_state)
-                handle_drag = None if frame_pinned else draw_state.on_action(
+                handle_drag = None if fixed_frame else draw_state.on_action(
                     "left_mouse_drag", view_id="window_resize",
                     rect=corner_rect, priority_delta=1, cursor=mouse_cursor.RESIZE_SE)
 
@@ -2276,10 +2292,8 @@ def render_func(*args, **o_kwargs):
                                                      view_id="corner_drag_double", priority_delta=-1)
                 if corner_drag is None and corner_double is not None:
                     corner_drag = corner_double
-                # A right-drag always resizes; the held LEFT button only
-                # selects the corner (read per frame in the drag block below
-                # - pressing/releasing left mid-drag flips corners live, with
-                # a baseline rebase there keeping the handoff seamless).
+                # Both right-drag variants use the resize path. The double
+                # press selects top-left; holding left does not change corners.
                 if handle_drag is None and corner_drag is not None:
                     handle_drag = corner_drag
 
@@ -2292,7 +2306,7 @@ def render_func(*args, **o_kwargs):
                 # window-move press and right-press raise chain; if a child
                 # wins the press chain first, we simply fall back to the
                 # rebase (old behavior).
-                handle_press = None if frame_pinned else draw_state.on_action(
+                handle_press = None if fixed_frame else draw_state.on_action(
                     "non_blocking_left_mouse_down", view_id="window_resize",
                     rect=corner_rect, priority_delta=2)
                 corner_press = draw_state.on_action("non_blocking_right_mouse_down", view_id="corner_drag",
@@ -2339,12 +2353,9 @@ def render_func(*args, **o_kwargs):
                     # right-drag the TOP-LEFT corner - left column edge +
                     # window top, same collision rules. Fixed for the
                     # gesture (a double press can't become single mid-drag),
-                    # but both modes always state size/pos as baseline ±
-                    # total_d and the rebase-on-flip below is live, so a
-                    # mode change between frames hands off with zero jump;
-                    # the column edge is re-latched for the new side against
-                    # the CURRENT cursor (the gesture-start latch below uses
-                    # the press point).
+                    # and both modes express size/position as baseline ±
+                    # total displacement. Re-latching state preserves that
+                    # geometry; it does not enable a held-left corner switch.
                     top_left_now = bool(handle_drag is corner_drag and corner_double is not None)
                     # The corner's own directional shape (bottom-right ↘ vs
                     # top-left ↖). Immediate: the right-drag has no grab rect
@@ -2406,7 +2417,7 @@ def render_func(*args, **o_kwargs):
                     # a ROW edge (the window's own top/bottom frame edges
                     # included) through the y-axis solve.
                     queued_rows = False
-                    if passed_height is None or frame_pinned:
+                    if passed_height is None or fixed_frame:
                         # A right-drag (corner_drag) retargets the height to
                         # a ROW edge latched once at drag start - the row
                         # edge BELOW the cursor (plain drag), ABOVE it in
@@ -2445,7 +2456,7 @@ def render_func(*args, **o_kwargs):
                             except Exception:
                                 resize_trace.record("queue-y-error", draw_state, handle_drag, error=True)
                                 queued_rows = False
-                        if not queued_rows and not frame_pinned:
+                        if not queued_rows and not fixed_frame:
                             new_h = snap_int(max(size_h, draw_state.min_height))
                             if draw_state.max_height:
                                 new_h = min(new_h, snap_int(draw_state.max_height))
@@ -2462,10 +2473,10 @@ def render_func(*args, **o_kwargs):
                                     draw_state._initial_window_pos_resize[1]
                                     + (draw_state._initial_window_size[1] - new_h))
 
-                    if passed_width is None or frame_pinned:
+                    if passed_width is None or fixed_frame:
                         # A right-drag (corner_drag) retargets the width to a
                         # COLUMN edge latched once at drag start: plain drag
-                        # takes the edge to the cursor's RIGHT, left held
+                        # takes the edge to the cursor's RIGHT, double-right
                         # (top-left-d) the edge to its LEFT. The bottom-right corner
                         # HANDLE (left-drag) always resizes the window frame
                         # directly. The latched edge - typically the window's
@@ -2477,7 +2488,7 @@ def render_func(*args, **o_kwargs):
                         # the edge cursor-driven, exempting it from the
                         # frame-edge walls that guard the foreign-width
                         # invariant  in _solve_collisions. Defensive: any
-                        # columns hiccup bverts to a plain width resize.
+                        # columns hiccup reverts to a plain width resize.
                         #
                         # The queue is INCREMENTAL (edge["x"] + this frame's dx),
                         # exactly like ColumnLayout's own edge handles, NOT an
@@ -2512,7 +2523,7 @@ def render_func(*args, **o_kwargs):
                             except Exception:
                                 resize_trace.record("queue-x-error", draw_state, handle_drag, error=True)
                                 queued = False
-                        if not queued and not frame_pinned:
+                        if not queued and not fixed_frame:
                             new_w = snap_int(max(size_w, draw_state.min_width))
                             draw_state.width = new_w
                             if from_top_left:
@@ -2706,6 +2717,7 @@ def render_func(*args, **o_kwargs):
             _drag_drop.DragDrop.register_item(draw_state)
             _wtF = time.perf_counter()   # TEMP perf: size/resize time
             if draw_state.window_pos is not None and closable:
+                import meltygui.core.windowing.os_frame as os_frame
                 _explicit_window_pos = kwargs.get("window_pos", None) is not None
                 if not _explicit_window_pos:
                     on_held = draw_state.on_action("left_mouse_held", "window_move", priority_delta=-2)
@@ -2807,7 +2819,8 @@ def render_func(*args, **o_kwargs):
                                                            draw_state.window_pos)
                             draw_state._move_undo_origin = None
                         draw_state._initial_window_pos = None
-                elif draw_state.parent_window is not None:
+                elif (draw_state.parent_window is not None
+                      and not os_frame._native_layout_frame(draw_state)):
                     # An explicitly-positioned NESTED window (a popover, a
                     # context menu, the find bar) has no move handle, so
                     # nothing in it subscribed to a left drag: the handler's
@@ -2820,8 +2833,9 @@ def render_func(*args, **o_kwargs):
                     # move handle's priority: anything that wants the drag
                     # (sliders, text rows, a child window's edge) resolves
                     # first as before; a bare press on the body goes nowhere.
-                    # A surface ROOT (parent_window None) is left alone - the
-                    # bare background IS the OS window's drag-anywhere strip.
+                    # Surface roots and explicitly frame-pinned nested layout
+                    # bodies pass bare background drags to the native move
+                    # handler. They are app background, not floating popovers.
                     draw_state.on_action("left_mouse_drag", "window_hold", priority_delta=-2)
                     draw_state.on_action("left_mouse_held", "window_hold", priority_delta=-2)
 
@@ -2842,13 +2856,6 @@ def render_func(*args, **o_kwargs):
                 pin = kwargs.get("pin_to_clip", None)
                 draw_state.pin_to_clip = pin if isinstance(pin, Pin) else None
 
-                # Draggable windows always render at their own abs box; an
-                # explicitly-positioned window keeps the caller's cursor but
-                # a clip overrides its position (abs box ignores the captured
-                # offsets, so the cursor must follow the pin).
-                if not _explicit_window_pos or draw_state.pin_to_clip is not None:
-                    imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
-
                 # Draggable window frame edges (left/right) use the shared
                 # column-edge collision system (columns.window_edge_pass).
                 # Resolved through the module each call so columns.py
@@ -2864,6 +2871,14 @@ def render_func(*args, **o_kwargs):
                         draw_state._edge_pass_error = repr(_edge_err)
                         print(f"[window_edge_pass] {draw_state.name}: {_edge_err!r}")
 
+                # Place the body after collision solving: near-edge resizing
+                # can change its origin in this frame. Descendants capture
+                # their offsets from this cursor, so an earlier position would
+                # shift the whole body until the next native acknowledgement.
+                if (not _explicit_window_pos or draw_state.pin_to_clip is not None
+                        or draw_state._frame_pinned):
+                    imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
+
             kwargs['melty_window'] = False
             Melty.size_stack.append((draw_state.width, draw_state.height))
 
@@ -2878,8 +2893,10 @@ def render_func(*args, **o_kwargs):
             imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
 
 
+            # A caller's mutation notification invalidates the rendered tile
+            # even when the view does not consume `changed` itself.
+            draw_state._external_change |= kwargs.get("changed", False)
             if "changed" in wanted_params:
-                draw_state._external_change |= kwargs.get("changed", False)
                 kwargs['changed'] |= draw_state._external_change
                 if draw_state.frame_count < 1:
                     kwargs['changed'] = True
@@ -6005,6 +6022,7 @@ def render_func(*args, **o_kwargs):
         wrapper._searchable = True
 
     wrapper.__render_func__ = True
+    wrapper.multi_instance = multi_instance
     wrapper.__header_defaults__ = header_defaults
     wrapper.__params__ = params
     # on_cleanup(draw_state): called once per draw_state of this view at
@@ -6070,7 +6088,7 @@ _RF_KWARG_EXCLUDE = frozenset({
     "_converter_mode", "next_kwargs", "draw_state", "input_value",
     "melty_window", "style_manager", "depth", "changed", "collection",
     "ui_scale", "font_manager", "keyboard_available", "pointer_buttons_down",
-    "luts",
+    "luts", "file_metadata", "multi_instance", "multi_instance_renderers",
     "data", "ref", "registry", "from_type", "to_type", "load_data",
     "save_data", "is_default_for", "is_lens_for", "interrupt_source_for",
     "inverse_of", "real_type", "key", "return_extras", "name_func",

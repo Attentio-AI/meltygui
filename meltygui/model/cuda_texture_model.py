@@ -8,8 +8,9 @@ import ctypes
 
 import OpenGL.GL as gl
 
+from meltygui.core.graphics.cuda_context_core import current_device_index
 from meltygui.core.graphics.cuda_interop_core import (
-    interop_context, current_device_index, copy_to_buffer, log_once,
+    interop_context, copy_to_buffer, log_once,
     register_buffer, unregister_buffer,
 )
 from meltygui.core.graphics.gl_state import (

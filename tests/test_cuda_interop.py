@@ -132,7 +132,7 @@ def test_voxel_view_preserves_cuda_source_and_reuses_volume(gl_context):
         try:
             changed, value, draw_state = draw_voxels(
                 source, name="CUDA volume", width=200, height=160,
-                x_dim=2, y_dim=1, z_dim=0, cuda_march=True,
+                x_dim=2, y_dim=1, z_dim=0,
                 name_size=0, num_size=0, draw_plane=False, draw_shading=False,
                 show_bg=False, with_header=None, show_header=False, shadow=False,
                 use_cache=False, return_extras=True)
@@ -202,7 +202,7 @@ def test_cache_hit_skips_tensor_sync_and_copy(cuda_state, monkeypatch):
 @needs_cuda
 def test_nondefault_stream_finishes_before_driver_copy(cuda_state, monkeypatch):
     from meltygui.model import cuda_texture_model
-    from meltygui.core.graphics.cuda_interop_core import current_device_index
+    from meltygui.core.graphics.cuda_context_core import current_device_index
     device = current_device_index()
     tensor = torch.zeros(16, 16, 16, device=f'cuda:{device}')
     stream = torch.cuda.Stream(device=device)
@@ -328,8 +328,9 @@ def test_failed_unregister_keeps_buffer_alive_until_retry(cuda_state, monkeypatc
 @needs_cuda
 def test_wrong_cuda_context_rejects_upload_but_cleanup_restores_owner(cuda_state):
     import meltygui_pycuda.driver as cuda
-    from meltygui.core.graphics.cuda_interop_core import (
-        cuda_ready, current_device_index, detach_inactive_primary,
+    from meltygui.core.graphics.cuda_interop_core import cuda_ready
+    from meltygui.core.graphics.cuda_context_core import (
+        current_device_index, detach_inactive_primary,
     )
     if torch.cuda.device_count() < 2:
         pytest.skip('needs another CUDA device')
@@ -387,7 +388,7 @@ def test_interop_hotswap_preserves_runtime_allocations_and_updates_queued_cleanu
     from pathlib import Path
     from test_render_func_integration import _init_melty
     from meltygui.code.file_converters import _recompile_module, stamp_module_baseline
-    from meltygui.core.graphics import cuda_interop_core
+    from meltygui.core.graphics import cuda_interop_core, cuda_context_core
     from meltygui.model import cuda_texture_model
 
     _init_melty()
@@ -395,12 +396,12 @@ def test_interop_hotswap_preserves_runtime_allocations_and_updates_queued_cleanu
     texture = tensor_to_texture(cuda_state, 'hot interop', tensor, 1)
     owner = cuda_state.peek('hot interop')
     buffer, registration = owner.buffer, owner.registered
-    state = cuda_interop_core.runtime()
+    state = cuda_context_core.runtime()
     primary = state.primary_context
     state.last_logged = 'runtime diagnostic'
     original_function = cuda_texture_model.tensor_to_texture
     original_class = cuda_texture_model.CudaVolume
-    modules = (cuda_interop_core, cuda_texture_model)
+    modules = (cuda_context_core, cuda_interop_core, cuda_texture_model)
     sources = {module: Path(module.__file__).read_text() for module in modules}
     try:
         for module in modules:
@@ -410,7 +411,7 @@ def test_interop_hotswap_preserves_runtime_allocations_and_updates_queued_cleanu
                 source = source.replace('def _release_volume(volume, context):',
                     'def _release_volume(volume, context):\n    volume.last_version = "hot cleanup"')
             assert _recompile_module(module, source, module.__file__) is None
-        assert cuda_interop_core.runtime() is state
+        assert cuda_context_core.runtime() is state
         assert state.primary_context is primary
         assert state.last_logged == 'runtime diagnostic'
         assert cuda_texture_model.CudaVolume is original_class
@@ -437,7 +438,7 @@ def test_standalone_upload_initializes_display_context_and_restores_borrowed_con
 import glfw
 import torch
 import meltygui_pycuda.driver as cuda
-from meltygui.core.graphics import cuda_interop_core
+from meltygui.core.graphics import cuda_interop_core, cuda_context_core
 from meltygui.core.graphics.gl_state import GLState
 from meltygui.model.cuda_texture_model import tensor_to_texture
 assert glfw.init()
@@ -447,18 +448,18 @@ assert window
 glfw.make_context_current(window)
 tensor = torch.ones(2, 2, 2, device='cuda:0')
 assert cuda.Context.get_current() is None
-borrowed = cuda_interop_core._native_context()
+borrowed = cuda_context_core._native_context()
 state = GLState()
 try:
     assert tensor_to_texture(state, 'cold', tensor, 1) is not None
-    assert cuda_interop_core.current_device_index() in cuda_interop_core.gl_devices()
-    assert cuda_interop_core.runtime().primary_context is not None
+    assert cuda_context_core.current_device_index() in cuda_interop_core.gl_devices()
+    assert cuda_context_core.runtime().primary_context is not None
 finally:
     state.release()
     GLState.flush_deletes()
-    cuda_interop_core._detach_primary()
+    cuda_context_core._detach_primary()
     assert cuda.Context.get_current() is None
-    assert cuda_interop_core._native_context() == borrowed
+    assert cuda_context_core._native_context() == borrowed
     glfw.destroy_window(window)
 '''], close_fds=False, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -467,19 +468,19 @@ finally:
 @needs_cuda
 def test_native_context_switch_is_scoped_for_upload_and_cleanup(cuda_state):
     import meltygui_pycuda.driver as cuda
-    from meltygui.core.graphics import cuda_interop_core
+    from meltygui.core.graphics import cuda_interop_core, cuda_context_core
     if cuda.Device.count() < 2:
         pytest.skip('needs another CUDA device')
-    device = cuda_interop_core.current_device_index()
+    device = cuda_context_core.current_device_index()
     tensor = torch.ones(2, 2, 2, device=f'cuda:{device}')
     tensor_to_texture(cuda_state, 'native mismatch', tensor, 1)
     updated_tensor = tensor * 2
     previous = cuda.Context.get_current()
     other = cuda.Device((device + 1) % cuda.Device.count()).retain_primary_context()
-    library = cuda_interop_core._driver_library()
-    with cuda_interop_core.using_context(previous):
+    library = cuda_context_core._driver_library()
+    with cuda_context_core.using_context(previous):
         assert library.cuCtxSetCurrent(other.handle) == 0
-    assert cuda_interop_core._native_context() == previous.handle
+    assert cuda_context_core._native_context() == previous.handle
     assert library.cuCtxSetCurrent(other.handle) == 0
     try:
         # Torch/native CUDA can change the real context without changing
@@ -488,14 +489,14 @@ def test_native_context_switch_is_scoped_for_upload_and_cleanup(cuda_state):
         assert not cuda_interop_core.cuda_ready()
         texture = tensor_to_texture(cuda_state, 'native update', updated_tensor, 2)
         assert texture is not None and np.all(_readback(texture) == 2.0)
-        assert cuda_interop_core._native_context() == other.handle
+        assert cuda_context_core._native_context() == other.handle
         cuda_state.drop('native mismatch')
         GLState.flush_deletes()
         assert cuda.Context.get_current() == previous
-        assert cuda_interop_core._native_context() == other.handle
+        assert cuda_context_core._native_context() == other.handle
     finally:
         assert library.cuCtxSetCurrent(previous.handle) == 0
-        cuda_interop_core.detach_inactive_primary(other)
+        cuda_context_core.detach_inactive_primary(other)
     assert cuda_interop_core.cuda_ready()
 
 
