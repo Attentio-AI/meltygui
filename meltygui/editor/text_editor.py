@@ -58,6 +58,10 @@ COLORS = {
     'decorator': _hex('#bbb529'),  # Name.Decorator
     'string': _hex('#6a8759'),  # String
     'string_doc': _hex('#629755'),  # String.Doc (docstrings)
+    # f-string replacement-field punctuation: `{` `}`, the `!r` conversion and the
+    # `:` opening the format spec (IntelliJ paints these keyword orange). The
+    # expression between them gets ordinary code kinds, the spec stays 'string'.
+    'fstring_delim': _hex('#cc7832'),
     'comment': _hex('#5e6265'),  # Comment - muted & darker so comments recede
     'line_no': _hex('#808080'),  # Gutter numbers keep the old comment color
     'number': _hex('#6897bb'),  # Number
@@ -5847,6 +5851,140 @@ def _split_icons(s, base):
         yield s[start:], ('icon' if run_icon else base)
 
 
+# Nested replacement fields deeper than this (`{x:{w:{p}}}` is depth 3) stay
+# plain spec text - keeps a pathological `{:{:{:...` line from recursing away.
+_FSTRING_MAX_NEST = 4
+
+
+def _fstring_literal(s, a, b, out):
+    """Append the literal (non-field) run s[a:b] of an f-string to `out` in the
+    string colour, PUA icons split out like in any other string."""
+    if a >= b:
+        return
+    run = s[a:b]
+    if any(_is_icon_char(c) for c in run):
+        out.extend(_split_icons(run, 'string'))
+    else:
+        out.append((run, 'string'))
+
+
+def _skip_quoted(s, k, end):
+    """Index just past the string literal opening at s[k] (a quote char) inside
+    an f-string field expression, clamped to `end` when it never closes."""
+    q = s[k:k + 3] if s[k:k + 3] in ('"""', "'''") else s[k]
+    k += len(q)
+    while k < end:
+        if s[k] == '\\' and len(q) == 1:
+            k += 2
+        elif s.startswith(q, k):
+            return min(end, k + len(q))
+        else:
+            k += 1
+    return end
+
+
+def _fstring_field(s, i, end, out, nest=1):
+    """Tokenize ONE replacement field of an f-string: s[i] is its `{`, `end`
+    bounds the scan (the string's closing quote is never part of a field).
+    Appends to `out` and returns the index after the field:
+      `{` `}`, the `!r` conversion and the `:` that opens the format spec ->
+      'fstring_delim'; the expression -> ordinary code tokens (`_tokenize_raw`,
+      so nested strings / f-strings, numbers, calls all colour as usual); the
+      format spec -> string colour, with its own nested `{width}` fields
+      tokenized the same way. A field that never closes (half-typed) just ends
+      at `end`: everything typed so far is coloured as the expression."""
+    out.append(('{', 'fstring_delim'))
+    k = i + 1
+    depth = 0
+    while k < end:
+        c = s[k]
+        if c in '([{':
+            depth += 1
+        elif c in ')]':
+            depth = max(0, depth - 1)
+        elif c == '}':
+            if depth == 0:
+                break
+            depth -= 1
+        elif c in '"\'':
+            k = _skip_quoted(s, k, end)
+            continue
+        elif depth == 0 and c == ':':
+            break
+        elif c == '!':
+            if s[k + 1:k + 2] == '=':
+                k += 1                  # `!=` - step over the `=` too
+            elif depth == 0:
+                break
+        k += 1
+    k = min(k, end)
+    if k > i + 1:
+        out.extend(_tokenize_raw(s[i + 1:k]))
+    if k < end and s[k] == '!':         # conversion: !r / !s / !a
+        m = k + 1
+        while m < end and (s[m].isalnum() or s[m] == '_'):
+            m += 1
+        out.append((s[k:m], 'fstring_delim'))
+        k = m
+        while m < end and s[m] not in ':}':
+            m += 1
+        if m > k:                       # junk after the conversion: plain
+            out.append((s[k:m], 'default'))
+            k = m
+    if k < end and s[k] == ':':         # format spec, may hold nested fields
+        out.append((':', 'fstring_delim'))
+        k += 1
+        lit = k
+        while k < end and s[k] != '}':
+            if s[k] == '{' and nest < _FSTRING_MAX_NEST:
+                _fstring_literal(s, lit, k, out)
+                k = lit = _fstring_field(s, k, end, out, nest + 1)
+            else:
+                k += 1
+        _fstring_literal(s, lit, k, out)
+    if k < end and s[k] == '}':
+        out.append(('}', 'fstring_delim'))
+        k += 1
+    return k
+
+
+def _split_fstring(s, quote, body_start=0, raw=False):
+    """Split an f-string token into (substr, color_key) runs, the way
+    `_split_icons` splits a plain string: literal text (prefix and quotes
+    included) stays 'string', every replacement field goes through
+    `_fstring_field`. `{{` / `}}` are escapes and stay literal, so does
+    `\\N{NAME}` (not in a raw f-string, where a backslash is just a char).
+    `s[:body_start]` is the prefix + opening quote (0 when `s` RESUMES inside
+    an f-string, see `_resume_in_string`); `quote` is the closing quote. The
+    runs concatenate to exactly `s`, and a field-less f-string is still ONE
+    'string' token."""
+    n = len(s)
+    body_end = n - len(quote) if (n - len(quote) >= body_start and s.endswith(quote)) else n
+    out = []
+    i, lit = body_start, 0
+    while i < body_end:
+        c = s[i]
+        if c == '\\' and not raw:
+            if s.startswith('N{', i + 1):
+                close = s.find('}', i + 3, body_end)
+                i = close + 1 if close != -1 else body_end
+            else:
+                i += 1 if s[i + 1:i + 2] in ('{', '}') else 2
+        elif c in '{}' and i + 1 < body_end and s[i + 1] == c:
+            i += 2
+        elif c == '{':
+            _fstring_literal(s, lit, i, out)
+            # A field of a single-quoted f-string never runs past its line: a
+            # half-typed `f"{x` leaves the next lines string-coloured, the
+            # same as a window that resumes there (`_resume_in_string`).
+            nl = s.find('\n', i, body_end) if len(quote) == 1 else -1
+            i = lit = _fstring_field(s, i, nl if nl != -1 else body_end, out)
+        else:
+            i += 1
+    _fstring_literal(s, lit, n, out)
+    return out
+
+
 # An override comment holds live values (`# [tint=(0.1, 0.2), nf_on=True]`,
 # possibly split across several '#' lines - see _parse_override_comment in
 # libcst_conversion). Matches LINE-LOCALLY, because viewport tokenization may
@@ -5878,9 +6016,11 @@ def _tokenize_override_comment(comment):
         yield tok, kind if kind in _OVERRIDE_VALUE_KINDS else 'comment'
 
 
-def _tokenize_raw(text):
+def _tokenize_raw(text, fstring_fields=True):
     """Yields (text, color_key) tuples with Darcula-style token categories.
-    Raw pass — see tokenize() below for the unary-sign merge."""
+    Raw pass — see tokenize() below for the unary-sign merge.
+    `fstring_fields=False` keeps an f-string one opaque 'string' token (the
+    lexer-state reference below wants whole string extents)."""
     i = 0
     n = len(text)
     after_def = False   # last meaningful token was `def` - next word is a fn name
@@ -5942,7 +6082,14 @@ def _tokenize_raw(text):
                         end += 1
                         break
                     end += 1
-            yield from _split_icons(text[i:end], 'string')
+            prefix = text[i:prefix_end].lower()
+            if 'f' in prefix and fstring_fields:
+                # f-string: replacement fields are code, the rest stays string.
+                closer = _opener_quote(text[i:end])
+                yield from _split_fstring(text[i:end], closer, prefix_end - i + len(closer),
+                                          raw='r' in prefix)
+            else:
+                yield from _split_icons(text[i:end], 'string')
             i = end
 
         # --- Strings ---
@@ -6038,6 +6185,8 @@ def _unary_sign_context(prev):
     if kind == 'default':
         # 'default' covers identifiers AND single operator/punctuation chars.
         return len(tok) == 1 and tok in '=+-*/%<>&|^~,([{:;@'
+    if kind == 'fstring_delim':
+        return tok == '{'                # f"{-5}": the field opens an expression
     return False
 
 
@@ -6207,7 +6356,9 @@ def _line_offsets(text):
 # tests/test_incremental_tokenize.py): triple quotes close at the next literal
 # triple (no escapes), single/double quotes accept backslash escapes and DO run
 # across newlines until closed, comments end at the newline, a bare triple is
-# 'string_doc' and a prefixed one (`r'''`, `f"""`) is 'string'.
+# 'string_doc' and a prefixed one (`r'''`, `b"""`) is 'string'. An f-string
+# (any quote style) records the state kind 'fstring' - it colors 'string' too,
+# but a window resuming inside it keeps tokenizing its `{replacement fields}`.
 _LEX_OUT_RE = re.compile('#|"""|\'\'\'|"|\'')
 _LEX_SQ_RE = {'"': re.compile(r'\\.|"', re.DOTALL),
               "'": re.compile(r"\\.|'", re.DOTALL)}
@@ -6233,7 +6384,8 @@ def _quote_is_prefixed(text, q):
         if (ch in _LEX_PREFIX
                 and (q == pos + 1
                      or (q == pos + 2 and text[pos + 1] in _LEX_PREFIX))):
-            return True
+            # The prefix itself (truthy): callers tell an f-string from r'' / b''.
+            return text[pos:q]
         if ch == '@' and (pos == 0 or text[pos - 1] in '\n '):
             pos += 1
             while pos < n and (text[pos].isalnum() or text[pos] in '_.'):
@@ -6261,6 +6413,20 @@ def _quote_is_prefixed(text, q):
         else:
             pos += 1
     return False
+
+
+def _string_state_kind(tok, kind):
+    """The `line_open` state kind of a string: its colour kind, except that an
+    f-string ('f' in the prefix of `tok` - a whole token or just the prefix)
+    records 'fstring', so a window resuming inside it (`_resume_in_string`)
+    still tokenizes its replacement fields."""
+    if kind == 'string':
+        for c in tok[:2]:
+            if c in 'fF':
+                return 'fstring'
+            if c in '"\'':
+                break
+    return kind
 
 
 def _iter_lex_spans(text, pos=0, state=None, stop=None):
@@ -6300,14 +6466,14 @@ def _iter_lex_spans(text, pos=0, state=None, stop=None):
             pre = _quote_is_prefixed(text, i)
             c = text.find(tok, i + 3)
             end = c + 3 if c != -1 else n
-            yield i, end, (tok, 'string' if pre else 'string_doc')
+            yield i, end, (tok, _string_state_kind(pre, 'string') if pre else 'string_doc')
         else:
             end = n
             for mm in _LEX_SQ_RE[tok].finditer(text, i + 1):
                 if mm.group() == tok:
                     end = mm.end()
                     break
-            yield i, end, (tok, 'string')
+            yield i, end, (tok, _string_state_kind(_quote_is_prefixed(text, i) or '', 'string'))
         pos = end
 
 
@@ -6372,13 +6538,15 @@ def _line_open_full_ref(text):
     offs = _line_offsets(text)
     line_open = [None] * len(offs)
     line = 0
-    for tok, kind in _tokenize_raw(text):
+    for tok, kind in _tokenize_raw(text, fstring_fields=False):
         if tok == '\n':
             line += 1                       # bare newline → next line starts clean
         elif '\n' in tok:
             # Only string/string_doc tokens carry embedded newlines; each line
-            # the string continues onto starts inside it.
-            qk = (_opener_quote(tok), kind) if kind in ('string', 'string_doc') else None
+            # the string continues onto starts inside it. (f-strings come
+            # whole here - fstring_fields=False - and record as 'fstring'.)
+            qk = (_opener_quote(tok), _string_state_kind(tok, kind)) \
+                if kind in ('string', 'string_doc') else None
             for ch in tok:
                 if ch == '\n':
                     line += 1
@@ -6444,7 +6612,10 @@ def _update_line_open(prev_text, prev_offs, prev_open, text):
 def _resume_in_string(body, opener):
     """Tokenize `body` given that it BEGINS inside a string. `opener` is the
     (closing_quote, color_kind) pair recorded in `line_open` (the kind matters:
-    a prefixed triple colors 'string', a bare triple 'string_doc'). Emits the
+    a prefixed triple colors 'string', a bare triple 'string_doc', and
+    'fstring' colors 'string' with its replacement fields tokenized as code -
+    the resume assumes the line starts in LITERAL text, so only a field that
+    itself spans lines loses its code coloring on the later lines). Emits the
     resumed string prefix with that kind, then tokenizes the code after it
     closes — seeding the merge passes with a string-kind prev so that code gets
     the same unary-sign/color-tuple context it has globally (where a closed
@@ -6463,7 +6634,8 @@ def _resume_in_string(body, opener):
             elif ch == quote:
                 cut = p + 1
                 break
-    head = list(_split_icons(body[:cut], skind))
+    head = (_split_fstring(body[:cut], quote) if skind == 'fstring'
+            else list(_split_icons(body[:cut], skind)))
 
     def _seeded():
         yield ('\x00', 'string')               # sentinel prev: can't merge, dropped below
@@ -6530,6 +6702,27 @@ def _tokenize_from(body, state):
     return _resume_in_string(body, state)
 
 
+# How far left of a long-line band cut `_banded_tokens` re-scans an f-string
+# to learn whether the cut sits inside a `{field}`. Past this the band resumes
+# as literal text (a field that far into one f-string is not worth the scan).
+_FSTRING_BAND_LOOKBACK = 20000
+
+
+def _drop_leading_chars(toks, count):
+    """`toks` without its first `count` source chars (a token straddling the
+    cut keeps its kind for the part that remains)."""
+    out = []
+    for tok, kind in toks:
+        if count >= len(tok):
+            count -= len(tok)
+        elif count:
+            out.append((tok[count:], kind))
+            count = 0
+        else:
+            out.append((tok, kind))
+    return out
+
+
 def _banded_tokens(text, line_offs, line_open, wl, v1, end_off, long_lines, c0, c1):
     """Token list for lines [wl, v1] where `long_lines` (ascending) are cut to
     columns [c0, c1) — see _window_tokens. Short stretches between long lines
@@ -6552,11 +6745,20 @@ def _banded_tokens(text, line_offs, line_open, wl, v1, end_off, long_lines, c0, 
         elif b < a:
             b = a
         state = line_open[ln]
+        span_start = ls
         if a > ls:
             out.append((text[ls:a], 'clipped'))
-            state, _span_start = _lex_state_at(text, ls, state, a)
+            state, span_start = _lex_state_at(text, ls, state, a)
         # Tokenize the band alone (no trailing newline), then clip the rest.
-        btoks = _tokenize_from(text[a:b], state)
+        # A cut inside an f-string can land in literal text OR in a `{field}`;
+        # only the string's start tells, so scan from there (bounded) and drop
+        # the part left of the cut.
+        body0 = span_start + (len(state[0]) if span_start > ls else 0) \
+            if isinstance(state, tuple) and state[1] == 'fstring' else a
+        if body0 < a <= body0 + _FSTRING_BAND_LOOKBACK:
+            btoks = _drop_leading_chars(_tokenize_from(text[body0:b], state), a - body0)
+        else:
+            btoks = _tokenize_from(text[a:b], state)
         out.extend(btoks)
         if b < le:
             out.append((text[b:le], 'clipped'))
