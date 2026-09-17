@@ -6,6 +6,8 @@ MeltyGUI is an open source data visualization toolkit for PyTorch, designed to r
 
 MeltyGUI is capable of rendering tensors exceeding 64GB in size. The primary challenge with visualizing data this large is moving it around. MeltyGUI skips the data movement entirely, and ray-marches tensors directly from CUDA memory.
 
+<img width="2410" height="2018" alt="Image" src="https://github.com/user-attachments/assets/82ffae2c-ec0a-456c-b781-5428c54009f8" />
+
 ## Getting started
 
 MeltyGUI is not yet published to PyPI. For now, install from a checkout using
