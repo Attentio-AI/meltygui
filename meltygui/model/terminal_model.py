@@ -116,6 +116,11 @@ class Terminal:
         from meltygui.core.services.terminal_core import _set_winsize
         from meltygui.core.services.terminal_core import _spawn_in_pty
 
+        if os.name == "nt":
+            self.error = "The terminal runs a shell in a POSIX pseudo-terminal; Windows is not supported yet"
+            self._reader_alive = False
+            self._notify_changed()
+            return
         try:
             import pyte
         except ImportError:

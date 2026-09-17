@@ -11,6 +11,8 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SUPPORT_PYTHONS = ('cp311', 'cp312', 'cp313')
+# Wheel platform tag prefixes each support package publishes; PyCUDA has no Windows build.
+SUPPORT_PLATFORMS = {'meltygui-imgui': ('manylinux', 'win_amd64'), 'meltygui-pycuda': ('manylinux',)}
 PACKAGES = {'meltygui': 'meltygui/', 'meltygui-imgui': 'meltygui_imgui/', 'meltygui-pycuda': 'meltygui_pycuda/'}
 
 
@@ -42,10 +44,11 @@ def verify(directory, require_license=False):
             metadata = BytesParser().parsebytes(wheel.read(next(n for n in names if n.endswith('.dist-info/METADATA'))))
             name = metadata['Name'].replace('_', '-')
             assert name in PACKAGES, (path, name)
-            # The support packages ship one wheel per CPython; meltygui itself is pure Python.
-            interpreter = path.name.split('-')[2]
-            assert (name, interpreter) not in seen, ('Duplicate release wheel', path.name)
-            seen.add((name, interpreter))
+            # The support packages ship one wheel per CPython and platform; meltygui itself is pure Python.
+            interpreter, platform = path.name.split('-')[2], path.stem.split('-')[4]
+            platform = 'manylinux' if platform.startswith('manylinux') else platform
+            assert (name, interpreter, platform) not in seen, ('Duplicate release wheel', path.name)
+            seen.add((name, interpreter, platform))
             assert metadata['Version'] == versions[name], path
             found.add(name)
             expected = PACKAGES[name]
@@ -65,7 +68,7 @@ def verify(directory, require_license=False):
                 assert not any(d.startswith(('imgui[', 'imgui>', 'pycuda>')) for d in deps)
                 assert not any(n in d.replace('_', '-') for d in deps for n in ('meltygui-pro', 'meltyprivate'))
             else:
-                assert interpreter in SUPPORT_PYTHONS and f'{interpreter}-{interpreter}-manylinux' in path.name, path
+                assert interpreter in SUPPORT_PYTHONS and platform in SUPPORT_PLATFORMS[name], path
                 assert any('/licenses/' in n for n in names), path
                 if name.endswith('pycuda'):
                     assert any('NVIDIA-CUDA-12.1-EULA' in n for n in names), path

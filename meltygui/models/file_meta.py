@@ -27,13 +27,17 @@ live. The file I/O is the proxy's job and stays off the render thread:
 """
 import atexit
 import contextlib
-import fcntl
 import os
 import pickle
 import tempfile
 import threading
 import time
 from pathlib import Path
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.rendering.core_decoration import defaults
@@ -42,6 +46,32 @@ from meltygui.core.rendering.core_decoration import no_save
 SAVE_DELAY_S = 0.4
 POLL_S = 0.5
 _FORMAT = 1
+
+
+def _lock_fd(fd):
+    """Block until this process holds the exclusive cross-process lock on fd
+    (flock on POSIX; on Windows a one-byte region lock at offset 0)."""
+    if os.name != "nt":
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return
+    while True:
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)      # retries for ~10 s, then OSError
+            return
+        except OSError:
+            continue
+
+
+def _unlock_fd(fd):
+    if os.name != "nt":
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return
+    os.lseek(fd, 0, os.SEEK_SET)
+    try:
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass                                         # never acquired (the lock call itself raised)
 
 
 def default_store_path():
@@ -248,10 +278,10 @@ class FileMetaProxy(dict):
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            _lock_fd(fd)
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _unlock_fd(fd)
             os.close(fd)
 
     def _read_file(self):

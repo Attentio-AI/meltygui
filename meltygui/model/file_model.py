@@ -39,7 +39,7 @@ def _create(path, value, pending):
             return
         if isinstance(value, Path):
             if value.exists() and value != path:
-                value.rename(path)
+                value.replace(path)        # rename() refuses an existing target on Windows
                 pending.discard(value)
                 return
             if not path.exists():
@@ -48,7 +48,7 @@ def _create(path, value, pending):
                 twin = next((p for p in sorted(pending)
                              if p.name == value.name and p.is_file()), None)
                 if twin is not None:
-                    twin.rename(path)
+                    twin.replace(path)
                     pending.discard(twin)
                     return
         if not path.exists():

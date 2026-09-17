@@ -1,5 +1,6 @@
 """Backend selection and native input contracts; no compositor required."""
 import ctypes
+import sys
 from types import SimpleNamespace
 
 import meltygui_imgui as imgui
@@ -191,6 +192,7 @@ def test_mock_window_is_not_a_native_handle(monkeypatch):
     assert titlebar._studio_window() is None
 
 
+@pytest.mark.skipif(not sys.platform.startswith('linux'), reason='loads libwayland-client')
 def test_native_decoration_protocol_metadata():
     from meltygui.core.windowing.backends.wayland_protocol import Native
     native = Native()

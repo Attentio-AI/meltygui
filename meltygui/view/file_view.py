@@ -1,5 +1,6 @@
 """Reusable file presentation; values and view state are supplied by callers."""
 from pathlib import Path
+from meltygui.core.runtime.paths import debug_log_path
 from meltygui.core.files.file_explorer_core import _trace_browser_size
 from meltygui.core.rendering.modes import Modes
 from meltygui.core.core_render import render_func
@@ -77,7 +78,7 @@ def draw_external_changes(draw_state=None):
         # past the event-time is_self_write check (disk hash not final yet)
         # and record a bogus entry, but by render time the flush has landed.
         if FileWatch.is_self_write(path):
-            with open("/tmp/ext_changes_debug.log", "a") as _f:
+            with open(debug_log_path("ext_changes_debug.log"), "a") as _f:
                 _f.write(f"pop self_write {path} recorded={FileWatch._self_write_hashes.get(path)} "
                          f"disk={FileWatch._get_hash(path)}\n")
             ExternalChanges.untrack(path)
@@ -93,7 +94,7 @@ def draw_external_changes(draw_state=None):
             _synced = ExternalChanges.synced.get(path)
             if _synced is None or str(_synced).splitlines(keepends=True) \
                     == current.splitlines(keepends=True):
-                with open("/tmp/ext_changes_debug.log", "a") as _f:
+                with open(debug_log_path("ext_changes_debug.log"), "a") as _f:
                     _f.write(f"pop drift_back {path}\n")
                 ExternalChanges.untrack(path)
                 continue

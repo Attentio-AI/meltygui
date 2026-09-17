@@ -2,6 +2,7 @@
 from pathlib import Path
 import os
 import sys
+import tempfile
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
@@ -18,3 +19,9 @@ def application_root():
 
 def cache_root():
     return Path(os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache') / 'meltygui'
+
+
+def debug_log_path(name):
+    """Where a diagnostics trail (`tail -f` while reproducing) is written: the
+    system temp folder, /tmp on Linux and %TEMP% on Windows."""
+    return os.path.join(tempfile.gettempdir(), name)

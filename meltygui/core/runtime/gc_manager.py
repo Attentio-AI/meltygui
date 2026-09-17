@@ -32,6 +32,7 @@ end_frame hook line in meltygui.py is restart-bound (meltygui never hotswaps).
 import gc
 import time
 
+from meltygui.core.runtime.paths import debug_log_path
 from meltygui.core.diagnostics.notifications import notify
 from meltygui.core.diagnostics.notifications import capture_stack
 from meltygui.core.runtime.toggles import Toggles
@@ -51,7 +52,7 @@ for _k, _v in (("last_tick", 0.0), ("focused", True), ("resumed_t", 0.0),
                ("unfocus_armed_t", 0.0)):
     _state.setdefault(_k, _v)
 
-PROFILE_LOG = "/tmp/lsd_gc_profile.log"
+PROFILE_LOG = debug_log_path("lsd_gc_profile.log")
 
 
 def _profile_enabled():

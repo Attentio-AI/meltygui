@@ -45,6 +45,7 @@ import json
 import os
 import re
 import socket
+import sys
 import threading
 import time
 
@@ -153,7 +154,10 @@ def forget_socket():
 
 def backend():
     """"hyprland" when this process runs under a Hyprland session whose
-    request socket exists, else "gnome" (the extension's D-Bus feed)."""
+    request socket exists, else "gnome" (the extension's D-Bus feed). None
+    off Linux: no compositor feed exists there, so rects stay unavailable."""
+    if not sys.platform.startswith("linux"):
+        return None
     path = hyprland_socket_path()
     if path and os.path.exists(path):
         return "hyprland"
@@ -778,6 +782,8 @@ def start(pid=None):
     that thread runs; a live thread of the OTHER backend — a hotswap after
     a desktop switch — is superseded by a new generation)."""
     wanted = backend()
+    if wanted is None:
+        return None
     thread = _STATE["thread"]
     if thread is not None and thread.is_alive() and _STATE.get("backend") == wanted:
         return thread
@@ -804,8 +810,11 @@ def start(pid=None):
 def ensure_started():
     """Per-frame cheap check (os_frame._observe): the feed thread of the
     CURRENT backend is running — starts / restarts it otherwise."""
+    wanted = backend()
+    if wanted is None:
+        return
     thread = _STATE["thread"]
-    if thread is None or not thread.is_alive() or _STATE.get("backend") != backend():
+    if thread is None or not thread.is_alive() or _STATE.get("backend") != wanted:
         start()
 
 
