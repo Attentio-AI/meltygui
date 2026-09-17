@@ -1,4 +1,4 @@
-name: Build and publish wheels
+name: Build and publish
 on:
   workflow_dispatch:
     inputs:
@@ -9,37 +9,7 @@ on:
 permissions:
   contents: read
 jobs:
-  native:
-    runs-on: ubuntu-22.04
-    strategy:
-      matrix:
-        binding: [imgui, pycuda]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Extract pinned CUDA 12.1 toolkit
-        if: matrix.binding == 'pycuda'
-        run: |
-          image=nvidia/cuda@sha256:327c9e046fbf662275be0934742f7e5412f9b24402ee90bf4d649c1a21707912
-          container=$(docker create "$image")
-          trap 'docker rm "$container"' EXIT
-          docker cp "$container:/usr/local/cuda-12.1" "$RUNNER_TEMP/cuda-12.1"
-      - name: Build support wheel and source archive
-        env:
-          BINDING: ${{ matrix.binding }}
-        run: |
-          args=()
-          if [ "$BINDING" = pycuda ]; then args+=(--cuda-root "$RUNNER_TEMP/cuda-12.1"); fi
-          python3 tools/native_wheels/build.py "$BINDING" --output "dist/release-native/$BINDING" "${args[@]}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: native-${{ matrix.binding }}
-          path: |
-            dist/release-native/${{ matrix.binding }}/*.whl
-            dist/release-native/${{ matrix.binding }}/*.tar.gz
-            dist/release-native/${{ matrix.binding }}/build.json
-            dist/release-native/${{ matrix.binding }}/auditwheel.txt
   verify:
-    needs: native
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -47,27 +17,25 @@ jobs:
         with:
           version: '0.11.19'
           python-version: '3.12'
-      - uses: actions/download-artifact@v4
-        with:
-          name: native-imgui
-          path: dist/release-native/imgui
-      - uses: actions/download-artifact@v4
-        with:
-          name: native-pycuda
-          path: dist/release-native/pycuda
       - run: uv build --no-sources
-      - run: python tools/release.py collect --require-license
+      # meltygui-imgui and meltygui-pycuda publish from their own repositories.
+      - run: python tools/release.py collect --core-only --require-license
       - name: Check package metadata
         run: uvx --from twine==7.0.0 twine check --strict dist/release/*.whl dist/release/*.tar.gz
-      - name: Install exactly as a user does, using the pending release wheels
+      - name: Install exactly as a user does, with the support wheels from PyPI
         run: |
-          uv venv "$RUNNER_TEMP/meltygui-check"
-          uv pip install --python "$RUNNER_TEMP/meltygui-check/bin/python" --find-links dist/release meltygui pytest
-          "$RUNNER_TEMP/meltygui-check/bin/python" -I -m pytest tests/test_package_contract.py tests/test_public_boundary.py tests/test_core_syntax.py -q
+          for version in 3.11 3.12 3.13; do
+            uv venv "$RUNNER_TEMP/meltygui-check-$version" --python "$version"
+            uv pip install --python "$RUNNER_TEMP/meltygui-check-$version/bin/python" --only-binary :all: dist/release/meltygui-*.whl pytest
+            "$RUNNER_TEMP/meltygui-check-$version/bin/python" -I -m pytest tests/test_package_contract.py tests/test_public_boundary.py tests/test_core_syntax.py -q
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: release
-          path: dist/release/*
+          path: |
+            dist/release/*.whl
+            dist/release/*.tar.gz
+            dist/release/SHA256.json
   publish:
     if: inputs.publish && vars.MELTYGUI_PUBLISH_ENABLED == 'true'
     needs: verify
@@ -84,7 +52,5 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.11.19'
-      - name: Publish support packages first
-        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple dist/release/meltygui_imgui-* dist/release/meltygui_pycuda-*
       - name: Publish MeltyGUI
         run: uv publish --trusted-publishing always --check-url https://pypi.org/simple dist/release/meltygui-*.whl dist/release/meltygui-*.tar.gz

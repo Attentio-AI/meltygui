@@ -624,7 +624,7 @@ def get_source_for(attr_name, draw_state, class_to_show=None):
 # pickable in the info tab's dropdown.
 _FRAMEWORK_CALLER_DIRS = ("/meltygui/rendering/", "/meltygui/views/",
                           "/meltygui/code/", "/meltygui/state/", "/meltygui/utils/",
-                          "/meltygui/editor/", "/meltygui_pro/editor/")
+                          "/meltygui/editor/")
 _FRAMEWORK_CALLER_FILES = ("melty.py", "app.py", "surface.py", "background.py")
 
 
@@ -634,7 +634,11 @@ def _is_framework_caller(location):
     if not location or not location[0]:
         return True
     p = str(location[0]).replace("\\", "/")
-    if "/meltygui/" in p or "/meltygui_pro/" in p:
+    if "/meltygui/" in p:
+        return True
+    # Component packages built on the toolkit register their own folders.
+    from meltygui.core.runtime.extensions import framework_folders
+    if any(str(folder).replace("\\", "/") in p for folder in framework_folders()):
         return True
     if any(d in p for d in _FRAMEWORK_CALLER_DIRS):
         return True

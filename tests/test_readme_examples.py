@@ -20,8 +20,13 @@ SMOKE_TIMEOUT_SECONDS = 120
 # (imports and the volume) are what the later fragments build on.
 WINDOW_CALL = 'meltygui.glfw_window('
 
+# Tests copied away from the checkout (tools/torch_matrix.py) have no README beside them.
+pytestmark = pytest.mark.skipif(not README.is_file(), reason='no README.md beside the tests')
+
 
 def readme_blocks():
+    if not README.is_file():
+        return []
     return re.findall(r'```python\n(.*?)```', README.read_text(), re.S)
 
 
@@ -30,6 +35,8 @@ def runnable_examples():
     a decorated window after the shared preamble, bare draw calls inside a
     decorated window body."""
     blocks = readme_blocks()
+    if not blocks:
+        return {}
     preamble = blocks[0][:blocks[0].index(WINDOW_CALL)]
     examples = {}
     for index, block in enumerate(blocks):

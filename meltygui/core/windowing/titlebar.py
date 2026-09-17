@@ -667,6 +667,52 @@ def paint_window_controls(draw_list):
     _paint_buttons(draw_list, buttons, over_button)
 
 
+# Toggles.show_fps readout. Change the pill/text values to restyle it;
+# FPS_GAP is its distance from the right control group (or the window edge).
+FPS_GAP = 8.0
+FPS_PAD_X = 6.0
+FPS_PILL_COLOR = (0.0, 0.0, 0.0, 0.55)
+FPS_TEXT_COLOR = (0.85, 0.95, 0.85)
+
+
+# (label, chrome) a Surface measured for the frame being drawn; consumed by
+# paint_fps. None: the studio's window, which falls back to imgui's rate.
+_fps_note = None
+
+
+def note_fps_label(label, chrome):
+    global _fps_note
+    _fps_note = (label, chrome)
+
+
+def paint_fps(overlay):
+    """Toggles.show_fps: the OS window's frame-rate label, right-aligned in
+    the titlebar strip before the right control group (the top-right corner
+    of a window without Melty chrome). Called from Melty.end_frame with the
+    overlay list at its top channel: the label changes every frame, and the
+    overlay renders after the cached tiles' blits, so no view is
+    invalidated to keep it current."""
+    global _fps_note
+    from meltygui.core.melty import Melty
+    from meltygui.hdr_color import pack_color
+    io = imgui.get_io()
+    label, chrome = _fps_note or (f"{io.framerate:.0f} fps", True)
+    _fps_note = None
+    disp_w = io.display_size.x
+    right = disp_w
+    if chrome and titlebar_enabled():
+        buttons = _button_layout(disp_w, _maximized(_studio_window()))
+        right = _button_bands(buttons, disp_w)[1]
+    text = imgui.calc_text_size(label)
+    pad = Melty.px(FPS_PAD_X)
+    height = min(Melty.px(_BTN_H), text.y + Melty.px(6.0))
+    x1 = right - Melty.px(FPS_GAP)
+    x0 = x1 - text.x - 2 * pad
+    y0 = (Melty.px(_BTN_H) - height) * 0.5
+    overlay.add_rect_filled(x0, y0, x1, y0 + height, pack_color(*FPS_PILL_COLOR), rounding=Melty.px(6.0))
+    overlay.add_text(x0 + pad, y0 + (height - text.y) * 0.5, pack_color(*FPS_TEXT_COLOR, 1.0), label)
+
+
 def _paint_buttons(dl, buttons, over_button):
     """The controls (`buttons` = _button_layout's list), each painted EXACTLY like a window header's
     close button (draw_header_end): the same flat_button call — colour

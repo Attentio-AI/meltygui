@@ -9,10 +9,15 @@ from meltygui.core.rendering.window_decoration import window
 from meltygui.state.new_core_model import DropDownState
 from meltygui.core.runtime.toggles import Tint
 from meltygui.view.header_view import draw_header
+from meltygui.view.header_view import flat_button
 import meltygui_imgui as imgui
 from meltygui.core.core_render import SCROLLBAR_MARGIN
 from meltygui.core.core_render import SCROLL_BAR_WIDTH_DEFAULT
 import traceback
+
+# Inset of a left/right aligned trigger label from the trigger edge, in pixels.
+# Raise it to move the caret and label further from the edge.
+TRIGGER_TEXT_INSET = 5
 
 
 @render_func(use_cache=True, temp=True)
@@ -61,7 +66,6 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     every frame; we stash the last picked leaf on it for the trigger label."""
     from meltygui.core.conversion.cache_tree import UNSET_VALUE
     from meltygui.core.windowing.glfw_utils import request_render
-    from meltygui.view.control_view import button
     from meltygui.model.dropdown_model import _dd_as_tuple
     from meltygui.core.layout.dropdown_core import _dd_close
     from meltygui.core.layout.dropdown_core import _dd_handle_keys
@@ -131,7 +135,6 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     # measured item rect is exactly what reads as animation jitter.
     _slot_w = kwargs.get("width") or draw_state.content_width
     compact = False
-    bg_offset = 4 if is_open else 7
 
     # A compact trigger hugs its glyph: minimal text pad and a centered label,
     # so a small chevron/icon cell doesn't balloon to full text label width.
@@ -155,9 +158,6 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
 
     # A caller's trigger_height taller than the 25 px slot also moves the popover anchor down.
     trigger_h = (getattr(draw_state, "content_height", 0) or 25) if compact else max(25, kwargs.get("trigger_height", 25))
-    # Colour the trigger by the selected item's embedded tint (input_value is the
-    # current selection passed by the caller), falling back to the view's tint.
-    trigger_tint = _dd_obj_tint(input_value, draw_state.tint)
     # Quiet text dimming (text_toward_bg - the info tab's info rows): a
     # selection WITHOUT an embedded tint fades toward the background, so a
     # tinted one (the active source in yellow) is what draws the eye.
@@ -166,12 +166,23 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     if _ttb and getattr(input_value, "tint", None) is None:
         trigger_text_value = 1.023 * (1.0 - min(max(float(_ttb), 0.0), 1.0))
     trigger_left, trigger_top = imgui.get_cursor_screen_pos()
-    clicked, _ = button(drop_down_display_str, name=f"{name}_dd_trigger{unique}", show_bg=False, width=trigger_w,
-                        show_button_bg=kwargs.get("show_button_bg", True),
-                        shadow=shadow, tint=trigger_tint,
-                        text_value=trigger_text_value,
-                        height=kwargs.get("trigger_height", 19), disable_scroll=True,
-                        z_offset=0, text_align=trigger_align, bg_offset=bg_offset, text_pad=trigger_pad)
+    # Draw-list trigger: the click is claimed through this dropdown's own
+    # draw_state (no nested render_func). It fires on press, as the old button did.
+    # An embedded tint colours the trigger; otherwise flat_button's default hue applies.
+    embedded_tint = _dd_obj_tint(input_value)
+    trigger_color = {} if embedded_tint is None else {"color": embedded_tint}
+    label_width = imgui.calc_text_size(drop_down_display_str.split("##")[0]).x
+    if trigger_align == "left":
+        trigger_text_offset = TRIGGER_TEXT_INSET
+    elif trigger_align == "right":
+        trigger_text_offset = trigger_w - label_width - TRIGGER_TEXT_INSET
+    else:
+        trigger_text_offset = None
+    clicked = flat_button(drop_down_display_str, draw_state, view_id=f"{name}_dd_trigger{unique}",
+                          width=trigger_w, height=trigger_h,
+                          alpha=1.0 if kwargs.get("show_button_bg", True) else 0.0,
+                          shadow=shadow, text_value=trigger_text_value, text_pad=trigger_pad,
+                          text_offset_x=trigger_text_offset, event="left_mouse_down", **trigger_color)
 
     if clicked:
 

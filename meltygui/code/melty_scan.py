@@ -888,6 +888,12 @@ def _string(tok):
     return inner.encode("latin-1", "backslashreplace").decode("unicode_escape")
 
 
+def _is_whole_fstring(tok):
+    """Tokenizers before Python 3.12 give a whole f-string as ONE STRING token
+    (no FSTRING_* tokens): it is opaque code, never a constant."""
+    return tok.type == _STRING and "f" in tok.string[:tok.string.index(tok.string[-1])].lower()
+
+
 def _has_depth0(toks, string, tok_type=_OP):
     """Index of the first `string` token at bracket depth 0 (lambda parameter
     lists excluded, their `=` / `:` are not the statement's), else None."""
@@ -1308,6 +1314,8 @@ class _Parser:
                 v = _number(t0.string)
                 return (Constant(v) if v is not UNRESOLVED else Opaque())._pos(t0, t0)
             if t0.type == _STRING:
+                if _is_whole_fstring(t0):
+                    return Opaque()._pos(t0, t0)
                 return Constant(_string(t0.string))._pos(t0, t0)
             if t0.type == _NAME:
                 if t0.string in ("True", "False", "None"):
@@ -1324,6 +1332,8 @@ class _Parser:
                 return Opaque()._pos(t0, tl)
             return UnaryOp(_UNARY_NUM[t0.string](), Constant(v)._pos(tl, tl))._pos(t0, tl)
         if all(t.type == _STRING for t in toks):
+            if any(_is_whole_fstring(t) for t in toks):
+                return Opaque()._pos(t0, tl)
             try:
                 parts = [_string(t.string) for t in toks]
                 if all(isinstance(p, str) for p in parts) or all(isinstance(p, bytes) for p in parts):
@@ -1393,6 +1403,8 @@ class _Parser:
                     depth -= 1
                 elif depth == 0 and t.type != _STRING:
                     break
+                elif depth == 0 and _is_whole_fstring(t):
+                    fstr = True
                 k += 1
             if depth != 0:
                 return None
@@ -1582,6 +1594,19 @@ def _import_aliases(toks):
 _BODY_FIELDS = ("body", "orelse", "handlers", "finalbody")
 
 
+def _token_scan_error(text, error):
+    """Tokenizers before Python 3.12 report an unclosed bracket or string at the
+    END of the text; the compiler names the line that opened it."""
+    msg, (line, col) = error.args[0], error.args[1] if len(error.args) > 1 else (0, 0)
+    try:
+        compile(text, "<text>", "exec")
+    except SyntaxError as located:
+        return ScanError(located.msg, ("<text>", located.lineno or line, located.offset or col + 1, ""))
+    except ValueError:
+        pass
+    return ScanError(msg, ("<text>", line, col + 1, ""))
+
+
 def scan_imports(text):
     """Every Import / ImportFrom of `text`, in source order, WITHOUT building
     the tree — the file import graph's path (file_graph.py). The token
@@ -1618,8 +1643,7 @@ def scan_imports(text):
                 stmt = [t]
             at_start = False
     except tokenize.TokenError as e:
-        msg, (line, col) = e.args[0], e.args[1] if len(e.args) > 1 else (0, 0)
-        raise ScanError(msg, ("<text>", line, col + 1, "")) from None
+        raise _token_scan_error(text, e) from None
     except (IndentationError, SyntaxError) as e:
         raise ScanError(str(e), ("<text>", getattr(e, "lineno", 0) or 0, getattr(e, "offset", 0) or 0, "")) from None
     if stmt is not None:
@@ -1668,8 +1692,7 @@ def scan(text):
             else:
                 sig.append(t)
     except tokenize.TokenError as e:
-        msg, (line, col) = e.args[0], e.args[1] if len(e.args) > 1 else (0, 0)
-        raise ScanError(msg, ("<text>", line, col + 1, "")) from None
+        raise _token_scan_error(text, e) from None
     except (IndentationError, SyntaxError) as e:
         raise ScanError(str(e), ("<text>", getattr(e, "lineno", 0) or 0, getattr(e, "offset", 0) or 0, "")) from None
     if not sig or sig[-1].type != _ENDMARKER:

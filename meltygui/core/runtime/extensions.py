@@ -23,6 +23,11 @@ def source_folders():
     return call('source_folders') or ()
 
 
+def framework_folders():
+    """Folders of component packages whose call sites count as framework code."""
+    return call('framework_folders') or ()
+
+
 def source_window(instance=0):
     return call('source_window', instance)
 

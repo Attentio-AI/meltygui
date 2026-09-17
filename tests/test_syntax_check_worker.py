@@ -1,8 +1,15 @@
 """Disk-loaded source must stay on the isolated compiler path."""
+import importlib.util
 import subprocess
 import sys
 
 import pytest
+
+# The isolated workers run in a CPython 3.12 subinterpreter; on other versions the
+# library parses and compiles in-process instead (see _ScanWorker.available).
+pytestmark = pytest.mark.skipif(
+    importlib.util.find_spec('_xxsubinterpreters') is None or importlib.util.find_spec('_xxinterpchannels') is None,
+    reason='subinterpreter workers need the CPython 3.12 _xxsubinterpreters / _xxinterpchannels modules')
 
 
 def test_disk_span_syntax_checks_remain_isolated_and_worker_closes():

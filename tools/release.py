@@ -30,7 +30,8 @@ def verify_public_member(name, data):
             assert implementation not in data, ('Private implementation in public artifact', name)
 
 
-def verify(directory, require_license=False):
+def verify(directory, require_license=False, core_only=False):
+    expected_packages = {'meltygui'} if core_only else set(PACKAGES)
     project = tomllib.loads((ROOT / 'pyproject.toml').read_text())['project']
     if require_license and (not project.get('license') or not (ROOT / 'LICENSE').is_file()):
         raise SystemExit('Publication needs the owner-selected project license and LICENSE file.')
@@ -43,7 +44,7 @@ def verify(directory, require_license=False):
             names = wheel.namelist()
             metadata = BytesParser().parsebytes(wheel.read(next(n for n in names if n.endswith('.dist-info/METADATA'))))
             name = metadata['Name'].replace('_', '-')
-            assert name in PACKAGES, (path, name)
+            assert name in expected_packages, (path, name)
             # The support packages ship one wheel per CPython and platform; meltygui itself is pure Python.
             interpreter, platform = path.name.split('-')[2], path.stem.split('-')[4]
             platform = 'manylinux' if platform.startswith('manylinux') else platform
@@ -73,7 +74,7 @@ def verify(directory, require_license=False):
                 if name.endswith('pycuda'):
                     assert any('NVIDIA-CUDA-12.1-EULA' in n for n in names), path
             print(f'{name} {metadata["Version"]}: verified')
-    assert found == set(PACKAGES), found
+    assert found == expected_packages, found
     for path in directory.glob('*.tar.gz'):
         with tarfile.open(path) as source:
             names = source.getnames()
@@ -82,7 +83,7 @@ def verify(directory, require_license=False):
                 for member in source.getmembers():
                     if member.isfile():
                         verify_public_member(member.name, source.extractfile(member).read())
-    assert len(list(directory.glob('*.tar.gz'))) == 3
+    assert len(list(directory.glob('*.tar.gz'))) == len(expected_packages)
     artifacts = sorted([*directory.glob('*.whl'), *directory.glob('*.tar.gz')])
     receipt = {p.name: {'bytes': p.stat().st_size, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()} for p in artifacts}
     (directory / 'SHA256.json').write_text(json.dumps(receipt, indent=2) + '\n')
@@ -93,14 +94,17 @@ def main():
     parser.add_argument('action', choices=['collect', 'verify'])
     parser.add_argument('--directory', type=Path, default=ROOT / 'dist/release')
     parser.add_argument('--require-license', action='store_true')
+    parser.add_argument('--core-only', action='store_true',
+                        help='MeltyGUI alone: the support packages publish from their own repositories')
     args = parser.parse_args()
     args.directory.mkdir(parents=True, exist_ok=True)
     if args.action == 'collect':
-        for directory in [ROOT / 'dist', ROOT / 'dist/release-native/imgui', ROOT / 'dist/release-native/pycuda']:
+        native = [] if args.core_only else [ROOT / 'dist/release-native/imgui', ROOT / 'dist/release-native/pycuda']
+        for directory in [ROOT / 'dist', *native]:
             for pattern in ('*.whl', '*.tar.gz'):
                 for file in directory.glob(pattern):
                     shutil.copy2(file, args.directory / file.name)
-    verify(args.directory, args.require_license)
+    verify(args.directory, args.require_license, args.core_only)
 
 
 if __name__ == '__main__':

@@ -102,9 +102,13 @@ def test_native_gesture_uses_parent_kwargs(comment_window):
 @pytest.mark.parametrize('dangerous', [False, True])
 def test_framework_callers_never_receive_automatic_edits(monkeypatch, dangerous):
     monkeypatch.setattr(Toggles, 'dangerous_edit_mode', dangerous)
-    srcs = {'kinds': {'caller': 'caller'},
-            'locations': {'caller': ('/project/meltygui_pro/editor/text.py', 100)}}
-    assert not anywhere.window_source_writable(srcs, 'caller')
+    # A component package built on the toolkit registers its folder as framework code.
+    from meltygui.core.runtime import extensions
+    monkeypatch.setitem(extensions._services, 'framework_folders', lambda: ('/project/component_package/',))
+    for framework_file in ('/project/component_package/editor/text.py',
+                           '/site-packages/meltygui/view/text_view.py'):
+        srcs = {'kinds': {'caller': 'caller'}, 'locations': {'caller': (framework_file, 100)}}
+        assert not anywhere.window_source_writable(srcs, 'caller')
 
 
 def test_callsite_gate_and_comment_movement(monkeypatch):

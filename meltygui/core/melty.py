@@ -4437,8 +4437,8 @@ class Melty:
 
         window_size = imgui.get_io().display_size
         if Toggles.show_fps:
-            overlay.add_text(window_size.x - 600, 5, pack_color(1, 1, 1, 1),
-                             f"FPS: {imgui.get_io().framerate:.1f}")
+            import meltygui.core.windowing.titlebar as titlebar
+            titlebar.paint_fps(overlay)
 
         _ef_mark("post_layers")   # TEMP perf
         to_unselect = set()

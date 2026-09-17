@@ -45,6 +45,7 @@ import meltygui.core.graphics.wayland_color as wayland_color
 import meltygui.core.windowing.wayland_move as wayland_move
 import meltygui.core.input.input_handler as input_handler
 from meltygui.core.runtime.toggles import Toggles
+from meltygui.core.diagnostics.fps_counter import FpsCounter
 import meltygui.utils.render_utils as views
 from meltygui.core.windowing.glfw_utils import request_render
 
@@ -135,6 +136,7 @@ class Surface:
         self.stale = False          # closing because its call stopped, not an OS close
         self.children: list = []
         self.frames = 0
+        self.fps_counter = FpsCounter()
         self.closed = False
         self.last_sent_rect = None
         self.chrome = not titlebar.wants_os_decoration()
@@ -350,6 +352,7 @@ class Surface:
 
     def frame(self):
         self.activate()
+        frame_started = self.fps_counter.frame_started()
         if glfw.window_should_close(self.window):
             # The window's ×, the compositor's close and set_window_should_close
             # all land here; a window's on_close may decline (and hide instead).
@@ -426,6 +429,7 @@ class Surface:
             Melty.style_manager.set_imgui_tint(*previous_tint)
         if self.chrome:
             titlebar.paint_window_controls(draw_list)
+        titlebar.note_fps_label(self.fps_counter.label(), self.chrome)
         Melty.end_frame()
         if self.request is not None:
             Melty.finish_surface_root(self.request, self)
@@ -451,6 +455,7 @@ class Surface:
                       f'mods_corner={id(self._mods[(titlebar, "_corner_gl")]):#x} active={Surface.active.title!r}',
                       flush=True)
             raise
+        self.fps_counter.frame_finished(frame_started)
         self.frames += 1
         if self.frames == 2 and not Melty.cache.enabled:
             Melty.cache.set_enabled(True)

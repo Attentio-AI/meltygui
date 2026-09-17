@@ -953,9 +953,20 @@ def _walk_chain(ctx, scope, base, attrs):
     return obj, None
 
 
+def _is_cython_function(obj):
+    """Cython 3 compiles `def` to its own function type (introspectable, unlike
+    Cython 0.29's builtin functions); the embedded doc signature still carries
+    the C types."""
+    return type(obj).__name__ == "cython_function_or_method"
+
+
 def _live_spec(obj, fname):
     if hasattr(obj, "__wrapped__"):
         return None                 # the wrapper may inject args (@render_func)
+    if _is_cython_function(obj):
+        spec = _spec_from_doc(fname, getattr(obj, "__doc__", None))
+        if spec is not None:
+            return spec
     try:
         return _spec_from_signature(inspect.signature(obj))
     except (ValueError, TypeError):
@@ -1541,8 +1552,8 @@ def _span_spec_for_live(obj, fname):
     constructor doesn't enforce) and callable INSTANCES lie (PyOpenGL's
     glDrawBuffers wrapper hides its signature and its doc line parses into
     the wrong arity) — both produce false alarms, so they stay silent."""
-    if isinstance(obj, type) or not isinstance(
-            obj, (types.FunctionType, types.BuiltinFunctionType)):
+    if isinstance(obj, type) or not (_is_cython_function(obj) or isinstance(
+            obj, (types.FunctionType, types.BuiltinFunctionType))):
         return None
     return _object_spec(obj, fname)
 

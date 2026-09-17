@@ -2705,6 +2705,8 @@ class Toggles:
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
     developer_mode = False
+    # Frame rate (and, for app windows, render-thread frame time) in the
+    # titlebar of every OS window (titlebar.paint_fps). Apps start with it off.
     show_fps = True
 
     # The notification overlay (notifications.draw_notifications, gated by

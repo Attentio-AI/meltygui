@@ -1823,41 +1823,55 @@ class DrawState(DictConversion):
         # validate the parent origin and selected corner before accepting a
         # cached value: solve() may have read us before a parent hand resize
         # or native rebase later in this same frame.
+        #
+        # This is read thousands of times a frame (every on_action, clip rect
+        # and hover test), so a cache hit must stay cheap at any nesting depth:
+        # the key and cache writes are raw, as in _ancestor_scroll, because the
+        # memo must not re-enter @live setattr tracking, and only this axis of
+        # parent_anchor_offset is worked out.
         if self.pin_to_clip:
             return self._abs_left() if axis == 0 else self._abs_top()
-        previous = self._abs_left_key if axis == 0 else self._abs_top_key
-        cached = self._abs_left_cache if axis == 0 else self._abs_top_cache
+        if axis == 0:
+            key_name, previous, cached = '_abs_left_key', self._abs_left_key, self._abs_left_cache
+        else:
+            key_name, previous, cached = '_abs_top_key', self._abs_top_key, self._abs_top_cache
         if previous is False:
             return cached  # malformed parent cycles retain the last position
-        if axis == 0:
-            self._abs_left_key = False
+        parent = self.parent_window
+        if parent is None or parent is self:
+            # A root reads no other draw_state, so it needs no cycle mark.
+            parent = None
+            parent_origin = parent_extent = 0
         else:
-            self._abs_top_key = False
+            # Mark evaluation before reading the parent: a parent cycle gets
+            # the last position back instead of recursing forever.
+            object.__setattr__(self, key_name, False)
         key = None
         try:
-            parent = self.parent_window
-            parent_origin = 0
-            if parent is not None and parent is not self:
-                parent_origin = parent.abs_left if axis == 0 else parent.abs_top
+            if parent is not None:
+                parent_anchor_pos = self.parent_anchor_pos
+                if axis == 0:
+                    parent_origin = parent.abs_left
+                    parent_extent = 0 if parent_anchor_pos in LEFT_ANCHORS else parent.width
+                else:
+                    parent_origin = parent.abs_top
+                    parent_extent = 0 if parent_anchor_pos in TOP_ANCHORS else parent.height
             scroll = self._ancestor_scroll()[axis]
+            # parent_extent with parent_anchor_pos decides parent_anchor_offset.
             key = (Core.melty.frame_count,
                    self.left_offset if axis == 0 else self.top_offset,
                    self.window_pos, self.anchor_pos, self.parent_anchor_pos,
                    self.width if axis == 0 else self.height, scroll,
-                   parent_origin, self.parent_anchor_offset[axis])
+                   parent_origin, parent_extent)
             if previous == key:
+                key = previous
                 return cached
             value = self._abs_left() if axis == 0 else self._abs_top()
-            if axis == 0:
-                self._abs_left_cache = value
-            else:
-                self._abs_top_cache = value
+            object.__setattr__(self, '_abs_left_cache' if axis == 0 else '_abs_top_cache', value)
             return value
         finally:
-            if axis == 0:
-                self._abs_left_key = key
-            else:
-                self._abs_top_key = key
+            if parent is not None or key is not previous:
+                object.__setattr__(self, key_name, key)
 
     @property
     def abs_left(self):
