@@ -1,5 +1,6 @@
 """Header view functions and supporting definitions."""
 from meltygui.hdr_color import pack_color
+from meltygui.hdr_color import style_color
 from meltygui.core.melty import Melty
 from meltygui.core.melty import add_to_collection
 from meltygui.core.rendering.render_funcs import RenderFuncs
@@ -367,10 +368,17 @@ def draw_header_arrow(expanded, color=None, alpha=0.071):
             "alpha": alpha, "max_value": 1.601})
     else:
         color = tuple(c * dim for c in color[:3]) + tuple(color[3:])
-    imgui.push_style_color(imgui.COLOR_TEXT, *color[:3], 1.0)
+    # The arrow's transparency rides IN the colour, packed by style_color:
+    # imgui multiplies a style colour's alpha BYTE by STYLE_ALPHA, and in
+    # Melty's vertex colour that byte's top bit is the SDR flag (hdr_color).
+    # A small style alpha cleared it, so the shader decoded the arrow's
+    # saturated bytes as an HDR colour at the top of the range - the arrow
+    # came out far too bright. STYLE_ALPHA is pinned to 1 around the button
+    # (the header pushes its own opacity) so the packed byte arrives intact.
+    imgui.push_style_color(imgui.COLOR_TEXT, *style_color(*color[:3], alpha))
     imgui.push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
     imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, 0.0, 0.0, 0.0, 0.0)
-    imgui.push_style_var(imgui.STYLE_ALPHA, alpha)
+    imgui.push_style_var(imgui.STYLE_ALPHA, 1.0)
     try:
         imgui.set_item_allow_overlap()
         return imgui.arrow_button("##tree", imgui.DIRECTION_DOWN if expanded else imgui.DIRECTION_RIGHT)

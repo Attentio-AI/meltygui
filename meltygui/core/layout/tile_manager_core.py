@@ -193,7 +193,7 @@ def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
     corner_hover_color = (1.0, 1.0, 1.0, 0.35)
     # Change the tile lift here: how far each tile rises above the host
     # (its shadow spread) and the rounding of that shadow.
-    tile_shadow_offset = 4.0
+    tile_shadow_offset = 1.0
     tile_shadow_radius = 4.0
 
     rect = tile_rect(frame, draw_state, gap=gap)

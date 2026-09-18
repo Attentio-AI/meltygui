@@ -728,42 +728,43 @@ FPS_PILL_COLOR = (0.0, 0.0, 0.0, 0.55)
 FPS_TEXT_COLOR = (0.85, 0.95, 0.85)
 
 
-# (label, chrome) a Surface measured for the frame being drawn; consumed by
-# paint_fps. None: the studio's window, which falls back to imgui's rate.
-_fps_note = None
+# The widest label the readout can show: the pill is sized to it once, so
+# neither the pill nor the text moves as digits change.
+FPS_LABEL_TEMPLATE = "0000 fps  000.0 ms"
 
 
-def note_fps_label(label, chrome):
-    global _fps_note
-    _fps_note = (label, chrome)
-
-
-def paint_fps(overlay):
-    """Toggles.show_fps: the OS window's frame-rate label, right-aligned in
-    the titlebar strip before the right control group (the top-right corner
-    of a window without Melty chrome). Called from Melty.end_frame with the
-    overlay list at its top channel: the label changes every frame, and the
-    overlay renders after the cached tiles' blits, so no view is
-    invalidated to keep it current."""
-    global _fps_note
+def paint_fps(overlay, chrome, frame_ms):
+    """Toggles.show_fps: imgui's frame rate (io.framerate) and the previous
+    frame's render-thread time, in a fixed-width pill right-aligned in the
+    titlebar strip before the right control group (the top-right corner of
+    a window without Melty chrome). Called by the root loop (Surface.frame)
+    on the overlay's top channel, after the body, Melty.end_frame and the
+    titlebar: it renders over the cached tiles' blits whatever the views'
+    caches did this frame."""
     from meltygui.core.melty import Melty
     from meltygui.hdr_color import pack_color
     io = imgui.get_io()
-    label, chrome = _fps_note or (f"{io.framerate:.0f} fps", True)
-    _fps_note = None
     disp_w = io.display_size.x
     right = disp_w
     if chrome and titlebar_enabled():
         buttons = _button_layout(disp_w, _maximized(_studio_window()))
         right = _button_bands(buttons, disp_w)[1]
-    text = imgui.calc_text_size(label)
+    slot = imgui.calc_text_size(FPS_LABEL_TEMPLATE)
     pad = Melty.px(FPS_PAD_X)
-    height = min(Melty.px(_BTN_H), text.y + Melty.px(6.0))
+    height = min(Melty.px(_BTN_H), slot.y + Melty.px(6.0))
     x1 = right - Melty.px(FPS_GAP)
-    x0 = x1 - text.x - 2 * pad
+    x0 = x1 - slot.x - 2 * pad
     y0 = (Melty.px(_BTN_H) - height) * 0.5
+    text_y = y0 + (height - slot.y) * 0.5
+    color = pack_color(*FPS_TEXT_COLOR, 1.0)
     overlay.add_rect_filled(x0, y0, x1, y0 + height, pack_color(*FPS_PILL_COLOR), rounding=Melty.px(6.0))
-    overlay.add_text(x0 + pad, y0 + (height - text.y) * 0.5, pack_color(*FPS_TEXT_COLOR, 1.0), label)
+    # Two right-aligned fields with fixed right edges: the ms field ends at
+    # the pill's padding, the fps field where the template's fps part ends.
+    fps_label = f"{min(io.framerate, 9999.0):.0f} fps"
+    ms_label = f"{min(frame_ms, 999.9):.1f} ms"
+    fps_right = x0 + pad + imgui.calc_text_size(FPS_LABEL_TEMPLATE.split("  ")[0]).x
+    overlay.add_text(fps_right - imgui.calc_text_size(fps_label).x, text_y, color, fps_label)
+    overlay.add_text(x1 - pad - imgui.calc_text_size(ms_label).x, text_y, color, ms_label)
 
 
 def _paint_buttons(dl, buttons, over_button):

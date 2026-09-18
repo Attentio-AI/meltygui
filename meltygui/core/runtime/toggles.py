@@ -1975,6 +1975,11 @@ class Toggles:
 
         max_preferred_header_width = 70
         preferred_header_width = 132
+        # draw_any renders collections through fast_draw_collection (no
+        # @render_func wrapper per nested collection). Off = every collection
+        # goes back through the draw_collection wrapper, for comparing the
+        # two paths' look and frame time.
+        fast_draw_collection = True
 
     # [icon=""]
     @defaults(tint=(0.65, 0.385, 0.069, 1.0))
@@ -2723,10 +2728,11 @@ class Toggles:
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
     developer_mode = False
-    # Frame rate (and, for app windows, render-thread frame time) painted in
-    # the titlebar strip of every OS window: the studio's and each meltygui
-    # app surface, parents and children alike (titlebar.paint_fps). Read
-    # live; MELTY_SHOW_FPS=0 turns it off for one app launch.
+    # imgui's frame rate and the render-thread frame time, in a fixed-width
+    # pill in the titlebar strip of every OS window, parents and children
+    # alike. Painted by the root loop (Surface.frame -> titlebar.paint_fps),
+    # outside every view. Read live; MELTY_SHOW_FPS=0 turns it off for one
+    # app launch.
     show_fps = True
 
     # The notification overlay (notifications.draw_notifications, gated by

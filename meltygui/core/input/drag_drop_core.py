@@ -138,8 +138,9 @@ class _ImItem:
     ds: object       # the OWNER view's draw_state (not a per-item one)
     key: object
     value: object
-    rect: tuple      # (x0, y0, x1, y1) absolute
+    rect: tuple      # (x0, y0, x1, y1) absolute: the drag HANDLE
     index: int
+    box: tuple = None   # the item's full extent (slots, ghost, home); None = rect
 
 
 @dataclass
@@ -361,12 +362,20 @@ class DragDrop:
     # ghost tracks the cursor - the else is managed for you.
 
     @classmethod
-    def on_drag(cls, source_rect, key, value=None, draw_state=None):
+    def on_drag(cls, source_rect, key, value=None, draw_state=None, index=None, box=None):
         """Register `source_rect` as the drag handle for item `key` of the
         current view, and — when this item IS the active drag — arrange the
         draw list for ghost drawing and return a truthy DragInfo.
 
         value: what a cross-collection drop delivers (defaults to key).
+        index: the item's index in the collection the drop applies to.
+        Defaults to the on_drag call order, which is only the collection
+        order when EVERY item is registered; an owner that hides or skips
+        items (fast_draw_collection: excluded keys, off-screen rows) passes
+        the real index so slot and DropEvent indices stay collection-space.
+        box: the item's full extent when `source_rect` is only a handle on
+        it (a collection row is grabbed by its header label): the drop slots,
+        the ghost size and the home / cancel frame use the box.
         Returns None while the item is at rest (or another item drags)."""
         cls.end_drag()   # clean for the previous item, if its caller didn't
         meltygui = Core.melty
@@ -382,7 +391,8 @@ class DragDrop:
             entry = (frame, [])
             cls._im_lists[draw_state] = entry
         item = _ImItem(draw_state, key, key if value is None else value,
-                       tuple(source_rect), len(entry[1]))
+                       tuple(source_rect), len(entry[1]) if index is None else index,
+                       tuple(source_rect if box is None else box))
         entry[1].append(item)
 
         view_id = _IM_PREFIX + str(key)
@@ -439,14 +449,14 @@ class DragDrop:
             for it in entry[1]:
                 if it.key == dragged_key:
                     continue   # its gap is the home/cancel target
-                x0, y0, x1, y1 = it.rect
+                x0, y0, x1, y1 = it.box
                 if horizontal:
                     slots.append((it.index, y0, y1, x0 - 2, True))
                 else:
                     slots.append((it.index, x0, x1, y0 - 2, False))
                 last = it
             if last is not None:
-                x0, y0, x1, y1 = last.rect
+                x0, y0, x1, y1 = last.box
                 if horizontal:
                     slots.append((last.index + 1, y0, y1, x1 + 3, True))
                 else:
@@ -484,7 +494,7 @@ class DragDrop:
         cls.key = item.key
         cls.value = item.value
         cls.im_index = item.index
-        x0, y0, x1, y1 = item.rect
+        x0, y0, x1, y1 = item.box
         down_x, down_y = ev.x - ev.total_dx, ev.y - ev.total_dy
         cls.grab_offset = (max(0.0, down_x - x0), max(0.0, down_y - y0))
         cls.size = (x1 - x0, y1 - y0)

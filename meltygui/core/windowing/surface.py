@@ -430,7 +430,6 @@ class Surface:
             Melty.style_manager.set_imgui_tint(*previous_tint)
         if self.chrome:
             titlebar.paint_window_controls(draw_list)
-        titlebar.note_fps_label(self.fps_counter.label(), self.chrome)
         Melty.end_frame()
         if self.request is not None:
             Melty.finish_surface_root(self.request, self)
@@ -442,6 +441,10 @@ class Surface:
         views.end()
         if self.chrome:
             titlebar.draw_titlebar(self.window)
+        if Toggles.show_fps:
+            # Here in the root loop, outside every view and Melty.end_frame:
+            # no cache, tile or invalidation decides whether it is current.
+            titlebar.paint_fps(Melty.overlay_top_channel(), self.chrome, self.fps_counter.frame_ms)
         views.end_frame()
         try:
             Melty.post_frame(self.impl, self.window)   # imgui render, shadow, corner cut, PQ, swap

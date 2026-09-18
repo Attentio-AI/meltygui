@@ -135,6 +135,7 @@ from meltygui.core.automation.search_core import search_activate_target
 
 
 from meltygui.view.collection_view import draw_collection
+from meltygui.view.collection_view import fast_draw_collection
 
 
 def main_header(input_value, name, **kwargs):
@@ -1827,7 +1828,7 @@ def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=No
         new_default = Core.melty.get_default_view_function(real_type=real_type, collection_type=collection_type,
                                                            attrib_key=key, value=input_value)
         if new_default is None:
-            new_default = draw_collection
+            new_default = fast_draw_collection
         if view_func is None:
             view_func = new_default
 

@@ -1363,6 +1363,19 @@ class Melty:
         return text
 
     @classmethod
+    def register_default_view(cls, view_func, types):
+        """File `view_func` as draw_any's default renderer for `types` - what
+        @render_func(is_default_for=...) does, for a view without the
+        decorator (fast_draw_collection). A str entry registers by attribute
+        name. Hotswap's registry snapshot keeps the entry on this object."""
+        for register_type in types:
+            if isinstance(register_type, str):
+                cls.default_funcs_by_name[register_type] = view_func
+            else:
+                cls.default_funcs_by_type[register_type] = view_func
+                cls.default_funcs_by_name[register_type.__name__] = view_func
+
+    @classmethod
     def get_default_view_function(cls, draw_state=None, real_type=None, collection_type=None, attrib_key=None,
                                   value=None):
         # `value` feeds the shape-refined tier (Shaped keys): a shape is a
@@ -4006,8 +4019,7 @@ class Melty:
         # Reset overlay routing to the top (global, unmasked) channel so
         # end_frame draws - FPS counter, selection rects, debug text - don't
         # accidentally land on whatever per-window channel a view last set.
-        if cls._overlay_channels_active:
-            imgui.get_overlay_draw_list().channels_set_current(cls.max_layer - 1)
+        cls.overlay_top_channel()
 
         Melty.mode_stack = []
 
@@ -4470,10 +4482,6 @@ class Melty:
 
 
         window_size = imgui.get_io().display_size
-        if Toggles.show_fps:
-            import meltygui.core.windowing.titlebar as titlebar
-            titlebar.paint_fps(overlay)
-
         _ef_mark("post_layers")   # TEMP perf
         to_unselect = set()
         for selected_ds in cls.selected:
@@ -4742,6 +4750,15 @@ class Melty:
                                          for (_l0, _t0), (_l1, _t1) in zip(_ef_marks, _ef_marks[1:])))
 
 
+
+    @classmethod
+    def overlay_top_channel(cls):
+        """The overlay draw list, routed to its top (global, unmasked)
+        channel while the per-window channels are split."""
+        overlay = imgui.get_overlay_draw_list()
+        if cls._overlay_channels_active:
+            overlay.channels_set_current(cls.max_layer - 1)
+        return overlay
 
     @classmethod
     def finalize_overlay_channels(cls):
