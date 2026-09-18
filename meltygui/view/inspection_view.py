@@ -19,6 +19,7 @@ import inspect
 import meltygui_imgui as imgui
 import threading
 import types
+from meltygui.view.collection_view import fast_draw_collection
 
 
 @render_func(use_cache=False, show_bg=False, disable_scroll=True, shadow=False, selectable=False)
@@ -603,7 +604,7 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
             if _group:
                 outer[_gkey] = _group
         outer["__overrides__"] = _INFO_GROUP_OVERRIDES
-        draw_collection(outer, name="rows", use_cache=False, show_bg=False,
+        fast_draw_collection(outer, name="rows", use_cache=False, show_bg=False,
                         show_header=False, shadow=False, selectable=False,
                         item_spacing_y=2, child_kwargs={"show_system": True,
                                                         "initial":{"expanded":False}

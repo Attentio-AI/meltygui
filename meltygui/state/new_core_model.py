@@ -1301,39 +1301,34 @@ class DrawState(DictConversion):
         each corner clamps to the visible edge (e.g. bottom = min(parent_bottom,
         clip_bottom)) instead of running past it.
 
-        The target's box is read from its LIVE abs (``_abs_left``/``_abs_top``),
-        not its per-frame-cached ``abs_left``/``abs_top``. A pinned float needs
-        the target's current position on frames the target itself isn't
-        re-rendering — e.g. while its window is dragged: the window moves (its
-        own abs cache invalidates on window_pos), but the target's cache key
-        doesn't change, so cached ``target.abs_left`` would return last frame's
-        anchor. Computing live re-reads the moved window through the parent
-        chain, so the anchor tracks the drag instead of lagging a frame."""
+        The target's box comes from its cached ``abs_left``/``abs_top``. That
+        cache is keyed on Melty.geometry_version, so a target carried by a
+        dragged window (its own attributes unchanged, its window's window_pos
+        written) misses and re-reads the moved chain: the anchor tracks the
+        drag on frames the target itself isn't re-rendering, with no walk per
+        read."""
         target = self._pin_target
         if target is None:
             return None
-        # Anchor to the target's RAW box (live abs), so the float tracks the
+        # Anchor to the target's RAW box, so the float tracks the
         # target's actual position. PARENT/WINDOW/GRANDPARENT do NOT clamp here:
         # intersecting with the target's clip rect makes the anchor corner snap
         # to the clip edge whenever the target is clipped, so the window tracks
         # the *clip* instead of the target (the "only moves when the clamp moves
         # it" bug). Clamping is Pin.CLIP's job - see below.
-        tl, tt = target._abs_left(), target._abs_top()
+        tl, tt = target.abs_left, target.abs_top
         rect = (tl, tt, tl + target.width, tt + target.height)
         if self.pin_to_clip is Pin.CLIP:
             # Pin.CLIP clamps the float to the parent window's visible box so
-            # corners track the visible edge. Use the window's LIVE box
-            # (win._abs_left()/_abs_top()), not its cached abs_left or the
-            # target's captured clip_rect: both are fixed in screen space and so
-            # are stale when the window itself is dragged, which left Pin.CLIP
-            # floats clamped to the old position. The live window box is correct
-            # in both cases - it's constant while content scrolls and moves with
-            # a window window.
+            # corners track the visible edge. The window's box, not the
+            # target's captured clip_rect: that one is fixed in screen space
+            # and stale once the window itself is dragged. The box is constant
+            # while content scrolls and moves with the window.
             win = self.parent_window
             if win is None and len(Core.melty.melty_windows) > 0:
                 win = Core.melty.melty_windows[-1]
             if win is not None and win is not self:
-                wl, wt = win._abs_left(), win._abs_top()
+                wl, wt = win.abs_left, win.abs_top
                 c = (wl, wt, wl + win.width, wt + win.height)
                 rect = (max(rect[0], c[0]), max(rect[1], c[1]),
                         min(rect[2], c[2]), min(rect[3], c[3]))
@@ -1455,7 +1450,7 @@ class DrawState(DictConversion):
             return base_y
         win = self.parent_window
         if win is not None and win is not self:
-            win_top, win_h = win._abs_top(), win.height or 0
+            win_top, win_h = win.abs_top, win.height or 0
         else:
             disp = Core.melty.display_size
             win_top, win_h = 0, (disp[1] if disp is not None else 0)
@@ -1824,59 +1819,44 @@ class DrawState(DictConversion):
         return cache._tile_fully_filled(cache._tiles.get(self._tile_id))
 
     def _cached_absolute_position(self, axis):
-        # Pins already resolve their target live. For ordinary placement,
-        # validate the parent origin and selected corner before accepting a
-        # cached value: solve() may have read us before a parent hand resize
-        # or native rebase later in this same frame.
+        # abs_left / abs_top are read thousands of times a frame (every
+        # on_action, hover test, clip rect, pin and edge pass), so a HIT is
+        # one key comparison: no parent read, no walk, no per-level key. Never
+        # weaken that (docs/WINDOW_COLLISION_COLUMNS.md, "Absolute-position
+        # caching is not negotiable").
         #
-        # This is read thousands of times a frame (every on_action, clip rect
-        # and hover test), so a cache hit must stay cheap at any nesting depth:
-        # the key and cache writes are raw, as in _ancestor_scroll, because the
-        # memo must not re-enter @live setattr tracking, and only this axis of
-        # parent_anchor_offset is worked out.
-        if self.pin_to_clip:
-            return self._abs_left() if axis == 0 else self._abs_top()
+        # Freshness comes from invalidation instead. Melty.geometry_version
+        # bumps on every real change to an attribute positions are computed
+        # from, on ANY draw state (invalidation_decoration.GEOMETRY_ATTRS), and
+        # scroll_version does the same for ancestor scroll. So a parent hand
+        # resize, native rebase or edge solve later in this same frame, a
+        # dragged window carrying its children, and a pin target that moved
+        # all miss here on the next read - pinned views included, which is why
+        # they need no live walk of their own. The frame count covers inputs
+        # that are not draw-state attributes (display size, a DnD flight).
+        #
+        # Key and cache writes are raw, as in _ancestor_scroll: the memo must
+        # not re-enter @live setattr tracking.
+        melty = Core.melty
+        key = (melty.frame_count, melty.geometry_version, melty.scroll_version)
         if axis == 0:
             key_name, previous, cached = '_abs_left_key', self._abs_left_key, self._abs_left_cache
         else:
             key_name, previous, cached = '_abs_top_key', self._abs_top_key, self._abs_top_cache
-        if previous is False:
-            return cached  # malformed parent cycles retain the last position
-        parent = self.parent_window
-        if parent is None or parent is self:
-            # A root reads no other draw_state, so it needs no cycle mark.
-            parent = None
-            parent_origin = parent_extent = 0
-        else:
-            # Mark evaluation before reading the parent: a parent cycle gets
-            # the last position back instead of recursing forever.
-            object.__setattr__(self, key_name, False)
-        key = None
+        if previous == key or previous is False:
+            return cached  # False: a malformed parent cycle keeps the last position
+        # Mark evaluation before reading the parent: a parent cycle gets the
+        # last position back instead of recursing forever.
+        object.__setattr__(self, key_name, False)
         try:
-            if parent is not None:
-                parent_anchor_pos = self.parent_anchor_pos
-                if axis == 0:
-                    parent_origin = parent.abs_left
-                    parent_extent = 0 if parent_anchor_pos in LEFT_ANCHORS else parent.width
-                else:
-                    parent_origin = parent.abs_top
-                    parent_extent = 0 if parent_anchor_pos in TOP_ANCHORS else parent.height
-            scroll = self._ancestor_scroll()[axis]
-            # parent_extent with parent_anchor_pos decides parent_anchor_offset.
-            key = (Core.melty.frame_count,
-                   self.left_offset if axis == 0 else self.top_offset,
-                   self.window_pos, self.anchor_pos, self.parent_anchor_pos,
-                   self.width if axis == 0 else self.height, scroll,
-                   parent_origin, parent_extent)
-            if previous == key:
-                key = previous
-                return cached
             value = self._abs_left() if axis == 0 else self._abs_top()
             object.__setattr__(self, '_abs_left_cache' if axis == 0 else '_abs_top_cache', value)
             return value
         finally:
-            if parent is not None or key is not previous:
-                object.__setattr__(self, key_name, key)
+            # A geometry write made while computing (the display cap's flags
+            # are private, so normally none) leaves the key behind the
+            # version: the next read recomputes.
+            object.__setattr__(self, key_name, key)
 
     @property
     def abs_left(self):

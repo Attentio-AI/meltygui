@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import weakref
 
 from meltygui.core.layout import edge_constraints
 
@@ -23,6 +24,10 @@ EDGE_GRAB_WIDTH = 20.0
 HIGHLIGHT_TINT = (0,0,0, 1.0)
 
 _NOTE = dict(name="draw_columns", tint=(0.5, 0.8, 1.0))
+
+# id(draw_state) -> draw_state for every holder of layout registries; filled
+# by _ensure_window_state, read through layout_owners().
+_LAYOUT_OWNERS = weakref.WeakValueDictionary()
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +280,19 @@ def _clamp_interior(edges, axis="x"):
                    walls=frozenset({id(edges[0]), id(edges[-1])}), axis=axis)
 
 
+def layout_owners():
+    """Every live draw state that holds layout registries (windows and the
+    ordinary views serving as a layout's coordinate owner). Per-frame readers
+    (diagnostics/edge_motion_guard) walk these few instead of probing every
+    draw state in the app for registry attributes."""
+    return list(_LAYOUT_OWNERS.values())
+
+
 def _ensure_window_state(window):
+    # Every registration passes through here, each frame: a draw state
+    # restored from a session with its registries already set is recorded
+    # too, and the weak entry goes with the draw state.
+    _LAYOUT_OWNERS[id(window)] = window
     for views_attr, pending_attr, _frame_attr, specs_attr, bands_attr in _REGISTRY.values():
         if getattr(window, views_attr, None) is None:
             setattr(window, views_attr, {})

@@ -424,12 +424,16 @@ def _crumb_menu(directory, on_path, file_metadata, memo):
     return memo["rows"]
 
 
-@render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=True,
-             show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
-def draw_breadcrumbs(input_value: str, draw_state, crumb_height=24.0, left_pad=6.0,
+# A strip's scratch, keyed by (host draw_state unique, strip name): its open
+# crumbs' (draw_state, DropDownState), the listing memos and the path last
+# drawn. Not draw_state.misc - that is the host's persisted view state.
+_crumb_strips = {}
+
+
+def draw_breadcrumbs(input_value: str, draw_state, width=None, crumb_height=24.0, left_pad=6.0,
                      folder_bg_boost=-0.12, text_mix=0.5, file_metadata=None,
-                     crumb_pad=4.0, menu_min_width=260.0, **kwargs):
-    """A path strip whose every segment is a DROPDOWN (`draw_dropdown`: its
+                     crumb_pad=4.0, menu_min_width=260.0, name="breadcrumbs"):
+    """A path strip whose every segment is a DROPDOWN (`fast_draw_dropdown`: its
     search box, keyboard nav, fast leaf rows) over the directory that
     segment lives in — a folder crumb lists the folder, the file crumb its
     siblings — for a host that shows one path: the code editor draws it
@@ -440,7 +444,12 @@ def draw_breadcrumbs(input_value: str, draw_state, crumb_height=24.0, left_pad=6
     store). Listings are lazy (read while a menu shows). A strip wider than
     the view drops its leading crumbs. A picked row returns ``(True, path)``
     once — a file or a directory, the host deciding what each means;
-    otherwise ``(False, input_value)``."""
+    otherwise ``(False, input_value)``.
+
+    A plain function, no @render_func: it draws at the cursor into the
+    HOST's tile, `width` wide (default the host's content width), and
+    advances the cursor by the strip's height. `draw_state` is the host's;
+    two strips on one host take different `name`s."""
     from meltygui.core.layout.dropdown_core import _dd_close
     from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.files.fast_file_explorer import row_tint_bg
@@ -449,7 +458,7 @@ def draw_breadcrumbs(input_value: str, draw_state, crumb_height=24.0, left_pad=6
     from meltygui.models.file_meta import FileMeta
     from meltygui.models.file_meta import file_meta_store
     from meltygui.view.dropdown_view import TRIGGER_TEXT_INSET
-    from meltygui.view.dropdown_view import draw_dropdown
+    from meltygui.view.dropdown_view import fast_draw_dropdown
 
     if not input_value:
         return False, input_value
@@ -462,14 +471,14 @@ def draw_breadcrumbs(input_value: str, draw_state, crumb_height=24.0, left_pad=6
     meta = file_metadata if file_metadata is not None else file_meta_store()
     parts = Path(input_value).parts
     targets = [Path(*parts[:i + 1]) for i in range(len(parts))]
-    content_w = draw_state.content_width or draw_state.width or 240
+    content_w = width if width is not None else (draw_state.content_width or draw_state.width or 240)
 
     # ── the path moved under an open menu: close it (its crumb may be gone) ──
-    crumb_states = draw_state.misc.setdefault("_crumb_states", {})
-    memos = draw_state.misc.setdefault("_crumb_memos", {})
+    strip = _crumb_strips.setdefault((draw_state.unique, name), {"states": {}, "memos": {}, "path": None})
+    crumb_states, memos = strip["states"], strip["memos"]
     mine_open = any(ds is Melty.popover_focused_ds for ds, _state in crumb_states.values())
-    if draw_state.misc.get("_crumb_path") != input_value:
-        draw_state.misc["_crumb_path"] = input_value
+    if strip["path"] != input_value:
+        strip["path"] = input_value
         for ds, state in crumb_states.values():
             if Melty.popover_focused_ds is ds:
                 Melty.popover_focused_ds = None
@@ -487,6 +496,9 @@ def draw_breadcrumbs(input_value: str, draw_state, crumb_height=24.0, left_pad=6
     first = 0
     while first < len(parts) - 1 and pad + sum(widths[first:]) + sum(gaps[first:]) > content_w:
         first += 1
+    if first == len(parts) - 1:
+        # The last crumb alone: it ellipsizes inside the strip (nothing clips it).
+        widths[first] = max(px(18), min(widths[first], content_w - pad))
 
     def menu_source(index):
         """The rows of crumb `index`, resolved by draw_dropdown only while its
@@ -522,9 +534,9 @@ def draw_breadcrumbs(input_value: str, draw_state, crumb_height=24.0, left_pad=6
         imgui.set_cursor_screen_pos((cx, y0))
         # STABLE identity (the index, never the path): the popover is a
         # latching window, so a name keyed on the file would orphan it.
-        result = draw_dropdown(
+        result = fast_draw_dropdown(
             str(target), collection={}, collection_source=lambda index=i: menu_source(index),
-            display_label=parts[i], name=f"crumb_{i}", width=widths[i], height=crumb_h,
+            display_label=parts[i], name=f"{name}_crumb_{i}", width=widths[i], height=crumb_h,
             trigger_height=crumb_h, show_header=False, shadow=False, show_button_bg=False,
             text_pad=inner, trigger_text_color=text_color, trigger_caret=("", ""),
             row_tints=_CrumbTints(meta), menu_min_width=px(menu_min_width), return_extras=True)

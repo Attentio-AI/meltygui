@@ -45,6 +45,8 @@ def rgb_to_hsv(r, g, b):
     minc = min(r, g, b)
     rangec = (maxc - minc)
     v = maxc
+    if maxc == 0:
+        maxc = 1.0
     if minc == maxc:
         return 0.0, 0.0, v
     s = rangec / maxc
@@ -490,7 +492,7 @@ class Toggles:
         # [tint=(0.85, 0.75, 0.05)]
         tabs_height = 30
         # [tint=(0.85, 0.75, 0.05)]
-        extension_width = 60
+        extension_width = 34
         # [tint=(0.85, 0.75, 0.05)]
         exposure_band_height = 54
         # [tint=(0.85, 0.75, 0.05)]
@@ -524,7 +526,7 @@ class Toggles:
         # [tint=(0.85, 0.75, 0.05)]
         tag_color = (0.55, 0.6, 0.72, 0.85)
         # [tint=(0.85, 0.75, 0.05)]
-        tag_gap = 8.0
+        tag_gap = 6.761
         # [tint=(0.85, 0.75, 0.05)]
         row_tint_alpha = 0.35
 
@@ -547,6 +549,11 @@ class Toggles:
         # Chosen when an application's window share group is created.
         # [tint=(0.103, 0.341, 0.617)]
         native_os_windows = True
+        # An OS window nothing asked to redraw skips its frame and its swap
+        # (surface.Surface.wants_frame); the compositor keeps showing its last
+        # buffer. Off: every window draws on every requested frame.
+        # [tint=(0.103, 0.341, 0.617)]
+        skip_clean_os_windows = True
 
     # [tint=(0.811, 0.59, 0.29)]
     dynamic_styles = False
@@ -1979,7 +1986,7 @@ class Toggles:
         # @render_func wrapper per nested collection). Off = every collection
         # goes back through the draw_collection wrapper, for comparing the
         # two paths' look and frame time.
-        fast_draw_collection = True
+        fast_draw_collection = False
 
     # [icon=""]
     @defaults(tint=(0.65, 0.385, 0.069, 1.0))

@@ -1547,30 +1547,45 @@ class TileCacheMasked:
             return
         self.invalidate_up(self._stack[-1].key, max_depth=max_depth, force=force, note=note)
 
-    def invalidate_up_by_obj(self, obj, name=None, max_depth=4, force=False, frame_delta=0, note=None):
+    # The caches of the app's OS windows, each with the call that asks for its
+    # window's frame (surface.Surface adds and removes its own; the studio has
+    # none). An object or a render function is shown by views of any window,
+    # while Melty.cache is only the window drawing now: the by-object and
+    # by-function invalidations reach the others through here, and a window
+    # they hit draws (it skips its frames otherwise, Surface.wants_frame).
+    window_caches: dict = {}
 
-        if name is not None:
-            keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
-            if keys is not None:
-                for k in keys:
-                    self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta, note=note)
-        else:
-            keys = self.py_id_to_keys.get(f"{id(obj)}", None)
-            if keys is not None:
-                for k in keys:
-                    self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta, note=note)
+    def _invalidate_other_windows(self, method, shows, *args, **kwargs):
+        for cache, request_window_frame in list(TileCacheMasked.window_caches.items()):
+            if cache is not self and shows(cache):
+                getattr(cache, method)(*args, other_windows=False, **kwargs)
+                request_window_frame()
 
-    def invalidate_by_obj(self, obj, name=None, frame_delta=0, note=None):
-        if name is not None:
-            keys = self.py_id_to_keys.get(f"{id(obj)}.{name}", None)
-            if keys is not None:
-                for k in keys:
-                    self.invalidate(k, frame_delta=frame_delta, note=note)
-        else:
-            keys = self.py_id_to_keys.get(f"{id(obj)}", None)
-            if keys is not None:
-                for k in keys:
-                    self.invalidate(k, frame_delta=frame_delta, note=note)
+    @staticmethod
+    def _obj_key(obj, name) -> str:
+        return f"{id(obj)}.{name}" if name is not None else f"{id(obj)}"
+
+    def invalidate_up_by_obj(self, obj, name=None, max_depth=4, force=False, frame_delta=0, note=None,
+                             other_windows=True):
+        obj_key = self._obj_key(obj, name)
+        keys = self.py_id_to_keys.get(obj_key, None)
+        if keys is not None:
+            for k in keys:
+                self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta, note=note)
+        if other_windows:
+            self._invalidate_other_windows("invalidate_up_by_obj", lambda cache: obj_key in cache.py_id_to_keys,
+                                           obj, name=name, max_depth=max_depth, force=force,
+                                           frame_delta=frame_delta, note=note)
+
+    def invalidate_by_obj(self, obj, name=None, frame_delta=0, note=None, other_windows=True):
+        obj_key = self._obj_key(obj, name)
+        keys = self.py_id_to_keys.get(obj_key, None)
+        if keys is not None:
+            for k in keys:
+                self.invalidate(k, frame_delta=frame_delta, note=note)
+        if other_windows:
+            self._invalidate_other_windows("invalidate_by_obj", lambda cache: obj_key in cache.py_id_to_keys,
+                                           obj, name=name, frame_delta=frame_delta, note=note)
 
     @staticmethod
     def _func_ids(func) -> set:
@@ -1610,16 +1625,22 @@ class TileCacheMasked:
             keys |= self.func_id_to_keys.get(fid, set())
         return keys
 
-    def invalidate_by_func(self, func, frame_delta=0, note=None):
+    def invalidate_by_func(self, func, frame_delta=0, note=None, other_windows=True):
         """Invalidate every view drawn by the given @render_func, e.g.
         invalidate_by_func(draw_text) rerenders all text views."""
         for k in self._keys_for_func(func):
             self.invalidate(k, frame_delta=frame_delta, note=note)
+        if other_windows:
+            self._invalidate_other_windows("invalidate_by_func", lambda cache: cache._keys_for_func(func),
+                                           func, frame_delta=frame_delta, note=note)
 
-    def invalidate_up_by_func(self, func, max_depth=4, force=False, frame_delta=0, note=None):
+    def invalidate_up_by_func(self, func, max_depth=4, force=False, frame_delta=0, note=None, other_windows=True):
         """Like invalidate_by_func, but also cascades up to parents/children."""
         for k in self._keys_for_func(func):
             self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta, note=note)
+        if other_windows:
+            self._invalidate_other_windows("invalidate_up_by_func", lambda cache: cache._keys_for_func(func),
+                                           func, max_depth=max_depth, force=force, frame_delta=frame_delta, note=note)
 
     # def apply_invalid(self):
     # for t in self.pending_invalid:
@@ -1859,7 +1880,7 @@ class TileCacheMasked:
                     if stop_at_filled and self._tile_fully_filled(pt):
                         break
     # [tint=(0.72, 0.11, 0.11), show_tint=True]
-    def invalidate_all(self) -> None:
+    def invalidate_all(self, other_windows=True) -> None:
         for t in self._tiles.values():
             if t is not None:
                 _bump_note(t, "invalidate_all")
@@ -1867,6 +1888,8 @@ class TileCacheMasked:
                 t.force_invalidate = True
                 # self.force_invalid.append(t)
         request_render()
+        if other_windows:
+            self._invalidate_other_windows("invalidate_all", lambda cache: True)
     
     # [tint=(0.72, 0.11, 0.11), show_tint=True]
     def invalidate_scrolled_in(self, draw_state, on_change: bool = False) -> None:

@@ -80,6 +80,17 @@ If a native child window also uses parent-relative placement, its implementation
 
 **Regression coverage:** Lukas reported failures in complex arrangements with multiple nested views containing a nested Melty window. The reproduced ancestry/duplicate-parent-motion failure is now fixed and covered by focused tests, including ordinary-view reflow. The actual MCE inspector exposed an additional feedback path through its caller-sized workspace; native-growth anchor compensation and sticky reversal now cover that chain. See the [MCE reproduction and fix](WINDOW_COLLISION_INVESTIGATION.md#mce-workspace-feedback-reproduced-and-fixed). Full live complex-nesting coverage remains incomplete; see the [investigation and resolution](WINDOW_COLLISION_INVESTIGATION.md#resolution-after-authorization). These layouts remain supported requirements.
 
+## Absolute-position caching is not negotiable
+
+`DrawState.abs_left` and `abs_top` are read thousands of times per frame: every `on_action`, hover test, clip rect, pin and edge pass. **A cache hit must be O(1): one key comparison, no parent read, no walk, no per-level key construction.** Never remove, bypass or weaken this cache to fix a collision, resize or nesting bug. A collision fix that needs fresh geometry must invalidate the cache where the geometry changes, not re-derive positions on every read.
+
+This rule exists because it was broken once. On 2026-09-16 a window-resize fix replaced the O(1) key check with a "validated" hit that reads `parent.abs_left` recursively and rebuilds a key at every nesting level, without saying so. Hits became O(nesting depth). Dragging a nested Melty window over the code editor fell from 120 fps to about 90, with roughly 18% of every drag frame spent in position reads; nothing in the collision tests noticed.
+
+- The legitimate problem behind that change: a view's cached position goes stale when an ancestor moves or resizes *later in the same frame* (hand resize, native rebase, solver write). Solve it with invalidation keyed on real geometry changes, the way `_ancestor_scroll` is keyed on `Melty.scroll_version`. A write that does not change the value must not invalidate anything.
+- Pinned views (`pin_to_clip`) and `pin_rect` targets follow the same rule. "Resolve live" is not a licence to walk the parent chain per read.
+- Dragging a nested Melty window must leave the rest of the app frozen: cached views blit, and per-frame work outside the tile cache (position reads, edge passes, diagnostics such as `edge_motion_guard`, BVH sync) stays proportional to what moved, never to the number of draw states in the app.
+- Any change touching `_cached_absolute_position`, `_abs_left` / `_abs_top`, `pin_rect` or their keys must be profiled on a nested-window drag in `melty_code_editor` (py-spy share of position reads, fps at a 1000 Hz pointer) before and after, and the numbers reported.
+
 ## Melty and native behavior should match where possible
 
 The goal is for Melty and native windows to behave as closely as possible. The native backend is GLFW or Wayland according to the Toggle; the desired interaction model should not silently change with that choice.

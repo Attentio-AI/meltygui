@@ -818,6 +818,13 @@ class Melty:
     # mid-frame scroll deltas invalidate it without per-access parent walks.
     scroll_version = 0
 
+    # Bumped on every REAL change to an attribute absolute positions are
+    # computed from (invalidation_decoration.GEOMETRY_ATTRS), on any draw
+    # state. It keys DrawState's O(1) abs_left / abs_top cache: an ancestor or
+    # pin target moved or resized mid-frame (hand resize, native rebase, edge
+    # solve) invalidates every dependent position without per-read walks.
+    geometry_version = 0
+
     # list, full with 32 Nones
     max_depth = 32
     nested_layer_boost = 1
@@ -921,10 +928,26 @@ class Melty:
         first_request = req is None
         if req is None:
             req = SimpleNamespace(tile_id=tile_id, name=name, surface=None, parent_surface=None,
-                                  closed=False, pinned=False, tick=-1)
+                                  closed=False, pinned=False, tick=-1, unechoed=[])
             cls.surface_windows[tile_id] = req
             draw_state.closed = req.closed
-        req.input_value, req.kwargs, req.draw_state = input_value, kwargs, draw_state
+            req.passed_value = req.input_value = input_value
+        elif cls.surface_request_echoes(req, input_value):
+            # The caller handing back an edit the child window reported: the
+            # child has since drawn on, from its own call replayed (it draws
+            # without this window), so it keeps its latest value - the echo
+            # is older and would undo what was typed after it.
+            req.passed_value = input_value
+            if req.surface is not None and cls.surface_request_differs(req, input_value, kwargs):
+                glfw_utils.request_surface_render(req.surface)       # the kwargs changed
+        elif cls.surface_request_differs(req, input_value, kwargs):
+            # The child window draws what this call passes, and only draws
+            # when asked (Surface.wants_frame).
+            req.passed_value = req.input_value = input_value
+            req.unechoed.clear()
+            if req.surface is not None:
+                glfw_utils.request_surface_render(req.surface)
+        req.kwargs, req.draw_state = kwargs, draw_state
         req.tick = cls.app_tick
         from meltygui.core.windowing.window_visibility import override_state
         override_state(draw_state).native_kwargs = kwargs
@@ -958,6 +981,47 @@ class Melty:
             req.parent_surface = Surface.active
             cls.surface_requests.append(req)
         return req
+
+    # Edits a child window reported that its caller has yet to hand back.
+    UNECHOED_RESULTS = 32
+
+    @staticmethod
+    def same_request_value(old, new):
+        """Identity, or equality for plain values only: a container's `==`
+        walks it and an array's is not a bool, so those differ unless they
+        are the same object - an edit INSIDE the same object reaches the
+        child by the edit's report or its invalidation."""
+        if old is new:
+            return True
+        if type(old) is not type(new) or not isinstance(new, (bool, int, float, str, bytes, tuple)):
+            return False
+        try:
+            return bool(old == new)
+        except Exception:
+            return False
+
+    @classmethod
+    def surface_request_differs(cls, req, input_value, kwargs):
+        """Whether a glfw_window=True call passes its child window something
+        other than last time."""
+        old_kwargs = req.kwargs
+        if not cls.same_request_value(req.passed_value, input_value) or old_kwargs.keys() != kwargs.keys():
+            return True
+        return not all(cls.same_request_value(old_kwargs[kwarg_name], kwarg_value)
+                       for kwarg_name, kwarg_value in kwargs.items())
+
+    @classmethod
+    def surface_request_echoes(cls, req, input_value):
+        """Whether the call passes a value the child window itself reported
+        (finish_surface_root) and the caller stored: `text = new`. Consumes
+        that report and the older ones; the child's value stays its latest."""
+        if cls.same_request_value(req.passed_value, input_value):
+            return False
+        for index, reported in enumerate(req.unechoed):
+            if cls.same_request_value(reported, input_value):
+                del req.unechoed[:index + 1]
+                return True
+        return False
 
     @classmethod
     def record_surface_request(cls, req):
@@ -997,10 +1061,15 @@ class Melty:
         if result is not None:
             cls.pending_return_values[req.tile_id] = tuple(result)[:2]
             if result[0]:
-                from meltygui.core.windowing.glfw_utils import request_render
-                request_render()
+                # The child's value from here on, whenever its caller next runs.
+                req.input_value = result[1]
+                req.unechoed.append(result[1])
+                del req.unechoed[:-cls.UNECHOED_RESULTS]
+                # The parent's call returns it: that window's frame.
+                glfw_utils.request_surface_render(req.parent_surface)
         if req.draw_state.closed:
             req.closed = surface.closed = True
+            glfw_utils.request_surface_render(req.parent_surface)
     # Self-registering RenderHost objects (id -> host). draw_main renders each one
     # in its own thread every frame; see view/core_conversion/render_host.py.
     render_hosts = {}

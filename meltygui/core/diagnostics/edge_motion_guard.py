@@ -212,7 +212,7 @@ def _layout_owners():
     ordinary view that served as a layout's coordinate owner, provided its
     window ancestry leads into this surface. Windows come first."""
     import meltygui.core.windowing.os_frame as os_frame
-    from meltygui.core.melty import Melty
+    import meltygui.core.layout.column_core as column_core
     owners, seen = [], set()
     windows = os_frame._all_windows()
     window_ids = {id(w) for w in windows}
@@ -223,9 +223,10 @@ def _layout_owners():
             continue                       # a window still fitting itself on its first frames
         seen.add(id(window))
         owners.append(window)
-    registry = getattr(Melty, "draw_state_registry", None) or {}
-    for ds in list(registry.values()):
-        if ds is None or id(ds) in seen or not (getattr(ds, "_edge_views", None)
+    # The layouts' own record of who holds registries: probing every draw
+    # state in the app for them cost most of a millisecond per drag frame.
+    for ds in column_core.layout_owners():
+        if id(ds) in seen or not (getattr(ds, "_edge_views", None)
                                                 or getattr(ds, "_row_views", None)):
             continue
         if getattr(ds, "closable", False) or getattr(ds, "closed", False):

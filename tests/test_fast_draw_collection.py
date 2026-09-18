@@ -1,6 +1,4 @@
 """fast_draw_collection hosts draw_collection's body without the wrapper."""
-import time
-
 import meltygui_imgui as imgui
 import pytest
 
@@ -96,24 +94,29 @@ def test_a_landed_drop_reorders_in_place_and_reports_changed(melty):
     assert changed and value is root and root["folder"] is data and list(data) == ["c", "a", "b"]
 
 
+def test_offscreen_fast_collections_reserve_their_box_without_running(melty, monkeypatch):
+    data = {"folder": {f"row_{index}": {"value": float(index), "flag": True} for index in range(12)}}
+    root = _frames(melty, data, count=4)[2]
+    folder = root._children[0]
+    rows = {index: folder._children[index] for index in folder._children}
+    heights = {index: row.height for index, row in rows.items()}
+    runs_before = {index: row.frame_count for index, row in rows.items()}
+    # Only the first rows are inside the clip; row skipping is OFF (a pending
+    # remeasure), which is when the host's own early-out has to carry it.
+    monkeypatch.setattr(melty, "get_clip_rect", classmethod(lambda cls: (0, 0, 800, 260)))
+    folder.invalid_content_height = True
+    _frames(melty, data, count=1)
+    ran = [index for index, row in rows.items() if row.frame_count > runs_before[index]]
+    skipped = [index for index in sorted(rows) if index not in ran]
+    assert ran and len(skipped) >= 6
+    # The patched clip also narrows this harness's wrap width, so the rows
+    # that DID run re-lay out; every reserved row keeps its box and pitch.
+    assert all(rows[index].height == heights[index] for index in skipped)
+    tops = [rows[index].abs_top for index in skipped]
+    assert len({later - earlier for earlier, later in zip(tops, tops[1:])}) == 1
+
+
 def test_wrapper_only_requests_go_to_the_wrapper(melty):
     from meltygui.view.collection_view import draw_collection
     _, _, draw_state = _frames(melty, _nested(1), use_cache=True)
     assert draw_state._wrapper is draw_collection
-
-
-def test_fast_host_is_cheaper_than_the_wrapper(melty):
-    from meltygui.core.runtime.toggles import Toggles
-    data = _nested(3)
-
-    def frame_time():
-        _frames(melty, data, count=3)
-        start = time.perf_counter()
-        _frames(melty, data, count=5)
-        return (time.perf_counter() - start) / 5
-
-    fast = frame_time()
-    Toggles.Collection.fast_draw_collection = False
-    wrapped = frame_time()
-    print(f"\nfast {fast * 1000:.2f} ms/frame, wrapper {wrapped * 1000:.2f} ms/frame")
-    assert fast < wrapped

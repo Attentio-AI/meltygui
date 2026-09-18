@@ -559,6 +559,7 @@ def run():
         surface.settings = kw.get('settings')
     mark(f'{len(Surface.all)} window(s) created')
     import meltygui.core.windowing.glfw_utils as glfw_utils
+    glfw_utils._render_thread_id = threading.get_ident()
     bench = os.environ.get('MELTY_BENCH')
     first = True
     frames = 0
@@ -575,12 +576,20 @@ def run():
             # is cleared BEFORE the frame so a request made mid-frame
             # remains for the next iteration. app_tick advances only with a
             # frame: a child not drawn in a TICK closes (_close_stale_children).
+            # Only the windows the requests were for draw (Surface.wants_frame):
+            # a clean one keeps its last buffer on screen, no frame, no swap.
             if glfw_utils._needs_render.is_set():
                 glfw_utils._needs_render.clear()
                 Melty.app_tick += 1
                 frames += 1
                 started = time.perf_counter() if frametime is not None else 0.0
+                drawn = []
                 for surface in list(Surface.all):
+                    # Asked at its turn: a request an earlier window's frame
+                    # made of this one (a parent's new value) draws this tick.
+                    if surface.closed or not surface.wants_frame():
+                        continue
+                    drawn.append(surface.title)
                     try:
                         surface.frame()
                     except Exception:
@@ -588,9 +597,10 @@ def run():
                         raise
                 if frametime is not None:
                     # MELTY_FRAMETIME=1 prints a line per frame with the render
-                    # thread's time for it (the budget for 120 fps is 8.3 ms).
+                    # thread's time for it (the budget for 120 fps is 8.3 ms) and the
+                    # windows that drew in it (the others were clean: wants_frame).
                     spent = (time.perf_counter() - started) * 1000
-                    print(f'meltygui: frame {frames} {spent:.1f} ms', flush=True)
+                    print(f'meltygui: frame {frames} {spent:.1f} ms  drew {drawn}', flush=True)
                 _close_stale_children()
             for surface in list(Surface.all):
                 _present_children(surface)
@@ -698,6 +708,9 @@ def _close_stale_children():
     from meltygui.core.melty import Melty
     for req in list(Melty.surface_windows.values()):
         child = req.surface
+        parent = req.parent_surface
+        if parent is not None and parent.drawn_tick != Melty.app_tick:
+            continue        # its parent skipped this tick (Surface.wants_frame): the call was not due
         if child is not None and req.tick != Melty.app_tick:
             child.closed = True
             child.stale = True

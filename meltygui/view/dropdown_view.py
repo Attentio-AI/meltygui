@@ -351,6 +351,160 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     return False, input_value
 
 
+# Wrapper-only features for the dropdown's fast host: fast_view's list minus
+# what draw_dropdown's own body reads (its trigger is `width` x
+# `trigger_height`, `shadow` is the trigger's, show_bg=False is its decoration).
+FAST_DROPDOWN_WRAPPER_KWARGS = (
+    "closable", "as_window", "glfw_window", "melty_window", "parent_window", "convert_in", "convert_out",
+    "convert", "with_wrapper", "with_footer", "with_header_end", "column", "drives", "pending", "auto_apply",
+    "background", "fill_height", "selectable", "context_menu", "draw_state", "use_cache", "layer_unique",
+    "_converter_mode", "bypass", "expanded_mode", "freeze_resize", "just_shadow", "changed", "show_bg",
+    "horizontal", "initial", "window_pos")
+
+
+def fast_draw_dropdown(input_value=None, **kwargs):
+    """draw_dropdown without the @render_func wrapper, for a host drawing
+    many triggers a frame (the breadcrumbs: one per path segment). It hosts
+    draw_dropdown's own body (one body, two hosts, as fast_draw_collection)
+    and does by hand the part of the wrapper a trigger uses: the kwargs
+    layers, identity + DrawState, its `drop_down_state`, the box, the tint,
+    the header, measurement and undo. It owns no tile: the trigger paints
+    into the enclosing tile and draw_state.invalidate() reaches that tile.
+
+    The popover stays what it was, a draw_dd_menu window parented to this
+    trigger's draw_state - the same draw_state either host binds (identity
+    hashes by the body), so an open menu survives a host switch. Returns
+    (changed, picked), plus the draw_state with return_extras=True.
+    A call carrying a FAST_DROPDOWN_WRAPPER_KWARGS feature goes to the wrapper."""
+    from meltygui.core.cache.tile_cache import snap_int
+    from meltygui.core.core_render import pop_id
+    from meltygui.core.core_render import push_id
+    from meltygui.core.rendering.fast_view import bind_fast_draw_state
+    from meltygui.core.rendering.fast_view import close_fast_box
+    from meltygui.core.rendering.fast_view import draw_fast_header
+    from meltygui.core.rendering.fast_view import finish_fast_view
+    from meltygui.core.rendering.fast_view import measure_fast_box
+    from meltygui.core.rendering.fast_view import push_view_tint
+    from meltygui.core.rendering.fast_view import resolve_fast_kwargs
+    from meltygui.core.rendering.fast_view import stamp
+    from meltygui.core.rendering.fast_view import wants_wrapper
+    from meltygui.core.windowing.glfw_utils import request_render
+
+    if wants_wrapper(kwargs, FAST_DROPDOWN_WRAPPER_KWARGS):
+        return draw_dropdown(input_value, **kwargs)
+    body = draw_dropdown.__wrapped__
+    return_extras = kwargs.pop("return_extras", False)
+    input_value = kwargs.pop("input_value", input_value)
+    if Melty.depth > Melty.max_depth:
+        return (False, None, None) if return_extras else (False, None)
+    decoration = {param_name: param_value for param_name, param_value in draw_dropdown.__header_defaults__.items()
+                  if param_name not in FAST_DROPDOWN_WRAPPER_KWARGS}
+    kwargs, mode_stacked = resolve_fast_kwargs(body, decoration, input_value, kwargs)
+    if kwargs.get("view_func") is not None or wants_wrapper(kwargs, FAST_DROPDOWN_WRAPPER_KWARGS):
+        # A mode / comment asked for another renderer or a wrapper feature.
+        if mode_stacked:
+            Melty.mode_stack.pop()
+        return draw_dropdown(input_value, return_extras=return_extras, **kwargs)
+    kwargs.pop("view_func", None)
+
+    # Host bookkeeping writes are silenced (see fast_draw_collection);
+    # tracking is back on for the body.
+    caller_silence = Melty.silence_invalidate
+    Melty.silence_invalidate = True
+    draw_state = bind_fast_draw_state(body, fast_draw_dropdown, input_value, kwargs)
+    # The wrapper's typed-state injection: the DropDownState lives in the
+    # draw_state's misc under the param's name (where either host finds it).
+    drop_down_state = kwargs.get("drop_down_state")
+    if drop_down_state is None:
+        drop_down_state = draw_state.misc.get("drop_down_state")
+        if drop_down_state.__class__.__name__ != DropDownState.__name__:
+            drop_down_state = draw_state.misc["drop_down_state"] = DropDownState()
+        kwargs["drop_down_state"] = drop_down_state
+    draw_state.misc_used.add("drop_down_state")
+    unique = draw_state.unique
+    measure_fast_box(draw_state, kwargs)
+    if kwargs.get("width"):
+        # A caller's width is the box: hover and the click rect stop at the
+        # trigger's edge (a strip of triggers shares one row).
+        stamp(draw_state, "width", snap_int(kwargs["width"]))
+        stamp(draw_state, "_bounding_hovered", draw_state.is_bounding_hovered())
+    start_z_pos, start_shadow_depth = Melty.z_pos, Melty.shadow_depth
+    Melty.depth += 1
+    Melty.unique_stack.append(unique)
+    Melty.draw_state_stack.append(draw_state)
+    stamp(draw_state, "depth", Melty.depth)
+    stamp(draw_state, "layer", Melty.active_layer)
+    Melty.z_pos = (Melty.paint_rank * Melty.max_depth) + Melty.depth
+    stamp(draw_state, "z_pos", Melty.z_pos)
+    total_z_offset = (draw_state.z_offset or 0) + (kwargs.get("z_offset", 0) or 0)
+    Melty.shadow_depth = Melty.shadow_depth + total_z_offset
+    stamp(draw_state, "depth_and_layer", (Melty.shadow_depth, Melty.paint_rank))
+    kwargs["depth"] = Melty.depth
+    push_id(unique)
+
+    changed, value = False, input_value
+    previous_tint = None
+    try:
+        previous_tint = push_view_tint(draw_state, input_value, kwargs)
+        draw_list = imgui.get_window_draw_list()
+        if not Melty.channels_split:
+            draw_list.channels_split(Melty.max_depth)
+            Melty.channels_split = True
+        draw_list.channels_set_current(max(0, min(Melty.get_channel() + total_z_offset, Melty.max_depth - 1)))
+
+        imgui.begin_group()
+        header_changed, header_value = draw_fast_header(draw_state, kwargs)
+        if header_changed:
+            changed, value = True, header_value
+        imgui.begin_group()
+        body_kwargs = {param_name: param_value for param_name, param_value in kwargs.items()
+                       if param_name != "input_value"}
+        Melty.silence_invalidate = False
+        try:
+            body_return = body(input_value, **body_kwargs)
+        except Exception as body_error:
+            # Reported, not raised: the groups opened above still have to
+            # close or imgui's stacks are unbalanced for the whole frame.
+            from meltygui.core.windowing.glfw_utils import print_stack_trace
+            print(f"Error rendering {draw_state.name} (draw_dropdown): {body_error}")
+            print_stack_trace(exception=body_error)
+            body_return = None
+        Melty.silence_invalidate = True
+        if isinstance(body_return, tuple) and len(body_return) >= 2 and body_return[0]:
+            changed, value = True, body_return[1]
+        imgui.end_group()
+        stamp(draw_state, "_content_rect", imgui.get_item_rect_size())
+        stamp(draw_state, "content_height", draw_state._content_rect[1])
+        if close_fast_box(draw_state, kwargs):
+            draw_state.invalidate()
+            request_render()
+        if draw_state._parent is not None and draw_state._parent is not draw_state:
+            draw_state._parent._melty_content_height += draw_state.height
+        draw_state.pos_changed()
+        stamp(draw_state, "last_seen", Melty.frame_count)
+        draw_state.frame_count += 1
+    finally:
+        if previous_tint is not None:
+            Melty.style_manager.set_imgui_tint(*previous_tint)
+        pop_id()
+        Melty.draw_state_stack.pop()
+        Melty.unique_stack.pop()
+        Melty.depth -= 1
+        Melty.z_pos = start_z_pos
+        Melty.shadow_depth = start_shadow_depth
+        if mode_stacked:
+            Melty.mode_stack.pop()
+        if Melty.depth == 0 and Melty.channels_split:
+            Melty.channels_split = False
+            imgui.get_window_draw_list().channels_merge()
+
+    changed, value = finish_fast_view(draw_state, input_value, changed, value)
+    Melty.silence_invalidate = caller_silence
+    if return_extras:
+        return changed, value, draw_state
+    return changed, value
+
+
 @render_func(use_cache=True, show_bg=True, shadow=True, selectable=False, temp=True,
              closable=True, popover=True, melty_window=False, auto_resize=True, with_header=None,
              max_height=420, min_width=300, swoosh=False, min_height=33, keep_in_view=True)

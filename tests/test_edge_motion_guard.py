@@ -5,6 +5,7 @@ Run: .venv/bin/pytest tests/test_edge_motion_guard.py -q
 import pytest
 
 from meltygui.core.diagnostics import edge_motion_guard as guard
+from meltygui.core.layout import column_core
 from meltygui.core.layout import edge_constraints
 from meltygui.core.melty import Melty
 from meltygui.core.windowing import os_frame
@@ -224,7 +225,7 @@ def test_layout_registered_on_an_ordinary_view_is_checked(rig, monkeypatch):
     panel = View()
     divider = {"x": 150.0}
     panel._edge_views[("row", "p")] = (panel, [{"x": 0.0}, divider, {"x": 300.0}])
-    monkeypatch.setattr(Melty, "draw_state_registry", {1: panel, 2: rig.window}, raising=False)
+    column_core._ensure_window_state(panel)                      # what a layout does to its coordinate owner
     rig.frame(dx=10.0)                                           # first seen: baseline
     rig.frame(dx=10.0, edge=divider, move=10.0)
     rig.frame(dx=10.0, edge=divider, move=80.0)

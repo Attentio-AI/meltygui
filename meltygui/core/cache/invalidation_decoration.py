@@ -7,6 +7,26 @@ from meltygui.core.rendering.core_decoration import auto_eval
 from meltygui.core.rendering.core_decoration import Core
 from meltygui.core.cache.invalidation_tracker import Note
 
+# The attributes DrawState.abs_left / abs_top are computed from, on the view
+# itself or on an ancestor / pin target. A REAL change to one of them bumps
+# Melty.geometry_version, which keys the O(1) absolute-position cache
+# (DrawState._cached_absolute_position). Add a name here when the position
+# math starts reading a new attribute; never make the cache re-derive it.
+GEOMETRY_ATTRS = frozenset((
+    'window_pos', 'left_offset', 'top_offset', 'width', 'height',
+    'anchor_pos', 'parent_anchor_pos', 'parent_window', '_parent',
+    'pin_to_clip', 'closable'))
+
+
+def _geometry_changed(previous, value):
+    """Did a geometry write change the value? Draw states (parent_window,
+    _parent) compare by identity: their == may be a deep comparison."""
+    if previous is value:
+        return False
+    if isinstance(value, (int, float, tuple, list, str, bool)) or value is None:
+        return previous != value
+    return True
+
 
 def live(cls):
     # Get excluded attrs from class (if defined)
@@ -49,6 +69,8 @@ def live(cls):
             # _ancestor_scroll memo (see DrawState._ancestor_scroll).
             if name == 'scroll_offset' and getattr(self, name, None) != value:
                 meltygui.scroll_version = getattr(meltygui, 'scroll_version', 0) + 1
+            elif name in GEOMETRY_ATTRS and _geometry_changed(getattr(self, name, None), value):
+                meltygui.geometry_version = getattr(meltygui, 'geometry_version', 0) + 1
             try:
                 original_setattr(self, name, value)
             except Exception as e:
@@ -67,6 +89,8 @@ def live(cls):
 
         if name == 'scroll_offset' and value != original_value:
             meltygui.scroll_version = getattr(meltygui, 'scroll_version', 0) + 1
+        elif name in GEOMETRY_ATTRS and _geometry_changed(original_value, value):
+            meltygui.geometry_version = getattr(meltygui, 'geometry_version', 0) + 1
 
         # Check if we're initializing
         initializing = getattr(self, init_flag, False)

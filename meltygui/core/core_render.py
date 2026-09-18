@@ -53,6 +53,7 @@ from meltygui.core.rendering.view_identity import view_unique
 from meltygui.utils.render_utils import push_style_var
 from meltygui.utils.render_utils import pop_style_var
 from meltygui.core.windowing.glfw_utils import request_render
+from meltygui.core.windowing.glfw_utils import note_shared_change
 from meltygui.core.windowing.glfw_utils import print_stack_trace
 from meltygui.core.windowing.glfw_utils import trace_group
 from meltygui.core.windowing.glfw_utils import get_live_frames
@@ -4935,6 +4936,9 @@ def render_func(*args, **o_kwargs):
                 # if isinstance(report_value, Pending):
                 #     raise Exception("Pending needs to be handled before saving to cache")
                 return_value = (report_changed, report_value, *return_value[2:])
+                if report_changed:
+                    # Another OS window may show this value: they all draw.
+                    note_shared_change()
 
                 if auto_resize:
                     # Post-pending guard: while ANY view rendered a pending

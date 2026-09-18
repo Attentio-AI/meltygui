@@ -23,6 +23,15 @@ and drop shadow when the window is frameless (Toggles.Melty.
 wayland_show_frame off), and the body drawn inline into the root. Views the
 body draws at root level fill the window (Melty.root_fill, consumed by the
 render wrapper) so a one-view body needs no width/height.
+
+A surface only draws when a frame was asked OF IT (``wants_frame``): every
+surface has its own default framebuffer, so a clean one skips the frame and
+the swap and the compositor keeps its last buffer. glfw_utils.request_render
+attributes a request to the surface whose frame or GLFW callback made it
+(render_scope); a request from anywhere else, and any view reporting
+`changed`, is every surface's. By-object / by-function tile invalidations
+reach every surface's cache (TileCacheMasked.window_caches), and a child
+drawing draws its ancestors first (app._surfaces_due).
 """
 from __future__ import annotations
 
@@ -47,6 +56,7 @@ import meltygui.core.input.input_handler as input_handler
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.diagnostics.fps_counter import FpsCounter
 import meltygui.utils.render_utils as views
+import meltygui.core.windowing.glfw_utils as glfw_utils
 from meltygui.core.windowing.glfw_utils import request_render
 
 # --- Per-window state -----------------------------------------------------------
@@ -78,6 +88,9 @@ MODULE_GLOBALS = {
     input_handler: ('_BUTTON_PROBE',),
 }
 _DEFAULTS = None      # Default module globals, captured before the first surface
+# Frames a new surface always draws: the blit cache switches on after the
+# second and its first cached frame follows.
+WARMUP_FRAMES = 3
 _DEBUG = bool(__import__('os').environ.get('MELTY_DEBUG'))
 
 
@@ -137,6 +150,9 @@ class Surface:
         self.stale = False          # closing because its call stopped, not an OS close
         self.children: list = []
         self.frames = 0
+        self.drawn_tick = -1        # the app tick of the last frame() (app._close_stale_children)
+        self.drawn_generation = -1  # glfw_utils' every-surface generation last consumed
+        self.drawn_visible = None   # a window shown again has no buffer: it draws
         self.fps_counter = FpsCounter()
         self.closed = False
         self.last_sent_rect = None
@@ -211,6 +227,9 @@ class Surface:
         self.impl = SplitOverlayRenderer(self.window)
         Melty.init_input_backend(self.window)
         Melty.cache = TileCacheMasked()
+        # Invalidations by object / function made while another window draws
+        # reach this cache, and this window then draws (request_frame).
+        TileCacheMasked.window_caches[Melty.cache] = self.request_frame
         # The blit cache starts OFF and resize() switches it on after the
         # second frame, the studio's schedule (lsd_studio: frame_count 2).
         # Off, nothing is ever tile-cached: every view, every RenderHost
@@ -236,6 +255,7 @@ class Surface:
                 self.parent_linked = wayland_move.set_parent(self.toplevel, parent.toplevel)
         self._hook_callbacks()
         Surface.all.append(self)
+        glfw_utils.register_surface(self)
         # Install the shadow margin BEFORE the first buffer is committed. A
         # deferred IPC resize overwrites Hyprland's restored content size and
         # first maps a content box smaller by twice the inset. Grow only the
@@ -296,12 +316,16 @@ class Surface:
                         interrupted._stash()
                     Surface.active = self
                     self._restore()
+                # A frame the callback asks for is THIS window's.
+                interrupted_scope = glfw_utils.render_scope
+                glfw_utils.render_scope = self
                 try:
                     if extra is not None:
                         extra(*args)
                     if prev is not None:
                         prev(window, *args)
                 finally:
+                    glfw_utils.render_scope = interrupted_scope
                     if interrupted is not self:
                         self._stash()
                         Surface.active = interrupted
@@ -319,6 +343,9 @@ class Surface:
         hook(glfw.set_window_focus_callback, self._on_focus)
         hook(glfw.set_framebuffer_size_callback, self._on_framebuffer_size)
         hook(glfw.set_window_close_callback, lambda *_: request_render())
+        # Damage (an uncomposited X11 expose): a clean surface is not redrawn
+        # otherwise. The native Wayland backend has no such event.
+        hook(glfw.set_window_refresh_callback, lambda *_: request_render())
 
     def _on_focus(self, focused):
         request_render()
@@ -351,7 +378,36 @@ class Surface:
         from meltygui.core.conversion.render_host import RenderHost
         RenderHost.draw_all()
 
+    def request_frame(self):
+        """A frame of THIS window, whichever window's frame or callback asks."""
+        glfw_utils.request_surface_render(self)
+
+    def wants_frame(self):
+        """Whether this tick draws the window (app.run asks each surface in
+        turn, so a request made by an earlier surface's frame counts). It
+        draws when a frame was requested of it (glfw_utils.render_scope: its
+        GLFW callbacks, its own frame's requests, a tile of its cache
+        invalidated from another window), when a request belongs to every
+        window, while it warms up, and when it was shown again. Otherwise
+        nothing of its picture changed: no frame and no swap, the compositor
+        keeps its last buffer. Consumes the request."""
+        requested, self.drawn_generation = glfw_utils.take_surface_request(self, self.drawn_generation)
+        visible = bool(glfw.get_window_attrib(self.window, glfw.VISIBLE))
+        shown = visible and self.drawn_visible is False
+        self.drawn_visible = visible
+        return (requested or shown or self.frames < WARMUP_FRAMES
+                or not Toggles.windows.skip_clean_os_windows)
+
     def frame(self):
+        self.drawn_tick = Melty.app_tick
+        interrupted_scope = glfw_utils.render_scope
+        glfw_utils.render_scope = self
+        try:
+            self._frame()
+        finally:
+            glfw_utils.render_scope = interrupted_scope
+
+    def _frame(self):
         self.activate()
         frame_started = self.fps_counter.frame_started()
         if glfw.window_should_close(self.window):
@@ -491,12 +547,15 @@ class Surface:
         if self not in Surface.all:
             return
         if _DEBUG:
-            print(f'[surface] destroy {self.title!r} (active={getattr(Surface.active, "title", None)!r})', flush=True)
+            print(f'[surface] destroy {self.title!r} after {self.frames} frames '
+                  f'(active={getattr(Surface.active, "title", None)!r})', flush=True)
         for child in list(self.children):
             child.destroy()
         if self.parent is not None and self in self.parent.children:
             self.parent.children.remove(self)
         self.activate()
+        from meltygui.core.cache.tile_cache import TileCacheMasked
+        TileCacheMasked.window_caches.pop(Melty.cache, None)
         from meltygui.core.graphics.gl_state import GLState
         from meltygui.core.graphics.gl_state import current_context
         context = current_context()
@@ -553,6 +612,7 @@ class Surface:
                 pass
         if self in Surface.all:
             Surface.all.remove(self)
+        glfw_utils.forget_surface(self)
         Surface.active = None
         # The imgui context must not be current when destroyed.
         imgui.set_current_context(Surface.owner_context)

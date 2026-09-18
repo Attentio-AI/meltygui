@@ -850,14 +850,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
 
 
 # ── fast_draw_collection: draw_collection without the @render_func wrapper ──
-#
-# The kwargs draw_collection's decoration supplies, resolved here instead.
-# To change a collection's default look change BOTH (the decoration still
-# hosts the windowed / converted collections the fast host hands back).
-FAST_COLLECTION_DEFAULTS = {
-    "use_cache": False, "header_same_line": False, "show_bg": True, "show_instance_vars": False,
-    "align_header": False, "shadow": True, "selectable": False, "bg_offset": -0.8, "wrap": False,
-    "with_header": draw_header, "indent_size": 3, "searchable": True, "child_kwargs": None}
+# (its defaults are draw_collection's own decoration kwargs: one definition)
 # Wrapper-only features: a call carrying any of these (truthy) is handed to
 # the draw_collection wrapper, which owns windows, converters, columns,
 # fixed sizes, footers and the right-click menu. use_cache=True is a caller
@@ -877,27 +870,6 @@ fast_collection_shadow_lift = 1.0
 drag_ghost_fill = (0.32, 0.92)      # (tint brightness, alpha)
 # [tint=(0.95, 0.75, 0.25)]
 drag_ghost_text = (0.92, 0.92, 0.92, 1.0)
-
-
-# draw_collection's signature defaults keyed by its code object, so a
-# hotswapped signature is re-read (the function object survives hotswap).
-_body_defaults_cache = {}
-
-
-def collection_body_defaults(body):
-    """The body's keyword defaults: the wrapper feeds a view's signature
-    defaults to its header too (show_add_delete=False keeps the header's add
-    button off), so they are the fast host's lowest kwargs layer."""
-    import inspect
-    cached = _body_defaults_cache.get(body.__code__)
-    if cached is None:
-        cached = {param_name: param.default
-                  for param_name, param in inspect.signature(body).parameters.items()
-                  if param.default is not inspect.Parameter.empty
-                  and param_name not in ("immediate_dnd", "child_kwargs")}
-        _body_defaults_cache.clear()
-        _body_defaults_cache[body.__code__] = cached
-    return cached
 
 
 def draw_drag_ghost(drag, label, style_manager):
@@ -956,18 +928,17 @@ def fast_draw_collection(input_value=None, **kwargs):
     term still highlights), and everything in FAST_COLLECTION_WRAPPER_KWARGS."""
     from meltygui.core.cache.tile_cache import add_shadow
     from meltygui.core.cache.tile_cache import snap_int
-    from meltygui.core.core_render import OBJ_ATTR_PARAMS
-    from meltygui.core.core_render import _restamp_kwargs
     from meltygui.core.core_render import pop_id
     from meltygui.core.core_render import push_id
-    from meltygui.core.layout.cursor_core import same_line
+    from meltygui.core.rendering.fast_view import bind_fast_draw_state
+    from meltygui.core.rendering.fast_view import close_fast_box
+    from meltygui.core.rendering.fast_view import draw_fast_header
+    from meltygui.core.rendering.fast_view import finish_fast_view
+    from meltygui.core.rendering.fast_view import measure_fast_box
+    from meltygui.core.rendering.fast_view import push_view_tint
+    from meltygui.core.rendering.fast_view import resolve_fast_kwargs
+    from meltygui.core.rendering.fast_view import skip_offscreen
     from meltygui.core.rendering.render_dispatch import compute_bg_color
-    from meltygui.core.rendering.view_identity import get_draw_state
-    from meltygui.core.rendering.view_identity import link_parent
-    from meltygui.core.rendering.view_identity import place_in_parent_window
-    from meltygui.core.rendering.view_identity import view_tile_id
-    from meltygui.core.rendering.view_identity import view_unique
-    from meltygui.state.core_undo import handle_undo
     from meltygui.view.decoration_view import draw_bg
 
     if (not Toggles.Collection.fast_draw_collection or Melty.in_annotation_mode()
@@ -987,127 +958,30 @@ def fast_draw_collection(input_value=None, **kwargs):
     if Melty.depth > Melty.max_depth:
         return (False, None, None) if return_extras else (False, None)
 
-    # ── kwargs layers, lowest first: decoration, type defaults, attribute
-    # defaults, mode, caller, object attrs, `# [..]` comment overrides ──
-    real_type = kwargs.get("real_type", type(input_value))
     collection = kwargs.get("collection", None)
-    key = kwargs.get("key", "")
-    modes = kwargs.pop("mode", None)
-    if modes is not None and not isinstance(modes, tuple):
-        modes = (modes,)
-    mode_stacked = False
-    mode_kwargs = {}
-    for mode in modes or ():
-        if mode is None:
-            continue
-        mode_config = mode.get_config_for(input_value)
-        if mode_config is not None and mode_config.kwargs is not None:
-            mode_kwargs |= mode_config.kwargs
-            mode_kwargs["current_mode"] = mode
-            if mode_config.recursive:
-                mode_kwargs["mode"] = mode
-                if mode is modes[0]:
-                    Melty.mode_stack.append(mode)
-                    mode_stacked = True
-    kwargs = (collection_body_defaults(body) | FAST_COLLECTION_DEFAULTS | Melty.default_kwargs_by_type[real_type]
-              | Melty.default_kwargs_by_attrib_type[kwargs.get("type_collection", type(collection))][key]
-              | kwargs | mode_kwargs)
-    if input_value is not None and not isinstance(input_value, dict):
-        for attr_param in OBJ_ATTR_PARAMS:
-            if attr_param not in kwargs and getattr(input_value, attr_param, None) is not None:
-                kwargs[attr_param] = getattr(input_value, attr_param)
-    # `# [tint=...]` comment overrides: the parent's entry for this key, then
-    # the dict's own (the wrapper's two __overrides__ sources).
-    override_sources = []
-    if isinstance(collection, dict) and isinstance(collection.get("__overrides__"), dict):
-        override_sources.append(collection["__overrides__"].get(f"__{key}__"))
-    if isinstance(input_value, dict):
-        override_sources.append(input_value.get("__overrides__"))
-    for overrides in override_sources:
-        if isinstance(overrides, dict):
-            for override_key, override_value in overrides.items():
-                if not (isinstance(override_key, str) and override_key.startswith("__")):
-                    kwargs[override_key] = override_value
+    kwargs, mode_stacked = resolve_fast_kwargs(body, draw_collection.__header_defaults__, input_value, kwargs,
+                                               skip_defaults=("immediate_dnd", "child_kwargs"))
     if kwargs.get("view_func") is not None and kwargs["view_func"] is not fast_draw_collection:
         # A value / comment that picks its own renderer is the wrapper's to route.
         if mode_stacked:
             Melty.mode_stack.pop()
         return draw_collection(input_value, return_extras=return_extras, **kwargs)
     kwargs.pop("view_func", None)
-    if len(Melty.search_stack) > 0:
-        kwargs["search_text"] = Melty.search_stack[-1]
 
-    # ── identity: hashed as draw_collection, so a collection keeps its saved
-    # draw_state (expanded, scroll) whichever host draws it ──
-    name = kwargs.get("name", "")
-    if name == "":
-        name = str(key) + collection.__class__.__name__
-    unique, suffix = view_unique(name, body.__name__, key=key, unique_name=kwargs.get("unique_name", name),
-                                 old_suffix=kwargs.get("suffix", None))
-    draw_state = get_draw_state(unique)
-    if draw_state._view_func is not None and draw_state._view_func is not body:
-        draw_state.invalidate_up(max_depth=6)
-    draw_state._view_func = body
-    draw_state._wrapper = fast_draw_collection
-    tile_id = view_tile_id(name, unique, draw_state)
-    draw_state._tile_id = tile_id
-    place_in_parent_window(draw_state, left=kwargs.get("left"), view_offset=kwargs.get("view_offset", True))
-    link_parent(draw_state)
-    if "bg_offset" not in kwargs and draw_state.__dict__.get("bg_offset") is not None:
-        kwargs["bg_offset"] = draw_state.__dict__["bg_offset"]
-    if kwargs.get("icon") is None and draw_state.__dict__.get("icon") is not None:
-        kwargs["icon"] = draw_state.__dict__["icon"]
+    # The host's own draw_state bookkeeping is not a user edit: silenced, a
+    # DrawState write skips change tracking (the wrapper does the same, see
+    # invalidation_decoration.new_setattr). Tracking is back on for the body.
+    caller_silence = Melty.silence_invalidate
+    Melty.silence_invalidate = True
+    draw_state = bind_fast_draw_state(body, fast_draw_collection, input_value, kwargs)
+    if skip_offscreen(draw_state, kwargs):
+        Melty.silence_invalidate = caller_silence
+        if mode_stacked:
+            Melty.mode_stack.pop()
+        return (False, input_value, draw_state) if return_extras else (False, input_value)
+    unique, name, tile_id = draw_state.unique, draw_state.name, draw_state._tile_id
     style_manager = Melty.style_manager
-    kwargs.update(input_value=input_value, draw_state=draw_state, name=name, unique=unique, suffix=suffix,
-                  style_manager=style_manager, func=body, render_func=fast_draw_collection)
-    _restamp_kwargs(draw_state, kwargs)
-    draw_state.unique = unique
-    draw_state.name = name
-    draw_state.closable = False
-    draw_state.use_cache = False
-    draw_state._collection = Melty.collection_stack[-1] if len(Melty.collection_stack) > 0 else None
-    draw_state._raw_input_value = input_value
-    draw_state._bg_stack = list(Melty.bg_stack)
-    draw_state._bg_depth = Melty.bg_depth
-    if kwargs.get("expanded") is not None:
-        draw_state.expanded = kwargs["expanded"]
-        kwargs["is_tree"] = False
-    if draw_state.expanded != draw_state._last_expanded:
-        draw_state.invalid_content_height = True
-        if draw_state._parent is not None:
-            draw_state._parent.invalid_content_height = True
-        draw_state._last_expanded = draw_state.expanded
-
-    # ── box: left / top from the cursor, width from the enclosing wrap frame,
-    # height from the last measure (what the bg, clip and shadow use) ──
-    content_margin = len(Melty.bg_stack) * 2.0
-    draw_state.left, draw_state.top = draw_state.abs_left, draw_state.abs_top
-    live_clip = Melty.get_clip_rect()
-    if len(Melty.fixed_size_stack) > 0:
-        wrap_frame = Melty.fixed_size_stack[-1]
-        wrap_left, wrap_width = wrap_frame.abs_left, wrap_frame.width
-        if live_clip is not None and wrap_width is not None and live_clip[2] < wrap_left + wrap_width:
-            wrap_width = max(0, live_clip[2] - wrap_left)
-    elif live_clip is not None:
-        wrap_left, wrap_width = live_clip[0], live_clip[2] - live_clip[0]
-    else:
-        wrap_left, wrap_width = 0, imgui.get_io().display_size[0]
-    available_width = wrap_width - (draw_state.abs_left - wrap_left) - content_margin
-    draw_state.width = snap_int(max(available_width, kwargs.get("min_width", 20) or 20))
-    draw_state.auto_resize = True
-    draw_state.corner_radius = kwargs.get("corner_radius", 5.0)
-    header_same_line = kwargs.get("header_same_line", False)
-    single_line_width = available_width - (draw_state.header_width + draw_state.header_end_width) - 10
-    if "content_width" in kwargs:
-        draw_state.multi_line = True
-    elif ((single_line_width < (kwargs.get("min_width", draw_state.min_width) or 30)
-           or (draw_state.height or 0) - draw_state.footer_height > 50) and not header_same_line):
-        draw_state.multi_line = True
-        draw_state.content_width = available_width
-    else:
-        draw_state.multi_line = False
-        draw_state.content_width = single_line_width
-    draw_state.footer_height = draw_state.footer_width = draw_state.header_end_width = 0
+    available_width, live_clip = measure_fast_box(draw_state, kwargs)
 
     # ── depth, z order and the shadow the box casts. add_shadow takes the
     # lift relative to the surface we sit on, so it runs BEFORE shadow_depth
@@ -1131,49 +1005,15 @@ def fast_draw_collection(input_value=None, **kwargs):
     draw_state.z_pos = Melty.z_pos
     Melty.shadow_depth = Melty.shadow_depth + total_z_offset + (1 if kwargs.get("shadow", False) else 0)
     draw_state.depth_and_layer = (Melty.shadow_depth, Melty.paint_rank)
-    draw_state._bounding_hovered = draw_state.is_bounding_hovered()
-    if has_box:
-        # What hover_eligible gates every on_action of this view on (the
-        # header's buttons, the rows' drag handles).
-        draw_state.fully_clipped = Melty.fully_inside_clip(
-            rect=(draw_state.abs_left, draw_state.abs_top, draw_state.width, draw_state.height))
-        draw_state.inside_clip = Melty.inside_clip(
-            rect=(draw_state.abs_left, draw_state.abs_top + draw_state.header_height,
-                  draw_state.width, draw_state.height))
     kwargs["depth"] = Melty.depth
     push_id(unique)
-    if live_clip is not None:
-        draw_state.clip_rect = live_clip
-        window = draw_state.parent_window
-        draw_state._clip_win_anchor = ((window._abs_left(), window._abs_top())
-                                       if window is not None and window is not draw_state else None)
 
     changed, value = False, input_value
     previous_tint = None
     bg_pushed = False
     try:
-        # ── tint: a parsed class's @defaults tint, else the resolved tint kwarg ──
-        decoration_tint = None
-        if isinstance(input_value, dict) and isinstance(input_value.get("decorators"), dict):
-            for decorator_value in input_value["decorators"].values():
-                if (isinstance(decorator_value, dict)
-                        and not (decorator_value.get("attr") or decorator_value.get("attrib"))
-                        and isinstance(decorator_value.get("tint"), (tuple, list))
-                        and len(decorator_value["tint"]) >= 3):
-                    decoration_tint = decorator_value["tint"]
         dynamic_style = kwargs.get("style", kwargs.get("tint"))
-        if not Toggles.dynamic_styles:
-            new_tint = kwargs.get("tint")
-            if not (isinstance(new_tint, (tuple, list)) and len(new_tint) >= 3):
-                new_tint = decoration_tint
-            if new_tint is None and getattr(collection, "__tint__", None) and name in collection.__tint__:
-                new_tint = collection.__tint__[name]
-            if new_tint is None and draw_state.tint is not None and kwargs.get("show_tint", False):
-                new_tint = draw_state.tint
-            if new_tint is not None:
-                previous_tint = style_manager.get_tint()
-                style_manager.set_imgui_tint(*new_tint[:4])
-                kwargs["tint"] = style_manager.get_tint()
+        previous_tint = push_view_tint(draw_state, input_value, kwargs)
         draw_state.bg_color = compute_bg_color(bg_offset=kwargs.get("bg_offset", None), nested_bg=True,
                                                max_bg_depth=kwargs.get("max_bg_depth", None),
                                                max_bg_value=kwargs.get("max_bg_value", None))
@@ -1214,31 +1054,9 @@ def fast_draw_collection(input_value=None, **kwargs):
         # ── header ──
         outline_margin = 3 if kwargs.get("show_bg", False) else 0
         imgui.begin_group()
-        header = kwargs.get("with_header", None)
-        if header is not None and kwargs.get("show_header", True):
-            imgui.begin_group()
-            header_start = imgui.get_cursor_screen_pos()
-            imgui.set_cursor_screen_pos((header_start[0] + outline_margin
-                                         + float(kwargs.get("header_indent", 0.0) or 0.0),
-                                         header_start[1] + outline_margin))
-            header_return = header(**kwargs)
-            if isinstance(header_return, tuple) and len(header_return) >= 2 and header_return[0]:
-                changed, value = True, header_return[1]
-            imgui.set_cursor_screen_pos(header_start)
-            imgui.end_group()
-            if imgui.is_item_active() or imgui.is_item_activated():
-                Melty.report_imgui_active()
-            draw_state.header_left, draw_state.header_top = header_start
-            draw_state.header_width, draw_state.header_height = imgui.get_item_rect_size()
-            if draw_state.parent_window is not None and not draw_state.multi_line:
-                draw_state.parent_window.max_header_width = min(
-                    Toggles.Collection.max_preferred_header_width,
-                    max(draw_state.parent_window.max_header_width, draw_state.header_natural_width))
-            if not draw_state.multi_line:
-                same_line(spacing=0.0)
-        else:
-            draw_state.header_left, draw_state.header_top = draw_state.left, draw_state.top
-            draw_state.header_width = draw_state.header_height = 0
+        header_changed, header_value = draw_fast_header(draw_state, kwargs, outline_margin)
+        if header_changed:
+            changed, value = True, header_value
 
         # ── body ──
         if kwargs.get("indent_size", 0) > 0:
@@ -1258,7 +1076,9 @@ def fast_draw_collection(input_value=None, **kwargs):
             start_cursor = imgui.get_cursor_screen_pos()
             body_kwargs = {k: v for k, v in kwargs.items() if k not in ("input_value", "immediate_dnd")}
             body_kwargs.setdefault("meta", None)
+            Melty.silence_invalidate = False
             body_return = body(input_value, immediate_dnd=True, **body_kwargs)
+            Melty.silence_invalidate = True
             draw_state.observed_content_height = int(imgui.get_cursor_screen_pos()[1] - start_cursor[1])
             if isinstance(body_return, tuple) and len(body_return) >= 2:
                 if body_return[0]:
@@ -1281,23 +1101,7 @@ def fast_draw_collection(input_value=None, **kwargs):
         draw_state._content_rect = imgui.get_item_rect_size()
         if draw_state.expanded:
             draw_state.content_height = draw_state._content_rect[1]
-        # The box closes with no trailing item spacing (the wrapper's final
-        # end_group): the collection's own item_spacing_y spaces the rows.
-        imgui.push_style_var(imgui.STYLE_ITEM_SPACING, (0, 0))
-        imgui.push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
-        imgui.end_group()
-        imgui.pop_style_var(2)
-        box = imgui.get_item_rect_size()
-        if imgui.is_item_active() or imgui.is_item_activated():
-            Melty.report_imgui_active()
-
-        # ── measure: width stays the wrap width (wrap=False); height is the flow ──
-        previous_height = draw_state.height
-        draw_state.height = min(snap_int(box[1]), 70000)
-        if draw_state.height != previous_height:
-            draw_state.invalid_content_height = True
-            if draw_state._parent is not None:
-                draw_state._parent.invalid_content_height = True
+        if close_fast_box(draw_state, kwargs):
             # The bg / shadow above were sized from the previous measure.
             draw_state.invalidate()
             from meltygui.core.windowing.glfw_utils import request_render
@@ -1333,28 +1137,9 @@ def fast_draw_collection(input_value=None, **kwargs):
             Melty.channels_split = False
             imgui.get_window_draw_list().channels_merge()
 
-    if Melty.cache is not None:
-        Melty.cache.mark_uncached(name, input_value, collection, tile_id, draw_state)
-
-    # ── undo / redo: a request registered for this draw_state replaces its
-    # output (a drop's inverse mutation applies to the live collection) ──
-    if draw_state in Melty.undo_requests:
-        requested, target_ui = Melty.undo_requests.pop(draw_state)
-        if getattr(requested, "__collection_mutation__", False):
-            try:
-                _, value, _ = requested.apply(value)
-                draw_state.invalid_content_height = True
-                invalidate_collection_rows(draw_state)
-            except Exception as mutation_error:
-                print(f"undo mutation apply failed: {mutation_error}")
-        else:
-            value = requested
-        changed = True
-        draw_state.apply_undo_state(target_ui)
-        draw_state.invalidate()
-    else:
-        handle_undo(changed, input_value, value, draw_state)
-
+    changed, value = finish_fast_view(draw_state, input_value, changed, value,
+                                      on_rows_moved=invalidate_collection_rows)
+    Melty.silence_invalidate = caller_silence
     if return_extras:
         return changed, value, draw_state
     return changed, value
@@ -1554,10 +1339,20 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
     _info = (info() if callable(info) else info) if is_open else None
     picker_h = color_picker_height(4, bool(_info), has_owner=view_owner is not None)
     # Anchor under the chip; flip up past the display bottom (draw_tuple).
-    _pop_y = color_picker_top_offset()
     _disp_w, _disp_h = imgui.get_io().display_size
-    if y + size + _pop_y + picker_h > _disp_h - 10:
-        _pop_y = -(picker_h + 38)
+
+    def popover_top_offset(height):
+        """Under the chip; flipped above it past the display bottom; pinned
+        to the display top when neither side has the room (a short window),
+        so the picker's header and first rows are never cut off."""
+        below = color_picker_top_offset()
+        if y + size + below + height <= _disp_h - 10:
+            return below
+        above = -(height + 38)
+        display_margin = 4
+        return max(above, display_margin - (y + size))
+
+    _pop_y = popover_top_offset(picker_h)
     # Flip LEFT the same way: a chip at a row's right edge (the file
     # listing's tint picker) cannot open off the display's right side, so
     # anchor the picker off the chip's right edge instead of its left.
@@ -1569,9 +1364,7 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
     if residual_tab:
         picker_w = max(picker_w, 520)
         picker_h = max(picker_h, 560)
-        _pop_y = color_picker_top_offset()
-        if y + size + _pop_y + picker_h > _disp_h - 10:
-            _pop_y = -(picker_h + 38)
+        _pop_y = popover_top_offset(picker_h)
     if x + picker_w > _disp_w - 10:
         _pop_x = -(picker_w - size)
     imgui.set_cursor_screen_pos((x, y + size))

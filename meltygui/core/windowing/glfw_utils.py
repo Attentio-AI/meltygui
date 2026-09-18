@@ -1292,6 +1292,70 @@ def _summarize(value):
 _needs_render = threading.Event()
 frames_left = 0
 
+# Which OS windows a request is for (surface.py draws only those; the studio,
+# with no Surface, never reads this). A request made on the render thread while
+# a Surface's frame or GLFW callback runs (render_scope) is that surface's. Any
+# other one - a worker thread, the app loop between frames, a view reporting
+# `changed` (note_shared_change) - cannot be attributed and is every surface's:
+# each surface compares the generation it last drew at.
+render_scope = None
+_render_thread_id = threading.main_thread().ident
+_open_surfaces = set()
+_requested_surfaces = set()
+_all_surfaces_generation = 0
+
+
+def register_surface(surface):
+    _open_surfaces.add(surface)
+
+
+def forget_surface(surface):
+    _open_surfaces.discard(surface)
+    _requested_surfaces.discard(surface)
+
+
+def note_shared_change():
+    """A view reported `changed`: a value any OS window may show was edited.
+    Every surface draws a frame, the other windows' included (hence the wake:
+    the edit's own request, if any, was only the editing window's)."""
+    global _all_surfaces_generation
+    _all_surfaces_generation += 1
+    if len(_open_surfaces) > 1:
+        _wake_render_loop()
+
+
+def request_surface_render(surface):
+    """A frame of `surface`, whichever window's frame or callback is running:
+    a parent handing its child window a new value, a child's result waiting
+    for its parent."""
+    global render_scope
+    if threading.get_ident() != _render_thread_id:
+        request_render()
+        return
+    interrupted_scope, render_scope = render_scope, surface
+    try:
+        request_render()
+    finally:
+        render_scope = interrupted_scope
+
+
+def take_surface_request(surface, drawn_generation):
+    """Consume what was requested of `surface` since it last asked: returns
+    (requested, generation) - the generation is what the surface passes back
+    next time. Render thread only."""
+    requested = surface in _requested_surfaces
+    _requested_surfaces.discard(surface)
+    generation = _all_surfaces_generation
+    return requested or generation != drawn_generation, generation
+
+
+def _wake_render_loop():
+    _needs_render.set()
+    try:
+        glfw.post_empty_event()
+    except Exception:
+        pass  # glfw torn down mid-call (shutdown/restart) - nothing to wake
+
 
 # [tint=(0.191, 0.328, 0.191), show_tint=True]
 def request_render(for_frames: int | None = None):
@@ -1336,8 +1400,10 @@ def request_render(for_frames: int | None = None):
             notify(f"request_render  [{fn}]  {threading.current_thread().name}",
                    tint=(0.4, 0.8, 1.0), tag="request_render", stack=stack, urgent=False)
 
-    _needs_render.set()
-    try:
-        glfw.post_empty_event()
-    except Exception:
-        pass  # glfw torn down mid-call (shutdown/restart) - nothing to wake
+    global _all_surfaces_generation
+    scope = render_scope
+    if scope is not None and threading.get_ident() == _render_thread_id:
+        _requested_surfaces.add(scope)
+    else:
+        _all_surfaces_generation += 1
+    _wake_render_loop()

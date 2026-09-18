@@ -1,7 +1,9 @@
 """Absolute coordinates must observe parent geometry changes within a frame."""
 import pytest
 
-from meltygui.state.new_core_model import Anchor, DrawState
+from meltygui.state.new_core_model import Anchor
+from meltygui.state.new_core_model import DrawState
+from meltygui.state.new_core_model import Pin
 from meltygui.core.melty import Melty
 
 
@@ -44,6 +46,70 @@ def test_absolute_position_parent_cycle_remains_bounded(monkeypatch):
     first.parent_window, second.parent_window = second, first
     assert isinstance(first.abs_left, int)
     assert isinstance(first.abs_top, int)
+
+
+def _nested_chain(monkeypatch, depth=6):
+    monkeypatch.setattr(Melty, 'frame_count', 500)
+    monkeypatch.setattr(DrawState, '_cap_to_display', lambda self, pos, axis: pos)
+    chain = [DrawState() for _ in range(depth)]
+    for i, node in enumerate(chain):
+        node.width, node.height = 400, 300
+        node.left_offset, node.top_offset = 5, 7
+        node.window_pos = (10., 20.)
+        if i:
+            node.parent_window = node._parent = chain[i - 1]
+    return chain
+
+
+def test_cached_position_hit_reads_nothing_else(monkeypatch):
+    """The regression of 2026-09-16: a hit walked the parent chain. A hit is
+    one key comparison at any nesting depth (docs/WINDOW_COLLISION_COLUMNS.md)."""
+    chain = _nested_chain(monkeypatch)
+    child = chain[-1]
+    expected = (child.abs_left, child.abs_top)
+    computed = []
+    monkeypatch.setattr(DrawState, '_abs_left', lambda self: computed.append(self) or 0)
+    monkeypatch.setattr(DrawState, '_abs_top', lambda self: computed.append(self) or 0)
+    monkeypatch.setattr(DrawState, '_ancestor_scroll', lambda self: computed.append(self) or (0, 0))
+    for _ in range(100):
+        assert (child.abs_left, child.abs_top) == expected
+    assert computed == []
+
+
+def test_unchanged_geometry_write_keeps_every_position_cached(monkeypatch):
+    chain = _nested_chain(monkeypatch)
+    child = chain[-1]
+    child.abs_left
+    version = Melty.geometry_version
+    for node in chain:                      # what the render wrapper does each run
+        node.left_offset, node.top_offset = 5, 7
+        node.width, node.height = 400, 300
+        node.window_pos = (10., 20.)
+        node.parent_window = node.parent_window
+    assert Melty.geometry_version == version
+    chain[0].window_pos = (11., 20.)
+    assert Melty.geometry_version == version + 1
+
+
+@pytest.mark.parametrize('pin', [Pin.PARENT, Pin.WINDOW, Pin.CLIP])
+def test_pinned_window_is_cached_and_follows_a_dragged_ancestor(monkeypatch, pin):
+    chain = _nested_chain(monkeypatch)
+    spawner = chain[-1]
+    menu = DrawState()
+    menu.width, menu.height = 200, 100
+    menu.left_offset, menu.top_offset = 0, 0
+    menu.window_pos = (0., 0.)
+    menu.parent_window, menu._parent = chain[-2], spawner
+    menu.pin_to_clip = pin
+    before = (menu.abs_left, menu.abs_top)
+    chain[1].window_pos = (110., 70.)       # a window far up the chain is dragged
+    assert (menu.abs_left, menu.abs_top) == (before[0] + 100, before[1] + 50)
+    walks = []
+    original = DrawState._abs_left
+    monkeypatch.setattr(DrawState, '_abs_left', lambda self: walks.append(self) or original(self))
+    for _ in range(50):
+        menu.abs_left
+    assert walks == []
 
 
 def test_state_enum_classification_survives_whole_module_hotswap(monkeypatch):
