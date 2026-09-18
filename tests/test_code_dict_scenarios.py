@@ -298,7 +298,7 @@ def test_editor_save_after_a_code_dict_write_wins_on_the_same_key(project):
     draw_state, address, text = editor_open(project.Settings)
     save_file(address, str(text).replace("speed = 2.25", "speed = 3.25"), codec=TypeCodec, parent_ds=draw_state)
     assert "speed = 3.25" in pending_text(project)
-    assert settings.refresh() is True
+    assert settings["speed"] == 1.5                          # the read caught up, no refresh() call
     assert settings._core.source_value(("speed",)) == 3.25
     assert settings["speed"] == 1.5                          # effective: nobody hotswapped
 
@@ -312,9 +312,79 @@ def test_the_editors_run_hotswaps_what_code_dict_queued(project):
     PendingSave.recompile_all()                              # Ctrl+Enter in the editor
     assert project.Settings is live_class
     assert live_class.speed == 2.25 and live_class.SomeInnerClass.my_int_toggle == 4
-    viewer.refresh()
-    assert viewer["speed"] == 2.25
+    assert viewer["speed"] == 2.25                           # the hotswap event, no refresh() call
     assert disk_text(project) == SOURCE                      # still nothing on disk
+
+
+# ── events: nobody calls refresh() ───────────────────────────────────────────
+
+class RecordingCache(StubCache):
+    """Records the object ids blit was asked to repaint."""
+
+    def __init__(self):
+        self.repainted = []
+
+    def invalidate_up_by_obj(self, obj, **kwargs):
+        self.repainted.append(id(obj))
+
+
+def test_an_editor_save_updates_the_dict_and_repaints_its_views(project, monkeypatch):
+    cache = RecordingCache()
+    monkeypatch.setattr(Melty, "cache", cache)
+    settings = CodeDict(project.Settings)
+    inner = settings["SomeInnerClass"]
+    draw_state, address, text = editor_open(project.Settings)
+    save_file(address, str(text).replace("    nothing = None\n", "    nothing = None\n    from_editor = 5\n"),
+              codec=TypeCodec, parent_ds=draw_state)
+    assert id(settings) in cache.repainted and id(inner) in cache.repainted
+    assert settings["from_editor"] == 5                      # first read after the event
+    assert settings["SomeInnerClass"] is inner
+
+
+def test_a_discarded_pending_edit_reverts_the_dict(project):
+    settings = CodeDict(project.Settings)
+    draw_state, address, text = editor_open(project.Settings)
+    save_file(address, str(text).replace("    nothing = None\n", "    nothing = None\n    from_editor = 5\n"),
+              codec=TypeCodec, parent_ds=draw_state)
+    assert "from_editor" in settings
+    PendingSave.discard_entry_for(address)                   # the editor's revert
+    assert "from_editor" not in settings
+
+
+def test_a_core_ignores_its_own_writes_and_other_spans(project):
+    settings = CodeDict(project.Settings, write_to=Codebase)
+    other = CodeDict(project.Other, write_to=Codebase)
+    parse = settings._core.parse
+    settings["speed"] = 2.25                                 # its own pending save
+    other["value"] = 200                                     # another span of the same file
+    assert settings._core.source_stale is False
+    assert settings["speed"] == 2.25 and settings._core.parse is parse   # never re-parsed
+
+
+def test_a_whole_file_pending_edit_reaches_every_span(project):
+    settings, other = CodeDict(project.Settings), CodeDict(project.Other)
+    module = CodeDict(project, write_to=Codebase)
+    module["LIMIT"] = 11                                     # queues the whole file
+    assert settings._core.source_stale and other._core.source_stale
+    assert settings["speed"] == 1.5 and other["value"] == 100
+    assert not settings._core.source_stale
+
+
+def test_a_write_repaints_the_other_handles_views_only(project, monkeypatch):
+    cache = RecordingCache()
+    monkeypatch.setattr(Melty, "cache", cache)
+    writer = CodeDict(project.Settings, write_to=Codebase)
+    viewer = CodeDict(project.Settings)
+    writer["SomeInnerClass"]["my_int_toggle"] = 2
+    assert id(viewer["SomeInnerClass"]) in cache.repainted
+    assert id(writer["SomeInnerClass"]) not in cache.repainted
+
+
+def test_a_direct_disk_write_is_not_watched(project):
+    settings = CodeDict(project.Settings)
+    write_disk(project, SOURCE.replace("    nothing = None\n", "    nothing = None\n    external = 42\n"))
+    assert "external" not in settings                        # pending changes are what the dict follows
+    assert settings._core.source_stale is False
 
 
 # ── the flush ─────────────────────────────────────────────────────────────────
@@ -534,8 +604,7 @@ def test_class_recompile_keeps_identity_and_handles_follow(project):
     class_source = SOURCE[SOURCE.index("class Settings:"):SOURCE.index("class Other:")]
     _recompile_class(live_class, class_source.replace("speed = 1.5", "speed = 6.5"), project.__file__)
     assert project.Settings is live_class and live_class.speed == 6.5
-    assert settings.refresh() is True
-    assert settings["speed"] == 6.5 and settings["SomeInnerClass"] is inner
+    assert settings["speed"] == 6.5 and settings["SomeInnerClass"] is inner   # no refresh() call
     settings["SomeInnerClass"]["my_int_toggle"] = 2           # same core, still writable
     assert live_class.SomeInnerClass.my_int_toggle == 2
     assert code_dict_model._core_for(live_class)[0] is settings._core

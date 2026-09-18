@@ -4098,10 +4098,23 @@ class Melty:
         # DragDrop.frame_update so a re-registered floating drag window is
         # included.
         _ef_mark("discard")   # TEMP perf
+        # registered_windows spans every OS window of the process; only the
+        # roots THIS surface draws belong in its channels and paint order. A
+        # child OS window's root (Settings, the file dialog) otherwise lands
+        # in the parent's window-occlusion mask at its own local (0, 0) and
+        # the specular pass outlines its rect inside the parent.
+        from meltygui.core.windowing.surface import Surface
+        surface_roots = (getattr(Surface.active, "root_windows", None)
+                         if Surface.active is not None else None)
+
+        def drawn_here(root_ds):
+            return surface_roots is None or id(root_ds) in surface_roots
+
         raw_window_indices = set()
         for w in cls.registered_windows.values():
             w_ds = getattr(w, 'draw_state', None)
-            if w_ds is not None and not w_ds.closed and w_ds.layer is not None:
+            if (w_ds is not None and not w_ds.closed and w_ds.layer is not None
+                    and drawn_here(w_ds)):
                 raw_window_indices.add(w_ds.window_index)
         for l_idx, l_ds_list in cls.root_draw_states_by_layer.items():
             for d_idx in range(len(l_ds_list)):
@@ -4118,7 +4131,8 @@ class Melty:
         paint_ordered = []
         for seq, w in enumerate(cls.registered_windows.values()):
             w_ds = getattr(w, 'draw_state', None)
-            if w_ds is not None and not w_ds.closed and w_ds.layer is not None:
+            if (w_ds is not None and not w_ds.closed and w_ds.layer is not None
+                    and drawn_here(w_ds)):
                 paint_ordered.append(((w_ds.layer, 0, seq), w_ds))
         for l_idx, l_ds_list in cls.root_draw_states_by_layer.items():
             for d_idx, n_ds in enumerate(l_ds_list):

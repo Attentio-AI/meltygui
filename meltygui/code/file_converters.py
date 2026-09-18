@@ -788,6 +788,19 @@ def _recompile(func: types.FunctionType, source: str,
         return e
 
     Melty.cache.invalidate_up_by_func(func, max_depth=10)
+    _announce_hotswap(func)
+
+
+def _announce_hotswap(live) -> None:
+    """A function, class or module was swapped in place: its live values may
+    have moved. The blit invalidations beside each call repaint the views
+    drawn FROM the object; this tells the consumer that mirrors it as data
+    (CodeDict registers 'definition_hotswapped')."""
+    try:
+        from meltygui.core.runtime.extensions import call
+        call('definition_hotswapped', live)
+    except Exception as e:
+        print_stack_trace(exception=e)
 
 
 def _exec_file_imports(filename: str, namespace: dict) -> None:
@@ -852,11 +865,13 @@ def _recompile_class(cls: type, source: str, filename: str) -> None:
     _hotswap_class(cls, new_cls, src_map=_attr_source_map(dedented), qualname=cls.__name__)
     _redirect_class_registrations(cls, new_cls)
     Melty.cache.invalidate_up_by_obj(cls, max_depth=10)
+    _announce_hotswap(cls)
 
     def _restore(c=cls, snap=_prev_cls):
         _hotswap_class(c, snap, force=True)
         _redirect_class_registrations(c, snap)
         Melty.cache.invalidate_up_by_obj(c, max_depth=10)
+        _announce_hotswap(c)
     # Class bodies compile at buffer-relative line numbers (the editor shows the
     # whole class span starting at line 1), so no line base offset.
     _register_hotswap(cls, _restore, _class_code_objects(new_cls), line_base=0)
@@ -1071,6 +1086,7 @@ def _recompile_module(module: types.ModuleType, source: str,
     for c in _swapped_classes:
         _patch_constructor_literals(c, source)
         Melty.cache.invalidate_up_by_obj(c, max_depth=10)
+    _announce_hotswap(module)
 
 
 # An enum's member bookkeeping. These are ordinary (non-dunder) class attrs, so

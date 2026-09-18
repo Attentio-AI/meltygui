@@ -42,6 +42,18 @@ wins on that span). Before a Codebase write the core compares the file's
 the pending overlay when another writer moved it, so a write never reverts
 somebody else's key.
 
+EVENTS. A user of a CodeDict draws it and does nothing else. The model
+registers for two framework events when it is imported: a pending save set
+or dropped on a span (PendingSave: the editor saved, a merge landed, another
+writer), and a definition hotswapped in place (the editor's Run, a file
+recompile). An event that touches a core flags it stale and invalidates the
+blit tiles of every handle of that core by object id, so their renderers
+redraw; the redraw's first read re-parses (or re-reads the live values) on
+the reading thread and updates the handles in place. Pending changes are the
+truth the dict follows; a direct disk write is not watched (the framework
+turns external changes into pending ones), it is only checked when a
+Codebase write needs a correct splice.
+
 Values need a source form to reach Codebase or LaunchOverride (literals,
 enum members, what core_syntax.render accepts); every sink validates before
 any of them writes. A mutable leaf that is not a dict or list is replaced by
@@ -71,6 +83,7 @@ from meltygui.code.new_codecs import FunctionCodec
 from meltygui.code.new_codecs import ModuleCodec
 from meltygui.code.new_codecs import TypeCodec
 from meltygui.core.melty import Melty
+from meltygui.core.runtime import extensions
 from meltygui.core.runtime import launch_override
 from meltygui.editor.pending_save import PendingSave
 from meltygui.editor.pending_save import three_way_merge
@@ -251,6 +264,10 @@ class _CodeCore:
         # path -> value of every Codebase write still pending: what is replayed
         # when the file changed on disk under them and a text merge conflicts.
         self.journal = {}
+        # Set by the framework events (any thread), consumed by the next read.
+        self.source_stale = False
+        self.live_stale = False
+        self.writing = False
         # path -> [weakref to each handle at that path]
         self.handles = {}
         self.load()
@@ -392,16 +409,73 @@ class _CodeCore:
 
     def write(self, handle, key, value):
         """One assignment (or deletion) from `handle`: validate against all of
-        its sinks, write to them, mirror into every handle at the path."""
+        its sinks, write to them, mirror into every handle at the path and
+        repaint the views of the OTHER handles (the writer's view reports its
+        own change)."""
         path = handle._path + (key,)
         value = _plain(value)
         sinks = sorted(handle._write_to, key=lambda sink: SINK_ORDER.index(sink.__name__))
         for sink in sinks:
             sink.validate(self, path, value)
-        for sink in sinks:
-            sink.write(self, path, value)
-        for other in self.handles_at(handle._path):
+        self.writing = True         # our own pending save is not news to us
+        try:
+            for sink in sinks:
+                sink.write(self, path, value)
+        finally:
+            self.writing = False
+        others = [other for other in self.handles_at(handle._path)]
+        for other in others:
             other._mirror(key, value)
+        _repaint(other for other in others if other is not handle)
+
+    def catch_up(self):
+        """Apply what the events flagged, on the reading thread."""
+        source, self.source_stale, self.live_stale = self.source_stale, False, False
+        if source:
+            self.reload()
+        else:
+            for handle in self.live_handles():
+                handle._fill()
+
+    def touches(self, address):
+        """Whether a pending change at `address` is about this core's span."""
+        mine = self.address
+        if mine is None or address is None or address.path != mine.path:
+            return False
+        if address.start is None or mine.start is None:
+            return True             # a whole-file entry covers every span
+        return address.start < mine.end and mine.start < address.end
+
+
+def _repaint(handles):
+    """Invalidate the blit tiles whose input is one of `handles` (blit maps a
+    renderer's input object id to its tiles) and wake the loop."""
+    if Melty.cache is None:
+        return
+    for handle in handles:
+        Melty.cache.invalidate_up_by_obj(handle, max_depth=HOTSWAP_INVALIDATE_DEPTH)
+    from meltygui.core.windowing.glfw_utils import request_render
+    request_render()
+
+
+def _on_pending_save_changed(address):
+    for core in list(_cores.values()):
+        if not core.writing and core.touches(address):
+            core.source_stale = True
+            _repaint(core.live_handles())
+
+
+def _on_definition_hotswapped(live):
+    module_name = live.__name__ if isinstance(live, types.ModuleType) else getattr(live, "__module__", None)
+    for core in list(_cores.values()):
+        if core.module_name == module_name and not core.writing:
+            core.live_stale = True
+            _repaint(core.live_handles())
+
+
+# Registered by name, so a hotswap of this module replaces the callbacks.
+extensions.register('pending_save_changed', _on_pending_save_changed)
+extensions.register('definition_hotswapped', _on_definition_hotswapped)
 
 
 def _core_for(live):
@@ -475,6 +549,9 @@ class CodeDict(dict):
         if loader is not None:
             self._pending_source = None
             CodeDict.__init__(self, loader(), self._write_to, list_package=self._list_package)
+        core = self._core
+        if core is not None and (core.source_stale or core.live_stale):
+            core.catch_up()
 
     # -- filling ---------------------------------------------------------
 
@@ -562,8 +639,10 @@ class CodeDict(dict):
         return value
 
     def refresh(self):
-        """Re-read the source (when it moved) and the live values. Returns
-        whether this handle changed."""
+        """Re-read the source (when it moved) and the live values now, without
+        waiting for an event: for a caller outside the framework's event flow
+        (a script, a test, a disk write nothing announced). Returns whether
+        this handle changed."""
         self._ensure()
         if self._core is None:
             return False

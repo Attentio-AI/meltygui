@@ -231,6 +231,20 @@ class PendingSave:
             cls.pending_saves.pop(hit[0], None)
             cls.originals.pop(hit[0], None)
         cls.originals.pop(address, None)
+        if hit is not None:
+            cls._announce_change(hit[0])
+
+    @classmethod
+    def _announce_change(cls, address):
+        """The queued edit of `address` was set or dropped: tell the consumer
+        that is not a draw_state (CodeDict registers 'pending_save_changed';
+        the per-draw_state wake is _wake_file_watchers). Runs on the queuing
+        thread, so the callback only flags and invalidates."""
+        try:
+            from meltygui.core.runtime.extensions import call
+            call('pending_save_changed', address)
+        except Exception as error:
+            print_stack_trace(exception=error)
 
     @classmethod
     def pending_gen_for(cls, path):
@@ -313,6 +327,7 @@ class PendingSave:
             call('conflicts_changed')
         except Exception:
             pass
+        cls._announce_change(address)
 
         # Re-lint the file's code-host: what the missing-import checker reports
         # depends on the file's PENDING text (code_checks._module_level_binds),

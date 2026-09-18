@@ -2391,7 +2391,6 @@ def draw_usage(input_value: UsageRef):
 
 @render_func(is_default_for=(Comment), shadow=False, header_same_line=True, initial={"expanded": False}, icon="",
              is_tree=True, show_name=False, indent_size=8, selectable=False, use_cache=False,
-             tint=(0.137, 0.683, 0.299, 0.708),
              show_bg=False, with_header=draw_header, temp=False, expanded_mode=ExpandMode.MANUAL)
 def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False, font=Font.JETBRAINS_MONO_13):
     changed, value = False, input_value
@@ -2400,17 +2399,26 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
     depth = max(0.3, Core.melty.bg_depth)
     depth_scale = 0.047
 
+    # Change the comment prose colour here: 'value' is its brightness above
+    # the tinted background (keep it clearly legible but below a value
+    # label), 'saturation' how much of the view's tint it carries.
     # [tint=(0.883, 0.712, 0.206, 0.34)]
     name_style = {
-        'value': -0.420, 'saturation': 1.06,
-        'alpha': 0.047, 'max_value': 0.704,
+        'value': -0.130, 'saturation': 0.55,
+        'alpha': 0.047, 'max_value': 0.78,
         'depth_factor': 0.34
     }
+    # Change the quote bar here: its width, its gap to the prose and how much
+    # dimmer than the prose it draws.
+    bar_width = 2.0
+    bar_gap = 7.0
+    bar_alpha = 0.45
+    text_right_pad = 8.0
     depth_intensity = float(depth) * depth_scale
     name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
 
     # [tint=(0.767, 0.379, 0.379)]
-    alpha = 1.02
+    alpha = 0.92
 
     sat_depth_factor = 0.0
     sat_depth_offset = 0.188
@@ -2427,6 +2435,17 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
 
     display = "\n".join(_strip_hash(ln) for ln in str(input_value).split("\n"))
 
+    # The prose sits right of a quote bar spanning its full height.
+    bar_left, bar_top = imgui.get_cursor_screen_pos()
+    text_left = bar_left + bar_width + bar_gap
+    imgui.set_cursor_screen_pos((text_left, bar_top))
+    # Wrap and truncate at what is VISIBLE: the view can be wider than the
+    # clip of the window it sits in.
+    text_right = draw_state.abs_left + draw_state.width
+    clip = Core.melty.get_clip_rect()
+    if clip is not None:
+        text_right = min(text_right, clip[2] - text_right_pad)
+
     # The framework header (is_tree=True) owns the expand/collapse button.
     # ExpandMode.MANUAL keeps this body visible while collapsed, with the
     # first line standing in for the whole comment.
@@ -2434,8 +2453,11 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
         # Collapsed: one line truncated to the available width - never let it
         # spill onto a second row.
         flat = " ".join(display.split("\n"))
-        avail = draw_state.abs_left + draw_state.width - imgui.get_cursor_screen_pos().x
+        avail = text_right - text_left
         if imgui.calc_text_size(flat).x > avail:
+            # Truncated: the ellipsis says there is more behind the arrow.
+            ellipsis = "…"
+            avail -= imgui.calc_text_size(ellipsis).x
             lo, hi = 0, len(flat)
             while lo < hi:
                 mid = (lo + hi + 1) // 2
@@ -2443,16 +2465,35 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
                     lo = mid
                 else:
                     hi = mid - 1
-            flat = flat[:lo].rstrip()
+            flat = flat[:lo].rstrip() + ellipsis
         imgui.push_style_color(imgui.COLOR_TEXT, *name_color[:3], alpha)
         imgui.text(flat)
         imgui.pop_style_color()
     else:
-        imgui.push_text_wrap_pos(draw_state.abs_left + draw_state.width)
+        # Reflow the grouped '# ' lines into prose paragraphs: a line joins the
+        # one before it unless either is blank or it opens a list item / an
+        # indented block, which keep their own rows.
+        paragraphs = []
+        for line in display.split("\n"):
+            keeps_row = (not line.strip() or line[0] in " \t"
+                         or line.lstrip()[:2] in ("- ", "* ") or line.lstrip()[:1].isdigit())
+            if paragraphs and paragraphs[-1].strip() and not keeps_row:
+                paragraphs[-1] = paragraphs[-1] + " " + line.strip()
+            else:
+                paragraphs.append(line)
+        # The wrap position is window-local; every paragraph starts beside the bar.
+        imgui.push_text_wrap_pos(text_right - imgui.get_window_position().x)
         imgui.push_style_color(imgui.COLOR_TEXT, *name_color[:3], alpha)
-        imgui.text_wrapped(display)
+        for paragraph in paragraphs:
+            imgui.set_cursor_screen_pos((text_left, imgui.get_cursor_screen_pos().y))
+            imgui.text_wrapped(paragraph if paragraph.strip() else " ")
         imgui.pop_style_color()
         imgui.pop_text_wrap_pos()
+
+    bar_bottom = imgui.get_item_rect_max().y
+    imgui.get_window_draw_list().add_rect_filled(
+        bar_left, bar_top + 1.0, bar_left + bar_width, bar_bottom - 1.0,
+        pack_color(*name_color[:3], alpha * bar_alpha), bar_width / 2)
 
     if changed:
         return True, value
