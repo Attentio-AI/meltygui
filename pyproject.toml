@@ -21,6 +21,8 @@ dependencies = [
 
 [project.optional-dependencies]
 tensor = ["torch>=2.2", "meltygui-pycuda>=2026.1.post1,<2026.2; sys_platform == 'linux'"]
+# The Claude Code chat backend (meltygui.chat.claude_code); imported on the first conversation.
+claude = ["claude-agent-sdk>=0.2.152"]
 input = ["evdev>=1.7; sys_platform == 'linux'", "pynput>=1.7"]
 profile = ["line-profiler>=4"]
 

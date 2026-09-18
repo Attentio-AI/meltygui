@@ -1187,6 +1187,10 @@ class Melty:
     # against it lazily so modules can reference render_funcs by symbol without
     # importing the (often cycle-prone) module that defines them.
     render_funcs_by_name = {}
+    # "module.qualname" of render functions an application offered in the tile
+    # picker with multi_instance() (model/tile_model.py): @render_func re-applies
+    # the flag when a hotswap re-decorates the function.
+    multi_instance_registered = set()
 
     # Stable callable identities whose implementation moved to another module.
     relocated_functions = {}

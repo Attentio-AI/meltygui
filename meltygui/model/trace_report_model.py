@@ -2,6 +2,12 @@
 `Toggles.CrashReports.directory` (~/.lsd/crash_reports by default), one file
 per trace (glfw_utils.save_crash_report), listed newest first.
 
+Every Melty process saves into the one folder, so the list is all of their
+crashes in one chronological run; each report's `app` header (the saving
+process's app ID) is what the toolbar's dropdown filters by. FileWatch events
+on the folder (`watch_reports`) repaint the list for a report another process
+saved.
+
 Modelled on fast_dock: rows are plain draw-list rects/text with manual
 hit-testing; hover boosts and clicks resolve inside the body while the view
 is hovered (the wrapper repaints every frame then), and the idle tile is a
@@ -59,6 +65,37 @@ def reports_changed():
         request_render()
     except Exception:
         pass                                      # no studio (tests, launcher): nothing to repaint
+
+
+# The folder FileWatch reports on (resolved str); None until the list first shows.
+_watched_directory = None
+
+
+def _on_report_file_event(src_path):
+    """FileWatch global listener (the watchdog OBSERVER thread): a report
+    another Melty process saved, or one deleted by hand. The idle window is a
+    cached tile whose body never runs, so nothing else would show it."""
+    if isinstance(src_path, str) and _watched_directory and src_path.startswith(_watched_directory):
+        reports_changed()
+
+
+def watch_reports(directory):
+    """Have the reports folder's file events repaint the list. Idempotent per
+    folder; a changed Toggles.CrashReports.directory moves the watch."""
+    global _watched_directory
+    from meltygui.core.melty import FileWatch
+    directory = str(Path(directory).resolve())
+    if directory == _watched_directory and _on_report_file_event in FileWatch.global_listeners:
+        return
+    # Hotswap-safe: an older copy of the listener is replaced by this one.
+    FileWatch.global_listeners[:] = [listener for listener in FileWatch.global_listeners
+                                     if getattr(listener, "__name__", "") != "_on_report_file_event"]
+    FileWatch.global_listeners.append(_on_report_file_event)
+    FileWatch.start()
+    if _watched_directory is not None:
+        FileWatch.unwatch_dir(_watched_directory)
+    Path(directory).mkdir(parents=True, exist_ok=True)
+    _watched_directory = directory if FileWatch.watch_dir(directory) else None
 
 
 # ──────────────────────────────────────────────────────────────────────────

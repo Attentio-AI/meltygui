@@ -978,8 +978,8 @@ def save_crash_report(text, exception=None, thread_name=None, frames=None, error
     the write failed — a crash report must never raise into the trace
     that produced it). The first lines are a `key: value` header the
     Crash Reports window reads without loading the whole file — `pid` the
-    printing process (readers outside it, like melty-admin's Exceptions
-    page, name the process by it), `commit`
+    printing process, `app` its app ID (`meltygui.boot(app_id=)`, what the
+    Crash Reports list filters by: every Melty process shares this folder), `commit`
     the checkout's HEAD sha and branch (git_head_commit), `frames`
     is the trace's (path, lineno, function) list as JSON, outermost first,
     which the window hands to draw_stack_trace, and `locals` the matching
@@ -990,6 +990,7 @@ def save_crash_report(text, exception=None, thread_name=None, frames=None, error
     if not Toggles.CrashReports.auto_save:
         return None
     try:
+        from meltygui.core.windowing.surface import Surface
         directory = crash_reports_dir()
         directory.mkdir(parents=True, exist_ok=True)
         thread_name = thread_name or threading.current_thread().name
@@ -999,6 +1000,7 @@ def save_crash_report(text, exception=None, thread_name=None, frames=None, error
         header = (f"time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                   f"thread: {thread_name}\n"
                   f"pid: {os.getpid()}\n"
+                  f"app: {Surface.app_id}\n"
                   f"error: {error.splitlines()[0] if error else ''}\n")
         commit, branch = git_head_commit()
         if commit:

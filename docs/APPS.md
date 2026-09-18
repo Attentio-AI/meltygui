@@ -30,6 +30,24 @@ frame, returning `(changed, value)`. For nested windows, pass `closable=True` an
 an `open_requested` event to the same call every frame. Use `glfw_window=True` to
 host a child in a native window; its lifecycle follows the same rules.
 
+### Window size and position: `initial=`, never `width=` / `height=`
+
+`width=`, `height=` and `window_pos=` on a call are applied **every frame**: they
+pin the window, so the user cannot resize or move it and the persisted geometry
+is thrown away. To give a window a starting size or place, pass
+`initial={...}`; it is written once, on the window's first frame, and the user's
+(persisted) geometry wins afterwards:
+
+```python
+draw_dep_manager(value, name="Dependencies", closable=True, as_window=True,
+                 open_requested=clicked,
+                 initial={"width": 760, "height": 620, "window_pos": (240, 90)})
+```
+
+`initial` also works at decorator level (`window(initial={...})`); a caller's
+`initial` wins over the decorator's. Pass `width=` / `height=` only to views laid
+out by their parent (a tile, a cell, a button), where the parent owns the size.
+
 ## Common imports
 
 ```python
@@ -73,7 +91,16 @@ title bar, just inside the window controls, that opens the settings window
 
 Mark an editor with `@render_func(multi_instance=True)` to offer it in every
 tile's editor dropdown. Registration happens when its module is imported; the
-flag does not open a window. A tile calls its editor with `layout_frame` (its
+flag does not open a window. A render function defined elsewhere (a library
+view) registers with `multi_instance(view)`, and keeps its own `display_name` /
+`icon` / `tint` in the picker. A plain callable (no render boundary of its own)
+is offered through the host's `multi_instance_renderers`:
+
+```python
+from meltygui import draw_claude_chat     # one call of draw_chat_interface
+draw_tiles(tiles, draw_state, multi_instance_renderers=(draw_claude_chat,))
+```
+ A tile calls its editor with `layout_frame` (its
 four edge dicts); an editor that lays out columns forwards it to the view that
 does, as `draw_chat_interface(layout_frame=...)` does, so the columns stay
 inside the tile instead of adopting the window frame. A `Tile` in the app model owns the selected function

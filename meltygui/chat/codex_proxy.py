@@ -3,6 +3,8 @@ import time
 from pathlib import Path
 
 from meltygui.chat.codex_settings import ThreadSettingsReader
+from meltygui.chat.codex_settings import ThreadUsageReader
+from meltygui.chat.codex_settings import codex_usage
 from meltygui.chat.codex_settings import effective_settings
 from meltygui.chat.codex_settings import fast_service_tier
 from meltygui.chat.codex_settings import model_service_tiers
@@ -135,6 +137,9 @@ class CodexChats(ChatProxy):
             if not hasattr(self, "settings_reader"):
                 self.settings_reader = ThreadSettingsReader()
             thread.update(self.settings_reader.read(thread.get("path")))
+            if not hasattr(self, "usage_reader"):
+                self.usage_reader = ThreadUsageReader()
+            thread.update(self.usage_reader.read(thread.get("path")))
             try:
                 thread["size_bytes"] = Path(thread["path"]).stat().st_size if thread.get("path") else None
             except OSError:
@@ -338,6 +343,7 @@ class CodexChats(ChatProxy):
                 chat = dict.get(self, key)
                 if thread.get("codex_settings_at", 0) >= chat.get("codex_settings_at", 0):
                     chat.update({field: thread[field] for field in ("codex_settings", "codex_settings_at") if field in thread})
+                chat.update({field: thread[field] for field in ("context_tokens", "context_window") if field in thread})
                 # Session-naming jobs contain real model/assistant messages, so
                 # emptiness and a rounded 0.0 MB size cannot identify them.
                 preview = str(thread.get("preview") or "").lstrip()
@@ -506,6 +512,11 @@ class CodexChats(ChatProxy):
 
     def _event(self, event):
         method, params = event.get("method", ""), event.get("params") or {}
+        if method == "thread/tokenUsage/updated":
+            for chat in self.known.values():
+                if chat.remote_id == params.get("threadId"):
+                    chat.update(codex_usage(params.get("tokenUsage") or {}))
+            return
         if method == "transport/error":
             error = params.get("message")
             remote_id = params.get("threadId")

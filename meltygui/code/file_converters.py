@@ -913,6 +913,11 @@ def _recompile_module(module: types.ModuleType, source: str,
     # registries first so each function's registrations can be reconciled back to
     # its live wrapper after patching.
     _pre_reg = _snapshot_func_registrations()
+    # The exec also re-runs the module's `extensions.register(...)` lines with the
+    # throwaway functions. Success points those services at the live functions;
+    # a rollback restores them, so a new callback never runs against old classes.
+    from meltygui.core.runtime import extensions
+    _pre_services = dict(extensions._services)
     # Per-member snapshot of the PREVIOUS compiled state, taken BEFORE patching so
     # in-place edits don't clobber it (old_attrs aliases the live objects, whose
     # __code__ we update below). Each entry is a zero-arg restore closure.
@@ -949,6 +954,10 @@ def _recompile_module(module: types.ModuleType, source: str,
                     if live_member is not None:
                         replacements[id(member)] = (member, live_member)
         canonicalize_definitions(replacements)
+        for service, callback in list(extensions._services.items()):
+            replacement = replacements.get(id(callback))
+            if replacement is not None and replacement[0] is callback:
+                extensions._services[service] = replacement[1]
 
         for name, old_obj in old_attrs.items():
             new_obj = new_attrs.get(name)
@@ -1062,6 +1071,8 @@ def _recompile_module(module: types.ModuleType, source: str,
     except Exception as e:
         # Roll back to old attributes on error
         module.__dict__.update(old_attrs)
+        extensions._services.clear()
+        extensions._services.update(_pre_services)
         print(f"Error recompiling module '{module.__name__}': {e}")
         return e
 

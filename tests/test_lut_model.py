@@ -252,3 +252,18 @@ def test_coolwarm_hdr_keeps_sign_by_hue_and_magnitude_by_brightness():
     assert np.allclose(H[C > 0.05][: n // 4], blue, atol=0.5)
     assert np.allclose(H[C > 0.05][-n // 4:], red, atol=0.5)
     assert rows.max() > 2.0 and rows.min() < 0.0
+
+
+@pytest.mark.parametrize("view_module", ["meltygui.view.voxel_view",
+                                         "meltygui.view.graph_view"])
+def test_views_with_a_lut_parameter_register_the_picker(view_module):
+    """A fresh interpreter importing only the view must route Lut to draw_lut;
+    otherwise the lut= row falls back to the generic str input."""
+    import subprocess
+    import sys
+    code = (f"import {view_module}\n"
+            "from meltygui.core.melty import Melty\n"
+            "assert Melty.default_funcs_by_name['Lut'].__name__ == 'draw_lut'\n")
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, close_fds=False)
+    assert result.returncode == 0, result.stderr

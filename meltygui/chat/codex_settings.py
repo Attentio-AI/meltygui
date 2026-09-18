@@ -98,3 +98,29 @@ class ThreadSettingsReader:
             return settings
         except OSError:
             return previous[2] if previous else {}
+
+
+def codex_usage(value):
+    """A thread's context usage from a token_count payload or a
+    thread/tokenUsage/updated event: the last request's total tokens and the
+    model's context window. Empty when no count was reported."""
+    last = value.get("last") or value.get("last_token_usage") or {}
+    count = last.get("totalTokens", last.get("total_tokens"))
+    limit = value.get("modelContextWindow", value.get("model_context_window"))
+    return {"context_tokens": count, "context_window": limit} if isinstance(count, int) and count >= 0 else {}
+
+
+class ThreadUsageReader(ThreadSettingsReader):
+    """The latest token_count of a saved thread (the header's token badge)."""
+    @staticmethod
+    def parse(line):
+        if b'"token_count"' not in line:
+            return None
+        try:
+            row = json.loads(line)
+            payload = row.get("payload") or {}
+            if row.get("type") == "event_msg" and payload.get("type") == "token_count":
+                return codex_usage(payload.get("info") or {}) or None
+        except (ValueError, TypeError, AttributeError):
+            pass
+        return None

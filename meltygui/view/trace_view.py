@@ -1,5 +1,6 @@
 """Trace view functions and supporting definitions."""
 from meltygui.core.melty import Melty
+from meltygui.model.trace_model import ALL_APPS
 from meltygui.model.trace_model import CrashReportStore
 from meltygui.model.trace_model import SavedTrace
 from meltygui.core.core_render import render_func
@@ -517,6 +518,7 @@ def draw_crash_reports(
     section_gap = px(6.0)                             # gap after a section header
     button_height = px(24.0)
     button_pad_x = px(10.0)
+    app_filter_width = px(190.0)                      # the toolbar's app ID dropdown
     trace_gap = px(4.0)                               # gap between a row and its stack trace view
     card_pad_bottom = px(6.0)                         # the row's card runs this far past its trace
     footer_height = px(22.0)                          # thread · commit line under an expanded trace
@@ -557,9 +559,15 @@ def draw_crash_reports(
     def clicked(left, top, right, bottom):
         return click is not None and left <= click[0] <= right and top <= click[1] <= bottom
 
-    # ---- toolbar: count + directory, Clear all ----
+    # ---- toolbar: count + directory, the app filter, Clear all ----
+    # Every Melty process saves into this one folder; the list is all of
+    # them newest first, narrowed to one app ID by the dropdown.
     toolbar_top = origin_y
-    entries = list(store.items())
+    app_choices = [ALL_APPS, *store.apps()]
+    shown_app = panel_state.app if panel_state is not None else ALL_APPS
+    if shown_app not in app_choices:
+        shown_app = ALL_APPS                           # that app's last report was deleted
+    entries = store.shown(shown_app)
     # flat_button, placed by the imgui cursor with layout=True so the click
     # is claimed through this view's on_action rect (layout=False is
     # draw-only - no subscription at all). event="left_mouse_down": the
@@ -567,7 +575,7 @@ def draw_crash_reports(
     # click; the button's registration sits 4 above it.
     clear_left, clear_pressed = row_right, False
     if entries:
-        clear_label = f"{trash_icon} Clear all"
+        clear_label = f"{trash_icon} Clear {'all' if shown_app == ALL_APPS else shown_app}"
         clear_width = imgui.calc_text_size(clear_label)[0] + 2 * button_pad_x
         clear_left = row_right - clear_width
         imgui.set_cursor_screen_pos((clear_left, toolbar_top + (toolbar_height - button_height) / 2.0))
@@ -576,15 +584,27 @@ def draw_crash_reports(
             event="left_mouse_down", color=delete_color, tint_value=0.45, max_bg_brightness=0.6,
             text_color=(1.0, 0.80, 0.78, 1.0), corner_radius=corner))
     if clear_pressed:
-        store.remove_all()
+        store.remove_all(shown_app)
         entries = []
         changed = True
+    filter_left = clear_left - px(8) - app_filter_width
+    imgui.set_cursor_screen_pos((filter_left, toolbar_top + (toolbar_height - button_height) / 2.0))
+    # display_label: the state's app is the selection of record (the
+    # dropdown's own remembered label lags a change made elsewhere).
+    app_picked, picked_app = RenderFuncs.draw_dropdown(
+        shown_app, collection=app_choices, name="crash_app_filter", display_label=shown_app,
+        show_header=False, width=app_filter_width, trigger_height=button_height,
+        shadow=False, tint=tint, z_offset=2)
+    if app_picked and picked_app != shown_app and panel_state is not None:
+        panel_state.app = picked_app                   # @live setattr: repaints the tile
+        changed = True
+        request_render()
     count_note = (f"{len(entries)} report{'s' if len(entries) != 1 else ''}   ·   "
                   f"{store.directory()}")
     if store.error:
         count_note += f"   ·   {store.error}"
     draw_list.add_text(row_left, toolbar_top + (toolbar_height - line_height) / 2.0,
-                       _color_u32(meta_color, 0.8), _ellipsize(count_note, clear_left - px(10) - row_left))
+                       _color_u32(meta_color, 0.8), _ellipsize(count_note, filter_left - px(10) - row_left))
 
     # ---- rows, under Today / Yesterday / date section headers ----
     row_top = toolbar_top + toolbar_height + row_gap
@@ -676,7 +696,7 @@ def draw_crash_reports(
             # ── right: time of day (the section header carries the date),
             # thread, commit - right-aligned, never clipped by the thread ──
             when = time.localtime(entry["mtime"])
-            meta = (f"{when.tm_hour % 12 or 12}:{when.tm_min:02d}"
+            meta = (f"{entry['app']}  ·  {when.tm_hour % 12 or 12}:{when.tm_min:02d}"
                     f"{'AM' if when.tm_hour < 12 else 'PM'} + {when.tm_sec}s")
             meta_right = trash_left - px(6)
             # ── left: the raising FILE first, then its FUNCTION on a pill in
@@ -797,6 +817,8 @@ def draw_crash_reports(
         # ---- footer: thread - commit, right-aligned inside the card ----
         footer_top = trace_top + trace_height
         footer = entry["thread"] or ""
+        if entry["pid"]:
+            footer += f"{'  ·  ' if footer else ''}pid {entry['pid']}"
         if entry["commit"]:
             sha, _, branch = entry["commit"].partition(" ")
             footer += f"{'  ·  ' if footer else ''}{sha[:8]}{(' ' + branch) if branch else ''}"

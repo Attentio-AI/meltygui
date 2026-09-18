@@ -24,8 +24,8 @@ editable fields, its action buttons and any extra rows (a device-code card,
 the Ollama model list). A kind with a `chat_label` appears in the Chat
 window's provider dropdown; its conversations come from the ChatProxy
 factory registered for the kind name with `register_chat_backend`
-(chat/backends.py) — the studio registers Codex's below, an external
-package (melty_agents) registers Claude Code's against "anthropic".
+(chat/backends.py) — Codex's and Claude Code's are registered below: the
+detached chat service's mirror (chat/chat_service.py).
 
 Layout: every row measures its buttons FIRST (`strip_layout`); if the text
 would be left less than min_text_width, or the strip is wider than the row,
@@ -830,12 +830,23 @@ class AnthropicKind(AccountKind):
         return out
 
 
+# Both chat kinds mirror the detached chat service (chat/chat_service.py): the
+# service owns the real backends (CodexChats, ClaudeCodeChats), so a turn
+# outlives the window that sent it and every app shows the same conversations.
 @register_chat_backend("codex")
 def codex_chats(account, metadata=None, wake=None):
     if account.get("_codex_signing_in") or account.get("_busy"):
         return None
-    from meltygui.chat.codex_proxy import CodexChats
-    return CodexChats(account["id"], metadata, wake)
+    from meltygui.chat.chat_service import PersistentChats
+    return PersistentChats("codex", account, metadata, wake)
+
+
+@register_chat_backend("anthropic")
+def claude_chats(account, metadata=None, wake=None):
+    if account.get("_busy"):
+        return None
+    from meltygui.chat.chat_service import PersistentChats
+    return PersistentChats("anthropic", account, metadata, wake)
 
 
 @account_kind

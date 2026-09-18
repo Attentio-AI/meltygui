@@ -74,6 +74,10 @@ def test_selection_stores_callable_and_propagates_editor_changes(monkeypatch):
     monkeypatch.setattr(tile_view, "draw_dropdown", lambda *a, **kw: (True, editor))
     monkeypatch.setattr(tile_view.imgui, "get_cursor_screen_pos", lambda: (10, 20))
     monkeypatch.setattr(tile_view.imgui, "set_cursor_screen_pos", lambda pos: None)
+    from meltygui.core.melty import Melty
+    clips = []
+    monkeypatch.setattr(Melty, "push_clip", lambda rect: clips.append(rect))
+    monkeypatch.setattr(Melty, "pop_clip", lambda: clips.append(None))
     tile = Tile(input_value="original")
     changed, result = inspect.unwrap(tile_view.draw_tile_content)(
         tile, 300, 200, (editor,))
@@ -81,6 +85,8 @@ def test_selection_stores_callable_and_propagates_editor_changes(monkeypatch):
     assert result is tile
     assert tile.render_func is editor
     assert tile.input_value == "original edited"
+    # The editor drew inside a clip of its tile (above the 28 px picker).
+    assert clips == [(10, 20, 310, 192), None]
     monkeypatch.setattr(tile_view, "draw_dropdown", lambda *a, **kw: (True, None))
     changed, result = inspect.unwrap(tile_view.draw_tile_content)(
         tile, 300, 200, (editor,))
@@ -263,3 +269,21 @@ def test_cached_tiles_only_rerun_the_stale_tile(gl_context, monkeypatch):
     frame()
     assert runs == {"left": 3, "right": 2}
     assert len(marks) == marked
+
+
+def test_multi_instance_registers_an_existing_render_function():
+    from meltygui.model.tile_model import multi_instance
+
+    @render_func(tint=(0.2, 0.4, 0.6), display_name="Library view")
+    def library_view(input_value: object):
+        return False, input_value
+
+    assert not library_view.multi_instance
+    assert multi_instance(library_view) is library_view
+    assert library_view.multi_instance
+    # A hotswap re-decorates the library's function: the registration holds.
+    assert render_func(inspect.unwrap(library_view)).multi_instance
+    assert not multi_instance(library_view, enabled=False).multi_instance
+    assert not render_func(inspect.unwrap(library_view)).multi_instance
+    with pytest.raises(TypeError):
+        multi_instance(lambda value: (False, value))

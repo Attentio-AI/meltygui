@@ -361,10 +361,11 @@ def chat_sources(accounts):
 
 
 def conversation_source_tag(kind, chat):
+    """A sidebar row's tag text where the provider has no bundled mark: a chat
+    glyph, plus a lock while another writer owns the conversation."""
     from meltygui.chat.chat_proxy import writer_conflict
-    label = "Claude" if kind.name == "anthropic" else kind.chat_label
     locked = chat.get("locked", writer_conflict(getattr(chat, "error", None)))
-    return label + " \uf023" if locked else label
+    return "\uf075 \uf023" if locked else "\uf075"
 
 
 def source_initials(label):
@@ -402,16 +403,14 @@ def pick_source(state, account_id, kinds, additive=False):
 
 
 def apply_folder_shortcuts(state, events):
-    """Set every current and subsequently discovered folder to the requested state."""
-    changed = False
+    """Ctrl+Shift+= / Ctrl+Shift+- fold the hovered sidebar column: queued
+    here, applied by the sidebar once it can hit-test this frame's columns."""
+    state.hovered_folder_action = None
     for key, mods in events:
         if mods & (glfw.MOD_CONTROL | glfw.MOD_SHIFT) == (glfw.MOD_CONTROL | glfw.MOD_SHIFT):
             if key in (glfw.KEY_EQUAL, glfw.KEY_KP_ADD, glfw.KEY_MINUS, glfw.KEY_KP_SUBTRACT):
-                state.folders_default_expanded = key in (glfw.KEY_EQUAL, glfw.KEY_KP_ADD)
-                state.folder_expanded = {}
-                state.revision += 1
-                changed = True
-    return changed
+                state.hovered_folder_action = key in (glfw.KEY_EQUAL, glfw.KEY_KP_ADD)
+    return False
 
 
 def _code_background(x, y, width, height, color, shadow=None):
@@ -565,11 +564,13 @@ def transcript_entries(messages, state, key):
 
 
 def chat_activity(chat, provider):
-    """Describe the latest reported work; never infer work from idle history."""
-    if chat["requests"]:
-        return "Waiting for your approval or input"
+    """Describe the latest reported work; never infer work from idle history.
+    An answered request can remain until the backend acknowledges it."""
+    from meltygui.model.chat_model import pending_requests
+    if pending_requests(chat):
+        return "Answer the request below to continue"
     if not chat["running"]:
-        return "Working in another session" if chat.get("external_busy") else "Recent activity"
+        return "Working in another session" if chat.get("external_busy") else "Starting the next step…"
     for message in reversed(chat["messages"].values()):
         if isinstance(message, UserMessage):
             break
@@ -589,11 +590,6 @@ def chat_activity(chat, provider):
 
 
 from meltygui.core.services.chat_core import _cleanup_chat
-
-
-def navigation_heading_control(pane, draw_state, state, x, y, width, height):
-    """App extension: draw a trailing heading control; return changed, width used."""
-    return False, 0
 
 
 def navigation_row_sizes(state, edges, opened, top, height, minimum):
@@ -666,8 +662,9 @@ def is_new_chat(chat):
 
 def chat_project_choices(state, proxies, current, *defaults):
     """Use directory paths as labels so identically named folders stay distinct."""
+    from meltygui.model.chat_folder_model import folder_settings
     projects = {current, *defaults, *state.projects.values(),
-                *getattr(state, "added_folders", [])}
+                *folder_settings()["added_folders"]}
     for proxy in proxies.values():
         if proxy is not None:
             projects.update(chat.get("project") for chat in dict.values(proxy))
@@ -730,3 +727,26 @@ def switch_new_chat_source(state, proxies, kinds, key, account_id, model):
 
 from meltygui.view.chat_view import draw_chat_interface
 draw_chat_interface = window(tint=(1.34, 1.62, 1.76), display_name='Chat', icon=f'\uf27a', initial={'width': 1100, 'height': 760})(draw_chat_interface)
+
+
+def _chat_proxies():
+    accounts = internet_accounts.accounts
+    for account in accounts.values():
+        proxy = account.get("_chat_proxy")
+        if proxy is not None and not proxy.closed:
+            yield proxy
+
+
+def stop_running():
+    """Interrupt every running turn (an app's Escape)."""
+    for proxy in _chat_proxies():
+        for key, chat in proxy.items():
+            if chat["running"]:
+                proxy.stop_chat(key)
+
+
+def disconnect_chats():
+    """Detach this process from the chat service without interrupting its
+    conversations (an app's exit)."""
+    for proxy in _chat_proxies():
+        proxy.close()

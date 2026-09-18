@@ -43,6 +43,9 @@ never library dependencies. Fix ownership, not just filenames; avoid catch-all m
 
 - Consume background results before drawing; dispatch work afterwards. Call window
   lifecycles every frame with `open_requested`; both backends must behave alike.
+- A window's starting size / position is `initial={"width":, "height":, "window_pos":}`
+  (applied once; user geometry persists). `width=` / `height=` / `window_pos=` kwargs
+  apply every frame and pin the window: never size a window with them.
 - Make resource ownership/cleanup explicit. GL stays on the render thread;
   `ShaderRegistry` is not thread safe. Detect staleness via mtime, generations or
   identity, never whole-file hashes/comparisons.

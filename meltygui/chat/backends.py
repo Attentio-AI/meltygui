@@ -1,7 +1,7 @@
 """The chat backend registry: account kind name -> ChatProxy factory.
 
 A backend is a ChatProxy subclass living anywhere (the studio's Codex one,
-an external package such as melty_agents). Registering it against an
+an external package). Registering it against an
 account kind gives that kind's accounts a conversation list in the Chat
 window; nothing else in the UI knows which package supplied it.
 

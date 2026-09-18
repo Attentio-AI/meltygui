@@ -29,14 +29,20 @@ class SavedTrace:
         return f"SavedTrace({len(self.frames)} frames, {self.error!r})"
 
 
+# The app filter's choices beside the app IDs themselves: every report, and the
+# reports saved before the header carried an `app` line.
+ALL_APPS = "All apps"
+UNKNOWN_APP = "unknown"
+
+
 class CrashReportStore(dict):
-    """path (str) → {"name", "time", "thread", "error", "commit", "mtime", "size"},
-    newest first. The trace bodies load lazily (`text`) and are cached by
+    """path (str) → {"name", "time", "thread", "pid", "app", "error", "commit",
+    "mtime", "size"}, every Melty process's reports in one list, newest first. The trace bodies load lazily (`text`) and are cached by
     the file's (mtime, size) so a rewritten file re-reads."""
     # save_crash_report's header: `key: value` lines up to the first blank
     # line - time / thread / error, and `frames` (JSON) when the trace saved
     # frames. Parsed by _read_header; nothing here counts lines.
-    HEADER_KEYS = ("time", "thread", "error", "commit", "frames", "locals")
+    HEADER_KEYS = ("time", "thread", "pid", "app", "error", "commit", "frames", "locals")
 
     def __init__(self):
         super().__init__()
@@ -56,8 +62,10 @@ class CrashReportStore(dict):
         or the directory's mtime moved (a file deleted or added by hand).
         One stat per call — content-free, so it is fine per frame."""
         from meltygui.model.trace_report_model import _generation
+        from meltygui.model.trace_report_model import watch_reports
 
         directory = self.directory()
+        watch_reports(directory)
         try:
             dir_mtime = os.stat(directory).st_mtime_ns
         except OSError:
@@ -83,15 +91,16 @@ class CrashReportStore(dict):
                 stat = path.stat()
             except OSError:
                 continue
-            entry = {"name": path.stem, "time": "", "thread": "", "error": "", "commit": "",
-                     "mtime": stat.st_mtime, "size": stat.st_size}
+            entry = {"name": path.stem, "time": "", "thread": "", "pid": "", "app": "",
+                     "error": "", "commit": "", "mtime": stat.st_mtime, "size": stat.st_size}
             try:
                 with open(path, "r", encoding="utf-8", errors="replace") as handle:
                     header, _ = self._read_header(handle)
             except OSError:
                 header = {}
-            for key in ("time", "thread", "error", "commit"):
+            for key in ("time", "thread", "pid", "app", "error", "commit"):
                 entry[key] = header.get(key, "")
+            entry["app"] = entry["app"] or UNKNOWN_APP
             self[str(path)] = entry
         self.loaded = True
         live = set(self.keys())
@@ -185,14 +194,24 @@ class CrashReportStore(dict):
         self._texts.pop(path, None)
         reports_changed()
 
-    def remove_all(self):
+    def apps(self):
+        """The app IDs that have a report, sorted: the filter's choices."""
+        return sorted({entry["app"] for entry in self.values()})
+
+    def shown(self, app=ALL_APPS):
+        """[(path, entry)] newest first, of one app ID or of every app."""
+        return [(path, entry) for path, entry in self.items()
+                if app in (ALL_APPS, "", None) or entry["app"] == app]
+
+    def remove_all(self, app=ALL_APPS):
+        """Delete every report, or only the ones of `app`."""
         from meltygui.model.trace_report_model import reports_changed
 
-        for path in list(self.keys()):
+        for path, _entry in self.shown(app):
             try:
                 os.unlink(path)
             except OSError as exc:
                 self.error = str(exc)
-        self.clear()
-        self._texts.clear()
+            self.pop(path, None)
+            self._texts.pop(path, None)
         reports_changed()

@@ -1,6 +1,7 @@
 """Injected state for trace views."""
 from meltygui.core.rendering.core_decoration import no_save
 from meltygui.core.conversion.dict_conversion import DictConversion
+from meltygui.model.trace_model import ALL_APPS
 
 
 @no_save("panes", "trace_obj", "trace_sig", "index_armed",
@@ -23,10 +24,12 @@ class StackTraceState(DictConversion):
 
 
 class CrashReportsPanelState(DictConversion):
-    """Which reports are expanded — file name → True — persisted with the
+    """Which reports are expanded — file name → True — and which app ID the
+    list is filtered to (trace_model.ALL_APPS = every app), persisted with the
     window's draw_state (injected as `panel_state: CrashReportsPanelState`,
     the TabState pattern) so the window reopens the way it was left."""
 
     def __init__(self):
         super().__init__()
         self.open = {}
+        self.app = ALL_APPS

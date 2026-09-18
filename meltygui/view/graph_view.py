@@ -13,6 +13,9 @@ from meltygui.state.graph_state import GraphViewState
 from meltygui.core.runtime.toggles import SwooshMode
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.view.header_view import draw_header
+# The lut= parameter's picker: importing registers draw_lut as the Lut
+# renderer (without it the row falls back to the generic str input).
+from meltygui.view.lut_view import draw_lut
 from meltygui.view.tensor_view import _tick_values
 from meltygui.state.file_state import ROOT
 from pathlib import Path

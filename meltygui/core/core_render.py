@@ -659,7 +659,8 @@ def render_func(*args, **o_kwargs):
     # Session-teardown hook (see run_cleanup_callbacks): decorator-only, never
     # a render kwarg, so kick it out before o_kwargs merge into call kwargs.
     on_cleanup = o_kwargs.pop("on_cleanup", None)
-    multi_instance = o_kwargs.pop("multi_instance", False)
+    multi_instance = (o_kwargs.pop("multi_instance", False)
+                      or f"{func.__module__}.{func.__qualname__}" in Melty.multi_instance_registered)
 
     sig = inspect.signature(func)
     params = sig.parameters

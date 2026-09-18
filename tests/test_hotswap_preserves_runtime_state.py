@@ -200,5 +200,46 @@ class HotswapPreservesRuntimeState(unittest.TestCase):
         self.assertIs(Core.melty, Melty)
 
 
+    # --- extensions services registered by the module body -----------------
+
+    SERVICE_V1 = """\
+from meltygui.core.runtime import extensions
+
+class Core:
+    pass
+
+cores = [Core()]
+
+def handler():
+    return [True for core in cores]
+
+extensions.register('hotswap_service_test', handler)
+"""
+    SERVICE_V2 = SERVICE_V1.replace("    pass\n", "    def touches(self):\n        return 'v2'\n") \
+                           .replace("[True for", "[core.touches() for")
+
+    def test_service_registration_follows_live_function(self):
+        from meltygui.core.runtime import extensions
+        mod, path = _load(self.SERVICE_V1, "hs_service")
+        self.addCleanup(extensions._services.pop, 'hotswap_service_test', None)
+        live = mod.handler
+        self.assertIsNone(_recompile_module(mod, self.SERVICE_V2, str(path)))
+        self.assertIs(extensions.get('hotswap_service_test'), live)
+        self.assertEqual(extensions.call('hotswap_service_test'), ['v2'])
+
+    def test_failed_swap_restores_service_registration(self):
+        # 2026-09-18: a module body raising after its register(...) line left
+        # the NEW callback registered against the rolled-back OLD classes
+        # ('_CodeCore' object has no attribute 'touches' on every pending change).
+        from meltygui.core.runtime import extensions
+        mod, path = _load(self.SERVICE_V1, "hs_service_failed")
+        self.addCleanup(extensions._services.pop, 'hotswap_service_test', None)
+        live = mod.handler
+        broken = self.SERVICE_V2 + "extensions.register('hotswap_service_other', not_written_yet)\n"
+        self.assertIsInstance(_recompile_module(mod, broken, str(path)), NameError)
+        self.assertIs(extensions.get('hotswap_service_test'), live)
+        self.assertEqual(extensions.call('hotswap_service_test'), [True])
+
+
 if __name__ == "__main__":
     unittest.main()

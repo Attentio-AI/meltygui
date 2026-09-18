@@ -16,281 +16,6 @@ import time
 import uuid
 
 
-def draw_chat_sidebar(sources, draw_state, state, width, height, cutoff=None, new_conversation=None, pane="all", file_metadata=None):
-    """Immediate layout; visible text leaves own their cached render tiles.
-    ``sources`` is ``[(account_id, proxy, kind, label)]`` (a lone ChatProxy is
-    accepted as the one source): their conversations MIX into one list,
-    newest first (Recent uses the last user message, All uses last activity). With no ``cutoff`` (the All chip) a folder appears once,
-    ranked by its newest conversation, holding all of its conversations.
-    With a ``cutoff`` (epoch seconds, `age_cutoff`) the list is strictly
-    chronological and a folder heading repeats wherever its conversations
-    resume after another folder's, so a run of headings reads as a feed;
-    conversations last active before the cutoff are out — except active
-    ones and the selected one. Several sources: each row names its provider
-    at the right. Selecting a row makes its source the primary account.
-    ``new_conversation(account_id, proxy, project)`` serves every heading's
-    + (a conversation in that folder, in the source of the run's newest
-    conversation)."""
-    from meltygui.chat.chat_interface import TRASH_ICON
-    from meltygui.view.chat_decoration_view import _button
-    from meltygui.view.chat_decoration_view import _card
-    from meltygui.view.chat_decoration_view import _caret
-    from meltygui.view.chat_decoration_view import _color
-    from meltygui.view.chat_decoration_view import _hovering
-    from meltygui.chat.chat_interface import _label_width
-    from meltygui.view.chat_decoration_view import _running_dot
-    from meltygui.chat.chat_interface import _text_layout
-    from meltygui.chat.chat_interface import _tint_slot
-    from meltygui.chat.chat_interface import _title
-    from meltygui.chat.chat_interface import _viewport
-    from meltygui.chat.chat_interface import conversation_source_tag
-    from meltygui.model.chat_model import is_active
-    from meltygui.model.chat_model import project_tint
-    from meltygui.model.chat_model import recent_chat_time
-    from meltygui.model.chat_model import sidebar_visible
-    from meltygui.model.file_metadata_model import set_row_tint
-    from meltygui.view.text_view import draw_text
-    import meltygui.core.windowing.window_api as glfw
-
-    from meltygui.chat.chat_proxy import ChatProxy
-    if isinstance(sources, ChatProxy):
-        sources = [(state.account, sources, None, "")]
-    if not hasattr(state, "folder_expanded"):
-        state.folder_expanded = {}
-    changed = False
-    archive = None
-    trash_icon = TRASH_ICON
-    trash_width = Melty.px(25)
-    row_width = max(Melty.px(80), width - Melty.px(7))
-    gap, pad = Melty.px(2), Melty.px(3)
-    memos = state.viewports.setdefault("sidebar-cards", {})
-    # The cards lay out the same until a source's conversations, the window's
-    # state (a selection, a fold, a rename), the filter minute or the width change:
-    # keep them between frames (scrolling changes none).
-    signature = (tuple((account_id, getattr(chats, "revision", None), len(chats) if chats is not None else 0)
-                       for account_id, chats, _, _ in sources),
-                 getattr(state, "folders_default_expanded", True), tuple(state.folder_expanded.items()), state.revision, int(cutoff // 60) if cutoff else None, row_width, Melty.ui_scale,
-                 new_conversation is not None, tuple(sorted(state.selected.items())), state.account)
-    memo = memos.get(pane)
-    if memo is not None and memo[0] == signature:
-        cards = memo[1]
-    else:
-        entries = []
-        for account_id, chats, kind, _label in sources:
-            if chats is None:
-                continue
-            selected_key = state.selected.get(account_id)
-            source_tint = tuple(kind.tint) if kind is not None else (0.6, 0.6, 0.6)
-            for key, chat in chats.items():
-                if (not any(part.startswith(".") and part not in (".", "..") for part in Path(chat["project"]).parts)
-                        and sidebar_visible(key, chat, cutoff, selected_key)):
-                    entries.append((-(recent_chat_time(chat) if pane == "recent" else (chat.get("updated") or 0.0)), account_id, chats, kind, key, chat, source_tint))
-        entries.sort(key=lambda entry: entry[0])
-        runs = []                       # [(project, [entry])], newest first
-        if cutoff is None:
-            by_project = {}
-            for entry in entries:
-                by_project.setdefault(entry[5]["project"], []).append(entry)
-            runs = list(by_project.items())
-        else:
-            for entry in entries:
-                if runs and runs[-1][0] == entry[5]["project"]:
-                    runs[-1][1].append(entry)
-                else:
-                    runs.append((entry[5]["project"], [entry]))
-        cards = []
-        for index, (project, rows) in enumerate(runs):
-            first_account, first_chats = rows[0][1], rows[0][2]
-            # Recent feeds repeat folders: key each run to its oldest chat,
-            # so a new conversation at its head does not move its fold state.
-            folder_key = (pane, project, rows[-1][1], rows[-1][4]) if cutoff is not None else (pane, project)
-            expanded = state.folder_expanded.get(folder_key, getattr(state, "folders_default_expanded", True))
-            # The folder's tint is its directory's in the file-meta store; an
-            # unpainted folder (and its unpainted rows) wears the source's.
-            painted = project_tint(project, file_metadata=file_metadata)
-            heading_tint = painted or rows[0][6]
-            folder_label = (Path(project).name or project) if project else "No project"
-            label, heading_height = _text_layout(state, "project:" + project, folder_label)
-            heading_height += Melty.px(2)
-            children = []
-            if expanded:
-                for _, account_id, chats, kind, key, chat, source_tint in rows:
-                    text, row_height = _text_layout(state, "chat:" + account_id + ":" + key, " ".join(str(chat["title"]).split()))
-                    children.append((account_id, chats, kind, key, chat.metadata, text, row_height + Melty.px(2),
-                                     tuple(heading_tint)))
-            card_height = pad * 2 + heading_height + sum(row[6] + gap for row in children)
-            cards.append((index, project, folder_key, label, heading_height, rows, children, card_height,
-                          painted, heading_tint, first_account, first_chats))
-        memos[pane] = (signature, cards)
-    total = sum(card[7] + 5 for card in cards)
-    with _viewport(draw_state, state, "sidebar:" + pane + ":" + ":".join(source[0] for source in sources),
-                   width, height, total) as (x, y, clip):
-        for (index, project, folder_key, label, heading_height, rows, children, card_height,
-             painted, heading_tint, first_account, first_chats) in cards:
-            run_id = f"{pane}:{index}:{project}"
-            if painted and _visible(y, card_height, clip):
-                _card(x, y, row_width, card_height, heading_tint, ui_scale=Melty.ui_scale, channel=Melty.get_channel() if Melty.channels_split else None)   # an unpainted card has no plate
-            heading_y = y + pad
-            if _visible(heading_y, heading_height, clip):
-                expanded = state.folder_expanded.get(folder_key, getattr(state, "folders_default_expanded", True))
-                arrow_top = max(heading_y, clip[1]) if clip else heading_y
-                arrow_bottom = min(heading_y + heading_height, clip[3]) if clip else heading_y + heading_height
-                arrow_tint = heading_tint if painted else tuple(Melty.bg_color_stack[-1] if Melty.bg_color_stack else Melty.get_bg_color(-1))[:3]
-                if _caret(draw_state, "project-arrow:" + run_id, x + pad, arrow_top,
-                          Melty.px(17), max(0, arrow_bottom - arrow_top), expanded,
-                          arrow_tint, brightness=0.55, ui_scale=Melty.ui_scale):
-                    state.folder_expanded[folder_key] = not expanded
-                    changed = True
-                heading_hovered = _hovering(x, heading_y, row_width, heading_height, pointer=imgui.get_mouse_pos())
-                if file_metadata is not None:
-                    changed |= _tint_slot(draw_state, "project:" + run_id, painted,
-                                          x + Melty.px(23), heading_y + max(0, (heading_height - Melty.px(13)) / 2),
-                                          heading_hovered, heading_tint,
-                                          lambda value, _p=project: set_row_tint(file_metadata, _p, value),
-                                          show_brush=heading_hovered, brush_tint=arrow_tint)
-                # The heading's +: a new conversation in this folder, in the
-                # source of the run's newest conversation.
-                plus_x = x + row_width - pad - trash_width
-                if _button(draw_state, "project-heading:" + run_id, "", x + Melty.px(46), arrow_top,
-                           max(0, plus_x - x - Melty.px(46)), heading_tint,
-                           height=max(0, arrow_bottom - arrow_top), background=False,
-                           event="left_mouse_down", ui_scale=Melty.ui_scale):
-                    state.folder_expanded[folder_key] = True
-                    changed |= not expanded
-                if new_conversation is not None and _button(
-                        draw_state, "new-in:" + run_id, "+", plus_x, heading_y, trash_width, heading_tint,
-                        not first_chats.loading and not first_chats.error, height=heading_height, background=False, text_color=_tint_style(tuple(heading_tint)).make_color_style_value(input={
-                            "value": 7.788, "saturation": 1.559, "max_value": 1.601})[:3], ui_scale=Melty.ui_scale):
-                    new_conversation(first_account, first_chats, project)
-                    changed = True
-                _title(label, x + Melty.px(46), heading_y,
-                       plus_x - x - Melty.px(46), heading_height, arrow_tint,
-                       brightness=0.65 * float(Toggles.Melty.arrow_brightness), ellipsis=True,
-                       text_color=_tint_style(tuple(arrow_tint)).make_color_style_value(input={
-                           "value": 7.788, "saturation": 1.559, "max_value": 1.601})[:3])
-                if not expanded and any(is_active(entry[5]) for entry in rows):
-                    _running_dot(plus_x - trash_width / 2, heading_y + heading_height / 2, heading_tint, ui_scale=Melty.ui_scale, channel=Melty.get_channel() if Melty.channels_split else None)
-            child_y = heading_y + heading_height + gap
-            for account_id, chats, kind, key, child_meta, text, row_height, row_tint in children:
-                row_id = pane + ":" + account_id + ":" + key
-                rect = (x + pad, child_y, x + row_width - trash_width, child_y + row_height)
-                renaming = getattr(state, "rename", None)
-                editing = (renaming is not None and renaming["account"] == account_id
-                           and renaming["key"] == key and renaming.get("pane", pane) == pane)
-                # Rows order by time: no drag reordering, and nothing registered
-                # for a row scrolled out of the list.
-                if not _visible(child_y, row_height, clip):
-                    child_y += row_height + gap
-                    continue
-                if draw_state.on_action("right_mouse_down", view_id="chat-menu:" + row_id, priority_delta=3,
-                                        rect=(x + pad, child_y, x + row_width - pad, child_y + row_height)):
-                    state.chat_menu = {"account": account_id, "key": key, "pane": pane}
-                    changed = True
-                tint = row_tint
-                selected = account_id == state.account and key == state.selected.get(account_id)
-                if selected:
-                    _card(x + pad, child_y, row_width - pad * 2, row_height, tint, selected=True,
-                          max_bg_value=0.32, shadow_offset=Toggles.Chat.selected_chat_shadow_offset, ui_scale=Melty.ui_scale, channel=Melty.get_channel() if Melty.channels_split else None)
-                # A row cut by the list's edge takes the pointer only where it
-                # shows: hit rects ignore the clip, and a full-length one would
-                # reach over the filter chips above or the button below.
-                hit_top = max(child_y, clip[1]) if clip else child_y
-                hit_bottom = min(child_y + row_height, clip[3]) if clip else child_y + row_height
-                # Select on press: CLICKED waits 250 ms for the label's rename
-                # double-click. DOWN remains immediate and enables renaming.
-                if hit_bottom - hit_top >= 1 and _button(draw_state, "chat:" + row_id, "", x + pad, hit_top,
-                           row_width - pad * 2 - trash_width, tint, height=hit_bottom - hit_top,
-                           background=False, event="left_mouse_down", ui_scale=Melty.ui_scale):
-                    state.selected[account_id] = key
-                    state.account = account_id
-                    if kind is not None:
-                        state.provider = kind.name
-                    changed = True
-                row_rect = (x + pad, child_y, x + row_width - pad, child_y + row_height)
-                hovered = draw_state.on_action("cursor_hover", view_id="chat-hover:" + row_id,
-                                               rect=row_rect) is not None
-                if not is_active(chats.get(key)) and hovered and hit_bottom - hit_top >= 1 and _button(
-                        draw_state, "archive:" + row_id, trash_icon, x + row_width - pad - trash_width, hit_top,
-                        trash_width, tint, height=hit_bottom - hit_top, background=False, ui_scale=Melty.ui_scale):
-                    archive = (chats, account_id, key)
-                if draw_state.on_action("left_mouse_double_clicked", view_id="rename:" + row_id,
-                                        rect=rect, priority_delta=5) is not None:
-                    state.rename = {"account": account_id, "key": key, "pane": pane, "draft": text, "focus": True}
-                    renaming = state.rename
-                    editing = True
-                    state.selected[account_id] = key
-                    state.account = account_id
-                    changed = True
-                title_width = row_width - pad * 2
-                right = x + row_width - pad
-                if hovered and not is_active(chats.get(key)):
-                    right -= trash_width
-                if kind is not None:
-                    tag = conversation_source_tag(kind, chats.get(key))
-                    tag_tint = (Toggles.Chat.claude_tag_tint if kind.name == "anthropic"
-                                else Toggles.Chat.codex_tag_tint if kind.name == "codex" else tuple(kind.tint))
-                    tag_dot_width = Melty.px(12) if is_active(chats.get(key)) else 0
-                    tag_width = _label_width(tag) + Melty.px(5) + tag_dot_width
-                    right -= tag_width
-                    imgui.get_window_draw_list().add_rect_filled(right, child_y, right + tag_width,
-                        child_y + row_height, _color(tag_tint, 0.28), rounding=Melty.px(4))
-                    if tag_dot_width:
-                        _running_dot(right + Melty.px(6), child_y + row_height / 2, tint, ui_scale=Melty.ui_scale, channel=Melty.get_channel() if Melty.channels_split else None)
-                    _title(tag, right + tag_dot_width + Melty.px(5), child_y,
-                           tag_width - tag_dot_width - Melty.px(5), row_height,
-                           tag_tint, text_color=tag_tint)
-                    right -= Melty.px(5)
-                size = chats.get(key).get("size_bytes")
-                size_label = (f"{size / 1_000_000:.0f} MB" if size >= 10_000_000 else f"{size / 1_000_000:.2f} MB") if size is not None else "— MB"
-                size_width = _label_width(size_label) + Melty.px(8)
-                right -= size_width
-                _title(size_label, right, child_y, size_width, row_height, tint, brightness=0.5)
-                title_width = max(0, right - x - pad - Melty.px(5))
-                if not editing:
-                    _title(text, x + pad + Melty.px(5), child_y, title_width, row_height, tint, ellipsis=True)
-                else:
-                    imgui.set_cursor_screen_pos((x + pad + Melty.px(5), child_y))
-                    request_focus = editing and renaming["focus"]
-                    edited, value, text_ds = draw_text(renaming["draft"] if editing else text,
-                        wrap=False, name="chat-row:" + row_id,
-                        request_focus=request_focus, select_all_on_focus=request_focus, single_line=True,
-                        return_extras=True,
-                        width=title_width, height=row_height, is_tree=False,
-                        editable=editing, focusable=editing, syntax_highlight=False, autocomplete=False,
-                        show_header=False, show_bg=False, shadow=False, show_widgets=False,
-                        show_file_header=False, show_jump_bar=False, scope_collapse=False,
-                        disable_scroll=True, freeze_resize=True, use_cache=True, imgui_padding=False,
-                        tint=tint, text_tint=_text_tint(tuple(tint)), fim="")
-                if editing:
-                    if Melty.text_focused_ds is text_ds:
-                        renaming["focused"] = True
-                        renaming["focus"] = False
-                    if edited:
-                        renaming["draft"] = value
-                        changed = True
-                    keys_pressed = {event[0] for event in Melty.frame_key_events}
-                    if glfw.KEY_ESCAPE in keys_pressed:
-                        state.rename = None
-                        changed = True
-                    elif (glfw.KEY_ENTER in keys_pressed or glfw.KEY_KP_ENTER in keys_pressed
-                          or renaming.get("focused", False) and Melty.text_focused_ds is not text_ds):
-                        if renaming["draft"].strip():
-                            chats.get(key)["title"] = renaming["draft"].strip()
-                        state.rename = None
-                        changed = True
-                child_y += row_height + gap
-            y += card_height + 5
-    if archive is not None:
-        chats, account_id, key = archive
-        del chats[key]
-        if state.selected.get(account_id) == key:
-            state.selected[account_id] = next(iter(chats), None)
-        if getattr(state, "rename", None) is not None and state.rename["key"] == key:
-            state.rename = None
-        changed = True
-    return changed, min(total, height)
-
-
 @render_func(tint=(0.2, 0.8, 0.4), use_cache=True, show_bg=False, with_header=None,
              with_footer=None, shadow=False, imgui_padding=False, disable_scroll=True)
 def draw_chat_terminal(input_value, draw_state=None):
@@ -903,6 +628,46 @@ def draw_chat_requests(requests, draw_state, state, key, width, height, tint):
     return changed
 
 
+def draw_token_badge(chat, x, y, width, height):
+    """The conversation's context usage at the right end of its header
+    (tooltip: the count against the window); returns the width it took."""
+    from meltygui.chat.chat_interface import _label_width
+    from meltygui.chat.chat_interface import _title
+    from meltygui.model.chat_model import token_badge
+    from meltygui.view.chat_decoration_view import _color
+
+    label, color, detail = token_badge(chat)
+    padding = Melty.px(10)
+    badge_width = min(width, _label_width(label) + 2 * padding)
+    left = x + width - badge_width
+    draw_list = imgui.get_window_draw_list()
+    if Melty.channels_split:
+        draw_list.channels_set_current(Melty.get_channel())
+    draw_list.add_rect_filled(left, y, left + badge_width, y + height, _color(color, 0.18), rounding=Melty.px(5))
+    _title(label, left + padding, y, max(1, badge_width - 2 * padding), height, color, text_color=color, ellipsis=True)
+    if imgui.is_mouse_hovering_rect(left, y, left + badge_width, y + height):
+        imgui.set_tooltip(detail)
+    return badge_width
+
+
+def draw_turn_banner(chat, width, height):
+    """Whose turn it is, under the transcript (`turn_status`'s banner text)."""
+    from meltygui.chat.chat_interface import _title
+    from meltygui.model.chat_model import turn_status
+    from meltygui.view.chat_decoration_view import _color
+
+    _, label, tint = turn_status(chat)
+    x, y = imgui.get_cursor_screen_pos()
+    draw_list = imgui.get_window_draw_list()
+    if Melty.channels_split:
+        draw_list.channels_set_current(Melty.get_channel())
+    draw_list.add_rect_filled(x, y, x + width, y + height - Melty.px(4), _color(tint, 0.13), rounding=Melty.px(5))
+    _title(label, x + Melty.px(10), y, max(1, width - Melty.px(20)), height - Melty.px(4), tint,
+           text_color=tint, ellipsis=True)
+    imgui.set_cursor_screen_pos((x, y))
+    imgui.dummy(width, height)
+
+
 def draw_conversation_title(chat, draw_state, state, selected, x, y, width, height, tint):
     """Double-click the header title to rename the same chat shown in the lists."""
     from meltygui.chat.chat_interface import _title
@@ -964,7 +729,8 @@ def draw_chat_navigation(input_value, draw_state=None, state: ChatInterfaceState
     from meltygui.chat.chat_interface import _label_width
     from meltygui.chat.chat_interface import _title
     from meltygui.model.chat_model import age_cutoff
-    from meltygui.chat.chat_interface import navigation_heading_control
+    from meltygui.view.chat_sidebar_view import draw_chat_sidebar
+    from meltygui.view.chat_sidebar_view import show_all_control
     from meltygui.chat.chat_interface import navigation_row_sizes
     from meltygui.core.layout.column_core import RowLayout
     import meltygui.accounts.internet_accounts as internet_accounts
@@ -977,7 +743,7 @@ def draw_chat_navigation(input_value, draw_state=None, state: ChatInterfaceState
     heading_height = Melty.px(26)
     tint = Toggles.Chat.navigation_tint
     def section_heading(pane, x, y, width):
-        control_changed, control_width = navigation_heading_control(
+        control_changed, control_width = show_all_control(
             pane, draw_state, state, x, y, width, heading_height)
         width = max(0, width - control_width)
         expanded = state.sections_expanded.get(pane, True)
@@ -1133,6 +899,11 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
     if not hasattr(state, "viewports"):
         state.viewports = {}
         state.text_layouts = {}
+    if not hasattr(state, "sidebar_chat_limits"):
+        state.folder_column_defaults = {}
+        state.sidebar_chat_limits = {}
+        state.hovered_folder_action = None
+        state.pending_smart_collapse = None
     folder_events = []
     if ctrl_shift_equal_down:
         folder_events.append((glfw.KEY_EQUAL, glfw.MOD_CONTROL | glfw.MOD_SHIFT))
@@ -1210,8 +981,16 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
     body_height = max(Melty.px(180), body_bottom - body_top)
     frame_kwargs = ({"left_edge": layout_frame[0], "right_edge": layout_frame[1],
                      "band": layout_frame[2:]} if layout_frame is not None else {})
+    # The minimums fit the frame they lay out in: a tile narrower than both
+    # gives the transcript the room first, so the columns never pass its edge.
+    available = (layout_frame[1]["x"] - layout_frame[0]["x"] if layout_frame is not None
+                 else draw_state.width) or 0
+    sidebar_min, transcript_min = 180, 400
+    if 0 < available < sidebar_min + transcript_min:
+        sidebar_min = min(sidebar_min, max(60, available * 0.25))
+        transcript_min = max(1, min(transcript_min, available - sidebar_min))
     columns = ColumnLayout(draw_state, 2, column_edges=column_edges,
-                           column_widths=[260, None], column_mins=[180, 400],
+                           column_widths=[260, None], column_mins=[sidebar_min, transcript_min],
                            padding=Melty.px(Toggles.Chat.column_gap), padding_y=0, border_color=None,
                            **frame_kwargs)
     with columns.cell(0, height=body_height) as width:
@@ -1292,8 +1071,10 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
             meta = chat.metadata
             chat_tint = tuple(project_tint(chat["project"], file_metadata=file_metadata) or kind.tint)
             x, y = imgui.get_cursor_screen_pos()
+            header_width = max(1, width - Melty.px(100))
+            badge_width = draw_token_badge(chat, x, y, header_width, Melty.px(28))
             changed |= draw_conversation_title(chat, draw_state, state, selected, x, y,
-                max(1, width - Melty.px(100)), Melty.px(28), chat_tint)
+                max(1, header_width - badge_width - Melty.px(10)), Melty.px(28), chat_tint)
             concise = getattr(state, "concise", False)
             if _button(draw_state, "concise-view", "✓ Concise" if concise else "Concise",
                        x + width - Melty.px(95), y, Melty.px(95), chat_tint,
@@ -1335,8 +1116,10 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
             status_height += 2 * status_pad
             history_height = max(Melty.px(40), body_bottom - imgui.get_cursor_screen_pos()[1]
                                  - requests_height - status_height - queue_height - controls_extra_height - Melty.px(120 + (26 if active else 0)))
+            banner_height = min(Melty.px(34), history_height)
             changed |= draw_messages(chat["messages"], draw_state, state, transcript_key,
-                                 width, history_height, conversation_tint=chat_tint, revision=proxy.revision, file_metadata=file_metadata)
+                                 width, max(1, history_height - banner_height), conversation_tint=chat_tint, revision=proxy.revision, file_metadata=file_metadata)
+            draw_turn_banner(chat, width, banner_height)
             if active:
                 x, y = imgui.get_cursor_screen_pos()
                 _running_dot(x + Melty.px(10), y + Melty.px(12), chat_tint, ui_scale=Melty.ui_scale, channel=Melty.get_channel() if Melty.channels_split else None)
@@ -1708,3 +1491,41 @@ def _row_geometry(rows):
         y += row[3]
         ends.append(y)
     return tops, ends
+
+
+# Claude Code's tint: the tile picker's row and the melty-claude window.
+CLAUDE_CHAT_TINT = (0.35, 0.38, 0.44)
+# Sidebar tints and ordering, kept between runs and shared by every app that
+# draws this chat (melty-claude's original location).
+CLAUDE_CHAT_METADATA = Path.home() / ".cache" / "melty-claude" / "chat_metadata.json"
+
+
+def draw_claude_chat(input_value=None, new_project=None, default_project=None, **kwargs):
+    """The Claude Code chat, ready for a window body or a tile: the chat
+    interface over the detached chat service (conversations continue in every
+    app that draws it), with folder tints from the shared file-meta store and
+    the sidebar metadata kept in CLAUDE_CHAT_METADATA.
+
+    A plain function, not a render boundary: `draw_chat_interface` is the one
+    @render_func, and the caller's kwargs (a tile's ``width`` / ``height`` /
+    ``key`` / ``layout_frame``...) go straight to it. An app offers it in its
+    tile picker through its host's ``multi_instance_renderers``.
+
+    A new conversation runs in ``new_project`` when given (an app started for
+    one project), else in the selected conversation's project, else
+    ``default_project``, else the input's project (`chat_project`: a path, or
+    whatever an application registered for its model - a tile split from a code
+    editor inherits its open files), else the cwd."""
+    from meltygui.chat.metadata import persistent_metadata
+    from meltygui.model.chat_model import chat_project
+    from meltygui.models.file_meta import file_meta_store
+
+    persistent_metadata(CLAUDE_CHAT_METADATA)   # before the first proxy is created
+    project = default_project or chat_project(input_value) or str(Path.cwd())
+    draw_chat_interface(name="claude-code", new_project=new_project, default_project=project,
+                        show_bg=False, file_metadata=file_meta_store(), **kwargs)
+    return False, input_value
+
+
+# The tile picker's row (renderer_decoration reads a plain callable's too).
+draw_claude_chat.__header_defaults__ = {"tint": CLAUDE_CHAT_TINT, "icon": f"\uf075", "display_name": "Claude Code"}

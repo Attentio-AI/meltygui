@@ -6,7 +6,8 @@ from meltygui.view.dropdown_view import draw_dropdown
 
 def renderer_decoration(renderer):
     """The kwargs a ``@render_func(...)`` decoration stamped on ``renderer``
-    (its ``__header_defaults__``), or an empty dict for a plain callable."""
+    (its ``__header_defaults__``; a plain callable may carry one for its picker
+    row), else an empty dict."""
     decoration = getattr(renderer, "__header_defaults__", None)
     return decoration if isinstance(decoration, dict) else {}
 
@@ -64,15 +65,22 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
 
     changed = selected
     if tile.render_func is not None:
+        from meltygui.core.melty import Melty
         imgui.set_cursor_screen_pos((left, top))
-        content_changed, value = tile.render_func(
-            tile.input_value,
-            unique_name=f"{tile.render_func.__module__}.{tile.render_func.__qualname__}",
-            width=width,
-            height=content_height,
-            auto_resize=False, show_header=False, use_cache=use_cache,
-            key=tile.id, instance=tile.id, layout_frame=layout_frame,
-        )
+        # A renderer that lays out wider than its tile (a view's own minimums)
+        # is cut at the tile, never drawn over its neighbours.
+        Melty.push_clip((left, top, left + width, top + content_height))
+        try:
+            content_changed, value = tile.render_func(
+                tile.input_value,
+                unique_name=f"{tile.render_func.__module__}.{tile.render_func.__qualname__}",
+                width=width,
+                height=content_height,
+                auto_resize=False, show_header=False, use_cache=use_cache,
+                key=tile.id, instance=tile.id, layout_frame=layout_frame,
+            )
+        finally:
+            Melty.pop_clip()
         if content_changed:
             tile.input_value = value
         changed |= content_changed

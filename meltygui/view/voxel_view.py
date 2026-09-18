@@ -11,6 +11,9 @@ from meltygui.core.rendering.shaped import Shaped
 from meltygui.core.runtime.toggles import SwooshMode
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.view.header_view import draw_header
+# The lut= parameter's picker: importing registers draw_lut as the Lut
+# renderer (without it the row falls back to the generic str input).
+from meltygui.view.lut_view import draw_lut
 import OpenGL.GL as gl
 import math
 import meltygui_imgui as imgui

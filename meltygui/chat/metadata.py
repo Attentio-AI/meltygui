@@ -103,7 +103,8 @@ def shared_metadata():
 def persistent_metadata(path):
     """The app-wide ChatMetadata, loaded from ``path`` (a JSON file; missing
     or unreadable starts empty) and written back at interpreter exit. Call
-    it once before the first chat proxy is created."""
+    it before the first chat proxy is created; later calls return the same
+    mirror and keep its first path."""
     import atexit
     import json
     import os
@@ -111,6 +112,8 @@ def persistent_metadata(path):
     global _app_metadata
     path = pathlib.Path(path).expanduser()
     metadata = shared_metadata()
+    if getattr(metadata, "save", None) is not None:
+        return metadata   # already persistent: a view may ask every frame
     try:
         accounts = json.loads(path.read_text()).get("accounts", {})
     except (OSError, ValueError):

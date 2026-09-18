@@ -3,7 +3,7 @@ from meltygui.core.rendering.core_decoration import no_save
 from meltygui.core.conversion.dict_conversion import DictConversion
 
 
-@no_save("revision", "viewports", "text_layouts", "rename")
+@no_save("revision", "viewports", "text_layouts", "rename", "hovered_folder_action", "pending_smart_collapse")
 class ChatInterfaceState(DictConversion):
     def __init__(self):
         super().__init__()
@@ -34,3 +34,11 @@ class ChatInterfaceState(DictConversion):
         self.folder_expanded = {}
         self.folders_default_expanded = True
         self.sections_expanded = {"recent": True, "all": True, "accounts": True}
+        # Per-pane fold default (Ctrl+Shift+= / - over a column) and how many
+        # conversations a folder or the recent feed lists before "Show more".
+        self.folder_column_defaults = {}
+        self.sidebar_chat_limits = {}
+        # This frame's fold shortcut, applied by the hovered sidebar column;
+        # the pane whose small folders stay open while the rest collapse.
+        self.hovered_folder_action = None
+        self.pending_smart_collapse = None

@@ -26,6 +26,8 @@ from meltygui.core.runtime.app import persisted
 
 if TYPE_CHECKING:   # IDE / type checkers only; never executed
     from meltygui.view.text_view import draw_text
+    from meltygui.model.tile_model import multi_instance
+    from meltygui.view.chat_view import draw_claude_chat
     from meltygui.view.texture_view import draw_texture
     from meltygui.core.rendering.render_dispatch import draw_any
     from meltygui.view.control_view import draw_button
@@ -57,6 +59,8 @@ _VIEWS = {
     'draw_tensor_error': ('meltygui.view.tensor_view', 'draw_tensor_error'),
     'draw_line_graph': ('meltygui.view.graph_view', 'draw_line_graph'),
     'render_func': ('meltygui.core.core_render', 'render_func'),
+    'multi_instance': ('meltygui.model.tile_model', 'multi_instance'),
+    'draw_claude_chat': ('meltygui.view.chat_view', 'draw_claude_chat'),
     'draw_text': ('meltygui.view.text_view', 'draw_text'),
     'draw_texture': ('meltygui.view.texture_view', 'draw_texture'),
     'draw_any': (_NCV, 'draw_any'),

@@ -45,10 +45,10 @@ def rgb_to_hsv(r, g, b):
     minc = min(r, g, b)
     rangec = (maxc - minc)
     v = maxc
-    if maxc == 0:
-        maxc = 1.0
-    if minc == maxc:
-        return 0.0, 0.0, v
+    if rangec == 0 or maxc <= 0:
+        # Grey, and a colour with no positive channel: black. A tint mix can
+        # undershoot zero by a hair (line_number_bg gave (0, -0.013, -0.019)).
+        return 0.0, 0.0, max(v, 0.0)
     s = rangec / maxc
     rc = (maxc - r) / rangec
     gc = (maxc - g) / rangec
