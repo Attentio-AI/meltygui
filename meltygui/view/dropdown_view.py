@@ -362,6 +362,19 @@ FAST_DROPDOWN_WRAPPER_KWARGS = (
     "horizontal", "initial", "window_pos")
 
 
+def _dropdown_wants_wrapper(kwargs):
+    """True when this call needs draw_dropdown's @render_func host. Not
+    fast_view.wants_wrapper: that one also follows
+    Toggles.Collection.fast_draw_collection, the collections' A/B switch,
+    which must not send a caller that asked for the fast host to the wrapper."""
+    if Melty.in_annotation_mode():
+        return True
+    for wrapper_kwarg in FAST_DROPDOWN_WRAPPER_KWARGS:
+        if kwargs.get(wrapper_kwarg):
+            return True
+    return False
+
+
 def fast_draw_dropdown(input_value=None, **kwargs):
     """draw_dropdown without the @render_func wrapper, for a host drawing
     many triggers a frame (the breadcrumbs: one per path segment). It hosts
@@ -387,10 +400,9 @@ def fast_draw_dropdown(input_value=None, **kwargs):
     from meltygui.core.rendering.fast_view import push_view_tint
     from meltygui.core.rendering.fast_view import resolve_fast_kwargs
     from meltygui.core.rendering.fast_view import stamp
-    from meltygui.core.rendering.fast_view import wants_wrapper
     from meltygui.core.windowing.glfw_utils import request_render
 
-    if wants_wrapper(kwargs, FAST_DROPDOWN_WRAPPER_KWARGS):
+    if _dropdown_wants_wrapper(kwargs):
         return draw_dropdown(input_value, **kwargs)
     body = draw_dropdown.__wrapped__
     return_extras = kwargs.pop("return_extras", False)
@@ -400,7 +412,7 @@ def fast_draw_dropdown(input_value=None, **kwargs):
     decoration = {param_name: param_value for param_name, param_value in draw_dropdown.__header_defaults__.items()
                   if param_name not in FAST_DROPDOWN_WRAPPER_KWARGS}
     kwargs, mode_stacked = resolve_fast_kwargs(body, decoration, input_value, kwargs)
-    if kwargs.get("view_func") is not None or wants_wrapper(kwargs, FAST_DROPDOWN_WRAPPER_KWARGS):
+    if kwargs.get("view_func") is not None or _dropdown_wants_wrapper(kwargs):
         # A mode / comment asked for another renderer or a wrapper feature.
         if mode_stacked:
             Melty.mode_stack.pop()

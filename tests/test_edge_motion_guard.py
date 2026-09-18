@@ -265,7 +265,10 @@ def test_surface_bound_frame_pair_is_left_to_the_native_pair(rig):
     assert rig.kinds() == ["faster than the pointer"]
 
 
-def test_lag_under_our_own_request_in_flight_is_not_judged(rig, monkeypatch):
+def test_lag_under_our_own_request_in_flight_is_reported(rig, monkeypatch):
+    # Until 09-18 this asserted NO report: a pending native request switched
+    # judgement off, and a push into the display wall files one every frame -
+    # the guard was blind to the very gestures it exists for.
     native = {"x": [{"x": 100.0}, {"x": 700.0}], "y": [{"y": 50.0}, {"y": 450.0}]}
     monkeypatch.setattr(os_frame, "_enabled", lambda: True)
     monkeypatch.setattr(os_frame, "edges", lambda axis: native[axis])
@@ -275,7 +278,8 @@ def test_lag_under_our_own_request_in_flight_is_not_judged(rig, monkeypatch):
     for _ in range(30):
         native["x"][0]["x"] -= 30.0
         rig.frame(dx=-30.0, edge=rig.left, move=-15.0)
-    assert rig.reports == []
+    assert "slower than the pointer" in rig.kinds()
+    assert all(v["edge"] == "win frame[0]" for report in rig.reports for v in report["violations"])
 
 
 def test_compositor_resize_with_the_hand_on_a_button_is_still_judged(rig, monkeypatch):
@@ -307,11 +311,26 @@ def test_window_on_its_first_frames_is_not_judged(rig):
     assert rig.reports == []
 
 
-def test_moving_surface_without_native_motion_is_not_judged(rig, monkeypatch):
+def test_lagging_edge_is_reported_while_a_native_move_is_pending(rig, monkeypatch):
     monkeypatch.setattr(guard, "_unapplied", lambda: (-12.0, 0.0))
     for _ in range(12):
         rig.frame(dx=30.0, edge=rig.divider, move=22.0)
-    assert rig.reports == []
+    assert set(rig.kinds()) == {"slower than the pointer"}
+
+
+def test_native_edge_outrunning_the_held_pointer_is_reported(rig, monkeypatch):
+    """The OS right edge flying out under a right-drag (Lukas 09-18): with a
+    button held the hand is the reference, not the native edge that moved."""
+    native = {"x": [{"x": 100.0}, {"x": 700.0}], "y": [{"y": 50.0}, {"y": 450.0}]}
+    monkeypatch.setattr(os_frame, "_enabled", lambda: True)
+    monkeypatch.setattr(os_frame, "edges", lambda axis: native[axis])
+    monkeypatch.setattr(os_frame, "applied_origin", lambda axis: 0.0)
+    rig.frame(dx=-4.0)
+    for _ in range(6):
+        native["x"][1]["x"] += 40.0
+        rig.frame(dx=-4.0)
+    flagged = {(v["edge"], v["kind"]) for report in rig.reports for v in report["violations"]}
+    assert ("native far", "faster than the pointer") in flagged
 
 
 class NativeRig(Rig):
@@ -327,9 +346,9 @@ class NativeRig(Rig):
         self.native_resize = True
         self.frame()                                            # arms the native-driven gesture
 
-    def native_frame(self, far=0.0, edge=None, move=0.0, axis="x"):
+    def native_frame(self, far=0.0, edge=None, move=0.0, axis="x", dx=0.0):
         self.native["x"][1]["x"] += far
-        self.frame(edge=edge, move=move, axis=axis)
+        self.frame(dx=dx, edge=edge, move=move, axis=axis)
 
 
 @pytest.fixture
@@ -392,7 +411,8 @@ def test_button_flicker_during_a_native_resize_keeps_one_gesture(native):
     # the native resize keeps landing throughout. Baselines must survive.
     for k in range(9):
         native.down = bool(k % 2)
-        native.native_frame(far=-30.0, edge=native.divider, move=-21.0)
+        # The hand on the button travels with the edge the compositor moves.
+        native.native_frame(far=-30.0, edge=native.divider, move=-21.0, dx=-30.0 if native.down else 0.0)
     assert len(guard._STATE["gestures"]) == 1
     assert native.kinds() and set(native.kinds()) == {"slower than the pointer"}
 

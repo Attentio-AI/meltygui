@@ -3,10 +3,13 @@
 While a mouse button is held, every edge either moves at the pointer's speed
 (in either direction: a blocked frame edge pushes the opposite one) or stands
 still, whatever the collision rules say; no edge may move faster than the
-pointer or travel farther than the pointer has. A native resize with no
-button held (the compositor's own grab, a programmatic placement) is driven
-by the native edge that moved instead: the same rules apply with that edge's
-motion in place of the pointer's. Speed is judged in chunks of
+pointer or travel farther than the pointer has. That holds for the native
+(OS) frame pair too: under a held button the hand is the only reference, and
+a native request in flight never suspends judgement - a push into the display
+wall files one every frame. A native resize with NO button held (the
+compositor's own grab, a programmatic placement) is driven by the native edge
+that moved instead: the same rules apply with that edge's motion in place of
+the pointer's, and that edge alone is not judged against itself. Speed is judged in chunks of
 CHUNK_PX of pointer motion rather than single frames, so a slow hand (a pixel
 or two a frame) is judged as well as a fast one: in each chunk an edge stands
 still, matches the pointer, or moves part of the way. A part-way chunk is a
@@ -41,9 +44,8 @@ The pointer is read in model screen coordinates (applied surface origin plus
 the content-local position). While a native move is in flight the origin and
 the local pointer can shift on different frames, so single frames over- or
 under-state the hand's motion by one surface step: the upper bounds are
-judged over a few frames, and a chunk with a native move in flight is judged
-against the native edges' own motion instead of the pointer, once the chunk
-spans JITTER_FRAMES of that motion so the in-flight step is within tolerance.
+judged over RECENT_FRAMES frames, and a landed origin shift widens the budget
+(motion the pointer already paid for).
 
 Change TOLERANCE_PX for the snap/rounding slack, RECENT_FRAMES for how many
 frames of pointer motion one edge step may consume, CHUNK_PX for the pointer
@@ -58,7 +60,6 @@ TOLERANCE_PX = 2.0
 RECENT_FRAMES = 3
 CHUNK_PX = 24.0
 MATCH_FRACTION = 0.85
-JITTER_FRAMES = 6
 NEAR_POINTER_PX = 48.0
 CONTACT_SLACK_PX = 4.0
 # A gesture survives this long without driver motion: a compositor resize
@@ -289,7 +290,7 @@ def _new_gesture(frame, pointer, origin, positions, driver="pointer"):
             "start_frame": frame, "frame": frame, "pointer": pointer, "origin": origin,
             "path": [0.0, 0.0], "recent": [], "start": dict(positions), "prev": dict(positions),
             "chunk": {"pointer": (0.0, 0.0), "pointer_at_start": pointer,
-                      "path": [0.0, 0.0], "moving": [False, False],
+                      "path": [0.0, 0.0],
                       "native": [0.0, 0.0], "native_max": [0.0, 0.0],
                       "start": {eid: pos for eid, (_l, pos, _a) in positions.items()}},
             "chunks": {}, "reports": 0}
@@ -365,12 +366,17 @@ def _check_frame():
     origin_shift = (abs(origin[0] - gesture["origin"][0]), abs(origin[1] - gesture["origin"][1]))
     delta, landed = [0.0, 0.0], [0.0, 0.0]
     for i in range(2):
-        if abs(native_step[i]) > TOLERANCE_PX:
-            # The native edge that moved is the reference on this axis (its
-            # motion already includes any origin shift).
-            delta[i] = native_step[i]
-        elif button:
+        if button:
+            # A held button makes the HAND the only reference. A native edge
+            # that moves under it is judged like every other edge: taken as
+            # the reference, a runaway OS edge set its own speed limit and
+            # travel budget and was never reported (Lukas 09-18).
             delta[i], landed[i] = pointer_delta[i], origin_shift[i]
+        elif abs(native_step[i]) > TOLERANCE_PX:
+            # No button: the compositor's own resize. The native edge that
+            # moved is the reference on this axis (its motion already
+            # includes any origin shift).
+            delta[i] = native_step[i]
     gesture["pointer"], gesture["origin"] = pointer, origin
     gesture["driver_pos"] = (gesture["driver_pos"][0] + delta[0], gesture["driver_pos"][1] + delta[1])
     gesture["right"] = button and _right_down()
@@ -383,11 +389,9 @@ def _check_frame():
         gesture["path"][i] += abs(delta[i]) + landed[i]
     allowance = (sum(r[0] for r in gesture["recent"]), sum(r[1] for r in gesture["recent"]))
     speed = gesture["recent"][-1]
-    surface_moving = tuple(bool(landed[i]) or bool(_unapplied()[i]) for i in range(2))
     chunk = gesture["chunk"]
     for i in range(2):
         chunk["path"][i] += abs(delta[i])
-        chunk["moving"][i] = chunk["moving"][i] or surface_moving[i]
         chunk["native"][i] += abs(native_step[i])
         chunk["native_max"][i] = max(chunk["native_max"][i], abs(native_step[i]))
     violations = []
@@ -399,7 +403,7 @@ def _check_frame():
             # opened): its baseline is where it appeared.
             gesture["start"][eid] = gesture["prev"][eid] = (label, pos, axis)
             continue
-        if label.startswith("native ") and abs(native_step[i]) > TOLERANCE_PX:
+        if not button and label.startswith("native ") and abs(native_step[i]) > TOLERANCE_PX:
             gesture["prev"][eid] = (label, pos, axis)      # the reference itself
             continue
         step = pos - previous[1]
@@ -419,11 +423,6 @@ def _check_frame():
     for i in range(2):
         if chunk["path"][i] < CHUNK_PX:
             continue
-        # With our own native request in flight, local edges are rebased at
-        # request time and the origin lands later: the chunk must span
-        # enough native motion for that one step to be within tolerance.
-        if chunk["moving"][i] and chunk["native"][i] < JITTER_FRAMES * chunk["native_max"][i]:
-            continue
         violations.extend(_close_chunk(gesture, i, gesture["driver_pos"], positions, frame))
     if violations:
         _report(gesture, violations, delta, allowance, frame)
@@ -435,14 +434,15 @@ def _close_chunk(gesture, i, pointer, positions, frame):
     chunks. Returns the violations."""
     chunk = gesture["chunk"]
     axis = "xy"[i]
-    against_native = chunk["native"][i] > TOLERANCE_PX
+    # Judged against the native edges' own motion only when they ARE the
+    # driver (no button held): under the hand they are edges like any other.
+    against_native = gesture["driver"] == "native" and chunk["native"][i] > TOLERANCE_PX
     net = abs(pointer[i] - chunk["pointer"][i])
-    # A reversal inside the chunk leaves the motion unmeasurable; so does
-    # our own native request in flight under a hand drag: local edges are
-    # rebased when it is filed and the origin lands later, so their screen
-    # positions cannot be read to a chunk. A compositor resize files no
-    # request and stays judged.
-    judged = net >= CHUNK_PX / 2 and not chunk["moving"][i]
+    # A reversal inside the chunk leaves the motion unmeasurable. Our own
+    # native request in flight does NOT: a push into the display wall files
+    # one every frame, and leaving those chunks unjudged hid exactly the
+    # gestures this guard exists for (Lukas 09-18).
+    judged = net >= CHUNK_PX / 2
     previous_net = gesture.setdefault("previous_net", [None, None])[i]
     # An edge dragged through a layout handle trails the hand by one frame;
     # under acceleration that reads as part way against this chunk alone,
@@ -501,7 +501,6 @@ def _close_chunk(gesture, i, pointer, positions, frame):
     chunk["pointer_at_start"] = tuple(gesture["pointer"][j] if j == i else chunk["pointer_at_start"][j]
                                       for j in range(2))
     chunk["path"][i] = 0.0
-    chunk["moving"][i] = False
     chunk["native"][i] = 0.0
     chunk["native_max"][i] = 0.0
     return violations
@@ -558,7 +557,11 @@ def _summary():
               "edges": {axis: [e.get(axis) for e in state["edges"][axis]] for axis in ("x", "y")},
               "screen": {axis: [e.get(axis) for e in state["screen"][axis]] for axis in ("x", "y")}
               if state.get("screen") else None,
-              "gestures": {axis: sorted(g.get("totals", {}).keys()) if isinstance(g, dict) else str(g)
+              # The native gesture's displacement so far, [near, far] per axis
+              # (os_frame.solve keeps a list; reading it as a dict lost the
+              # whole summary exactly when an OS edge was being pushed).
+              "gestures": {axis: ([round(float(t), 1) for t in g.get("totals") or ()]
+                                  if isinstance(g, dict) else str(g))
                            for axis, g in (state.get("gestures") or {}).items()},
               "pin_rebases": len(state.get("pin_rebases") or {})}
     return windows, native

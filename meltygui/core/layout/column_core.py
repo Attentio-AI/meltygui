@@ -740,16 +740,58 @@ def _solve_collisions(window, axis="x", os_ctx=None):
         residual = target - edge[axis]
         if abs(residual) <= 1e-6:
             continue
-        pair = os_pair if is_os else (fe if len(fe) == 2 else None)
-        if pair is None:
-            continue
-        opposite = pair[0] if residual > 0 else pair[1]
-        if opposite is edge:                         # dragged inward, blocked: nothing to flip
-            continue
+        if is_os or id(edge) in frame_ids:
+            pair = os_pair if is_os else (fe if len(fe) == 2 else None)
+            if pair is None:
+                continue
+            opposite = pair[0] if residual > 0 else pair[1]
+            if opposite is edge:                     # dragged inward, blocked: nothing to flip
+                continue
+        else:
+            # An INTERIOR edge: the active view is the cell being resized, not
+            # the window around it. Only that cell switches to its opposite
+            # edge; the window's frame moves when contact reaches it, never
+            # because a column inside it was blocked
+            # (docs/WINDOW_COLLISION_COLUMNS.md, contact order).
+            opposite = _active_cell_opposite(window, edge, residual, axis)
+            if opposite is None:
+                continue
         edge_constraints.solve_edge(graph, opposite, opposite[axis] - residual, walls=walls, axis=axis)
     if tuple(e[axis] for e in fe) != frame_before:
         moved = True
     return moved
+
+
+def _active_cell_opposite(window, edge, residual, axis):
+    """The edge a blocked cursor-driven INTERIOR ``edge`` flips onto, or None.
+
+    A right-drag latches one edge of the cell under the cursor: its far edge
+    (bottom/right), or its near edge on a double-right-drag (top/left). That
+    cell is the actively dragged view. Blocked while GROWING (the cascade ran
+    into an immovable boundary), it keeps growing the other way: its opposite
+    edge takes the remainder and pushes whatever it then meets. Blocked while
+    SHRINKING (its minimum pushed the pile all the way to the display) there
+    is nothing to enlarge and the drag stops. Until 09-18 the remainder went
+    to the WINDOW's opposite frame edge instead, every frame: a column's right
+    edge dragged left into the display's left wall sent the window's right
+    edge flying out to the far side of the screen.
+
+    A plain divider drag sits between two cells and has no active view: None.
+    """
+    latched = getattr(window, "_resize_target_edge" if axis == "x" else "_resize_target_row", None)
+    if latched is not edge:
+        return None
+    top_left = bool(getattr(window, "_resize_from_top_left", False))
+    growing = residual < 0 if top_left else residual > 0
+    if not growing:
+        return None
+    for _owner, edge_list in _views(window, axis).values():
+        for index, candidate in enumerate(edge_list):
+            if candidate is edge:
+                other = index + 1 if top_left else index - 1
+                if 0 <= other < len(edge_list):
+                    return edge_list[other]
+    return None
 
 
 def _hold_frame_min(window, dragged, axis="x"):

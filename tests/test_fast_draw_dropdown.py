@@ -16,8 +16,10 @@ def melty():
     meltygui.vis.root.draw_state_registry.clear()
     stub, stub_attr = meltygui.style_manager, meltygui.global_attrs.get("style_manager")
     meltygui.style_manager = meltygui.global_attrs["style_manager"] = ImGuiStyleManager()
+    # The collections' A/B switch, OFF: the dropdown's fast host does not
+    # follow it (it once did, and every crumb went to the wrapper unnoticed).
     previous = Toggles.Collection.fast_draw_collection
-    Toggles.Collection.fast_draw_collection = True
+    Toggles.Collection.fast_draw_collection = False
     yield meltygui
     Toggles.Collection.fast_draw_collection = previous
     meltygui.popover_focused_ds = None
