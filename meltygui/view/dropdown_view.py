@@ -1045,6 +1045,19 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     from meltygui.model.dropdown_model import _dd_row_lookup
     from meltygui.core.windowing.glfw_utils import request_render
 
+    from meltygui.model.dropdown_model import DD_DIVIDER
+    if value is DD_DIVIDER:
+        # A rule across the row, the row's own pitch: no hover, no pick.
+        x, y = imgui.get_cursor_screen_pos()
+        w = row_width if row_width else _dd_row_width(draw_state)
+        h = Toggles.Dropdown.row_height
+        imgui.get_window_draw_list().add_line(
+            x + left_pad, y + h * 0.5, x + w - left_pad, y + h * 0.5,
+            pack_color(*Tint.dd_text(requested_tint=tint), 0.28))
+        imgui.dummy(w, h)
+        imgui.set_cursor_screen_pos((x, y + h))
+        return UNSET_VALUE
+
     row_path = tuple(path_prefix) + (key,)
     is_cursor = _dd_as_tuple(cursor_path) == row_path
     kbd_mode = getattr(root_state, "_kbd_mode", True)

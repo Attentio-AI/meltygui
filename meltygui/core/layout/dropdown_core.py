@@ -213,10 +213,11 @@ def _dd_handle_keys(collection, root_state, search="", text_focused=False):
     # siblings. Fall back to the root level if the cursor path went stale.
     cursor = _dd_as_tuple(getattr(root_state, "cursor_path", ()))
     level = cursor[:-1]
-    rows = _dd_rows_at(collection, level, search)
+    from meltygui.model.dropdown_model import DD_DIVIDER
+    rows = [row for row in _dd_rows_at(collection, level, search) if row[1] is not DD_DIVIDER]
     if not rows:
         level = ()
-        rows = _dd_rows_at(collection, level, search)
+        rows = [row for row in _dd_rows_at(collection, level, search) if row[1] is not DD_DIVIDER]
         cursor = ()
     if not rows:
         return UNSET_VALUE

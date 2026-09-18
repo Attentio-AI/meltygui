@@ -1,6 +1,21 @@
 """Dropdown model functions and supporting definitions."""
 
 
+class _Divider:
+    """A leaf VALUE that draws its row as a rule instead of a label: never
+    hovered, never picked, skipped by the arrow keys, hidden while a search
+    filters the rows. The key only has to be unique in its dict."""
+
+    def __repr__(self):
+        return "DD_DIVIDER"
+
+    def __str__(self):
+        return ""
+
+
+DD_DIVIDER = _Divider()
+
+
 
 def _dd_entries(container):
     """Normalized (key, value, label, is_branch) rows for one level. Dict rows
@@ -37,7 +52,7 @@ def _dd_visible_entries(container, search=""):
     if not search:
         return rows
     return [(k, v, lbl, br) for (k, v, lbl, br) in rows
-            if search in lbl.lower() or (br and _dd_subtree_matches(v, search))]
+            if v is not DD_DIVIDER and search in lbl.lower() or (br and _dd_subtree_matches(v, search))]
 
 
 def _dd_walk(collection, path):
