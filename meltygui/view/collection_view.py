@@ -1379,138 +1379,32 @@ Melty.register_default_view(fast_draw_collection, (
              show_name=True, selectable=False, max_width=100, min_width=33, use_cache=False, with_header=draw_header)
 def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, outline=False,
                info=None):
-    from meltygui.core.windowing.glfw_utils import request_render
-    from meltygui.view.color_view import draw_color_picker
-    from meltygui.view.control_view import button
-    from meltygui.view.color_view import color_picker_height
-    from meltygui.view.color_view import color_picker_top_offset
-    from meltygui.view.color_view import color_picker_width
-    import meltygui.core.windowing.window_api as glfw
+    """The default colour-tuple value: ``draw_tuple_fast``'s chip and picker
+    popover (one implementation for value rows, headers, tab bars and file
+    rows), given a layout slot in the value row. ``None`` draws the hollow
+    chip; a click stamps in an opaque black."""
+    # Change the chip's size here.
+    chip_size = 17
 
-    is_open = False
-    changed = False
-
-    if input_value is None:
-        # Position BEFORE drawing, exactly like the color branch below - a
-        # first frame that skips the same_line breaks the header row (every
-        # remaining item wraps to a new line) and the early return under the
-        # button never restores it. Single-line rows only: line placement
-        # belongs in the wrapper (it same_lines after the header unless it
-        # chose multi_line), and forcing same_line on a multi_line frame drags
-        # the widget back onto the header's line.
-        if not draw_state.multi_line:
-            imgui.same_line(spacing=4)
-        if button("", height=21, shadow=False, z_offset=0, corner_radius=4, tint=(0, 0, 0, 0.1
-                                                                                   ), tint_value=0.14, use_cache=True,
-                  show_bg=True, text_pad=7, name=f"add_tuple##{unique}",
-                  show_button_bg=True)[0]:
-            input_value = (0.0, 0.0, 0.0, 1.0)
-            request_render()
-            return True, input_value
-
-    else:
-        # if not draw_state.multi_line:
-        #     imgui.same_line(spacing=4)
-
-        is_color = input_value is not None and isinstance(input_value, tuple) and len(input_value) in (3, 4) and all(
-            isinstance(c, (float, int)) for c in input_value)
-        if is_color:
-            # A swatch trigger that opens our own colour-picker popover (replacing
-            # imgui's built-in popup). Same popover pattern as the dropdown: identity
-            # in Melty.popover_focused_ds is the open state; click toggles it; the
-            # picker window is anchored under the swatch and dismissed on outside
-            # click / Esc. The picker itself is stateless and returns the new colour.
-            from meltygui.core.rendering.mode import Mode
-            is_open = Melty.popover_focused_ds is draw_state
-            col = list(input_value)
-            alpha = col[3] if len(col) == 4 else 1.0
-            # ALPHA_PREVIEW_HALF makes the swatch split: one half shows the colour
-            # composited over a checkerboard at its real alpha, the other fully
-            # opaque - so a length-4 tuple's transparency is visible in the chip itself
-            # (plain color_button forces opaque regardless of the alpha we pass).
-            flags = imgui.COLOR_EDIT_NO_TOOLTIP | imgui.COLOR_EDIT_ALPHA_PREVIEW_HALF
-            if imgui.color_button(f"##swatch{unique}{name}", col[0], col[1], col[2], alpha,
-                                  flags=flags, width=17, height=17):
-                Melty.popover_focused_ds = None if is_open else draw_state
-                if not is_open:
-                    Melty._popover_open_frame = Melty.frame_count  # grace the opening click
-                request_render()
-            if outline:
-                # Tight ring around the CHIP (the item just drawn) - the
-                # widget's draw_state box is the measured min/max_width
-                # envelope, far wider than the swatch.
-                _omn, _omx = imgui.get_item_rect_min(), imgui.get_item_rect_max()
-                imgui.get_window_draw_list().add_rect(
-                    _omn.x - 1.5, _omn.y - 1.5, _omx.x + 1.5, _omx.y + 1.5,
-                    pack_color(1.0, 1.0, 1.0, 0.55), rounding=4.0)
-            is_open = Melty.popover_focused_ds is draw_state  # reflect the toggle this frame
-
-            # The picker window is closable -> fixed size (auto-resize is off for
-            # closable windows), and its content is raw imgui (not child render_funcs)
-            # so the framework can't measure it. Size the window to fit the SV square
-            # (180) + the N channel drag-floats and the hex line, so nothing clips.
-    # info: a general-purpose caption for the popover (e.g. the anywhere
-    # swatch's "last known source"). A CALLABLE resolves only while the
-    # popover is open for a lazy path, so closed swatches never pay for it.
-    _info = None
-    if is_open and info is not None:
-        _info = info() if callable(info) else info
-    picker_h = color_picker_height(4, bool(_info))
-    # parent_window=draw_state anchors the popover under the swatch and makes
-    # the tuple the picker's ancestor, so clear_focus (which protects the
-    # clicked swatch window closure) leaves the popover open when you click
-    # the tuple, and dismisses it when you click anywhere else.
-    # Flip up when opening down would run past the display bottom: the
-    # popover renders at the invoking cursor + window_pos (core_render's
-    # nested-window anchor), and the cursor here sits just under the swatch -
-    # so the up offset is the picker's own height plus the swatch row.
-    _pop_y = color_picker_top_offset()
-    _anchor_y = imgui.get_cursor_screen_pos()[1]
-    _disp_h = imgui.get_io().display_size[1]
-    if _anchor_y + _pop_y + picker_h > _disp_h - 10:
-        _pop_y = -(picker_h + 38)
-    color_changed, new_color = draw_color_picker(input_value, name=f"color_picker{unique}",
-                                                 closed=not is_open, window_pos=(0, _pop_y), info=_info,
-                                                 parent_window=draw_state, width=color_picker_width(), height=picker_h,
-                                                 mode=Modes.POPOVER)
-    if is_open:
-        if color_changed:
-            if new_color is not None:
-                input_value = tuple(new_color)
-            else:
-                input_value = None
-                request_render()
-            changed = True
-        # Dismiss on a click outside the swatch/popover, or on Esc.
-        # if imgui.is_mouse_clicked(0):
-        #     mx, my = imgui.get_mouse_pos()
-        #     if not any(_is_in_subtree(d, draw_state) for d in Core.melty.bvh_query(mx, my)):
-        #         Melty.popover_focused_ds = None
-        #         request_render()
-        if any(k == glfw.KEY_ESCAPE for k, _ in Core.melty.frame_key_events):
-            Melty.popover_focused_ds = None
-            request_render()
-        # Keep re-rendering while a slider/square is being dragged so the live
-        # imgui interaction (is_item_active) updates the frame.
-        if Melty.imgui_any_item_active or imgui.is_mouse_down(0):
-            Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
-            request_render()
-
-    # elif input_value is not None and len(input_value) > 0 and isinstance(input_value[0], (float, int)):
-    #     str_value = ", ".join([str(v) for v in input_value])
-    #     ch, input_str = imgui.input_text("##tuple", str_value)
-    #     if ch:
-    #         try:
-    #             new_tuple = eval(f"({input_str},)")
-    #             if isinstance(new_tuple, tuple):
-    #                 input_value = new_tuple
-    #                 changed = True
-    #         except Exception:
-    #             pass
-    # else:
-    #     changed, input_value = draw_collection(input_value=input_value)
-
-    return changed, input_value
+    is_color = (isinstance(input_value, tuple) and len(input_value) in (3, 4)
+                and all(isinstance(channel, (float, int)) for channel in input_value))
+    if input_value is not None and not is_color:
+        # A tuple matched by NAME ('tint', 'color') that holds no colour: the
+        # chip's click would overwrite it, so it gets no chip.
+        return False, input_value
+    if input_value is None and not draw_state.multi_line:
+        # Single-line rows only: line placement belongs to the wrapper, and
+        # forcing same_line on a multi_line frame drags the chip back onto
+        # the header's line.
+        imgui.same_line(spacing=4)
+    left, top = imgui.get_cursor_screen_pos()
+    changed, value = draw_tuple_fast(input_value, draw_state, view_id=f"swatch{unique}{name}",
+                                     x=left, y=top, size=chip_size, outline=outline, info=info)
+    # The fast chip claims no layout (and parks the cursor under itself while
+    # its picker is open): the value row's slot is claimed here.
+    imgui.set_cursor_screen_pos((left, top))
+    imgui.dummy(chip_size, chip_size)
+    return changed, value
 
 
 def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,

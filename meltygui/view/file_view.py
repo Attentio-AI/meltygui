@@ -381,30 +381,168 @@ def paint_breadcrumbs(draw_state, path, click=None, crumb_height=24.0, left_pad=
     return None
 
 
+class _CrumbTints:
+    """draw_dropdown's `row_tints` for a crumb menu, looked up live: a row's
+    value is its path, its tint the one painted on it in the file-meta store
+    (no dict built over a listing that may never open)."""
+
+    def __init__(self, file_metadata):
+        self.file_metadata = file_metadata
+
+    def __bool__(self):
+        return self.file_metadata is not None
+
+    def get(self, path):
+        from meltygui.models.file_meta import FileMeta
+        return FileMeta.painted_tint(self.file_metadata.get(path))
+
+
+def _crumb_menu(directory, on_path, file_metadata, memo):
+    """One crumb's dropdown rows, {icon + name: path}: `directory`'s folders
+    then files in the file browser's order (`ordered_rows`), memoized in
+    `memo` by the directory's mtime. Hidden entries stay out unless
+    `on_path` (the entry the crumb strip continues through) is one."""
+    from meltygui.files.fast_file_explorer import row_icon
+    from meltygui.model.file_metadata_model import ordered_rows
+    from meltygui.model.file_model import _dir_mtime_ns
+    from meltygui.model.file_model import list_directory
+
+    # [tint=(0.55, 0.72, 0.95)]
+    folder_icon = f"\uf07b"
+    # [tint=(0.55, 0.72, 0.95)]
+    file_icon = f"\uf15b"
+    show_hidden = on_path is not None and on_path.name.startswith(".")
+    key = (str(directory), _dir_mtime_ns(directory), show_hidden)
+    if memo.get("key") != key:
+        meta = file_metadata
+        rows = ordered_rows(list_directory(directory, show_hidden), meta)
+        memo["key"] = key
+        memo["rows"] = {
+            f"{row_icon(path, is_dir, meta.get(str(path)) if meta is not None else None, folder_icon, file_icon)}  {path.name}":
+                str(path)
+            for path, is_dir in rows}
+    return memo["rows"]
+
+
 @render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=True,
              show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
-def draw_breadcrumbs(input_value: str, draw_state, left_mouse_clicked=False,
-                     crumb_height=24.0, left_pad=6.0, folder_bg_boost=-0.12,
-                     text_mix=0.5, file_metadata=None, **kwargs):
-    """The file browser's path strip on its own (`paint_breadcrumbs`) for a
-    host that shows one path — the code editor draws it along the top of
-    the selected file's column (``show_breadcrumbs=True``), the mirror of
-    the tab bar along its bottom. `input_value` is the path (a directory or
-    a file; a file's name is the last, bright crumb). A click on any other
-    crumb returns ``(True, directory)`` once, the host deciding what a
-    directory pick means; otherwise ``(False, input_value)``."""
+def draw_breadcrumbs(input_value: str, draw_state, crumb_height=24.0, left_pad=6.0,
+                     folder_bg_boost=-0.12, text_mix=0.5, file_metadata=None,
+                     crumb_pad=4.0, menu_min_width=260.0, **kwargs):
+    """A path strip whose every segment is a DROPDOWN (`draw_dropdown`: its
+    search box, keyboard nav, fast leaf rows) over the directory that
+    segment lives in — a folder crumb lists the folder, the file crumb its
+    siblings — for a host that shows one path: the code editor draws it
+    along the top of the selected file's column (``show_breadcrumbs=True``),
+    the mirror of the tab bar along its bottom. `input_value` is the path (a
+    directory or a file; the last crumb is the bright one). Rows and crumbs
+    wear their painted file-meta tint (`file_metadata`, default the shared
+    store). Listings are lazy (read while a menu shows). A strip wider than
+    the view drops its leading crumbs. A picked row returns ``(True, path)``
+    once — a file or a directory, the host deciding what each means;
+    otherwise ``(False, input_value)``."""
+    from meltygui.core.layout.dropdown_core import _dd_close
+    from meltygui.core.windowing.glfw_utils import request_render
+    from meltygui.files.fast_file_explorer import row_tint_bg
+    from meltygui.files.fast_file_explorer import tinted_text
+    from meltygui.hdr_color import unpack_color
+    from meltygui.models.file_meta import FileMeta
+    from meltygui.models.file_meta import file_meta_store
+    from meltygui.view.dropdown_view import TRIGGER_TEXT_INSET
+    from meltygui.view.dropdown_view import draw_dropdown
+
     if not input_value:
         return False, input_value
-    click = ((left_mouse_clicked.x, left_mouse_clicked.y)
-             if (left_mouse_clicked and hasattr(left_mouse_clicked, "x")) else None)
-    target = paint_breadcrumbs(draw_state, input_value, click=click,
-                               crumb_height=crumb_height, left_pad=left_pad,
-                               folder_bg_boost=folder_bg_boost, text_mix=text_mix,
-                               file_metadata=file_metadata)
-    if target is not None:
-        from meltygui.core.windowing.glfw_utils import request_render
+    crumb_separator = "  /  "
+    text_rgba = (0.92, 0.92, 0.92, 1.0)
+    dim_rgb = (0.6, 0.63, 0.68)
+
+    px = Melty.px
+    pad, crumb_h, inner = px(left_pad), px(crumb_height), px(crumb_pad)
+    meta = file_metadata if file_metadata is not None else file_meta_store()
+    parts = Path(input_value).parts
+    targets = [Path(*parts[:i + 1]) for i in range(len(parts))]
+    content_w = draw_state.content_width or draw_state.width or 240
+
+    # ── the path moved under an open menu: close it (its crumb may be gone) ──
+    crumb_states = draw_state.misc.setdefault("_crumb_states", {})
+    memos = draw_state.misc.setdefault("_crumb_memos", {})
+    mine_open = any(ds is Melty.popover_focused_ds for ds, _state in crumb_states.values())
+    if draw_state.misc.get("_crumb_path") != input_value:
+        draw_state.misc["_crumb_path"] = input_value
+        for ds, state in crumb_states.values():
+            if Melty.popover_focused_ds is ds:
+                Melty.popover_focused_ds = None
+                _dd_close(state)
+        mine_open = False
+    if not mine_open:
+        memos.clear()                            # a reopen re-reads icons / order
+
+    # ── widths; a strip wider than the view drops its LEADING crumbs ──
+    # A crumb is followed by the dim separator; the root chip ("/") by a gap.
+    widths = [imgui.calc_text_size(part).x + TRIGGER_TEXT_INSET + 2 * inner for part in parts]
+    separator_w = imgui.calc_text_size(crumb_separator).x
+    gaps = [0.0 if i == len(parts) - 1 else px(8) if part == os.sep else separator_w
+            for i, part in enumerate(parts)]
+    first = 0
+    while first < len(parts) - 1 and pad + sum(widths[first:]) + sum(gaps[first:]) > content_w:
+        first += 1
+
+    def menu_source(index):
+        """The rows of crumb `index`, resolved by draw_dropdown only while its
+        menu shows; the highlight starts on the entry the strip continues through."""
+        target = targets[index]
+        last = index == len(targets) - 1
+        directory = target if not last or target.is_dir() else target.parent
+        on_path = (targets[index + 1] if not last
+                   else target if directory != target else None)
+        rows = _crumb_menu(directory, on_path, meta, memos.setdefault(index, {}))
+        held = crumb_states.get(index)
+        if held is not None and on_path is not None:
+            label = next((label for label, path in rows.items() if path == str(on_path)), None)
+            held[1].selected_path = (label,) if label is not None else ()
+        return rows
+
+    row_bg = row_tint_bg()
+    draw_list = imgui.get_window_draw_list()
+    x0, y0 = imgui.get_cursor_screen_pos()
+    cx = x0 + pad
+    separator_y = y0 + (crumb_h - imgui.get_font_size()) * 0.5
+    dim_col = pack_color(*dim_rgb, 1.0)
+    picked = None
+    for i in range(first, len(parts)):
+        target, last = targets[i], i == len(parts) - 1
+        crumb_tint = FileMeta.painted_tint(meta.get(str(target)))
+        if crumb_tint:
+            draw_list.add_rect_filled(cx, y0 + px(2), cx + widths[i], y0 + crumb_h - px(2),
+                                      row_bg(crumb_tint, folder_bg_boost or 0.0), rounding=px(3))
+            text_color = unpack_color(tinted_text(text_rgba, crumb_tint, text_mix))[:3]
+        else:
+            text_color = text_rgba[:3] if last else dim_rgb
+        imgui.set_cursor_screen_pos((cx, y0))
+        # STABLE identity (the index, never the path): the popover is a
+        # latching window, so a name keyed on the file would orphan it.
+        result = draw_dropdown(
+            str(target), collection={}, collection_source=lambda index=i: menu_source(index),
+            display_label=parts[i], name=f"crumb_{i}", width=widths[i], height=crumb_h,
+            trigger_height=crumb_h, show_header=False, shadow=False, show_button_bg=False,
+            text_pad=inner, trigger_text_color=text_color, trigger_caret=("", ""),
+            row_tints=_CrumbTints(meta), menu_min_width=px(menu_min_width), return_extras=True)
+        crumb_ds = result[2] if len(result) > 2 else None
+        state = (getattr(crumb_ds, "misc", None) or {}).get("drop_down_state") if crumb_ds is not None else None
+        if state is not None:
+            crumb_states[i] = (crumb_ds, state)
+        if result[0] and result[1]:
+            picked = result[1]
+        cx += widths[i]
+        if not last and parts[i] != os.sep:
+            draw_list.add_text(cx, separator_y, dim_col, crumb_separator)
+        cx += gaps[i]
+    imgui.set_cursor_screen_pos((x0, y0))
+    imgui.dummy(content_w, crumb_h)
+    if picked is not None and picked != input_value:
         request_render()
-        return True, str(target)
+        return True, str(picked)
     return False, input_value
 
 

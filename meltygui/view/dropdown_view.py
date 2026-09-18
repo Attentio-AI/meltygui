@@ -50,13 +50,21 @@ def draw_drop_down_item(input_value, name="", unique=0, shadow=False, draw_state
              is_tree=False, show_name=True, with_header=draw_header)
 @window
 def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_state: DropDownState, shadow=True,
-                  text_align="left", open_upwards=None, menu_min_width=None, display_label=None, **kwargs):
+                  text_align="left", open_upwards=None, menu_min_width=None, display_label=None,
+                  collection_source=None, trigger_text_color=None, trigger_caret=None, **kwargs):
     """Root of a recursive dropdown. Renders a trigger button showing the current
     selection; clicking it opens the (click-o-open) root popover. Nested dict
     rows inside the popover open their own sub-menus on hover. Returns
     (changed, selected_leaf) when the user picks a value. `open_upwards`
     defaults to choosing the side with room. True forces above, False below;
     `menu_min_width` sets its width floor.
+
+    `collection_source` (a callable returning the collection) makes the rows
+    LAZY: it is resolved only while this popover shows, so a strip of closed
+    dropdowns (the breadcrumbs: one per path segment, each a directory
+    listing) reads nothing. `trigger_text_color` is the trigger label's exact
+    rgb (flat_button's text_color); `trigger_caret` a (closed, open) glyph pair
+    replacing the chevron (empty glyphs: no caret at all).
 
     Open/closed is a single global slot -- ``Melty.popover_focused_ds`` holds the
     draw_state of whichever dropdown's popover is currently shown. Each dropdown
@@ -79,6 +87,8 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     # DEBUG
     # Is THIS dropdown the one whose popover is showing?
     is_open = Melty.popover_focused_ds is draw_state
+    if collection_source is not None:
+        collection = collection_source() if is_open else {}
     _DD_DBG = False  # TEMP: default False for dropdown-close investigation
     if _DD_DBG:
         _pf = Melty.popover_focused_ds
@@ -121,6 +131,8 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     _sel_label = getattr(drop_down_state, "selected_label", "") or ""
     current = display_label if display_label is not None else (_sel_label if _sel_label else (str(input_value) if input_value is not None else ""))
     caret = "" if is_open else ""  # fa-chevron-down / fa-chevron-right
+    if trigger_caret is not None:
+        caret = trigger_caret[1] if is_open else trigger_caret[0]
 
     # Compact mode: in a very narrow slot (e.g. an inline table cell) there's no room
     # for the caret + button chrome, so show NOTHING but the selected value. Still a
@@ -154,7 +166,8 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         drop_down_display_str = _dd_fit_label(
             str(input_value if input_value is not None else current), _label_px)
     else:
-        drop_down_display_str = _dd_fit_label(f"{caret} {str(current)}", _label_px)
+        # An empty caret (trigger_caret=("", "")) leaves the bare label.
+        drop_down_display_str = _dd_fit_label(f"{caret} {str(current)}" if caret else str(current), _label_px)
 
     # A caller's trigger_height taller than the 25 px slot also moves the popover anchor down.
     trigger_h = (getattr(draw_state, "content_height", 0) or 25) if compact else max(25, kwargs.get("trigger_height", 25))
@@ -182,7 +195,8 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
                           width=trigger_w, height=trigger_h,
                           alpha=1.0 if kwargs.get("show_button_bg", True) else 0.0,
                           shadow=shadow, text_value=trigger_text_value, text_pad=trigger_pad,
-                          text_offset_x=trigger_text_offset, event="left_mouse_down", **trigger_color)
+                          text_offset_x=trigger_text_offset, event="left_mouse_down",
+                          text_color=trigger_text_color, **trigger_color)
 
     if clicked:
 
@@ -194,6 +208,8 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         is_open = Melty.popover_focused_ds is draw_state
         if is_open and not was_open:
             Melty._popover_open_frame = Melty.frame_count  # grace the opening click
+            if collection_source is not None:
+                collection = collection_source()
             # Fresh open: start with an empty query and give the search box a few
             # frames to grab text focus so the user can type to filter immediately.
             drop_down_state.search_query = ""

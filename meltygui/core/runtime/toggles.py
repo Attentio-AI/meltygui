@@ -518,7 +518,7 @@ class Toggles:
         # [tint=(0.85, 0.75, 0.05)]
         min_height = 33
         # [tint=(0.85, 0.75, 0.05)]
-        max_height = 500
+        max_height = 539
         # [tint=(0.85, 0.75, 0.05)]
         code_label_max_width = 150.0
         # [tint=(0.85, 0.75, 0.05)]

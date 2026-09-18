@@ -393,7 +393,54 @@ def draw_float_ctx(input_value):
                        col=pack_color(1, 0, 0, 0.5), thickness=1.0)
 
 
-@render_func(is_default_for=(float), shadow=False, use_cache=False, wrap=False, tint=(0.114, 0.087, 0.35),
+def begin_number_field(draw_state, wrap, min_width):
+    """The shared look of the numeric value fields (draw_float / draw_int):
+    draw_bool's chip palette on imgui's drag widget, so every primitive value
+    in a row of settings reads as one family. Returns the field width; pair
+    with ``end_number_field`` after the widget."""
+    from meltygui.utils.render_utils import push_style_var
+    # Change the numeric field's shape here; the height matches draw_bool's chip.
+    field_rounding = 4.0
+    field_padding = (6.0, 2.5)
+    # How strongly the chip's hover / pressed wash shows over the field.
+    hovered_wash = 0.35
+    active_wash = 0.6
+    # Lines the field's right edge up with draw_str's box and draw_bool's chip.
+    field_right_inset = 2.0
+
+    width = min_width if wrap else max(min_width, draw_state.content_width - field_right_inset)
+    field_bg = Tint.checkbox_bg()
+    wash = Tint.checkbox_bg_hovered()
+
+    def washed(amount):
+        return tuple(bg + (over - bg) * amount for bg, over in zip(field_bg, wash))
+
+    push_style_var(imgui.STYLE_FRAME_ROUNDING, field_rounding)
+    push_style_var(imgui.STYLE_FRAME_PADDING, field_padding)
+    imgui.push_style_color(imgui.COLOR_FRAME_BACKGROUND, *field_bg, 1.0)
+    imgui.push_style_color(imgui.COLOR_FRAME_BACKGROUND_HOVERED, *washed(hovered_wash), 1.0)
+    imgui.push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE, *washed(active_wash), 1.0)
+    imgui.push_style_color(imgui.COLOR_TEXT, *Tint.checkbox_text_true(), 1.0)
+    imgui.set_next_item_width(width)
+    return width
+
+
+def end_number_field():
+    """Pop ``begin_number_field``'s style and ring the widget just drawn with
+    the chip outline."""
+    # Change the ring here (draw_bool's chip uses the same outline tint).
+    field_rounding = 4.0
+    outline_thickness = 1.5
+    imgui.pop_style_color(4)
+    imgui.pop_style_var(2)
+    field_min, field_max = imgui.get_item_rect_min(), imgui.get_item_rect_max()
+    imgui.get_window_draw_list().add_rect(
+        field_min.x, field_min.y, field_max.x, field_max.y,
+        pack_color(*Tint.checkbox_outline(), 1.0),
+        rounding=field_rounding, thickness=outline_thickness)
+
+
+@render_func(is_default_for=(float), shadow=False, use_cache=False, wrap=False, tint=(0.0, 0.62, 0.72),
              is_tree=False, with_header=draw_header, align_header=True, temp=True)
 def draw_float(input_value: float,
                draw_state,
@@ -403,15 +450,13 @@ def draw_float(input_value: float,
                min_value=-98.703,
                max_value=99.264,
                speed=0.0042):
-    if not wrap:
-        imgui.set_next_item_width(draw_state.content_width)
-    else:
-        imgui.set_next_item_width(min_width)
+    begin_number_field(draw_state, wrap, min_width)
     changed, value = imgui.drag_float("", input_value,
                                       format='%.3f',
                                       change_speed=speed,
                                       min_value=min_value,
                                       max_value=max_value)
+    end_number_field()
 
     if changed:
         return True, value
@@ -464,22 +509,19 @@ def draw_button(input_value="", draw_state=None, label="", tint=(1.0, 1.0, 1.0, 
     return clicked, input_value
 
 
-@render_func(is_default_for=(int), shadow=False, use_cache=False, wrap=False,
+@render_func(is_default_for=(int), shadow=False, use_cache=False, wrap=False, tint=(0.0, 0.45, 0.85),
              is_tree=False, with_header=draw_header, align_header=True, temp=True)
 def draw_int(input_value: int, draw_state=None, max_height=100, min_height=20,
              min_width=80, wrap=False, min_value=-1000.0,
              max_value=1000.0, speed=0.1, unique=0):
-    if not wrap:
-        imgui.set_next_item_width(draw_state.content_width)
-    else:
-        imgui.set_next_item_width(min_width)
-
     max_int = 2147483647
     if input_value < max_int:
+        begin_number_field(draw_state, wrap, min_width)
         changed, value = imgui.drag_int("##int", input_value,
                                         change_speed=speed,
                                         min_value=min_value,
                                         max_value=max_value)
+        end_number_field()
         if changed:
             return True, value
 
