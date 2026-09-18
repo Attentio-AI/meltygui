@@ -1106,3 +1106,32 @@ def test_the_import_hook_leaves_other_modules_alone(project, tmp_path, monkeypat
     plain = importlib.import_module("cds_pkg.plain")
     assert plain.VALUE == 1
     assert not isinstance(plain.__spec__.loader, launch_override._OverrideLoader)
+
+
+def test_a_code_dict_built_in_the_overridden_modules_own_body_sees_the_override(project, tmp_path, monkeypatch):
+    """melty_code_editor's editor_settings.py: the class and `settings =
+    CodeDict(TheClass, ...)` live in one module. The import hook applies the
+    overrides after that body ran, so the dict was filled a moment too early."""
+    (tmp_path / "cds_pkg" / "own_settings.py").write_text(textwrap.dedent('''\
+        from meltygui.model.code_dict_model import CodeDict, Hotswap, LaunchOverride
+
+
+        class AppSettings:
+            class Editor:
+                show_shortcuts = True
+                tab_width = 4
+
+
+        settings = CodeDict(AppSettings, write_to=(LaunchOverride, Hotswap))
+    '''))
+    launch_override._state["path"].write_text(json.dumps({"version": 1, "overrides": {"cds_pkg.own_settings": [
+        {"path": ["AppSettings", "Editor", "show_shortcuts"], "default": "True", "value": "False"}]}}))
+    module = relaunch(tmp_path, monkeypatch, "cds_pkg.own_settings")
+    assert module.AppSettings.Editor.show_shortcuts is False              # the class got it
+    assert module.settings["Editor"]["show_shortcuts"] is False           # and so does the dict
+    assert module.settings["Editor"]["tab_width"] == 4
+    module.settings["Editor"]["tab_width"] = 2                            # a later edit keeps the first override
+    launch_override.flush()
+    saved = json.loads(launch_override._state["path"].read_text())["overrides"]["cds_pkg.own_settings"]
+    assert {tuple(entry["path"]): entry["value"] for entry in saved} == {
+        ("AppSettings", "Editor", "show_shortcuts"): "False", ("AppSettings", "Editor", "tab_width"): "2"}

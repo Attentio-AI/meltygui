@@ -90,6 +90,12 @@ def apply_to_module(module):
         except Exception as error:
             print(f"meltygui: launch override {module.__name__}:{'.'.join(map(str, entry['path']))} "
                   f"skipped: {type(error).__name__}: {error}", file=sys.stderr)
+    if applied:
+        # The module's live values moved. A CodeDict built in that module's own
+        # body (`settings = CodeDict(TheClass, ...)` beside the class) was filled
+        # a moment before this ran: the same event a hotswap sends refreshes it.
+        from meltygui.core.runtime import extensions
+        extensions.call('definition_hotswapped', module)
     return applied
 
 
