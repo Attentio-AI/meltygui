@@ -977,7 +977,9 @@ def save_crash_report(text, exception=None, thread_name=None, frames=None, error
     crash_reports_dir() and return its path (None when saving is off or
     the write failed — a crash report must never raise into the trace
     that produced it). The first lines are a `key: value` header the
-    Crash Reports window reads without loading the whole file — `commit`
+    Crash Reports window reads without loading the whole file — `pid` the
+    printing process (readers outside it, like melty-admin's Exceptions
+    page, name the process by it), `commit`
     the checkout's HEAD sha and branch (git_head_commit), `frames`
     is the trace's (path, lineno, function) list as JSON, outermost first,
     which the window hands to draw_stack_trace, and `locals` the matching
@@ -996,6 +998,7 @@ def save_crash_report(text, exception=None, thread_name=None, frames=None, error
                      else "stack trace")
         header = (f"time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                   f"thread: {thread_name}\n"
+                  f"pid: {os.getpid()}\n"
                   f"error: {error.splitlines()[0] if error else ''}\n")
         commit, branch = git_head_commit()
         if commit:

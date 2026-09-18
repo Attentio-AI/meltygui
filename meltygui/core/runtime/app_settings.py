@@ -180,11 +180,4 @@ class AppSettings:
         self.open_requested = False
         if changed:
             self.save()
-            # A setting is read by views anywhere in the app, none of which
-            # took it as an input: repaint them all. Edits here are rare.
-            from meltygui.core.melty import Melty
-            from meltygui.core.windowing.glfw_utils import request_render
-            if Melty.cache is not None:
-                Melty.cache.invalidate_all()
-            request_render()
         return changed

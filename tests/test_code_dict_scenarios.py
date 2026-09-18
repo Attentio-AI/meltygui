@@ -159,6 +159,9 @@ class StubCache:
     draw_state table (the same stand-in test_hotswap_preserves_runtime_state uses)."""
     key_to_draw_state = {}
 
+    def get_current_parent(self):
+        return None                 # no tile is being rendered
+
     def __getattr__(self, name):
         if name.startswith("invalidate"):
             return lambda *args, **kwargs: None
@@ -326,6 +329,118 @@ class RecordingCache(StubCache):
 
     def invalidate_up_by_obj(self, obj, **kwargs):
         self.repainted.append(id(obj))
+
+
+class RenderingCache(StubCache):
+    """Blit while it renders tiles: `rendering` is the current tile's key."""
+
+    def __init__(self):
+        self.rendering = None
+        self.key_to_draw_state = {"editor-tile": object(), "sidebar-tile": object(), "gone-tile": object()}
+        self.invalidated = []
+        self.invalidate_all_calls = 0
+        self.frames_requested = 0
+
+    def get_current_parent(self):
+        return None if self.rendering is None else types.SimpleNamespace(key=self.rendering)
+
+    def invalidate_up(self, key, **kwargs):
+        self.invalidated.append(key)
+
+    def request_frame(self):
+        self.frames_requested += 1
+
+    def invalidate_all(self):
+        self.invalidate_all_calls += 1
+
+
+def test_a_write_repaints_exactly_the_tiles_that_read_there(project, monkeypatch):
+    cache = RenderingCache()
+    monkeypatch.setattr(Melty, "cache", cache)
+    settings = CodeDict(project.Settings, write_to=Hotswap)
+    cache.rendering = "editor-tile"
+    inner = settings["SomeInnerClass"]
+    assert inner["my_int_toggle"] == 1                       # a render function reads its option
+    cache.rendering = "sidebar-tile"
+    assert settings["speed"] == 1.5                          # another view reads another value
+    cache.rendering = None
+    inner["my_int_toggle"] = 2
+    assert cache.invalidated == ["editor-tile"]
+    cache.invalidated.clear()
+    settings["speed"] = 2.25
+    assert set(cache.invalidated) == {"editor-tile", "sidebar-tile"}   # both read the top-level handle
+    assert cache.invalidate_all_calls == 0
+
+
+def test_a_read_outside_any_tile_records_the_window_not_a_tile(project, monkeypatch):
+    cache = RenderingCache()
+    monkeypatch.setattr(Melty, "cache", cache)
+    settings = CodeDict(project.Settings, write_to=Hotswap)
+    assert settings["speed"] == 1.5
+    settings["speed"] = 2.25
+    assert cache.invalidated == []                           # no tile to invalidate
+    assert settings._core.readers == {(): {(cache, None)}}   # the window: a frame request and its tiles
+    assert cache.invalidate_all_calls == 1
+
+
+def test_a_write_does_not_make_its_window_a_reader(project, monkeypatch):
+    cache = RenderingCache()
+    monkeypatch.setattr(Melty, "cache", cache)
+    settings = CodeDict(project.Settings, write_to=Hotswap)
+    inner = dict.__getitem__(settings, "SomeInnerClass")
+    inner["my_int_toggle"] = 2
+    inner["my_int_toggle"] = 3
+    assert settings._core.readers == {} and cache.invalidate_all_calls == 0
+
+
+def test_a_tile_that_no_longer_exists_is_forgotten(project, monkeypatch):
+    cache = RenderingCache()
+    monkeypatch.setattr(Melty, "cache", cache)
+    settings = CodeDict(project.Settings, write_to=Hotswap)
+    cache.rendering = "gone-tile"
+    settings["speed"]
+    cache.rendering = None
+    del cache.key_to_draw_state["gone-tile"]
+    settings["speed"] = 2.25
+    assert cache.invalidated == []
+    assert (cache, "gone-tile") not in settings._core.readers[()]
+
+
+def test_a_write_in_one_window_asks_the_reading_window_for_a_frame(project, monkeypatch):
+    """The settings window writes; the editor window read the value outside
+    any tile (its root body runs every frame it draws) and only draws a frame
+    it is asked for."""
+    from meltygui.core.cache.tile_cache import TileCacheMasked
+    editor_window, settings_window = RenderingCache(), RenderingCache()
+    monkeypatch.setattr(TileCacheMasked, "window_caches", {editor_window: editor_window.request_frame,
+                                                           settings_window: settings_window.request_frame})
+    settings = CodeDict(project.Settings, write_to=Hotswap)
+    monkeypatch.setattr(Melty, "cache", editor_window)       # the editor window draws: no tile
+    assert settings["SomeInnerClass"]["my_int_toggle"] == 1
+    monkeypatch.setattr(Melty, "cache", settings_window)     # the settings window draws and writes
+    settings_window.rendering = "editor-tile"
+    settings["SomeInnerClass"]["my_int_toggle"] = 2
+    assert editor_window.frames_requested == 1 and editor_window.invalidated == []
+    # Blit keeps a cached tile whose kwargs changed, and the root body passes the
+    # value down as a kwarg: the READING window's tiles are invalidated, once.
+    assert editor_window.invalidate_all_calls == 1 and settings_window.invalidate_all_calls == 0
+    assert settings_window.invalidated == []                 # the writer's own tile is not a reader
+    monkeypatch.setattr(TileCacheMasked, "window_caches", {settings_window: settings_window.request_frame})
+    settings["SomeInnerClass"]["my_int_toggle"] = 3          # the editor window closed: forgotten
+    assert editor_window.frames_requested == 1
+
+
+def test_an_editor_save_repaints_the_tiles_that_read_the_dict(project, monkeypatch):
+    cache = RenderingCache()
+    monkeypatch.setattr(Melty, "cache", cache)
+    settings = CodeDict(project.Settings)
+    cache.rendering = "editor-tile"
+    settings["speed"]
+    cache.rendering = None
+    draw_state, address, text = editor_open(project.Settings)
+    save_file(address, str(text).replace("my_int_toggle = 1", "my_int_toggle = 6"), codec=TypeCodec,
+              parent_ds=draw_state)
+    assert "editor-tile" in cache.invalidated
 
 
 def test_an_editor_save_updates_the_dict_and_repaints_its_views(project, monkeypatch):

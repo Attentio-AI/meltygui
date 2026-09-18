@@ -49,7 +49,12 @@ writer), and a definition hotswapped in place (the editor's Run, a file
 recompile). An event that touches a core flags it stale and invalidates the
 blit tiles of every handle of that core by object id, so their renderers
 redraw; the redraw's first read re-parses (or re-reads the live values) on
-the reading thread and updates the handles in place. Pending changes are the
+the reading thread and updates the handles in place. A READ made while blit
+renders a tile records that tile against the handle's path, and a write
+invalidates exactly the tiles that read there: a render function that reads
+`settings["Editor"]["show_breadcrumbs"]` repaints when it changes, with
+nothing to register (never repaint everything: a whole-cache invalidation
+re-runs every code host and cascades for dozens of frames). Pending changes are the
 truth the dict follows; a direct disk write is not watched (the framework
 turns external changes into pending ones), it is only checked when a
 Codebase write needs a correct splice.
@@ -268,6 +273,10 @@ class _CodeCore:
         self.source_stale = False
         self.live_stale = False
         self.writing = False
+        # path -> {(window's blit cache, tile key or None)}: who read a handle
+        # there while rendering. Each OS window has its own cache and only
+        # draws a frame it was asked for.
+        self.readers = {}
         # path -> [weakref to each handle at that path]
         self.handles = {}
         self.load()
@@ -427,6 +436,47 @@ class _CodeCore:
         for other in others:
             other._mirror(key, value)
         _repaint(other for other in others if other is not handle)
+        self.repaint_readers(handle._path)
+
+    def note_reader(self, path):
+        """A handle at `path` is being read. While a window draws, remember
+        that window (Melty.cache is the drawing window's blit cache) and the
+        tile being rendered, if the read is inside one: a write there asks
+        that window for a frame and invalidates that tile."""
+        cache = Melty.cache
+        if cache is None:
+            return
+        tile = cache.get_current_parent()
+        self.readers.setdefault(path, set()).add((cache, tile.key if tile is not None else None))
+
+    def repaint_readers(self, path=None):
+        """Repaint whoever read at `path` (every path when None)."""
+        if not self.readers:
+            return
+        from meltygui.core.cache.tile_cache import TileCacheMasked
+        from meltygui.core.windowing.glfw_utils import request_render
+        windows = TileCacheMasked.window_caches
+        entries = set().union(*self.readers.values()) if path is None else set(self.readers.get(path, ()))
+        for entry in entries:
+            cache, key = entry
+            if (windows and cache not in windows) or (key is not None and key not in cache.key_to_draw_state):
+                for readers in self.readers.values():
+                    readers.discard(entry)      # that window or tile is gone
+                continue
+            if key is not None:
+                cache.invalidate_up(key, max_depth=HOTSWAP_INVALIDATE_DEPTH)
+            else:
+                # Read outside any tile (a window's root body, which passes the
+                # value down as a kwarg): blit does not re-render a cached tile
+                # whose kwargs changed, so that window's tiles are invalidated,
+                # once, for this write. Only that window: not the writer's, not
+                # every window's.
+                cache.invalidate_all()
+            request_window_frame = windows.get(cache)
+            if request_window_frame is not None:
+                request_window_frame()
+            else:
+                request_render()
 
     def catch_up(self):
         """Apply what the events flagged, on the reading thread."""
@@ -463,6 +513,7 @@ def _on_pending_save_changed(address):
         if not core.writing and core.touches(address):
             core.source_stale = True
             _repaint(core.live_handles())
+            core.repaint_readers()
 
 
 def _on_definition_hotswapped(live):
@@ -471,6 +522,7 @@ def _on_definition_hotswapped(live):
         if core.module_name == module_name and not core.writing:
             core.live_stale = True
             _repaint(core.live_handles())
+            core.repaint_readers()
 
 
 # Registered by name, so a hotswap of this module replaces the callbacks.
@@ -544,14 +596,17 @@ class CodeDict(dict):
         handle._pending_source = source_loader
         return handle
 
-    def _ensure(self):
+    def _ensure(self, reading=True):
         loader = self._pending_source
         if loader is not None:
             self._pending_source = None
             CodeDict.__init__(self, loader(), self._write_to, list_package=self._list_package)
         core = self._core
-        if core is not None and (core.source_stale or core.live_stale):
-            core.catch_up()
+        if core is not None:
+            if core.source_stale or core.live_stale:
+                core.catch_up()
+            if reading:
+                core.note_reader(self._path)
 
     # -- filling ---------------------------------------------------------
 
@@ -653,7 +708,7 @@ class CodeDict(dict):
     # -- writes ----------------------------------------------------------
 
     def __setitem__(self, key, value):
-        self._ensure()
+        self._ensure(reading=False)     # a writer is not a reader to repaint
         if self._core is None:
             raise TypeError("a package's keys are its submodules; assign inside one")
         if isinstance(value, (CodeDict, CodeList)) and dict.get(self, key) is value:
@@ -663,7 +718,7 @@ class CodeDict(dict):
         self._core.write(self, key, value)
 
     def __delitem__(self, key):
-        self._ensure()
+        self._ensure(reading=False)
         if key not in self:
             raise KeyError(key)
         self._core.write(self, key, _DELETED)
