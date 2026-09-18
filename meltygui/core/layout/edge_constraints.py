@@ -110,6 +110,10 @@ def solve_edge(graph, edge, target, walls=frozenset(), axis="x"):
                       else max(target, wall[axis] - pull))
     if target == old:
         return False
+    # After a guard report, name the solve that moves a watched edge.
+    from meltygui.core.diagnostics import edge_motion_guard
+    before = ({eid: node[axis] for eid, node in graph.nodes.items()}
+              if edge_motion_guard.watching() else None)
     edge[axis] = float(target)
     # Propagate contact. Every relaxation moves an edge the way the drag
     # went and never back, so this is a monotone worklist that settles on
@@ -150,6 +154,8 @@ def solve_edge(graph, edge, target, walls=frozenset(), axis="x"):
                 if far[axis] > need:
                     far[axis] = need
                     pending.append(far)
+    if before is not None:
+        edge_motion_guard.note_solve(eid for eid, node in graph.nodes.items() if node[axis] != before[eid])
     return True
 
 

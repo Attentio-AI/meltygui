@@ -1652,6 +1652,12 @@ class Toggles:
         # OS edges pushed and the surface request per frame). Off: it prints
         # per push and per frame, a real cost at 120 fps.
         push_os_window_edges_trace = False
+        # Feedback-loop guard (diagnostics/edge_motion_guard): while a mouse
+        # button is held, an edge moving faster or farther than the pointer
+        # is logged to the resize trace with the app's geometry state and the
+        # solver stacks that moved it. Cheap (one pass over the edges per
+        # frame); off only to silence a known report while investigating.
+        edge_motion_guard = True
         # Hyprland has no window-geometry event, so the position feed
         # (geometry_feed's hyprland backend) POLLS its request intervals
         # this often on its own thread - a `j/clients` round trip is

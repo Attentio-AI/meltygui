@@ -242,6 +242,16 @@ def _frame_pinned(ds):
     return bool(getattr(ds, "_frame_pinned", False))
 
 
+def _unmanaged(ds):
+    """A window drawn with ``unmanaged=True`` lives outside the window
+    manager: no first-frame rescue, no frame-edge solve and no native
+    containment. A RenderHost parks its envelope off the display this way
+    (a 40 px stub left of x = 0); solving it widened the stub to the axis
+    minimum and pushed it back inside the surface every frame, a visible
+    sliver flickering down the left edge during native resizes."""
+    return bool(getattr(ds, "_kwargs", {}).get("unmanaged", False))
+
+
 def _frame_parent(window):
     """Containing window, skipping ordinary views used as placement parents."""
     parent = getattr(window, "parent_window", None)
@@ -1072,7 +1082,7 @@ def _window_floor(ds, axis):
 def _open(ds):
     return (getattr(ds, "closable", False) and ds.window_pos is not None
             and not getattr(ds, "closed", False) and getattr(ds, "expanded", True)
-            and bool(ds.width) and bool(ds.height))
+            and bool(ds.width) and bool(ds.height) and not _unmanaged(ds))
 
 
 def _root_of(ds):

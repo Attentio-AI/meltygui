@@ -38,8 +38,10 @@ import time
 _T0 = float(os.environ.get('MELTY_T0') or time.time())
 _MARKS = [('launcher exec', _T0), ('interpreter + stdlib', time.time())]
 _ROOTS: list = []            # (fn, kwargs) in decoration order
-_state = dict(booted=False, ran=False, app_id=None, cache=None, imports=None,
+_state = dict(booted=False, ran=False, app_id=None, app_name=None, cache=None, imports=None,
               import_error=None, switch_interval=None, failed=False)
+# The kernel keeps a process's name (/proc/<pid>/comm) in 16 bytes including the terminator.
+PROCESS_NAME_BYTES = 15
 
 
 def mark(label):
@@ -257,6 +259,39 @@ def persisted(name, factory, *, app_id=None):
     return saved
 
 
+def _set_process_name(name):
+    """Rename this process for the OS: what a system monitor, `top`, `pkill -x`
+    and `killall` show and match. On Linux this is prctl(PR_SET_NAME) on the
+    main thread; threads started afterwards inherit it. Elsewhere the name is
+    only recorded (macOS shows the bundle's name, Windows the .exe's)."""
+    if not sys.platform.startswith('linux'):
+        return
+    import ctypes
+    encoded = name.encode()
+    if len(encoded) > PROCESS_NAME_BYTES:
+        encoded = encoded[:PROCESS_NAME_BYTES]
+        print(f"meltygui: app_name {name!r} shortened to {encoded.decode(errors='replace')!r} "
+              f"(the kernel keeps {PROCESS_NAME_BYTES} bytes)", file=sys.stderr)
+    try:
+        ctypes.CDLL(None).prctl(15, encoded, 0, 0, 0)          # PR_SET_NAME
+    except (OSError, AttributeError) as e:
+        print(f'meltygui: cannot set the process name: {e}', file=sys.stderr)
+
+
+def name_app(app_name):
+    """The first window registered with an `app_name` names the process; a
+    later, different one is ignored with a warning, since the OS has one
+    name per process and the first is already what the user sees."""
+    if not app_name:
+        return
+    if _state['app_name'] is None:
+        _state['app_name'] = app_name
+        _set_process_name(app_name)
+    elif app_name != _state['app_name']:
+        print(f"meltygui: app_name {app_name!r} ignored — the process is already named "
+              f"{_state['app_name']!r} by the first window registered", file=sys.stderr)
+
+
 # --- the decorator ------------------------------------------------------------------
 def _register_editable(file):
     """Make the project holding `file` editable source (address.add_editable_root):
@@ -283,12 +318,17 @@ def _register_projects():
         traceback.print_exc()
 
 
-def glfw_window(fn=None, *, name=None, width=1280, height=800, app_id=None, on_close=None, **view_kwargs):
+def glfw_window(fn=None, *, name=None, width=1280, height=800, app_id=None, app_name=None, on_close=None,
+                **view_kwargs):
     """Register ``fn`` as an OS window. ``fn()`` draws the window's content
     each frame; views it draws at root level fill the window.
 
     ``name`` (default: the function's name) is the window's name AND its
     OS title — one per window; ``width`` / ``height`` its content size.
+    ``app_name`` names the PROCESS (what a system monitor or `pkill -x`
+    sees instead of `python`; 15 bytes on Linux): the first window
+    registered with one names it, and a different name on a later window
+    is ignored with a warning (name_app).
     ``on_close(surface)`` is asked when the window is told to close (the
     title bar's ×, the compositor, `glfw.set_window_should_close`): return
     False to keep it (hide it, say — a chat app with a turn streaming).
@@ -309,6 +349,7 @@ def glfw_window(fn=None, *, name=None, width=1280, height=800, app_id=None, on_c
     root."""
     def wrap(fn):
         boot(app_id)
+        name_app(app_name)
         try:
             source = inspect.getsourcefile(inspect.unwrap(fn))
         except TypeError:

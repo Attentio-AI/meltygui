@@ -260,3 +260,51 @@ The failure was reproduced in both the empty commit file column and the empty sh
 The workspace now explicitly declares `frame_pinned=True`, using the existing frame-ownership setting. A nested layout body with that setting and caller-owned geometry passes background drags to the native move handler. Fixed popovers retain their hold handler. Native frame-edge forwarding uses the same explicit distinction, rather than treating every fixed-size popover as native app background. No new DrawState fields were introduced.
 
 After in-place hotswap, both empty-space gestures captured `enhanced_titlebar_strip` and called the native move request successfully. Agent input still cannot verify the compositor's physical move grab; the patched test window is left open on Lukas's desktop for his real-pointer check. `test_native_background_drag.py` covers workspace passthrough, popover absorption, and interactive-child priority. The pinned empty-background case fails under the old hold condition.
+
+## 2026-09-17: integration failures after the tile-hosted editor
+
+Lukas reported melty-admin resize failures, feedback loops and flicker, and
+suspected the absolute-position cache work. The recorded runs and traces give
+this chronology:
+
+1. 09-16 21:21 (`e0fd6170`) and 22:35 (`504fd8e3`): the resize fixes and the
+   geometry ownership refactor. Every melty-admin scenario passed on native and
+   borrowed delivery between 22:28 and 22:42 against the workspace-based MCE.
+2. 09-17 17:36 (`6be9992a`): `DrawState._cached_absolute_position` rewritten
+   for speed. Its key still covers the parent origin and selected parent
+   extent. A randomized check (400 chains, 30 mutations each, both axes,
+   every anchor pair) found no difference between the cached and an
+   uncached recomputation. The cache is not the cause.
+3. 09-17 18:47: `melty_code_editor/editor.py` (uncommitted) dropped the
+   `draw_editor_workspace` window and draws its tiles straight on the native
+   root; each tile supplies `draw_code_editor`'s frame.
+4. 09-17 18:48: the run failed. Every failure is the adapter looking up
+   `draw_editor_workspace` (`view(..., 'workspace')`, `rim()`, the inspector
+   ancestry check, the column scenarios); the gestures that ran were smooth.
+
+Live probes of the current code (file-list, shortcuts and frame right-drags,
+plain and double) showed no reversals or over-shoot in native bounds, column
+edges or view rectangles. Two real defects did show, both present in the
+09-16 recordings as well:
+
+- RenderHost envelopes (`##code_cache_…`, 40 px, parked at x = -60) took part
+  in the edge solver and native containment. Every frame the frame pass
+  floored them at the axis minimum and containment pushed them to x = 0, the
+  caller reset them, and the loop repeated: 156 consecutive solved frames in
+  Lukas's live editor, and a 60 px sliver flickering down the left edge
+  during native resizes (13 flips in `test_parent_resize_display_right`,
+  every sample in the 15:16 column run). Fixed by keeping ``unmanaged``
+  windows out of the frame pass and out of `_open()`; see the pipeline
+  document's membership section and `tests/test_unmanaged_window_frames.py`.
+- One missed Hyprland poll mid-drag flipped the feed unavailable, os_frame
+  fell back to walls mode, and `_set_mode` discarded the gesture and every
+  root's view of the OS edges (`geometry_mode` feed → walls at frame 552 of a
+  probe run, `os_expected` reset). The feed now serves its last frame and
+  retries for a short grace before dropping; `tests/test_geometry_feed_grace.py`.
+
+The melty-admin adapter's workspace target now resolves the tile-hosted
+`draw_code_editor` frame. The inspector opening on the first click of a
+double-right gesture, and the inspector popup's on-display shift when the
+native frame grows, are unchanged behaviors observed in both old and new runs
+and are not addressed here.
+

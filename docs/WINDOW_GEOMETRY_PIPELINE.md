@@ -48,6 +48,14 @@ Bindings are measured from the last layout geometry before solving. Measuring
 the gaps against an already resized native frame would absorb the requested
 resize into the margins. The same binding is used throughout that local solve.
 
+## Membership
+
+A window drawn with ``unmanaged=True`` is outside the window manager: no
+first-frame rescue, no frame-edge pass and no native containment. Its caller
+owns the geometry outright. A RenderHost parks its envelope this way, off the
+display; solving that stub floored it at the axis minimum and containment
+pushed it back inside the surface every frame.
+
 ## Resolve, commit, draw
 
 Native containment reads window geometry for both axis solves before applying
@@ -69,6 +77,19 @@ This remains an immediate-mode layout system: newly rendered layouts register
 constraints for subsequent edge passes, and arbitrary caller-owned layout can
 require deferred anchor measurement. The refactor does not claim that all view
 layout is a single global pre-render pass.
+
+## Feedback-loop guard
+
+`core/diagnostics/edge_motion_guard.py` runs once per frame after every edge
+pass while a mouse button is held. Whatever the collision rules, an edge may
+follow the pointer at its speed in either direction, stand still, or move part
+of the way on a contact frame; it may never move faster than the pointer in a
+frame or travel farther than the pointer has during the gesture. A violation
+writes an `edge-motion-violation` entry to the resize trace with the offending
+edges, every window's geometry, the native model and the detection stack, and
+arms `edge_constraints.solve_edge` to capture the stack of each solve that
+moves those edges for the following frames. `Toggles.Melty.edge_motion_guard`
+switches it off.
 
 ## Verification
 

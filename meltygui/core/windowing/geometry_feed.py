@@ -73,6 +73,14 @@ _G_BUS_TYPE_SESSION = 2
 HYPR_SIGNATURE_ENV = "HYPRLAND_INSTANCE_SIGNATURE"
 HYPR_REQUEST_TIMEOUT_S = 0.25
 HYPR_MONITORS_EVERY_S = 1.0
+# A busy compositor (a resize in flight, another client hammering the
+# socket) can miss one reply. The feed keeps its last frame and retries
+# every HYPR_POLL_RETRY_S for HYPR_POLL_GRACE_S before reporting itself
+# unavailable: the os_frame mode flip that follows resets every gesture
+# and every root's view of the OS edges, so a one-poll hiccup mid-drag
+# must not become a jump.
+HYPR_POLL_GRACE_S = 1.5
+HYPR_POLL_RETRY_S = 0.05
 
 
 # The resolved socket is remembered for HYPR_SOCKET_RECHECK_S, so the
@@ -389,6 +397,7 @@ def _hyprland_thread_main(pid, gen):
     unavailable and retries after RETRY_SECONDS."""
     path = hyprland_socket_path()
     monitors_at = 0.0
+    failing_since = None
     while _alive(gen):
         try:
             now = time.monotonic()
@@ -398,10 +407,19 @@ def _hyprland_thread_main(pid, gen):
             _hypr_poll_windows(pid, path)
             _STATE["available"] = True
             _STATE["error"] = None
+            failing_since = None
             time.sleep(_hypr_poll_interval())
         except Exception as ex:
-            _STATE["available"] = False
             _STATE["error"] = str(ex)
+            now = time.monotonic()
+            if failing_since is None:
+                failing_since = now
+            if _STATE["available"] and now - failing_since < HYPR_POLL_GRACE_S:
+                # Serve the last frame through a transient miss (see
+                # HYPR_POLL_GRACE_S); only a persistent failure drops the feed.
+                time.sleep(HYPR_POLL_RETRY_S)
+                continue
+            _STATE["available"] = False
             deadline = time.monotonic() + RETRY_SECONDS
             while _alive(gen) and time.monotonic() < deadline:
                 time.sleep(0.25)

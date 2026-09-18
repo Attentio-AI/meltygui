@@ -4652,6 +4652,11 @@ class Melty:
         for empty_parent in empty_parents:
             cls.root_draw_states.pop(empty_parent, None)
 
+        # Every window's edge pass has run: check this frame's edge motion
+        # against the pointer's (diagnostics/edge_motion_guard).
+        from meltygui.core.diagnostics.edge_motion_guard import check_frame
+        check_frame()
+
         # Drop key events now that every view has rendered - including the
         # windows drawn above in this method's layer loop (the editors, the
         # floating search box). Clearing earlier would empty the buffer before

@@ -925,6 +925,12 @@ def window_edge_pass(window):
 
     if not getattr(window, "expanded", True) or not window.width or not window.height:
         return
+    import meltygui.core.windowing.os_frame as os_frame
+    if os_frame._unmanaged(window):
+        # Outside the window manager: its caller owns the geometry outright.
+        # Flooring a parked RenderHost stub at the axis minimum re-wrote its
+        # width every frame (a 40 px envelope solved to 60 and back).
+        return
     _ensure_window_state(window)
 
     # freeze_resize views whose per-frame edge invalidates were skipped
