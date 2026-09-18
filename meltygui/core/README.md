@@ -16,7 +16,7 @@ Everything else is grouped by the runtime responsibility it serves:
 | Folder | Responsibility and main entry points |
 |---|---|
 | `input/` | Event delivery, devices, hit testing, drag/drop and selection: `input_handler.py`, `collision.py`, `drag_drop_core.py` |
-| `rendering/` | Render dispatch, registration, parameter injection support, modes and decorators: `render_dispatch.py`, `parameter_core.py`, `mode.py` |
+| `rendering/` | Render dispatch, registration, view identity, parameter injection support, modes and decorators: `render_dispatch.py`, `view_identity.py`, `parameter_core.py`, `mode.py` |
 | `conversion/` | Dict-like objects, conversion graphs, hosting and persistence: `dict_conversion.py`, `render_host.py`, `load_save_v2.py` |
 | `cache/` | Drawing caches and invalidation: `tile_cache.py`, `invalidation_tracker.py` |
 | `windowing/` | Surface lifecycle, native windows, chrome and platform backends: `surface.py`, `window_api.py`, `backends/` |

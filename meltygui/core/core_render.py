@@ -43,6 +43,13 @@ from meltygui.state.new_core_model import LEFT_ANCHORS
 from meltygui.state.new_core_model import ExpandMode
 from meltygui.state.core_enums import PendingAction
 from meltygui.core.rendering.shaped import Shaped
+from meltygui.core.rendering.view_identity import _headless_draw_state_registry
+from meltygui.core.rendering.view_identity import get_draw_state
+from meltygui.core.rendering.view_identity import link_parent
+from meltygui.core.rendering.view_identity import place_in_parent_window
+from meltygui.core.rendering.view_identity import strhash
+from meltygui.core.rendering.view_identity import view_tile_id
+from meltygui.core.rendering.view_identity import view_unique
 from meltygui.utils.render_utils import push_style_var
 from meltygui.utils.render_utils import pop_style_var
 from meltygui.core.windowing.glfw_utils import request_render
@@ -1022,43 +1029,17 @@ def render_func(*args, **o_kwargs):
         # ----- Unique computation BEFORE pushing ID scope (avoid divergence) -----
         old_suffix = kwargs.get("suffix", None)
         unique_name = kwargs.get("unique_name", name)
-
-        index = key if isinstance(key, int) else 0
-        suffix = Melty.unique_stack[-1] if len(Melty.unique_stack) > 0 else (name or "")
         column = str(kwargs.get("column", ""))
-
-        # Keep original behavior of always appending name (even if empty)
-
-        suffix = f"{old_suffix}_{suffix}_{unique_name}_{key}"
 
         # A deferred re-entry from Melty.draw (the layer pass) brings the
         # window's own unique, and parks the cursor at its ABS position.
         deferred_entry = "layer_unique" in kwargs
         if deferred_entry:
             unique = kwargs.pop("layer_unique")
+            suffix = f"{old_suffix}_{Melty.unique_stack[-1] if len(Melty.unique_stack) > 0 else (name or '')}_{unique_name}_{key}"
         else:
-            if len(Melty.melty_window_stack) > 0:
-                _rw = Melty.melty_window_stack[-1]
-                # The floating dragged item renders as its own window, so its
-                # descendants would hash the item's name here instead of the
-                # home window's - fresh uniques, fresh draw_states, expanded/
-                # scroll state gone every pickup. Keep the inline identity:
-                # while the item floats, its subtree hashes the home window.
-                if (_drag_drop.DragDrop.active
-                        and _rw is _drag_drop.DragDrop.item_ds
-                        and _rw.parent_window is not None):
-                    root_window_name = _rw.parent_window.name
-                else:
-                    root_window_name = _rw.name
-            else:
-                root_window_name = "Root"
-            if is_root:
-                unique = ui_id(suffix=name + unique_name + str(key) + func.__name__)
-                suffix = f"{unique_name}_{func.__name__}_{unique}_{key}"
-            else:
-                unique = ui_id(suffix=suffix + unique_name +
-                                      name + root_window_name +
-                                      str(key) + func.__name__, idx=index)
+            unique, suffix = view_unique(name, func.__name__, key=key, unique_name=unique_name,
+                                         old_suffix=old_suffix)
 
         draw_state: DrawState = kwargs.get("draw_state", get_draw_state(unique))
         if not selected_entry and view_func_selection and _has_imgui:
@@ -1097,7 +1078,7 @@ def render_func(*args, **o_kwargs):
             kwargs = resolved_window_kwargs(draw_state, kwargs)
 
         if kwargs.get('glfw_window') and not deferred_entry:
-            _tile = f"{name}##{strhash(str(unique) + str(draw_state.id))}"
+            _tile = view_tile_id(name, unique, draw_state)
             draw_state._tile_id = _tile
             _req = Melty.surface_window_request(_tile, name, input_value, kwargs, draw_state)
             Melty.record_surface_request(_req)
@@ -1121,7 +1102,7 @@ def render_func(*args, **o_kwargs):
 
         auto_apply = kwargs.get("auto_apply", ())
 
-        tile_id = f"{name}##{strhash(str(unique) + str(draw_state.id))}"
+        tile_id = view_tile_id(name, unique, draw_state)
         draw_state._tile_id = tile_id
         _wtB = time.perf_counter()   # TEMP perf: unique/draw_state computation
 
@@ -1145,45 +1126,9 @@ def render_func(*args, **o_kwargs):
         # exposure-band lift) walked up the screen until the display cap
         # held it, and jittered whenever its spawner's body ran (09-10).
         explicit_parent = kwargs.get("parent_window") is not None
-        enclosing_view = Melty.draw_state_stack[-1] if Melty.draw_state_stack else None
-        if _has_imgui and not deferred_entry and (Melty.melty_window_stack or explicit_parent
-                                                 or enclosing_view is not None):
-            draw_state.parent_window = kwargs.get("parent_window", None)
-            if draw_state.parent_window is None:
-                if Melty.melty_window_stack:
-                    draw_state.parent_window = Melty.melty_window_stack[-1]
-                else:
-                    # Plain render-function hosts also own positioned children.
-                    # Their text, hit regions and clipping must use the same
-                    # cursor origin as the child backgrounds.
-                    draw_state.parent_window = enclosing_view.parent_window or enclosing_view
-
-            # draw_state._cursor_start_pos = imgui.get_cursor_screen_pos()
-            # if draw_state._parent is draw_state or draw_state._parent._cursor_start_pos is None:
-            #     draw_state.top_offset_true = draw_state.header_height
-            # else:
-            #     parent_cursor = draw_state._parent._cursor_start_pos[1]
-            #     this_cursor = imgui.get_cursor_screen_pos()[1]
-            #     # if kwargs.get("column", None) is not None and draw_state._parent.final_max_column > 1:
-            #     #     this_cursor = draw_state._parent._column_cursor[kwargs.get("column", 0)][1]
-            #
-            #     parent_scroll = draw_state._parent.scroll_offset[1] if draw_state._parent.scroll_offset is not None else 0
-            #     draw_state.top_offset_true = (this_cursor - parent_cursor + parent_scroll + 1)
-
-            # Store left/top_offset as the UNSCROLLED position relative to
-            # parent_window's content (cursor pos already reflects ancestor
-            # scroll, so add it back). _abs_left subtracts the live ancestor
-            # scroll, making abs_left react to mid-frame scroll deltas instead
-            # of waiting for this view to re-render with a new cursor pos.
-            anc_sx, anc_sy = draw_state._ancestor_scroll()
-            if kwargs.get("view_offset", True):
-                left = kwargs.get("left", imgui.get_cursor_screen_pos()[0])
-                draw_state.left_offset, draw_state.top_offset = (
-                    left - draw_state.parent_window.abs_left + anc_sx,
-                    imgui.get_cursor_screen_pos()[1] - draw_state.parent_window.abs_top + anc_sy)
-            else:
-                draw_state.left_offset, draw_state.top_offset = (kwargs.get("left", 0),0)
-
+        if _has_imgui and not deferred_entry:
+            place_in_parent_window(draw_state, parent_window=kwargs.get("parent_window"),
+                                   left=kwargs.get("left"), view_offset=kwargs.get("view_offset", True))
 
         if closable:
             if draw_state.parent_window is None and not kwargs.get("unmanaged", False):
@@ -1322,23 +1267,7 @@ def render_func(*args, **o_kwargs):
         #             # FIX: ensure we reset the same container we read from
         #             Melty.move_draw_state_pending = {}
 
-        if len(Melty.draw_state_stack) > 0:
-            parent = Melty.draw_state_stack[-1]
-            draw_state._parent = parent
-
-            # Self-register into the parent's child index. draw_collection used
-            # to be the only view with children (keyed by collection idx),
-            # so every other container had an empty _children and
-            # children_in_clip found nothing. Doing it here - at the one place
-            # the render-tree parent is assigned - populates it for every view.
-            # Keyed by id(): draw_states are reused from the registry, so a
-            # view's id is stable across frames, and a re-render always overwrites
-            # its own entry. Stale _parented entries are removed at read time
-            # (children_in_clip drops any whose _parent is no longer this DS).
-        if draw_state._parent is not None:
-            if draw_state._parent.id != draw_state.id:
-                if id(draw_state) not in draw_state._parent._view_children:
-                    draw_state._parent._view_children[id(draw_state)] = draw_state
+        link_parent(draw_state)
 
         original_width_b = draw_state.width
         original_height_b = draw_state.height
@@ -6237,30 +6166,6 @@ def get_melty_state():
     return static_melty
 
 
-def get_draw_state(unique: int) -> DrawState:
-    """Get or create a ViewState object for a widget ID."""
-    registry = None
-    if Melty.vis is not None:
-        registry = Melty.vis.root.draw_state_registry
-    elif Melty.draw_state_registry is not None:
-        registry = Melty.draw_state_registry
-
-    if registry is None:
-        # Headless / background thread - use a module-level fallback
-        registry = _headless_draw_state_registry
-        if Melty.draw_state_registry is None:
-            Melty.draw_state_registry = registry
-
-    if unique not in registry or registry[unique] is None:
-        registry[unique] = DrawState()
-        registry[unique].unique = unique
-
-    registry[unique].dlt_count = Melty.save_draw_state_for
-    return registry[unique]
-
-
-_headless_draw_state_registry = {}
-
 # kwargs the wrapper never copies onto ds_kwargs (see the wrapper's
 # `ds_kwargs` build) - a frozenset so the per-call check is one pass.
 _DS_KWARGS_EXCLUDE = frozenset((
@@ -6341,53 +6246,6 @@ def run_cleanup_callbacks():
             except Exception as e:
                 print(f"[meltygui] on_cleanup {getattr(fn, '__qualname__', fn)} failed: {e!r}")
     return ran
-
-
-def strhash(s: str) -> int:
-    """Stable 32-bit hash of a string."""
-    return zlib.crc32(s.encode("utf-8")) & 0xffffffff
-
-
-def combine(h: int, s: str) -> int:
-    """Order-sensitive, stable combine (FNV-style)."""
-    return ((h * 16777619) ^ strhash(s)) & 0xffffffff
-
-
-def ui_id(suffix=None, idx=0) -> int:
-    """
-    Generate a stable UI ID from the call stack + optional metadata.
-
-    - meta: optional Meta object to fold in attribute name/type
-    - max_depth: limit to avoid walking the whole interpreter stack
-    """
-    # Pure function of (suffix, idx) - memoized: every wrapper call builds
-    # its suffix string and hashed it twice (crc32 + str round trip).
-    memo_key = (suffix, idx)
-    hit = _UI_ID_MEMO.get(memo_key)
-    if hit is not None:
-        return hit
-    h = 0
-    # frame = sys._getframe(2)  # skip ui_id itself
-    code = None
-    func_name = ""
-    cls_name = ""
-
-    scope = f"{cls_name}.{func_name}" if cls_name else func_name
-    h = combine(h, scope)
-    # datatype = datatype if datatype is not None else Any
-    # h = combine(h, str(datatype))
-    suffix_int = strhash(str(suffix))
-
-    unique = h if suffix is None else (((h * 16777619) ^ suffix_int) + (idx + 1))
-    unique = strhash(str(unique))
-
-    if len(_UI_ID_MEMO) > 65536:
-        _UI_ID_MEMO.clear()     # bounded: dynamic names (table-row ids) churn
-    _UI_ID_MEMO[memo_key] = unique
-    return unique
-
-
-_UI_ID_MEMO = globals().get("_UI_ID_MEMO", {})    # (suffix, idx) → stable id
 
 
 class WrapType(Enum):

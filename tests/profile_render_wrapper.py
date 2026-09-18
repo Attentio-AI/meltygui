@@ -33,6 +33,7 @@ _io.fonts.get_tex_data_as_rgba32()
 
 from meltygui.core.melty import Melty
 import meltygui.core.core_render as core_render
+import meltygui.core.rendering.view_identity as view_identity
 from meltygui.core.core_render import render_func
 from meltygui.core.cache.tile_cache import TileCacheMasked
 from meltygui.state.new_core_model import DrawState
@@ -351,8 +352,9 @@ def pass_c(depth, frames, pct_threshold):
     _lp_add(lp, DrawState.__dict__.get('abs_left'), "abs_left")
     _lp_add(lp, DrawState.__dict__.get('abs_top'), "abs_top")
     _lp_add(lp, DrawState.__dict__.get('pos_changed'), "pos_changed")
-    _lp_add(lp, core_render.get_draw_state, "get_draw_state")
-    _lp_add(lp, core_render.ui_id, "ui_id")
+    _lp_add(lp, view_identity.get_draw_state, "get_draw_state")
+    _lp_add(lp, view_identity.ui_id, "ui_id")
+    _lp_add(lp, view_identity.view_unique, "view_unique")
     bvh_update = getattr(Melty, 'bvh_update', None)
     if bvh_update is not None:
         _lp_add(lp, bvh_update, "Melty.bvh_update")
