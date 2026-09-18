@@ -1099,7 +1099,8 @@ def render_func(*args, **o_kwargs):
         if kwargs.get('glfw_window') and not deferred_entry:
             _tile = f"{name}##{strhash(str(unique) + str(draw_state.id))}"
             draw_state._tile_id = _tile
-            Melty.surface_window_request(_tile, name, input_value, kwargs, draw_state)
+            _req = Melty.surface_window_request(_tile, name, input_value, kwargs, draw_state)
+            Melty.record_surface_request(_req)
             return_value = Melty.returned_values.pop(_tile, None) or (False, None)
             if return_extras:
                 return return_value[0], return_value[1], draw_state
@@ -1234,7 +1235,7 @@ def render_func(*args, **o_kwargs):
                 # call-site icon= never reached the draw_state and the Important
                 # Button dropped the row. Stamp just the icon, never the full
                 # kwargs: that would pin input values on a closed window.
-                icon = kwargs.get("icon")
+                icon = kwargs.get("icon") or draw_state.__dict__.get("icon")
                 if icon:
                     if type(draw_state._kwargs) is dict:
                         if draw_state._kwargs.get("icon") != icon:
@@ -1263,6 +1264,14 @@ def render_func(*args, **o_kwargs):
             _ds_bg_offset = draw_state.__dict__.get("bg_offset")
             if _ds_bg_offset is not None:
                 kwargs["bg_offset"] = _ds_bg_offset
+        # `icon` (the header glyph) rides the same tier: the colour picker's
+        # icon row writes `locate_icon`, which lands here when no code sets
+        # it. Checked by value, not presence - a mode default carries
+        # icon=None - so a passed glyph keeps priority and None yields.
+        if kwargs.get("icon") is None:
+            _ds_icon = draw_state.__dict__.get("icon")
+            if _ds_icon is not None:
+                kwargs["icon"] = _ds_icon
         from meltygui.core.windowing.window_visibility import sync_live_comment_inputs
         sync_live_comment_inputs(draw_state, kwargs)
         _restamp_kwargs(draw_state, kwargs)
@@ -3489,6 +3498,7 @@ def render_func(*args, **o_kwargs):
                 # tile keeps its subscriptions - same fix as the pre-gate
                 # register_hovered above, for body-level subs.
                 draw_state.replay_body_actions()
+                draw_state.replay_surface_requests()
                 if Toggles.dynamic_styles:
                     Melty.add_cached_background(draw_state)
             if _render_body:
@@ -3509,6 +3519,7 @@ def render_func(*args, **o_kwargs):
                     Melty.cache.mask_mark_uncached_window(draw_state)
                 # Fresh record for this render's body-level on_action calls.
                 draw_state._body_actions = (Melty.frame_count, [])
+                draw_state._body_surface_requests = (Melty.frame_count, [])
                 # Rect-scoped event params (draw_state.event_rect): take the
                 # LAST body run's declarations for this run's registration
                 # lookup and clear the slot, so the body re-declares each run

@@ -190,3 +190,76 @@ def test_renderer_choices_follow_registration_and_explicit_override(gl_context, 
     assert seen == [(), (registered_later,), (), (registered_later,)]
     assert "multi_instance_renderers" not in view_param_names(
         SimpleNamespace(_view_func=choices_probe))
+
+
+def test_cached_tiles_only_rerun_the_stale_tile(gl_context, monkeypatch):
+    """Each tile is its own blit-cache unit, gated at the wrapper's real
+    mark_start_offscreen boundary (no offscreen GL capture in tests)."""
+    from conftest import begin_frame, end_frame
+    from test_render_func_integration import _init_melty, _tick_frame
+    from meltygui.view.tile_view import draw_tile_content
+    import meltygui_imgui as imgui
+    from meltygui.core.styling.style_core import ImGuiStyleManager
+
+    runtime = _init_melty()
+    monkeypatch.setattr(runtime, "style_manager", ImGuiStyleManager())
+    monkeypatch.setattr(runtime.cache, "enabled", True)
+    runs = {"left": 0, "right": 0}
+    stale = {"left", "right"}
+    marks = []
+    cached = [True]
+
+    def cache_gate(draw_state):
+        # Dropdown pickers and the host pass through; only the tiles gate.
+        value = draw_state._input_value
+        if value not in runs or not draw_state.use_cache:
+            return True
+        marks.append(value)
+        return value in stale
+
+    monkeypatch.setattr(runtime.cache, "mark_start_offscreen", cache_gate)
+    monkeypatch.setattr(runtime.cache, "mark_end_offscreen", lambda *a, **kw: None)
+
+    @render_func(multi_instance=True, tint=(0.2, 0.4, 0.6))
+    def cached_tile_probe(input_value: object):
+        runs[input_value] += 1
+        return False, input_value
+
+    tiles = [Tile(render_func=cached_tile_probe, input_value="left"),
+             Tile(render_func=cached_tile_probe, input_value="right")]
+
+    @render_func(tint=(0.2, 0.4, 0.6))
+    def host(input_value: object):
+        x, y = imgui.get_cursor_screen_pos()
+        for index, tile in enumerate(tiles):
+            imgui.set_cursor_screen_pos((x + index * 350, y))
+            draw_tile_content(tile, width=320, height=220, use_cache=cached[0])
+        return False, input_value
+
+    def frame():
+        _tick_frame(runtime)
+        begin_frame()
+        imgui.set_next_window_position(0, 0)
+        imgui.set_next_window_size(800, 600)
+        imgui.begin("Cached tile test")
+        try:
+            host(None, width=750, height=500)
+        finally:
+            imgui.end()
+            end_frame()
+
+    frame()
+    assert runs == {"left": 1, "right": 1}
+    stale.clear()
+    frame()
+    assert runs == {"left": 1, "right": 1}
+    stale.add("left")
+    frame()
+    assert runs == {"left": 2, "right": 1}
+    assert marks[-2:] == ["left", "right"]
+    # Without use_cache the tiles never reach the cache boundary.
+    marked = len(marks)
+    cached[0] = False
+    frame()
+    assert runs == {"left": 3, "right": 2}
+    assert len(marks) == marked

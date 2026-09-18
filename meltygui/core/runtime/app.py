@@ -97,6 +97,10 @@ def boot(app_id=None):
     _state['booted'] = True
     _utf8_output()
     _state['app_id'] = app_id or _default_app_id()
+    # Before anything reads a setting: the user's launch overrides patch the
+    # modules already imported and hook the import of the rest.
+    from meltygui.core.runtime import launch_override
+    launch_override.install(_state['app_id'])
     cache = pathlib.Path(os.environ.get('XDG_CACHE_HOME') or pathlib.Path.home() / '.cache') / _state['app_id']
     _state['cache'] = cache
     _register_editable(getattr(sys.modules.get('__main__'), '__file__', None))
@@ -214,7 +218,10 @@ def _init_melty():
     # renders) until the studio's Melty.init() clears it. That init also
     # starts file watchers and a jedi worker we do not need.
     Melty.annotation_mode = False
-    Toggles.show_fps = False
+    # The Toggles.show_fps readout stays on in apps and their child surfaces;
+    # MELTY_SHOW_FPS=0 hides it for one launch (clean screenshots).
+    if os.environ.get('MELTY_SHOW_FPS', '1').strip().lower() in ('0', 'false', 'no', 'off'):
+        Toggles.show_fps = False
     if os.environ.get('MELTY_NO_OS_FRAME'):
         Toggles.Melty.push_os_window_edges = False
     Surface.app_id = _state['app_id']
@@ -319,7 +326,7 @@ def _register_projects():
 
 
 def glfw_window(fn=None, *, name=None, width=1280, height=800, app_id=None, app_name=None, on_close=None,
-                **view_kwargs):
+                settings=None, **view_kwargs):
     """Register ``fn`` as an OS window. ``fn()`` draws the window's content
     each frame; views it draws at root level fill the window.
 
@@ -332,6 +339,13 @@ def glfw_window(fn=None, *, name=None, width=1280, height=800, app_id=None, app_
     ``on_close(surface)`` is asked when the window is told to close (the
     title bar's ×, the compositor, `glfw.set_window_should_close`): return
     False to keep it (hide it, say — a chat app with a turn streaming).
+    ``settings`` is a plain dict of defaults the framework keeps between
+    runs (app_settings.py): loaded INTO that dict in place before the loop
+    starts (so the app reads it like any dict), nested dicts as
+    sub-folders, saved to `$XDG_CONFIG_HOME/<app_id>/settings.json` when
+    edited and on exit. A window with settings gets a cog in its title bar
+    beside the window controls that opens the settings window (the dict
+    drawn as a child OS window).
     These are the universal meltygui names (`@window`, every view's kwargs),
     never `title=` or `size=` (Lukas 09-12).
 
@@ -356,20 +370,36 @@ def glfw_window(fn=None, *, name=None, width=1280, height=800, app_id=None, app_
             source = None
         _register_editable(source)
         config = dict(name=name or fn.__name__, width=int(width), height=int(height), on_close=on_close,
-                      view_kwargs=view_kwargs)
+                      view_kwargs=view_kwargs, settings=None)
         for index, (registered, existing) in enumerate(_ROOTS):
             if existing['name'] == config['name']:
+                config['settings'] = _app_settings(settings, config['name'], existing.get('settings'))
                 existing.update(config)        # the live config object: the body reads it
                 if not _state['ran']:
                     _ROOTS[index] = (fn, existing)
                 break
         else:
+            config['settings'] = _app_settings(settings, config['name'], None)
             _ROOTS.append((fn, config))
         if not _state.get('hooked'):
             _state['hooked'] = True
             _hook_main_return()
         return fn
     return wrap(fn) if fn is not None else wrap
+
+
+def _app_settings(values, window_name, existing):
+    """The window's AppSettings for the decorator's `settings=` dict, loaded
+    from the app's settings file (app_settings.py): None without one. A
+    re-decoration (hotswap) that passes the SAME dict keeps the existing
+    object — its window state, its loaded values — and a new dict is
+    loaded afresh."""
+    if values is None:
+        return None
+    if existing is not None and existing.values is values:
+        return existing
+    from meltygui.core.runtime.app_settings import AppSettings, settings_path
+    return AppSettings(values, window_name, settings_path(_state['app_id']))
 
 
 def _root_body(fn, name, view_kwargs=None, config=None):
@@ -412,16 +442,23 @@ def _root_body(fn, name, view_kwargs=None, config=None):
     return tinted
 
 
-def _searchable_body(body):
+def _searchable_body(body, config=None):
     """The root body plus the app's global search (app_search.draw: a no-op
     unless meltygui.global_search enabled it and this is its window), drawn
-    AFTER the body so the search window floats above the root."""
+    AFTER the body so the search window floats above the root, and the
+    window's settings window (`@glfw_window(settings=...)`, read off the
+    LIVE config each frame so a hotswapped decorator reaches it): its
+    lifecycle call runs every frame, as a closable window's must."""
     def searchable(surface):
         body(surface)
         from meltygui.core.runtime.extensions import call
         from meltygui.view.code_view import draw_pending_preview
         draw_pending_preview()
         call('root_draw', surface)
+        settings = config.get('settings') if config is not None else None
+        surface.settings = settings
+        if settings is not None:
+            settings.draw()
     return searchable
 
 
@@ -517,8 +554,9 @@ def run():
         # decorator tint is the surface's; a render-func body gets its
         # kwargs from _draw_root and sits on the default ground.
         ground_tint = None if hasattr(fn, '__render_func__') else view_kwargs.get('tint')
-        Surface(kw['name'], _searchable_body(_root_body(fn, kw['name'], view_kwargs, config=kw)),
-                width=kw['width'], height=kw['height'], tint=ground_tint, on_close=kw.get('on_close'))
+        surface = Surface(kw['name'], _searchable_body(_root_body(fn, kw['name'], view_kwargs, config=kw), kw),
+                          width=kw['width'], height=kw['height'], tint=ground_tint, on_close=kw.get('on_close'))
+        surface.settings = kw.get('settings')
     mark(f'{len(Surface.all)} window(s) created')
     import meltygui.core.windowing.glfw_utils as glfw_utils
     bench = os.environ.get('MELTY_BENCH')
@@ -581,6 +619,9 @@ def run():
         if not _state['failed']:
             _flush_pending_saves()
             _save_session()
+            _save_settings()
+            from meltygui.core.runtime import launch_override
+            launch_override.flush()
         for surface in list(Surface.all):
             surface.destroy()
         glfw.terminate()
@@ -599,6 +640,16 @@ def _flush_pending_saves():
         return
     _debug(f'flushing {len(PendingSave.pending_saves)} pending save(s)')
     PendingSave.apply_all_saves()
+
+
+def _save_settings():
+    """Write every window's settings dict (app_settings.AppSettings.save):
+    the exit backstop behind the save-on-edit, so a value the app changed
+    itself lands too. Skipped after a failed frame like the session."""
+    for fn, kw in _ROOTS:
+        settings = kw.get('settings')
+        if settings is not None:
+            settings.save()
 
 
 def _save_session():

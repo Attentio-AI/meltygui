@@ -271,3 +271,4 @@ def test_the_right_drag_latch_skips_a_detached_outer_edge_for_the_frame():
     w._row_views[("rows", "other")] = (w, [bottom, {"y": 450.0}])
     w._row_bands[("rows", "other")] = ({"x": 0.0}, {"x": 300.0})
     assert C.row_edge_under_cursor(w, 300.0, 100.0) is bottom
+

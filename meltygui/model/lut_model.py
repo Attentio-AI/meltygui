@@ -1,4 +1,5 @@
 """Editable palette dictionaries and integer-like LUT texture values."""
+import bisect
 import math
 import weakref
 
@@ -66,7 +67,7 @@ def hdr_ramp(hue_at, peak=16.0, chroma=1.0, white_from=0.55, n=1024):
         hue = hue_at(u)
         w = min(1.0, max(0.0, (u - white_from) / (1.0 - white_from)))
         envelope = 1.0 - w * w * (3.0 - 2.0 * w)
-        c = chroma * envelope * oklab_max_chroma(lightness, hue, peak)
+        c = chroma * envelope * oklab_max_chroma(lightness, hue, peak) if chroma else 0.0
         lin = oklab_to_linear((lightness, c * math.cos(hue), c * math.sin(hue)))
         out += [linear_to_srgb(v) for v in lin]
     return out
@@ -88,6 +89,100 @@ def _hot_hdr_hue(u):
     t = min(1.0, max(0.0, (u - red_until) / (yellow_from - red_until)))
     t = t * t * (3.0 - 2.0 * t)                      # smoothstep
     return red + (yellow - red) * t
+
+def sdr_hue_path(fn, floor=0.03, samples=256):
+    """The hue journey of an SDR scale as a ``hue_at(u)`` for hdr_ramp:
+    the hue the SDR scale gives a level at lightness fraction ``u`` of ITS
+    OWN Oklab lightness range, so the HDR ramp visits the same hues in the
+    same order, stretched up the taller box the way `hot_hdr` stretches
+    hot's red-then-yellow. That is how an SDR scale's information is kept
+    and extended rather than replaced: the hue axis still says what it
+    said, the lightness axis gains the HDR stops, and P3 gives each hue
+    more chroma than the sRGB triangle allowed. Samples paler than
+    ``floor`` chroma (black and white ends, whose hue is noise) are
+    dropped and the nearest chromatic hue extends over them. Hues are
+    unwrapped so a scale crossing ±180° (viridis) interpolates the short
+    way round. Only lightness-ordered scales (viridis, inferno, plasma,
+    magma, hot ...) belong here: a rainbow such as jet or turbo visits
+    hues out of lightness order, and its HDR form would have to be a
+    different design, not this one."""
+    from meltygui.hdr_color import linear_to_oklab
+    from meltygui.hdr_color import srgb_to_linear
+    points = []
+    lightness = []
+    for i in range(samples):
+        rgb = fn(i / (samples - 1))
+        lab = linear_to_oklab(tuple(srgb_to_linear(min(1.0, max(0.0, float(c)))) for c in rgb))
+        lightness.append(lab[0])
+        if math.hypot(lab[1], lab[2]) >= floor:
+            points.append((lab[0], math.atan2(lab[2], lab[1])))
+    points.sort()
+    low, high = min(lightness), max(lightness)
+    fractions, hues = [], []
+    for level, hue in points:
+        if hues:
+            hue = hues[-1] + math.remainder(hue - hues[-1], 2.0 * math.pi)
+        fractions.append((level - low) / (high - low))
+        hues.append(hue)
+
+    def hue_at(u):
+        if u <= fractions[0]:
+            return hues[0]
+        if u >= fractions[-1]:
+            return hues[-1]
+        j = bisect.bisect_right(fractions, u)
+        f0, f1 = fractions[j - 1], fractions[j]
+        t = 0.0 if f1 <= f0 else (u - f0) / (f1 - f0)
+        return hues[j - 1] + (hues[j] - hues[j - 1]) * t
+
+    return hue_at
+
+def hdr_diverging(hue_neg, hue_pos, peak=16.0, top=0.79, chroma=1.0,
+                  center=0.896, pale=0.25, n=1024):
+    """A diverging HDR scale as a flat LUT list, for the `centered` param:
+    the middle entry is a NEUTRAL grey of Oklab lightness ``center`` (the
+    default is coolwarm's pale centre, 0.865 sRGB grey) and each arm
+    climbs UNIFORMLY in lightness to ``top`` of the ``peak`` × white box,
+    hue ``hue_neg`` below the centre, ``hue_pos`` above (radians). An SDR
+    diverging scale spends its one white on zero and must make magnitude
+    DARKER and more saturated on both sides, so the two cues fight and
+    the dark ends lose sign on a dark background; here zero keeps its pale
+    neutral and magnitude climbs into the HDR headroom instead — sign is
+    hue, magnitude is brightness, the strongest cue the eye has, and each
+    arm gets log2(peak × top³) stops rather than a fraction of one.
+
+    Chroma is the most saturated colour of the arm's hue that fits the
+    box, eased in over the first ``pale`` of each arm (smoothstep) so small
+    values stay pale like coolwarm's. The arms STOP at ``top`` of the box's
+    lightness rather than at its peak on purpose: the box pinches every
+    hue to white at the peak, and a diverging scale whose two ends meet at
+    white would lose the sign exactly where the magnitude is largest. The
+    default 0.79 (8 × white) keeps both of coolwarm's hues at a third of
+    their peak chroma at the ends; raise it for more stops, at the cost of
+    paler ends."""
+    from meltygui.hdr_color import _cbrt
+    from meltygui.hdr_color import linear_to_srgb
+    from meltygui.hdr_color import oklab_max_chroma
+    from meltygui.hdr_color import oklab_to_linear
+    end = top * _cbrt(peak)
+    out = []
+    for i in range(n):
+        v = i / (n - 1)
+        t = abs(v - 0.5) * 2.0
+        hue = hue_neg if v < 0.5 else hue_pos
+        lightness = center + t * (end - center)
+        w = min(1.0, t / pale)
+        envelope = w * w * (3.0 - 2.0 * w)
+        c = chroma * envelope * oklab_max_chroma(lightness, hue, peak)
+        lin = oklab_to_linear((lightness, c * math.cos(hue), c * math.sin(hue)))
+        out += [linear_to_srgb(x) for x in lin]
+    return out
+
+def _sdr_hue(rgb):
+    """Oklab hue of an SDR colour tuple, for naming a diverging arm's hue."""
+    from meltygui.hdr_color import oklab_hue
+    from meltygui.hdr_color import srgb_to_linear
+    return oklab_hue(tuple(srgb_to_linear(float(c)) for c in rgb))
 
 def _poly(coeffs):
     """Per-channel polynomial in t (Horner); rows are (r, g, b) coefficients
@@ -195,6 +290,20 @@ def make_luts():
         # ── HDR ramps get their own entries (hdr_ramp - uniform Oklab lightness
         # up a 16× box, max chroma that fits, 4 stops longer than the SDR one)
         "hot_hdr": hdr_ramp(_hot_hdr_hue, peak=16.0),
+        # the same box, neutral: grey's 8 bits of tone plus four stops of
+        # headroom, for radiance / counts where hue would be an invention
+        "grey_hdr": hdr_ramp(lambda u: 0.0, peak=16.0, chroma=0.0),
+        # the sequential scales' own hue journeys (sdr_hue_path) stretched
+        # up the box: viridis' purple → blue → teal → green → yellow and
+        # inferno's purple → magenta → red → orange → yellow, each at the
+        # chroma P3 allows and whitening only across the top stop. (plasma
+        # and magma stretch to near-duplicates of inferno: at max chroma
+        # their hue paths sit within ~10° of its, so they get no entry.)
+        "viridis_hdr": hdr_ramp(sdr_hue_path(_poly(_VIRIDIS)), peak=16.0),
+        "inferno_hdr": hdr_ramp(sdr_hue_path(_poly(_INFERNO)), peak=16.0),
+        # coolwarm's hues, with magnitude climbing into the headroom on
+        # both sides of its pale centre instead of darkening (hdr_diverging)
+        "coolwarm_hdr": hdr_diverging(_sdr_hue(_coolwarm(0.0)), _sdr_hue(_coolwarm(1.0))),
     }
 
 

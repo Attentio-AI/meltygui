@@ -81,15 +81,44 @@ layout is a single global pre-render pass.
 ## Feedback-loop guard
 
 `core/diagnostics/edge_motion_guard.py` runs once per frame after every edge
-pass while a mouse button is held. Whatever the collision rules, an edge may
-follow the pointer at its speed in either direction, stand still, or move part
-of the way on a contact frame; it may never move faster than the pointer in a
-frame or travel farther than the pointer has during the gesture. A violation
-writes an `edge-motion-violation` entry to the resize trace with the offending
-edges, every window's geometry, the native model and the detection stack, and
-arms `edge_constraints.solve_edge` to capture the stack of each solve that
-moves those edges for the following frames. `Toggles.Melty.edge_motion_guard`
-switches it off.
+pass, for every native surface separately (an app's root and each child window
+keep their own gesture; entries name the surface). A gesture is a held mouse
+button or a native resize nobody's button drives (the compositor's grab, a
+placement); it survives short pauses and a press dropped and re-taken at the
+window edge. It covers window frame pairs, every column and row layout
+registered on a window or on an ordinary view of that surface, and the native
+frame pair.
+
+Whatever the collision rules, an edge either moves at the driver's speed in
+either direction or stands still, and it may never move faster than the driver
+in a frame or travel farther than the driver has during the gesture. The
+driver on an axis is the native edge that moved this frame, else the pointer.
+Speed is judged per chunk of driver motion (24 px), so slow and fast hands are
+judged alike: a part-way chunk is a contact only at the start or end of a
+moving stretch, and a chunk is judged against the smaller of its own and the
+previous chunk's driver motion, since a layout-handle drag trails the hand by
+one frame. A chunk with our own native request in flight under a hand drag is
+not judged for lag (local edges are rebased when the request is filed and the
+origin lands later); a compositor resize files no request and stays judged. A
+surface-bound frame pair and a window on its first frames are left out; the
+native pair is the solver's output for the same freedom.
+
+During a right-button drag an edge moving the pointer's way must also have a
+reason: it is the latched edge, it is within 48 px of the pointer, or it is in
+contact (the cell behind it at its minimum span, or the cell ahead at its
+maximum, read from the layout's own floors and caps). Motion opposite to the
+pointer is the edge-push flip, and motion back toward where the gesture found
+the edge is the sticky reversal; both are exempt. Anything else is reported as
+"pushed without contact". A released hand ends its gesture at once; only a
+native resize may pause and continue.
+
+A violation writes an `edge-motion-violation` entry to the resize trace with
+the offending edges and their chunks, every window's geometry, the native model
+and the detection stack, and arms `edge_constraints.solve_edge` to capture the
+stack of each solve that moves those edges for the following frames. Each
+gesture also writes an `edge-motion-guard-armed` entry naming its driver and
+the sampled edges. `Toggles.Melty.edge_motion_guard` switches it off; the
+melty-admin Exceptions page lists these entries per process.
 
 ## Verification
 

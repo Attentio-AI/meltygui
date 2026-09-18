@@ -120,3 +120,4 @@ def test_frame_hit_regions_use_both_solved_dimensions(monkeypatch):
     x, y = window.window_pos
     assert rectangles['left_mouse_drag', 'win_edge_x_1'] == (x+360-half, y, x+360+half, y+450)
     assert rectangles['left_mouse_drag', 'win_edge_y_1'] == (x, y+450-half, x+360, y+450+half)
+

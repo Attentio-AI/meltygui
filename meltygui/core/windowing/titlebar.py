@@ -408,7 +408,8 @@ _ICON_MAXIMIZE = "\uf2d0"   # fa window-maximize
 _ICON_RESTORE = "\uf2d2"    # fa window-restore
 _ICON_CLOSE = "\uf00d"      # fa times
 _ICON_MOVE = "\uf0b2"       # fa arrows-alt - the desktop's left-drag move toggle (hypr_left_drag)
-_ICONS = (_ICON_MINIMIZE, _ICON_MAXIMIZE, _ICON_RESTORE, _ICON_CLOSE, _ICON_MOVE)
+_ICON_SETTINGS = "\uf013"   # fa cog - opens the app's settings window (app_settings.py)
+_ICONS = (_ICON_MINIMIZE, _ICON_MAXIMIZE, _ICON_RESTORE, _ICON_CLOSE, _ICON_MOVE, _ICON_SETTINGS)
 
 
 def _button_icon(kind, maximized):
@@ -418,6 +419,8 @@ def _button_icon(kind, maximized):
         return _ICON_RESTORE if maximized else _ICON_MAXIMIZE
     if kind == "move":
         return _ICON_MOVE
+    if kind == "settings":
+        return _ICON_SETTINGS
     return _ICON_CLOSE
 
 
@@ -459,14 +462,51 @@ def control_kinds():
     `state = "left_drag_move"` button mirrored, unless
     Toggles.Melty.titlebar_move_toggle hides it. It sits INNERMOST of the
     right group like the hyprbars one (before minimize / maximize / close),
-    or ends the left group when everything is on the left."""
+    or ends the left group when everything is on the left.
+
+    Plus the app's own control: a "settings" cog when the active surface
+    is a `@glfw_window(settings=...)` root (settings_available). It goes
+    on the INNER side of the group holding the close button, toward the
+    window's middle (Lukas 09-17: left of the close / move buttons):
+    innermost of the right group, before the move toggle, or after the
+    left group when every control is on the left — set apart by
+    _SETTINGS_GAP and painted flat (_paint_buttons), so it reads as the
+    app's button, not the window's."""
     from meltygui.core.runtime.toggles import Toggles
-    left_kinds, right_kinds = button_layout()
-    if not (Toggles.Melty.titlebar_move_toggle and hypr_left_drag.available()):
-        return left_kinds, right_kinds
-    if right_kinds or not left_kinds:
-        return tuple(left_kinds), ("move",) + tuple(right_kinds)
-    return tuple(left_kinds) + ("move",), tuple(right_kinds)
+    left_kinds, right_kinds = tuple(button_layout()[0]), tuple(button_layout()[1])
+    if Toggles.Melty.titlebar_move_toggle and hypr_left_drag.available():
+        if right_kinds or not left_kinds:
+            right_kinds = ("move",) + right_kinds
+        else:
+            left_kinds = left_kinds + ("move",)
+    if settings_available():
+        if right_kinds or not left_kinds:
+            right_kinds = ("settings",) + right_kinds
+        else:
+            left_kinds = left_kinds + ("settings",)
+    return left_kinds, right_kinds
+
+
+def settings_available():
+    """Whether the active OS window has settings to open: a
+    `@glfw_window(settings=...)` root (surface.settings, app.py). The
+    studio has no Surface, an app's child windows carry none."""
+    from meltygui.core.windowing.surface import Surface
+    surface = Surface.active
+    return surface is not None and getattr(surface, "settings", None) is not None
+
+
+def _active_settings():
+    from meltygui.core.windowing.surface import Surface
+    surface = Surface.active
+    return getattr(surface, "settings", None) if surface is not None else None
+
+
+# The settings cog's distance from the window controls beside it, on top of
+# button_gap: the visible seam between the window's chrome and the app's
+# button. Change here to move it closer or further.
+# [tint=(1.0, 0.55, 0.2)]
+_SETTINGS_GAP = 10.0
 
 
 def _button_metrics():
@@ -488,14 +528,19 @@ def _button_layout(disp_w, maximized):
     """[(kind, icon, rect)] of every control the layout asks for, in
     on-screen order: the left group from the top-left corner, the right
     group right-aligned at the top-right, each inset button_margin from
-    its corner and button_gap apart."""
+    its corner and button_gap apart; the settings cog a further
+    _SETTINGS_GAP inward of the controls."""
+    from meltygui.core.melty import Melty
     left_kinds, right_kinds = control_kinds()
     button_margin, button_gap, height, widths = _button_metrics()
+    settings_gap = Melty.px(_SETTINGS_GAP)
     buttons = []
     x0 = button_margin
     for kind in left_kinds:
         icon = _button_icon(kind, maximized)
         width = widths[icon]
+        if kind == "settings":
+            x0 += settings_gap           # set apart from the window's own controls
         buttons.append((kind, icon, (x0, button_margin, x0 + width, button_margin + height)))
         x0 += width + button_gap
     right = []
@@ -503,6 +548,8 @@ def _button_layout(disp_w, maximized):
     for kind in reversed(right_kinds):
         icon = _button_icon(kind, maximized)
         width = widths[icon]
+        if kind == "settings":
+            x1 -= settings_gap           # set apart from the window's own controls
         right.append((kind, icon, (x1 - width, button_margin, x1, button_margin + height)))
         x1 -= width + button_gap
     right.reverse()
@@ -529,12 +576,14 @@ def chrome_insets():
     left_kinds, right_kinds = control_kinds()
     button_margin, button_gap, height, widths = _button_metrics()
     maximized = _maximized(_studio_window())
+    from meltygui.core.melty import Melty
+    settings_gap = Melty.px(_SETTINGS_GAP)
 
     def group(kinds):
         if not kinds:
             return 0.0
         return button_margin + sum(widths[_button_icon(k, maximized)] for k in kinds) \
-            + button_gap * len(kinds)
+            + button_gap * len(kinds) + (settings_gap if "settings" in kinds else 0.0)
 
     return group(left_kinds), group(right_kinds)
 
@@ -592,6 +641,10 @@ def _activate_button(kind, window):
         _toggle_maximize(window)
     elif kind == "move":
         hypr_left_drag.toggle()
+    elif kind == "settings":
+        settings = _active_settings()
+        if settings is not None:
+            settings.request_open()
     elif _close_blocked_by_merge():
         pass        # merge window opened instead; app stays up
     else:
@@ -736,6 +789,18 @@ def _paint_buttons(dl, buttons, over_button):
     move_off_glyph = (0.4, 0.4, 0.4)
     # [tint=(0.9, 0.15, 0.15)]
     move_off_disc_value = 0.06
+    # The settings cog is the APP's button, not the window's: no disc and
+    # no shadow at rest, a neutral glyph this grey (text_color, the
+    # full-range bypass), and hovered a faint neutral disc (settings_color
+    # at settings_hover_alpha) with the glyph brightened.
+    # [tint=(0.9, 0.15, 0.15)]
+    settings_glyph = (0.72, 0.75, 0.8)
+    # [tint=(0.9, 0.15, 0.15)]
+    settings_glyph_hover = (0.98, 0.98, 1.0)
+    # [tint=(0.9, 0.15, 0.15)]
+    settings_color = (1, 1, 1)
+    # [tint=(0.9, 0.15, 0.15)]
+    settings_hover_alpha = 0.35
     style_manager = Melty.style_manager
     previous_tint = style_manager.get_tint() if style_manager is not None else None
     chrome_tint = Toggles.Melty.melty_window_tint
@@ -743,6 +808,14 @@ def _paint_buttons(dl, buttons, over_button):
         style_manager.set_imgui_tint(*chrome_tint[:4])
     try:
         for i, (kind, icon, (x0, y0, x1, y1)) in enumerate(buttons):
+            hovered = over_button == i
+            if kind == "settings":
+                flat_button(icon, None, view_id=f"titlebar_button_{i}",
+                            width=x1 - x0, height=y1 - y0, pos=(x0, y0),
+                            hovered=hovered, layout=False, draw_list=dl, shadow=False,
+                            color=settings_color, alpha=settings_hover_alpha if hovered else 0.0,
+                            text_color=settings_glyph_hover if hovered else settings_glyph)
+                continue
             # The header close's own lift over its surface (+2 over the
             # flat-mask mark paint_window_controls stamped for the button).
             add_shadow((x0, y0, x1 - x0, y1 - y0), corner_radius=Melty.px(6.0), clip=False,
@@ -750,7 +823,7 @@ def _paint_buttons(dl, buttons, over_button):
             faded = kind == "move" and not hypr_left_drag.enabled()
             flat_button(icon, None, view_id=f"titlebar_button_{i}",
                         width=x1 - x0, height=y1 - y0, pos=(x0, y0),
-                        hovered=(over_button == i), layout=False, draw_list=dl,
+                        hovered=hovered, layout=False, draw_list=dl,
                         color=close_color,
                         **({"text_color": move_off_glyph, "tint_value": move_off_disc_value}
                            if faded else {}))

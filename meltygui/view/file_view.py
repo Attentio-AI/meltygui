@@ -819,7 +819,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     return False, input_value
 
 
-@render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=True, use_cache=True,
+@render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=True, use_cache=True, freeze_resize=True,
              show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
 def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_clicked=False,
                    shortcut_state: ShortcutState = None, row_height=22.0,

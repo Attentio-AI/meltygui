@@ -442,7 +442,8 @@ class TypeCodec(Codec):
                           start_lineno - 1 + len(source_lines),
                           source=unwrapped, watcher_ds=draw_state)
         address._span_fp = _span_fingerprint(source_lines)
-        draw_state._addr_cache = (input_value, mtime, address)
+        if draw_state is not None:
+            draw_state._addr_cache = (input_value, mtime, address)
         return address
 
 
@@ -737,11 +738,18 @@ class FunctionCodec(TypeCodec):
             source_lines, start_lineno = inspect.getsourcelines(unwrapped)
 
         except (OSError, TypeError, tokenize.TokenError, SyntaxError) as e:
-            if draw_state._addr_cache is not None:
-                return draw_state._addr_cache[2]
+            # A file that SHRANK under us (an external edit removed code above)
+            # leaves co_firstlineno past its end: inspect refuses with "lineno
+            # is out of bounds" before there is any block to verify. Same cure
+            # as the misaligned block below - re-anchor by ast.
+            span = _reanchor_function(unwrapped, source_file) if isinstance(e, OSError) else None
+            if span is None:
+                if cached is not None:
+                    return cached[2]
 
-            print(f"[editable_source] could not resolve {getattr(input_value, '__name__', input_value)}: {e}")
-            return None
+                print(f"[editable_source] could not resolve {getattr(input_value, '__name__', input_value)}: {e}")
+                return None
+            source_lines, start_lineno = span[2], span[0] + 1
 
         # The function may resolve to a DIFFERENT line than its cached address because
         # that's the legitimate sibling-shift case: editing another function in the
@@ -788,7 +796,8 @@ class FunctionCodec(TypeCodec):
         address = Address(Path(source_file), start0, start0 + len(span_lines),
                           source=input_value, watcher_ds=draw_state)
         address._span_fp = _span_fingerprint(span_lines)
-        draw_state._addr_cache = (input_value, mtime, address)
+        if draw_state is not None:
+            draw_state._addr_cache = (input_value, mtime, address)
         return address
 
 

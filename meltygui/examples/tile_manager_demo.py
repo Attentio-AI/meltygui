@@ -21,7 +21,8 @@ class CounterState(DictConversion):
         self.count = 0
 
 
-@render_func(multi_instance=True, tint=(0.20, 0.36, 0.52))
+@render_func(multi_instance=True, tint=(0.20, 0.36, 0.52), icon=f"\uf1ec",
+             display_name="Counter")
 def draw_tile_counter(input_value: object, draw_state,
                       counter_state: CounterState = None, style_manager=None):
     """Choose in two tiles to exercise independent, persisted view state."""
@@ -33,7 +34,8 @@ def draw_tile_counter(input_value: object, draw_state,
     return clicked, input_value
 
 
-@render_func(multi_instance=True, tint=(0.22, 0.44, 0.30))
+@render_func(multi_instance=True, tint=(0.22, 0.44, 0.30), icon=f"\uf249",
+             display_name="Notes")
 def draw_tile_notes(input_value: object):
     from meltygui.view.text_view import draw_text
     changed, value = draw_text("" if input_value is None else input_value)
@@ -62,7 +64,7 @@ class TileManagerDemoModel(DictConversion):
 # auto_resize=False: a fixed-size window gives the tree a stable frame;
 # the tiles inside it and every edge moves independently of the rest.
 @window
-@render_func(tint=(0.24, 0.30, 0.20), auto_resize=False, min_width=720,
+@render_func(tint=(0.24, 0.30, 0.20), auto_resize=False,
              min_height=420, show_bg=True)
 def draw_tiled_window_manager_demo(input_value: object, draw_state,
                                    tile_state: TileManagerState = None,

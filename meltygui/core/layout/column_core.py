@@ -946,6 +946,12 @@ def window_edge_pass(window):
         window._freeze_settle = {}
         request_render()
 
+    # Window-local positions of every registered edge list before the solve:
+    # only the views whose OWN edges moved are invalidated below.
+    edges_before = {(axis, key): [e[axis] for e in edge_list]
+                    for axis in _REGISTRY
+                    for key, (_, edge_list) in _views(window, axis).items()}
+
     moved = _frame_pass(window, "x")
     moved = _frame_pass(window, "y") or moved
     _register_frame_handles(window)
@@ -953,8 +959,16 @@ def window_edge_pass(window):
     if moved:
         seen = set()
         for axis in _REGISTRY:
-            for ds, _ in _views(window, axis).values():
+            for key, (ds, edge_list) in _views(window, axis).items():
                 if id(ds) in seen:
+                    continue
+                # A drag elsewhere in the window left this view's edges where
+                # they were (a tile two dividers away): its cached pixels still
+                # hold. A list registered mid-pass has no baseline and counts
+                # as moved.
+                before = edges_before.get((axis, key))
+                if before is not None and len(before) == len(edge_list) and all(
+                        abs(e[axis] - b) <= 1e-6 for e, b in zip(edge_list, before)):
                     continue
                 seen.add(id(ds))
                 # A view whose box already disagrees with its tile

@@ -47,11 +47,36 @@ from meltygui.chat import draw_chat_interface, register_chat_backend
 addition to automatically retained view state. Keep an existing app's `app_id`
 when migrating so its session file remains the same.
 
+## Settings
+
+`@glfw_window(settings=...)` takes a plain dict of defaults and keeps it between
+runs. The dict is loaded in place before the loop starts, so the app reads it
+like any dict; nested dicts are sub-folders of the settings window.
+
+```python
+SETTINGS = {'font_size': 14, 'editor': {'tab_width': 4, 'wrap': False}}
+
+@meltygui.glfw_window(name="Editor", app_id="my-editor", settings=SETTINGS)
+def editor():
+    size = SETTINGS['font_size']
+```
+
+The dict's own values are the schema: a saved value only lands on a key the
+dict has, with the same type, so a renamed or removed setting disappears and a
+new one shows its default. The file is `$XDG_CONFIG_HOME/<app_id>/settings.json`
+(default `~/.config`), one section per window name, written when the settings
+window changes a value and on exit. A window with settings shows a cog in its
+title bar, just inside the window controls, that opens the settings window
+(the dict drawn as a child native window). See `meltygui/examples/settings_demo.py`.
+
 ## Tiled editors
 
 Mark an editor with `@render_func(multi_instance=True)` to offer it in every
 tile's editor dropdown. Registration happens when its module is imported; the
-flag does not open a window. A `Tile` in the app model owns the selected function
+flag does not open a window. A tile calls its editor with `layout_frame` (its
+four edge dicts); an editor that lays out columns forwards it to the view that
+does, as `draw_chat_interface(layout_frame=...)` does, so the columns stay
+inside the tile instead of adopting the window frame. A `Tile` in the app model owns the selected function
 reference and its `input_value`. `Tile` and `Split` are `DictConversion` models,
 so the normal app/session persistence saves the layout and function references.
 

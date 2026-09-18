@@ -960,6 +960,18 @@ class Melty:
         return req
 
     @classmethod
+    def record_surface_request(cls, req):
+        """The wrapper made `req` (glfw_window=True) inside the bodies on
+        draw_state_stack: note it on each enclosing view's record for this
+        frame, so a blit-cache hit that skips those bodies replays it
+        (DrawState.replay_surface_requests) instead of letting
+        _close_stale_children take the child window down."""
+        for enclosing in cls.draw_state_stack:
+            record = enclosing._body_surface_requests
+            if record is not None and record[0] == cls.frame_count and req not in record[1]:
+                record[1].append(req)
+
+    @classmethod
     def draw_surface_root(cls, req, surface):
         """The child surface's body: the requested view drawn as the
         surface's ROOT meltygui window (surface.root_view_kwargs — pinned to
@@ -2537,7 +2549,15 @@ class Melty:
                     cls.focused_ds._search_was_active = False
                     cls.focused_ds.invalidate_up()
 
+                # A popover owner with a menu open INSIDE it (the colour
+                # picker's icon row, draw_view_icon_fast) keeps its slot:
+                # this Esc closes the menu, its own handler takes the next.
+                # Text focus (the menu's search box) still clears.
+                popover = cls.popover_focused_ds
+                keeps_escape = popover is not None and getattr(popover, '_popover_keeps_escape', False)
                 cls.clear_focus()
+                if keeps_escape:
+                    cls.popover_focused_ds = popover
 
                 if Toggles.TextEditor.text_focus_stack_trace:
                     print_stack_trace()
@@ -4563,6 +4583,42 @@ class Melty:
                                  rounding=note.rounding, thickness=note.thickness)
                 if clip is not None:
                     overlay.pop_clip_rect()
+
+        if Toggles.InvalidateTracker.enable and Toggles.InvalidateTracker.draw_render_time:
+            # Render-time heat: an inner glow, opaque at the view's edge and
+            # transparent HEAT_BAND px in (a nested view's interior stays
+            # readable), fading with the invalidation rects below. Change
+            # these to restyle.
+            heat_fill_alpha = 0.45
+            heat_edge_alpha = 0.8
+            heat_band = Melty.px(28.0)
+            from meltygui.core.cache.invalidation_tracker import hot_color
+            keep = max(1, Toggles.InvalidateTracker.keep_for_frames)
+            for key, render in InvalidateTracker.render_times.items():
+                ds = render.draw_state
+                if ds is None or ds.width is None or ds.height is None:
+                    continue
+                fade = max(0.0, 1.0 - (Melty.frame_count - render.frame) / keep)
+                if fade <= 0.0:
+                    continue
+                r, g, b = hot_color(render.ms)
+                x0, y0 = ds.abs_left, ds.abs_top
+                x1, y1 = x0 + ds.width, y0 + ds.height
+                band = min(heat_band, ds.width * 0.5, ds.height * 0.5)
+                edge = pack_color(r, g, b, heat_fill_alpha * fade)
+                clear = pack_color(r, g, b, 0.0)
+                # Top and bottom bands span the full width; the side bands
+                # fill between them, so corners get one gradient, not two.
+                overlay.add_rect_filled_multicolor(x0, y0, x1, y0 + band, edge, edge, clear, clear)
+                overlay.add_rect_filled_multicolor(x0, y1 - band, x1, y1, clear, clear, edge, edge)
+                overlay.add_rect_filled_multicolor(x0, y0 + band, x0 + band, y1 - band, edge, clear, clear, edge)
+                overlay.add_rect_filled_multicolor(x1 - band, y0 + band, x1, y1 - band, clear, edge, edge, clear)
+                overlay.add_rect(x0, y0, x1, y1, pack_color(r, g, b, heat_edge_alpha * fade), thickness=1.0)
+                label = f"{render.ms:.1f} ms"
+                text_size = imgui.calc_text_size(label)
+                overlay.add_rect_filled(x0, y0, x0 + text_size.x + 4, y0 + text_size.y,
+                                        pack_color(0.0, 0.0, 0.0, 0.6 * fade))
+                overlay.add_text(x0 + 2, y0, pack_color(r * 0.5 + 0.5, g * 0.5 + 0.5, b * 0.5 + 0.5, fade), label)
 
         if Toggles.InvalidateTracker.enable:
             for key, note in InvalidateTracker.invalidations.items():

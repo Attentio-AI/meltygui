@@ -125,6 +125,7 @@ class Surface:
         self.name, self.body, self.parent, self.draw_state = name, body, parent, draw_state
         self.tint = tint
         self.on_close = on_close      # asked when an OS close lands; False keeps the window
+        self.settings = None          # app_settings.AppSettings of a @glfw_window(settings=...) root: the chrome's cog
         width, height = int(width), int(height)
         self.title = _unique_title(name.split('##')[0])
         self.request = None         # the melty.surface_children entry of a child

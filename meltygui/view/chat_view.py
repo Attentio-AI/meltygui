@@ -1092,10 +1092,14 @@ def draw_effort_slider(draw_state, key, value, levels, x, y, width, height, tint
              on_cleanup=_cleanup_chat, use_cache=True, disable_scroll=True, imgui_padding=False, indent_size=0)
 def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: ChatInterfaceState = None,
                         column_edges=None, new_project=None, default_project=None, file_metadata=None,
-                        ctrl_shift_equal_down=False, ctrl_shift_minus_down=False, **kwargs):
+                        ctrl_shift_equal_down=False, ctrl_shift_minus_down=False, layout_frame=None,
+                        **kwargs):
     """The chat window. A new conversation runs in `new_project` when given
     (an app started for one project), else in the selected conversation's
-    project, else `default_project` (an app's cwd; the studio: its checkout)."""
+    project, else `default_project` (an app's cwd; the studio: its checkout).
+    ``layout_frame`` (a tile's ``(left, right, top, bottom)`` edge dicts, as
+    draw_tile_content passes) pins the sidebar / transcript columns inside
+    that tile instead of the window frame."""
     from meltygui.chat.chat_interface import REFRESH_S
     from meltygui.view.chat_decoration_view import _button
     from meltygui.view.chat_decoration_view import _color
@@ -1204,9 +1208,12 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
     body_top = imgui.get_cursor_screen_pos()[1]
     body_bottom = draw_state.abs_top + (draw_state.height or Melty.px(760)) - Melty.px(16)
     body_height = max(Melty.px(180), body_bottom - body_top)
+    frame_kwargs = ({"left_edge": layout_frame[0], "right_edge": layout_frame[1],
+                     "band": layout_frame[2:]} if layout_frame is not None else {})
     columns = ColumnLayout(draw_state, 2, column_edges=column_edges,
                            column_widths=[260, None], column_mins=[180, 400],
-                           padding=Melty.px(Toggles.Chat.column_gap), padding_y=0, border_color=None)
+                           padding=Melty.px(Toggles.Chat.column_gap), padding_y=0, border_color=None,
+                           **frame_kwargs)
     with columns.cell(0, height=body_height) as width:
         x, y = imgui.get_cursor_screen_pos()
         top = y

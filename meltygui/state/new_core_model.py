@@ -611,6 +611,10 @@ class DrawState(DictConversion):
         # by the wrapper for blit-cache hits: (frame_count, [entries]). See
         # on_action / replay_body_actions.
         self._body_actions = None
+        # Child OS-window requests made from this view's body (the wrapper's
+        # glfw_window=True branch) - replayed on a blit-cache hit like
+        # _body_actions, see replay_surface_requests.
+        self._body_surface_requests = None
         # Rect-scoped event PARAMS from the last real render (event_rect):
         # {param_name: [rect relative to (abs_left, abs_top), ...]}. The
         # wrapper consumes and clears it before each body run.
@@ -1022,6 +1026,7 @@ class DrawState(DictConversion):
     # Class-level default lets draw_states alive from before a hotswap (whose
     # __init__ never saw the field) read None instead of raising.
     _body_actions = None
+    _body_surface_requests = None
     _event_rects = None
 
     def __getattr__(self, name):
@@ -2248,6 +2253,23 @@ class DrawState(DictConversion):
         """
         identity = self._tile_id if view_id is None else f"{self._tile_id}_{view_id}"
         return Core.melty.events.get(identity, {}).get(event_name)
+
+    def replay_surface_requests(self):
+        """Blit-cache hit: the body did not run, so the child OS windows it
+        requested on its last real render (draw_x(glfw_window=True) - the
+        project card's environment picker) made no request this tick. The
+        app loop closes a child whose request was not refreshed in a tick
+        (_close_stale_children), and a stale close leaves the request open,
+        so the next real run reopened it: the window flickered with every
+        hover frame that hit the cache. Re-stamp the recorded requests
+        instead - the body still wants them, it just did not run."""
+        record = self._body_surface_requests
+        if not record or not record[1]:
+            return
+        melty = Core.melty
+        for req in record[1]:
+            if melty.surface_windows.get(req.tile_id) is req and not req.closed:
+                req.tick = melty.app_tick
 
     def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None, cursor=None,
                   cursor_gate=None):

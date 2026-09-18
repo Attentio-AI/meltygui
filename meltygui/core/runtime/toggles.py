@@ -500,6 +500,12 @@ class Toggles:
         # [tint=(0.85, 0.75, 0.05)]
         view_offset_rows = (("bg_offset", "Bg offset", 0.05),
                             ("z_offset", "Z offset", 0.05))
+        # The view's `icon` row under the offsets (draw_view_icon_fast):
+        # its height in the popover and the glyph chip's square size.
+        # [tint=(0.85, 0.75, 0.05)]
+        icon_row_height = 28
+        # [tint=(0.85, 0.75, 0.05)]
+        icon_chip_size = 20
 
     @defaults(tint=(0.85, 0.75, 0.05))
     class Dropdown:
@@ -2488,6 +2494,12 @@ class Toggles:
         keep_for_frames = 100
         enable = False
         draw_rect = True
+        # A faint fill over every cached (use_cache) view that rendered
+        # live, coloured by its own render time on the `hot` LUT (black →
+        # red → yellow → white at render_time_max_ms and above), fading out
+        # over keep_for_frames: which views cost the frame, at a glance.
+        draw_render_time = True
+        render_time_max_ms = 8.0
         # [tint=(0.85, 0.45, 0.05), show_tint=True]
         invalidate_stack_trace = False
         # [tint=(0.028, 0.561, 0.115), show_tint=True]
@@ -2711,8 +2723,10 @@ class Toggles:
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
     developer_mode = False
-    # Frame rate (and, for app windows, render-thread frame time) in the
-    # titlebar of every OS window (titlebar.paint_fps). Apps start with it off.
+    # Frame rate (and, for app windows, render-thread frame time) painted in
+    # the titlebar strip of every OS window: the studio's and each meltygui
+    # app surface, parents and children alike (titlebar.paint_fps). Read
+    # live; MELTY_SHOW_FPS=0 turns it off for one app launch.
     show_fps = True
 
     # The notification overlay (notifications.draw_notifications, gated by

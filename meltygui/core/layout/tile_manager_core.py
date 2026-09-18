@@ -43,6 +43,7 @@ import meltygui.core.input.mouse_cursor as mouse_cursor
 from meltygui.hdr_color import pack_color
 from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.cache.tile_cache import snap_int
+from meltygui.core.cache.tile_cache import add_shadow
 from meltygui.core.layout.column_core import ColumnLayout
 from meltygui.core.layout.column_core import RowLayout
 from meltygui.core.layout.column_core import MIN_COLUMN_WIDTH
@@ -183,18 +184,25 @@ def corner_rect(rect, on_left, on_top, size):
 def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
               tile_state=None, gap=4.0):
     """Paint one leaf — no background (``draw_split_dividers`` draws the
-    lines between tiles), only a corner grip where hovered — and run the
-    corner split gesture when ``tree`` /
-    ``root_frame`` / ``tile_state`` are given (``draw_tiles`` passes
-    them). Returns True when the gesture changed the tree."""
+    lines between tiles), a shadow lifting the tile off the host, and a
+    corner grip where hovered — and run the corner split gesture when
+    ``tree`` / ``root_frame`` / ``tile_state`` are given (``draw_tiles``
+    passes them). Returns True when the gesture changed the tree."""
     # [tint=(1.0, 0.8, 0.3)]
     corner_size = 14.0
     corner_hover_color = (1.0, 1.0, 1.0, 0.35)
+    # Change the tile lift here: how far each tile rises above the host
+    # (its shadow spread) and the rounding of that shadow.
+    tile_shadow_offset = 4.0
+    tile_shadow_radius = 4.0
 
     rect = tile_rect(frame, draw_state, gap=gap)
     if rect is None:
         return False
     draw_list = imgui.get_window_draw_list()
+    x0, y0, x1, y1 = rect
+    add_shadow((x0, y0, x1 - x0, y1 - y0), offset=tile_shadow_offset,
+               corner_radius=tile_shadow_radius)
 
     changed = False
     for name, on_left, on_top in CORNERS:
@@ -469,6 +477,10 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
             height=bottom - top - 2 * grip_inset,
             multi_instance_renderers=multi_instance_renderers,
             layout_frame=frame,
+            # Each tile is its own blit-cache unit: only the tiles whose view
+            # was invalidated run their renderer, the rest draw their captured
+            # texture. Set False here to render every tile live each frame.
+            use_cache=True,
         )
         changed |= content_changed
     imgui.set_cursor_screen_pos(cursor)

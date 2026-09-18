@@ -1124,6 +1124,9 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
         Melty.popover_focused_ds = picker_ds
     if not is_open:
         draw_state._tint_edit_key = None
+        if picker_ds is not None:
+            # The icon row's menu (draw_view_icon_fast) goes with the picker.
+            picker_ds._popover_keeps_escape = False
         # The picker closed on the final frame: one DEEP cascade so every
         # nested tile under the host (depth-shifted bgs, headers, rows)
         # settles on it - the live edits below only reached the host's
@@ -1157,7 +1160,15 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
                                             tint=(0.85, 0.75, 0.05)))
         request_render()
     if any(k == glfw.KEY_ESCAPE for k, _ in Core.melty.frame_key_events):
-        Melty.popover_focused_ds = None
+        # A nested menu inside the picker (draw_view_icon_fast's icon row)
+        # takes the Escape while open, whether the picker body ran before or
+        # after this check: the flag covers the after, the frame stamp the
+        # before. begin_frame's Escape clear honours the same flag.
+        icon_menu_open = picker_ds is not None and (
+            getattr(picker_ds, "_popover_keeps_escape", False)
+            or getattr(picker_ds, "_popover_escape_frame", -1) == Melty.frame_count)
+        if not icon_menu_open:
+            Melty.popover_focused_ds = None
         request_render()
     # Keep the frames coming while a slider/square drag is live - the
     # picker is use_cache=False, so a frame is all it needs; the host's

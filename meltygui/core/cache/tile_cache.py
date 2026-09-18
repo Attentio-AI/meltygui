@@ -173,6 +173,11 @@ class _Ctx:
     depth_and_layer: any
     drew_cached: bool
     auto_resize: bool
+    # Live renders only (InvalidateTracker render times): perf_counter at
+    # mark_start_offscreen, and the total time of the cached views rendered
+    # inside this one, subtracted so the readout is this view's own cost.
+    started: float = 0.0
+    child_ms: float = 0.0
 
 
 @dataclass
@@ -4047,6 +4052,7 @@ class TileCacheMasked:
                     depth_and_layer=draw_state.shadow_depth,
                     drew_cached=False,
                     auto_resize=draw_state.auto_resize,
+                    started=time.perf_counter(),
                 )
             )
             return True
@@ -4267,6 +4273,7 @@ class TileCacheMasked:
                 depth_and_layer=draw_state.shadow_depth,
                 drew_cached=False,
                 auto_resize=draw_state.auto_resize,
+                started=time.perf_counter(),
             )
         )
         self._frame_body_runs += 1
@@ -4282,6 +4289,11 @@ class TileCacheMasked:
 
         if len(self._stack) > 0:
             ctx = self._stack.pop()
+            if ctx.started:
+                total_ms = (time.perf_counter() - ctx.started) * 1000.0
+                if self._stack:
+                    self._stack[-1].child_ms += total_ms
+                InvalidateTracker.note_render(ctx.key, ctx.draw_state, total_ms - ctx.child_ms)
 
         imgui.pop_id()
 
