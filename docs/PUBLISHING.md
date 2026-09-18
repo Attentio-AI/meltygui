@@ -1,6 +1,6 @@
-# Publishing the first release
+# Publishing a release
 
-Artifacts are prepared and locally verified. They have not been uploaded.
+`meltygui` 0.1.0 was published on 2026-09-18 through the workflow below.
 
 ## Required account decisions
 
@@ -55,4 +55,4 @@ uv pip install --python /tmp/meltygui-from-pypi/bin/python meltygui
 
 Then launch a child app and check `meltygui[tensor]` on a supported NVIDIA machine.
 A local install using `--find-links` validates the artifacts, not public PyPI
-availability. Public acceptance remains pending until that final check passes.
+availability. 0.1.0 passed the fresh-install check on Linux (3.11-3.13) and Windows (3.12).
