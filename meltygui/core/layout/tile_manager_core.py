@@ -203,6 +203,13 @@ def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
     x0, y0, x1, y1 = rect
     add_shadow((x0, y0, x1 - x0, y1 - y0), offset=tile_shadow_offset,
                corner_radius=tile_shadow_radius)
+    # A renderer may paint its whole tile (the view itself is clipped to the
+    # content box inside the grips and above the picker): set
+    # `renderer.tile_background = lambda tile: packed colour | None`.
+    background = getattr(tile.render_func, "tile_background", None)
+    fill = background(tile) if background is not None else None
+    if fill is not None:
+        draw_list.add_rect_filled(x0, y0, x1, y1, fill, tile_shadow_radius)
 
     changed = False
     for name, on_left, on_top in CORNERS:
