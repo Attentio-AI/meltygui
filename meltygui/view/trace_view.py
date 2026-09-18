@@ -492,6 +492,10 @@ def draw_crash_reports(
     # these mix the section headers and the toolbar text.
     factor = 0.90
     hover_bg_boost = 0.05
+    # The row / card background is the tab colour scaled by this: a list of fifty
+    # saturated error tints glares where a strip of tabs does not. 1.0 = the
+    # tabs' own brightness; lower = darker rows.
+    row_bg_dim = 0.5
     text_saturation = 0.8
     section_text_value = 0.75                          # the Today / Yesterday / date headers
     # Fixed design colours (rule 18): the error text, the dim time/thread/commit
@@ -666,11 +670,12 @@ def draw_crash_reports(
             # tabs' text colour (below). Collapsed or expanded, the same styling.
             bg = style_manager.make_color_rgb(
                 row_tint[0], row_tint[1], row_tint[2],
-                value=Toggles.CodeEditor.tab_active_bg_brightness
+                value=Toggles.CodeEditor.tab_active_bg_brightness * row_bg_dim
                 + (hover_bg_boost if row_hovered else 0.0),
                 factor=0.1, saturation_scale=Toggles.CodeEditor.tab_active_bg_saturation, alpha=1.0)
             bg = _brightness_clamp_fn()(bg[0], bg[1], bg[2], 0.0,
-                                        Toggles.CodeEditor.tab_active_bg_max_brightness)
+                                        Toggles.CodeEditor.tab_active_bg_max_brightness * row_bg_dim
+                                        + (hover_bg_boost if row_hovered else 0.0))
             add_shadow((row_left, row_top, row_right - row_left, card_bottom - row_top),
                        offset=11, corner_radius=corner, clip=clip)
             # One channel DOWN for the card: the trace's panes render on this

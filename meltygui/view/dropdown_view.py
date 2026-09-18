@@ -775,6 +775,11 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
         # full button/draw_text render_func. There's no click report from
         # imgui.text(), so derive one from this row's hover (the caller's
         # bounding-box hover) plus a fresh left mouse-down.
+        # The label starts where the leaf rows' do (_dd_leaf_row's left_pad):
+        # at the bare cursor a branch row sat 10 px left of its siblings.
+        leaf_left_pad = 10
+        cursor_x, cursor_y = imgui.get_cursor_screen_pos()
+        imgui.set_cursor_screen_pos((cursor_x + leaf_left_pad, cursor_y))
         imgui.text(f"{label}{chevron}")
         clicked = hovered and imgui.is_mouse_clicked(0)
     elif is_branch:
