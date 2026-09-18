@@ -4,6 +4,7 @@ import operator
 
 import OpenGL.GL as gl
 from meltygui.core.graphics.gl_state import GLTexture, tight_unpack
+from meltygui.core.runtime.toggles import Toggles
 
 from meltygui.core.graphics.gl_state import GLState, current_context, is_gl_thread
 
@@ -88,9 +89,21 @@ class TextureId:
 
 
 def _upload_cuda_image(gl_state, out):
-    """Transfer only the finished 2-D pixels; never the source tensor."""
+    """Transfer only the finished 2-D pixels; never the source tensor.
+
+    With CUDA-GL interop the image goes GPU to GPU into a registered pixel
+    buffer and becomes a texture inside the display GPU's VRAM
+    (cuda_texture_model.image_to_texture). Without it (a display GPU CUDA
+    cannot reach) a pinned host buffer carries it, as before."""
     import torch
     H, W = int(out.shape[0]), int(out.shape[1])
+    if Toggles.Voxels.cuda_image_interop:
+        from meltygui.model.cuda_texture_model import image_to_texture
+        img = image_to_texture(gl_state, "cuda_image_interop", out.data_ptr(), out.device.index, W, H)
+        if img is not None:
+            gl_state.drop("cuda_image"); gl_state.drop("cuda_host")
+            return img
+    gl_state.drop("cuda_image_interop")
     host = gl_state.get("cuda_host",
                         lambda: torch.empty(H, W, 4, dtype=torch.float16).pin_memory(),
                         deps=(W, H))

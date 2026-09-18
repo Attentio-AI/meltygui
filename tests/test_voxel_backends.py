@@ -86,7 +86,9 @@ def test_override_switches_same_cuda_tensor_between_backends(gl_context):
             resources = state.misc['gl_state']
             if view is draw_voxels_cuda:
                 assert resources.peek('cuda_view').view.data_ptr() == source.data_ptr()
-                assert resources.peek('cuda_image') is not None
+                # interop texture, or the pinned-host one where CUDA cannot reach this GL context
+                assert (resources.peek('cuda_image_interop') is not None
+                        or resources.peek('cuda_image') is not None)
                 assert state.misc['voxel_state'].cuda_error is None
             else:
                 assert resources.peek('volume_cuda') is not None

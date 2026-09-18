@@ -116,6 +116,12 @@ def current_device_index():
     return None
 
 
+def current_device_index_of(context):
+    """The CUDA ordinal `context` belongs to."""
+    with using_context(context):
+        return current_device_index()
+
+
 def _detach_primary():
     state = runtime()
     if state.primary_context is None:

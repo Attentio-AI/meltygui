@@ -127,6 +127,38 @@ def copy_to_buffer(registered, context, pointer, nbytes):
             mapping.unmap()
 
 
+def copy_image_to_buffer(registered, context, pointer, nbytes, source_device):
+    """Copy a finished image from ANY CUDA device into a mapped GL buffer.
+
+    `pointer` is device memory on CUDA ordinal `source_device`: this process's own
+    allocation or one opened from another process (cuda_image_share_core). On the
+    GL device it is a device copy; from another GPU it is a peer copy, which the
+    driver stages through host memory itself when the two GPUs have no peer access
+    (GeForce), overlapping both PCIe hops. Only images travel this way, never a
+    tensor (docs/TENSOR_RENDERING_REQUIREMENTS.md)."""
+    import meltygui_pycuda.driver as cuda
+    source_device = int(source_device)
+    source_context = (None if source_device == cuda_context_core.current_device_index_of(context)
+                      else cuda_context_core.primary_context_for(source_device))
+    if source_context is not None:
+        # The producer's kernel must be finished before its pixels are read.
+        with cuda_context_core.using_context(source_context):
+            cuda.Context.synchronize()
+    with cuda_context_core.using_context(context):
+        mapping = registered.map()
+        try:
+            destination, capacity = mapping.device_ptr_and_size()
+            if capacity < nbytes:
+                raise ValueError(f"CUDA buffer has {capacity} bytes; image needs {nbytes}")
+            if source_context is None:
+                cuda.memcpy_dtod(destination, pointer, nbytes)
+            else:
+                cuda.memcpy_peer(destination, pointer, nbytes, context, source_context)
+            cuda.Context.synchronize()
+        finally:
+            mapping.unmap()
+
+
 def unregister_buffer(registered, context):
     try:
         with cuda_context_core.using_context(context):

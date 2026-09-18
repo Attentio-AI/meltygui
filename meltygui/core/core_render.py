@@ -647,7 +647,7 @@ def _rebase_resize_baselines(draw_state, drag, from_top_left):
     else:
         draw_state._initial_window_pos_resize = (draw_state.window_pos[0], draw_state.window_pos[1])
 
-
+# [tint=(0.13, 0.55, 0.13), show_tint=True]
 def render_func(*args, **o_kwargs):
     func = args[0] if args else None
     if not callable(func):

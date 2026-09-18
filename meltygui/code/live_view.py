@@ -2449,7 +2449,9 @@ def publish_external_values(filename, source, name, values):
 
     Only a no-op function is compiled locally: project imports, decorators,
     defaults and user code belong exclusively to the project interpreter.
-    Values are (source line, variable name, decoded value) triples.
+    Values are (source line, variable name, decoded value[, loop dimension names]):
+    the project process ran this same instrumenter, so a loop site arrives already
+    accumulated and only its auto dimension names need stamping here.
     """
     import hashlib
     from meltygui.code import chain_converters as cc
@@ -2483,8 +2485,13 @@ def publish_external_values(filename, source, name, values):
         if key[0] == str(path):
             del cc._ENCLOSING_FN_CACHE[key]
     with run_capture(owner):
-        for line, label, value in values:
+        for line, label, value, *dim_names in values:
             disk_line = line - delta
             site = _Site((f'line:{disk_line}#{label}',), None, None, owner, disk_line)
             _publish(site, value, label, bare=False)
+            stamped = vars(owner).setdefault("__live_dim_names__", {})
+            if dim_names and dim_names[0]:
+                stamped[site.key_path] = tuple(dim_names[0])
+            else:
+                stamped.pop(site.key_path, None)
     return owner

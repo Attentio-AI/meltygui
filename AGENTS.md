@@ -60,6 +60,8 @@ never library dependencies. Fix ownership, not just filenames; avoid catch-all m
 
 For window, column/row, resize or collision changes, read the [reconciled behavior rules](docs/WINDOW_COLLISION_COLUMNS.md). Historical reviews and stale source comments do not override them.
 
+For anything that draws or moves a tensor, read the [tensor rendering requirements](docs/TENSOR_RENDERING_REQUIREMENTS.md): a CUDA tensor is raymarched in place on its own GPU (80 GB at 120 fps), only the image crosses, and a failure is an error, never a copy.
+
 ## Verification
 
 Preserve unrelated work/sessions; the editor refactor is deferred. Run focused

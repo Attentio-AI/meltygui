@@ -1357,6 +1357,12 @@ class Toggles:
         # Read live per frame by draw_voxels.
         gamma = 1.00
 
+        # The CUDA raymarcher's finished image reaches the display GPU's
+        # texture GPU to GPU (a registered pixel buffer; from another GPU a
+        # peer copy the driver stages itself). Off, or where CUDA cannot
+        # reach the display GPU: a pinned host buffer and glTexSubImage2D.
+        cuda_image_interop = True
+
         # Auto neural flow: when nf_on is OFF and a DISPLAYED axis is longer
         # than this (or than GL_MAX_3D_TEXTURE_SIZE, whichever is smaller),
         # draw_voxels wraps it itself - chops it into ~sqrt-sized chunks spaced

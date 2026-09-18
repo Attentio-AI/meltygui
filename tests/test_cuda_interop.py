@@ -150,7 +150,10 @@ def test_voxel_view_preserves_cuda_source_and_reuses_volume(gl_context):
     assert states[0] is states[1]
     assert resources[0] is resources[1]
     assert resources[0].view.data_ptr() == source.data_ptr()
-    assert states[0].peek("cuda_image") is not None
+    # The image lands in the interop texture, or in the pinned-host one where
+    # CUDA cannot reach this GL context (texture_model._upload_cuda_image).
+    image_key = next(key for key in ("cuda_image_interop", "cuda_image")
+                     if states[0].peek(key) is not None)
 
     # An edit in the new feature module preserves camera edits, view identity,
     # injected state and GPU allocations; changed source defaults still apply.
@@ -163,7 +166,7 @@ def test_voxel_view_preserves_cuda_source_and_reuses_volume(gl_context):
     draw_state.spin = 1.123
     local_state = draw_state.misc["voxel_state"]
     output = states[0].peek("cuda_out")
-    image = states[0].peek("cuda_image")
+    image = states[0].peek(image_key)
     try:
         assert _recompile_module(voxel_view, original.replace('tilt=0.283', 'tilt=0.383'),
                                  str(path)) is None
@@ -177,7 +180,7 @@ def test_voxel_view_preserves_cuda_source_and_reuses_volume(gl_context):
         # correctly refreshes the lightweight adapter without copying storage.
         assert resources[-1].view.data_ptr() == source.data_ptr()
         assert states[0].peek("cuda_out") is output
-        assert states[0].peek("cuda_image") is image
+        assert states[0].peek(image_key) is image
     finally:
         assert _recompile_module(voxel_view, original, str(path)) is None
     _voxels_cleanup(draw_state)
