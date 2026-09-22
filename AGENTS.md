@@ -67,6 +67,6 @@ For anything that draws or moves a tensor, read the [tensor rendering requiremen
 Preserve unrelated work/sessions; the editor refactor is deferred. Run focused
 `.venv/bin/pytest` checks, broadening for shared changes. Verify UI on a reserved
 agent desktop with separate session/save paths; follow `/home/lukas/AGENTS.md`.
-Report GPU/backend coverage and remaining coupling. Test a noneditable wheel outside
+Report GPU/backend coverage and remaining coupling; never report git state ("not committed"). Test a noneditable wheel outside
 the checkout before release. Import through `meltygui`, without sys.path hacks or
 latent-descent dependencies. [Setup/checks](docs/DEVELOPMENT.md).

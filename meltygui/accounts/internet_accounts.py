@@ -507,24 +507,23 @@ class AnthropicKind(AccountKind):
             flow.submit_code(code)
 
     def _owns_claude_login(self, account, login):
-        """One Claude Code login file = one claude.ai account, and every
-        Anthropic row points at the same default file — so rows sharing a
-        file must not ALL paint its numbers (work + personal rows showing
-        one account's bars twice). The file goes to the row whose sign-in
-        email is the login's account email; when none matches, to the
-        first row sharing that path (the default account)."""
+        """Match known identities even when only one row uses the login file.
+
+        Rows without a browser identity retain the default-file fallback;
+        a known different account must never inherit another account's usage.
+        """
         path = self._claude_code_login_path(account)
         sharing = [entry for entry in accounts.of_kind(self.name)
                    if self._claude_code_login_path(entry) == path]
-        if len(sharing) <= 1:
-            return True
-        email = (login.get("email") or "").lower()
+        email = (login.get("email") or "").strip().lower()
+        identities = [((self.login_info(entry) or {}).get("email") or "").strip().lower()
+                      for entry in sharing]
         if email:
-            matching = [entry for entry in sharing
-                        if ((self.login_info(entry) or {}).get("email") or "").lower() == email]
+            matching = [entry for entry, identity in zip(sharing, identities) if identity == email]
             if matching:
                 return matching[0] is account
-        return sharing[0] is account
+            sharing = [entry for entry, identity in zip(sharing, identities) if not identity]
+        return bool(sharing) and sharing[0] is account
 
     def refresh_all(self, account):
         """The Refresh button: re-read the logins and, for an open panel,

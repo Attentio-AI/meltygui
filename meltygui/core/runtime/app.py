@@ -715,6 +715,7 @@ def _flush_pending_saves():
     pending_save = sys.modules.get('meltygui.editor.pending_save')
     if pending_save is None or not pending_save.PendingSave.pending_saves:
         return
+    PendingSave = pending_save.PendingSave
     _debug(f'flushing {len(PendingSave.pending_saves)} pending save(s)')
     PendingSave.apply_all_saves()
 

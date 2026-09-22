@@ -16,6 +16,7 @@ from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.runtime.toggles import hsv_to_rgb
 from meltygui.core.runtime.toggles import rgb_to_hsv
 import inspect
+from pathlib import Path
 import meltygui_imgui as imgui
 import threading
 import types
@@ -845,9 +846,25 @@ def draw_live_tab(input_value, **kwargs):
     return False, input_value
 
 
+def _function_source_path(view_func):
+    """The file `view_func` is defined in (unwrapped: a render_func wrapper
+    reports its own module otherwise), or None for a builtin / interactive
+    definition."""
+    try:
+        return inspect.getsourcefile(inspect.unwrap(view_func))
+    except (TypeError, OSError):
+        return None
+
+
 def draw_func_tab(input_value, name=None, disable_scroll=True, width=None,
-                  height=None, select_line=None, select_seq=0, **kwargs):
+                  height=None, select_line=None, select_seq=0, draw_state=None,
+                  crumb_height=24.0, **kwargs):
     """Editable source of the inspected view function; hotswaps on save.
+    Under the file browser's crumb strip (`draw_breadcrumbs`, `crumb_height`
+    tall, drawn into the host `draw_state`'s tile when one is given): the
+    function's file, every segment a dropdown over its directory, the
+    crumbs in their painted file-meta tints; a picked file opens in the
+    code editor.
     Routes through Mode.FILE_TREE — the same cache-backed code_file_io path a
     folder-files leaf uses — so all editors share one code path.
 
@@ -871,6 +888,18 @@ def draw_func_tab(input_value, name=None, disable_scroll=True, width=None,
         from meltygui.code.new_converters import code_file_io
         from meltygui.view.code_view import draw_text_from_code_cache
         view_func_name = view_func.__name__ if hasattr(view_func, '__name__') else str(view_func)
+        if draw_state is not None:
+            from meltygui.view.file_view import draw_breadcrumbs
+            source_path = _function_source_path(view_func)
+            if source_path is not None:
+                picked, target = draw_breadcrumbs(
+                    source_path, draw_state, width=width, crumb_height=crumb_height,
+                    name=f"func crumbs {name}")
+                if picked and not Path(target).is_dir():
+                    from meltygui.core.runtime.extensions import open_source as open_in_editor
+                    open_in_editor(target)
+                if height is not None:
+                    height = max(60.0, height - Melty.px(crumb_height))
         _kw = {}
         if width is not None:
             _kw["width"] = width
@@ -1656,7 +1685,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             # to the func tab rather than indexing out of range.
             draw_func_tab(input_value, name=f"func_tab_{t_idx}##{unique}",
                           disable_scroll=True, select_line=func_tab_select_line,
-                          select_seq=func_tab_select_seq, **size_kw)
+                          select_seq=func_tab_select_seq, draw_state=draw_state, **size_kw)
             continue
         this_tab = tab_names[static_tab]
         if this_tab == tint_tab_name:
@@ -1674,7 +1703,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         elif this_tab == func_tab:
             draw_func_tab(input_value, name=f"func_tab_{t_idx}##{unique}",
                           disable_scroll=False, select_line=func_tab_select_line,
-                          select_seq=func_tab_select_seq, **size_kw)
+                          select_seq=func_tab_select_seq, draw_state=draw_state, **size_kw)
 
         elif this_tab == eval_tab_name:
             draw_eval_tab(input_value, unique=unique, enter_key_down=enter_key_down,
@@ -1714,6 +1743,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                 draw_stack_trace(
                     captured_stack, indent_views=False,
                     hide_dispatch=Toggles.ContextMenu.code_tab_hide_dispatch,
+                    crumb_headers=True,
                     name=f"code_tab_{t_idx}##{unique}", **size_kw)
             else:
                 RenderFuncs.draw_text(

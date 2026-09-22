@@ -14,8 +14,8 @@ import meltygui_imgui as imgui
 import numpy
 
 
-@render_func(is_default_for=PendingTexture, use_cache=True, wrap=True, z_offset=0, selectable=False,
-             show_bg=False, auto_resize=True, with_header=draw_header)
+@render_func(is_default_for=PendingTexture, use_cache=True, wrap=True, disable_scroll=True, z_offset=0, selectable=False,
+             show_bg=True, auto_resize=True, with_header=draw_header)
 def draw_pending_texture(input_value: PendingTexture, draw_state, **kwargs):
     from meltygui.view.texture_view import draw_texture
 
@@ -40,7 +40,7 @@ def draw_pending_texture(input_value: PendingTexture, draw_state, **kwargs):
         size_kwargs = {"initial": {"width": width, "height": height}}
 
     return_val = draw_texture(input_value.texture_id, **size_kwargs,
-                              name=f"{draw_state.id}_inner", auto_resize=False,
+                              name=f"{draw_state.id}_inner", auto_resize=False, disable_scroll=True,
                               show_header=False, use_cache=True, wrap=False, tint=(0.11, 0.29, 0.52))
 
     return return_val
@@ -55,7 +55,6 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
                  max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
                  draw_state=None, jet=False, nearest=False, dim_outside=None, dim_alpha=0.55, show_info=True, flip_y=False, **kwargs):
     import meltygui.core.windowing.window_api as glfw
-
     original_id = input_value
     texture_id = input_value
     imgui.dummy(draw_state.width, draw_state.height - 20)
@@ -65,7 +64,6 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
         zoom_state.zoom = 1.0
         zoom_state.center_u = 0.5
         zoom_state.center_v = 0.5
-
     # Check if opengl texture ID is valid
     if not gl.glIsTexture(texture_id):
         imgui.text(f"Error: {texture_id} is not a valid texture")

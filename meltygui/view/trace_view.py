@@ -24,7 +24,8 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
                      max_span_lines=80, context_lines=8, freeze_resize=True,
                      project_only=True, max_frames=40, indent_views=True,
                      hide_dispatch=False, placeholder_lines=None, file_headers=False,
-                     file_header_indent=18, cull_offscreen=True):
+                     file_header_indent=18, cull_offscreen=True, crumb_headers=False,
+                     crumb_height=24.0):
     """One draw_text per frame, outermost (main) first — each pane is a
     LineRange over the frame's file (project_code — pending truth, editable)
     from the def line to the call into the next frame, with the frame's
@@ -43,7 +44,11 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
     nothing. `file_headers=True` reads like a printed trace: each pane sits
     under a `File "path", line N, in func` line (the path in the file's
     painted FileMeta tint — the editor tabs' colour) and is indented by
-    `file_header_indent` px. `cull_offscreen=False` turns the viewport
+    `file_header_indent` px. `crumb_headers=True` (the context menu's Code
+    tab) puts the file browser's crumb strip (`draw_breadcrumbs`,
+    `crumb_height` tall: every path segment a dropdown over its directory,
+    the crumbs in their painted file-meta tints) above each pane instead;
+    a picked file opens in the code editor. `cull_offscreen=False` turns the viewport
     culling OFF: every pane resolves its bounds synchronously (the file's
     span index inline — the one-time parse the background path defers)
     and lays out at its real height whether or not it is in view, so the
@@ -85,6 +90,9 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
     # File header line: `File "path", line N, in func` - the path in the
     # file's painted tint, the rest in the subtle-text colour.
     header_height = imgui.get_text_line_height() + Melty.px(6) if file_headers else 0.0
+    if crumb_headers:
+        # The crumb strip above each pane: its own height, no card / inset.
+        header_height = Melty.px(crumb_height)
     header_indent = Melty.px(file_header_indent) if file_headers else 0.0
     card_pad_bottom = Melty.px(6) if file_headers else 0.0    # the card drops this far past the pane
     # The raising line's message - the marker's text; "" = no marker.
@@ -318,6 +326,19 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
             pane_width = card_width - 2 * (cursor_x - trace_left)
             if pane_width > 200:
                 span_kwargs["width"] = pane_width
+        elif crumb_headers:
+            # The pane's file as the crumb strip, drawn at the cursor into
+            # the trace's tile (a plain function; one strip per pane index).
+            from meltygui.view.file_view import draw_breadcrumbs
+            imgui.set_cursor_screen_pos((cursor_x, cursor_y))
+            picked, target = draw_breadcrumbs(
+                pane.path, draw_state, width=available_width,
+                crumb_height=crumb_height, name=f"stack crumbs {index}")
+            if picked and not Path(target).is_dir():
+                from meltygui.core.runtime.extensions import open_source as open_in_editor
+                open_in_editor(target)
+            cursor_y += header_height
+            imgui.set_cursor_screen_pos((cursor_x, cursor_y))
         if indent_views:
             shift_columns, parent_call_col = chain_shift(
                 def_indent, _indent_of(file_lines[pane.lineno - 1])
