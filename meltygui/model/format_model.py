@@ -1,6 +1,3 @@
-import torch
-
-
 import os
 import pwd
 import subprocess
@@ -127,6 +124,10 @@ def print_ascii_tensor(tensors, border=True, indices=None, spacing=2, names=None
         | 1 1 1 |  | 4 3 2 |
         +-----+    +-----+
     """
+    # torch is the optional "tensor" extra: import it only when a tensor is printed,
+    # so importing this module never requires torch.
+    import torch
+
     # Convert single tensor to list for uniform processing
     if isinstance(tensors, torch.Tensor):
         tensors = [tensors]
