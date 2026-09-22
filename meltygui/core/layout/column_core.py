@@ -8,7 +8,7 @@ from meltygui.hdr_color import pack_color
 
 import meltygui.core.input.mouse_cursor as mouse_cursor
 from meltygui.core.windowing.glfw_utils import request_render
-from meltygui.core.cache.tile_cache import snap_int
+from meltygui.core.cache.tile_marks import snap_int
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.core_decoration import Core
 from meltygui.core.rendering.render_dispatch import draw_any

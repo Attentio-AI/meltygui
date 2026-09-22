@@ -48,7 +48,7 @@ from meltygui.core.rendering.window_decoration import window
 from meltygui.view.collection_view import draw_tuple_fast
 from meltygui.view.decoration_view import draw_bg
 from meltygui.view.header_view import flat_button
-from meltygui.core.cache.tile_cache import add_shadow
+from meltygui.core.cache.tile_marks import add_shadow
 from meltygui.view.texture_view import draw_texture
 import meltygui.accounts.internet_accounts as internet_accounts
 

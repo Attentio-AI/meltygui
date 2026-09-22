@@ -17,9 +17,9 @@ from meltygui.state.new_core_model import TextEditorState
 from meltygui.core.rendering.render_funcs import RenderFuncs
 from meltygui.core.runtime.toggles import Tint
 from meltygui.code.libcst_conversion import CodeLine
-from meltygui.core.cache.tile_cache import add_shadow
-from meltygui.core.cache.tile_cache import add_glow
-from meltygui.core.cache.tile_cache import clear_glows
+from meltygui.core.cache.tile_marks import add_shadow
+from meltygui.core.cache.tile_marks import add_glow
+from meltygui.core.cache.tile_marks import clear_glows
 from meltygui.core.core_render import render_func
 from meltygui.core.core_render import SCROLLBAR_MARGIN
 import meltygui.core.input.mouse_cursor as mouse_cursor

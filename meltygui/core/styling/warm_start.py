@@ -5,6 +5,8 @@ NVIDIA GPU, originally in hdr-viewer's warm_start.py. MELTY_COLD=1 skips them.
     prepare(cache)             call BEFORE ``import glfw``
     remember_glfw_library()    call after it
     cache_hinted_atlas(fm)     wrap a meltygui FontManager before the renderer builds
+    code_stack_hint(cache)     did the last first frame need the code-editing stack?
+    remember_code_stack(...)   record that after the first frame
 """
 import hashlib
 import os
@@ -147,3 +149,33 @@ def _write_atomic(path, data):
         os.replace(tmp, path)
     except OSError:
         pass
+
+
+# --- code-editing stack ---------------------------------------------------------
+# The libcst stack (~100 ms) is only needed by apps that show code on their
+# first frame (a code editor's session). app.py's import thread loads it under
+# the driver load when the previous run's first frame needed it, and never
+# for an app whose first frame did not: the hint is a marker file.
+
+def _code_stack_file(cache):
+    return cache / 'first-frame-code-stack'
+
+
+def code_stack_hint(cache):
+    """True when this app's last first frame had the code stack loaded."""
+    if os.environ.get('MELTY_COLD'):
+        return False
+    return _code_stack_file(cache).exists()
+
+
+def remember_code_stack(cache, needed):
+    path = _code_stack_file(cache)
+    try:
+        if needed:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+        elif path.exists():
+            path.unlink()
+    except OSError:
+        pass
+

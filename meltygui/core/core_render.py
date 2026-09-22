@@ -63,9 +63,9 @@ from meltygui.core.melty import MeltyState
 from meltygui.core.melty import SearchTerm
 from meltygui.core.melty import search_walk
 from meltygui.core.layout.cursor_core import same_line
-from meltygui.core.cache.tile_cache import snap_int
-from meltygui.core.cache.tile_cache import add_shadow
-from meltygui.core.cache.tile_cache import clear_shadows
+from meltygui.core.cache.tile_marks import snap_int
+from meltygui.core.cache.tile_marks import add_shadow
+from meltygui.core.cache.tile_marks import clear_shadows
 from meltygui.state.annotation_state import AnnotationOverride
 from meltygui.state.core_undo import UndoManager
 from meltygui.state.core_undo import handle_undo
@@ -504,10 +504,12 @@ def _draw_state_reserved_names():
     return _ds_reserved_cache
 
 
-# type -> codec class (or None), resolved once per type via the codec
-# registry's MRO walk. Codec identity is hotswap-stable (classes patch in
-# place), and render_kwargs is read per-call with getattr, so editing a
-# codec's tint takes effect without busting this cache.
+# type -> (registry size, codec class or None), resolved once per type via
+# the codec registry's MRO walk (code/codec_registry.py) and again when the
+# registry has grown since — the codecs register when the code stack loads,
+# which may be after a type's first frame. Codec identity is hotswap-stable
+# (classes patch in place), and render_kwargs is read per-call with getattr,
+# so editing a codec's tint takes effect without busting this cache.
 _codec_by_type_cache = {}
 
 
@@ -515,18 +517,16 @@ def _codec_for_type(value_type):
     """The codec class registered for `value_type` (MRO walk, like
     code_file_io's codec resolution), or None. Drives both the codec's
     render_kwargs base layer and the Melty.codec_stack data-source context."""
-    codec = _codec_by_type_cache.get(value_type, _codec_by_type_cache)  # sentinel: self
-    if codec is _codec_by_type_cache:
+    from meltygui.code.codec_registry import codec_for_type, type_to_codec
+    registered = len(type_to_codec)
+    cached = _codec_by_type_cache.get(value_type)
+    if cached is not None and cached[0] == registered:
+        return cached[1]
+    try:
+        codec = codec_for_type(value_type)
+    except Exception:
         codec = None
-        try:
-            from meltygui.code.new_codecs import type_to_codec
-            for base in value_type.__mro__:
-                codec = type_to_codec.get(base)
-                if codec is not None:
-                    break
-        except Exception:
-            codec = None
-        _codec_by_type_cache[value_type] = codec
+    _codec_by_type_cache[value_type] = (registered, codec)
     return codec
 
 

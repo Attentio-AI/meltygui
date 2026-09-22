@@ -27,7 +27,7 @@ from meltygui.core.runtime.toggles import Tint
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.styling.fonts import Font
 from meltygui.code.libcst_conversion import UsageRef
-from meltygui.core.cache.tile_cache import add_shadow
+from meltygui.core.cache.tile_marks import add_shadow
 from meltygui.editor.code_line_fast import CodeLineTints
 from meltygui.view.code_view import draw_code_line_fast
 from meltygui.editor.code_line_fast import pop_code_font
@@ -255,7 +255,7 @@ def picker_content_height(menu_ds, model):
 def picker_fit(menu_ds, model):
     """The popover size that fits its rows, display-clamped: the fresh
     content rect's width (else the minimum) and the content height."""
-    from meltygui.core.cache.tile_cache import snap_int
+    from meltygui.core.cache.tile_marks import snap_int
     display_w, display_h = imgui.get_io().display_size
     rect = _fresh_rect(menu_ds, model)
     fit_w = snap_int(max(min(rect[0] if rect else PICKER_MIN_W, display_w), PICKER_MIN_W))

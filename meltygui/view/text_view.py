@@ -1,5 +1,4 @@
 """Text view functions and supporting definitions."""
-from meltygui.code.libcst_conversion import CodeLine
 from meltygui.completion.fim import FimState
 from meltygui.editor.source_tools import SourceToolsState
 from meltygui.core.styling.fonts import Font
@@ -1059,7 +1058,9 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
     return False, input_value
 
 
-@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False, with_header=draw_header,
+# CodeLine (code/libcst_conversion.py) is registered by name: the code stack
+# loads with the first code edit, not with the text view.
+@render_func(is_default_for='CodeLine', show_bg=True, use_cache=True, disable_scroll=False, with_header=draw_header,
              shadow=False, max_bg_depth=0, max_bg_value=0.05,
              show_name=False, with_footer=draw_footer, determines_height=False, saturation=1.7,
              selectable=False, searchable=True, bg_offset=-0.6, show_add_delete=False)
@@ -1242,9 +1243,9 @@ def draw_text(input_value: str, height=None,
     from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.view.code_view import draw_jump_to
     from meltygui.view.search_view import draw_search_highlight_multi
-    from meltygui.core.cache.tile_cache import add_glow
-    from meltygui.core.cache.tile_cache import add_shadow
-    from meltygui.core.cache.tile_cache import clear_glows
+    from meltygui.core.cache.tile_marks import add_glow
+    from meltygui.core.cache.tile_marks import add_shadow
+    from meltygui.core.cache.tile_marks import clear_glows
     import meltygui.core.input.mouse_cursor as mouse_cursor
     import meltygui.core.windowing.window_api as glfw
 

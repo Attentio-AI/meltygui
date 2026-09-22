@@ -149,16 +149,28 @@ def _is_user_code(filepath):
 
 
 # ── Syntax highlighting (IntelliJ Darcula) ───────────────
-try:
-    from pygments import highlight as _pyg_highlight
-    from pygments.lexers import PythonLexer
-    from pygments.formatters import TerminalTrueColorFormatter
-    from pygments.style import Style
-    from pygments.token import (
-        Token, Keyword, Name, Comment, String, Number,
-        Operator, Punctuation, Literal, Generic, Error
-    )
+# Pygments loads on the first trace or stack report: PythonLexer() compiles
+# ~120 regexes (13 ms), a cost no ordinary frame pays. `_pygments()` returns
+# (highlight, lexer, formatter), or None without pygments installed.
+_pygments_state = globals().get('_pygments_state') or {'loaded': False, 'tools': None}
 
+
+def _pygments():
+    state = _pygments_state
+    if state['loaded']:
+        return state['tools']
+    state['loaded'] = True
+    try:
+        from pygments import highlight
+        from pygments.lexers import PythonLexer
+        from pygments.formatters import TerminalTrueColorFormatter
+        from pygments.style import Style
+        from pygments.token import (
+            Token, Keyword, Name, Comment, String, Number,
+            Operator, Punctuation, Literal, Generic, Error
+        )
+    except ImportError:
+        return None
 
     class DarculaIntelliJ(Style):
         background_color = "#2b2b2b"
@@ -201,13 +213,17 @@ try:
             Error: "#ff5555",
         }
 
+    state['tools'] = (highlight, PythonLexer(), TerminalTrueColorFormatter(style=DarculaIntelliJ))
+    return state['tools']
 
-    _pygments_available = True
-    _python_lexer = PythonLexer()
-    _value_lexer = PythonLexer(stripnl=True, stripall=True, ensurenl=False)
-    _terminal_formatter = TerminalTrueColorFormatter(style=DarculaIntelliJ)
-except ImportError:
-    _pygments_available = False
+
+def _highlight_python(code):
+    """`code` syntax-highlighted for a true-colour terminal, or None without pygments."""
+    tools = _pygments()
+    if tools is None:
+        return None
+    highlight, lexer, formatter = tools
+    return highlight(code, lexer, formatter).rstrip('\n')
 
 # ── ANSI codes ───────────────────────────────────────────
 _BOLD = "\033[1m"
@@ -341,8 +357,8 @@ def _get_func_args(filename, lineno, funcname, local_vars):
 
 def _highlight(code, lineno=None):
     """Syntax-highlight a line of Python with editor-style background and line number."""
-    if _pygments_available:
-        colored = _pyg_highlight(code, _python_lexer, _terminal_formatter).rstrip('\n')
+    colored = _highlight_python(code)
+    if colored is not None:
         colored = _color_kwargs(colored, code, bg=_NO_BG)
     else:
         colored = f"{_YELLOW}{code}{_RESET}"
@@ -359,9 +375,9 @@ def _highlight(code, lineno=None):
 
 def _highlight_inline(code):
     """Syntax-highlight a short code snippet without background or gutter."""
-    if not _pygments_available:
+    result = _highlight_python(code)
+    if result is None:
         return f"{_GREEN}{code}{_RESET}"
-    result = _pyg_highlight(code, _python_lexer, _terminal_formatter).rstrip('\n')
     return _color_kwargs(result, code)
 
 
@@ -591,8 +607,7 @@ def _resolve_watch(expr, filename, lineno, local_vars,
             cut = max_output
         formatted_value = formatted_value[:cut] + f"\u2026({len(formatted_value)}ch)"
 
-    if _pygments_available:
-        formatted_value = _pyg_highlight(formatted_value, _python_lexer, _terminal_formatter).rstrip('\n')
+    formatted_value = _highlight_python(formatted_value) or formatted_value
 
     name_cell = _highlight_inline(expr)
     type_cell = f"{_DIM}{type(value).__name__}{_RESET}"

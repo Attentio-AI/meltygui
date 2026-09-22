@@ -5,11 +5,6 @@ from collections.abc import MutableMapping
 from enum import Enum
 from meltygui.core.conversion.bubbling import _BubblingDict
 from meltygui.core.conversion.bubbling import _DeepPath
-from meltygui.code.libcst_conversion import CallParse
-from meltygui.code.libcst_conversion import ClassParse
-from meltygui.code.libcst_conversion import EnumParse
-from meltygui.code.libcst_conversion import FunctionParse
-from meltygui.code.libcst_conversion import GeneralParse
 from meltygui.hdr_color import pack_color
 from meltygui.core.melty import CollectionAction
 from meltygui.core.melty import Melty
@@ -259,8 +254,13 @@ def draw_collection_as_tabs(input_value, tab_state: TabState = None, draw_state=
     return changed, input_value
 
 
-@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse,
-                             CallParse, ClassParse, EnumParse, FunctionParse, _BubblingDict, _DeepPath),
+# The parse dicts (code/libcst_conversion.py) are registered by name: the code
+# stack loads with the first code edit, not with the collection view.
+_PARSE_DICT_TYPES = ('GeneralParse', 'CallParse', 'ClassParse', 'EnumParse', 'FunctionParse')
+
+
+@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, *_PARSE_DICT_TYPES,
+                             _BubblingDict, _DeepPath),
              use_cache=True, header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
              manual_content_height=True, shadow=True, selectable=False, bg_offset=-0.8,
              wrap=False, with_header=draw_header, indent_size=3, searchable=True, child_kwargs=None)
@@ -288,7 +288,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     from meltygui.core.windowing.glfw_utils import print_stack_trace
     from meltygui.view.decoration_view import draw_bg
     from meltygui.view.header_view import draw_header_end
-    from meltygui.core.cache.tile_cache import snap_int
+    from meltygui.core.cache.tile_marks import snap_int
     from meltygui.model.collection_model import annotation_item_type
     from meltygui.model.collection_model import _collection_match_keys
     from meltygui.model.search_model import _fuzzy_key_match
@@ -946,8 +946,8 @@ def fast_draw_collection(input_value=None, **kwargs):
     (changed, value), plus the draw_state with return_extras=True.
     Not here: the right-click inspector, Ctrl+F ownership (a forwarded search
     term still highlights), and everything in FAST_COLLECTION_WRAPPER_KWARGS."""
-    from meltygui.core.cache.tile_cache import add_shadow
-    from meltygui.core.cache.tile_cache import snap_int
+    from meltygui.core.cache.tile_marks import add_shadow
+    from meltygui.core.cache.tile_marks import snap_int
     from meltygui.core.core_render import pop_id
     from meltygui.core.core_render import push_id
     from meltygui.core.rendering.fast_view import bind_fast_draw_state
@@ -1169,8 +1169,7 @@ def fast_draw_collection(input_value=None, **kwargs):
 # to do it through is_default_for); runs after draw_collection's decoration
 # above, so these entries replace the wrapper's.
 Melty.register_default_view(fast_draw_collection, (
-    dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse, ClassParse, EnumParse,
-    FunctionParse, _BubblingDict, _DeepPath))
+    dict, MutableMapping, defaultdict, tuple, list, *_PARSE_DICT_TYPES, _BubblingDict, _DeepPath))
 
 
 @render_func(is_default_for=(

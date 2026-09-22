@@ -27,9 +27,9 @@ from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.runtime.toggles import WindowManager
 from meltygui.core.windowing.glfw_utils import request_render
 from meltygui.core.styling.fonts import Font
-from meltygui.core.cache.tile_cache import add_glow
-from meltygui.core.cache.tile_cache import add_shadow
-from meltygui.core.cache.tile_cache import clear_glows
+from meltygui.core.cache.tile_marks import add_glow
+from meltygui.core.cache.tile_marks import add_shadow
+from meltygui.core.cache.tile_marks import clear_glows
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.core_decoration import Core
 

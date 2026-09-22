@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import meltygui_imgui as imgui
-import numpy as np
 
 from meltygui.state.model_enums import RelaxedEnum
 
@@ -564,6 +563,7 @@ class FontManager:
         """Return RGBA32 atlas bytes with FreeType light-hinted LCD glyphs
         written into imgui's rects, or None when freetype is unavailable.
         Stats land on `self.hint_stats` as {font name: (hinted, fallback)}."""
+        import numpy as np      # only the hinting pass needs it (warm_start caches its result)
         start_time = time.time()
         try:
             import freetype

@@ -239,7 +239,7 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
     place the button and drive its hover state themselves instead of the
     cursor position and the owning draw_state."""
     from meltygui.core.styling.style import Style
-    from meltygui.core.cache.tile_cache import add_shadow
+    from meltygui.core.cache.tile_marks import add_shadow
     from meltygui.core.layout.header_runtime import _TEXT_COLOR_MEMO
     from meltygui.model.color_model import _brightness_clamp
     import meltygui.core.input.mouse_cursor as mouse_cursor

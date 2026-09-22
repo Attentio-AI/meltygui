@@ -55,7 +55,7 @@ from meltygui.code.live_view import auto_dim_names_for
 from meltygui.code.live_view import RerunHint
 from meltygui.core.rendering.core_decoration import Core
 from meltygui.core.rendering.window_decoration import window
-from meltygui.core.cache.tile_cache import add_shadow
+from meltygui.core.cache.tile_marks import add_shadow
 import meltygui.editor.live_usage as live_usage
 
 # The seamless path: any app can call live_view() with no import (like

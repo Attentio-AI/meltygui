@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from enum import EnumType
 from pathlib import Path
 
+from meltygui.code.codec_registry import extension_to_codec
+from meltygui.code.codec_registry import type_to_codec
 from meltygui.code.fileref import Address
 from meltygui.code.fileref import _evict_linecache
 from meltygui.code.fileref import shift_sibling_linenos
@@ -39,8 +41,6 @@ import mimetypes
 
 NO_DATA = object()
 
-extension_to_codec = {}
-type_to_codec = {}
 
 
 class SaveConflict:

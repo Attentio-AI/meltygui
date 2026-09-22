@@ -8,7 +8,7 @@ import meltygui_imgui as imgui
 @window
 @render_func(auto_resize=True)
 def draw_actions(input_value=None, draw_state=None, **kwargs):
-    from meltygui.view.code_view import draw_type
+    from meltygui.view.inspection_view import draw_type
 
     draw_type(Actions, name="Actions")
 

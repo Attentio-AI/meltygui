@@ -9,24 +9,6 @@ from meltygui.state.new_core_model import Anchor
 from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.rendering.render_funcs import RenderFuncs
 from meltygui.core.runtime.toggles import WindowManager
-from meltygui.code.chain_converters import module_to_address
-from meltygui.code.chain_converters import address_to_general_parse
-from meltygui.code.chain_converters import general_parse_to_address
-from meltygui.code.chain_converters import address_to_module
-from meltygui.code.chain_converters import class_to_address
-from meltygui.code.chain_converters import address_to_class
-from meltygui.code.chain_converters import function_to_address
-from meltygui.code.chain_converters import address_to_function
-from meltygui.code.chain_converters import general_parse_to_str
-from meltygui.code.chain_converters import str_to_general_parse
-from meltygui.code.chain_converters import focus
-from meltygui.code.chain_converters import caller_to_address
-from meltygui.code.chain_converters import address_to_call_parse
-from meltygui.code.chain_converters import call_dict_to_save
-from meltygui.code.chain_converters import class_to_address_incl_overrides
-from meltygui.code.file_converters import path_to_dict
-from meltygui.code.file_converters import rf_bytes_to_str
-
 # Register built-in views used by lazy render-function handles in the modes.
 import meltygui.view.color_view
 import meltygui.view.decoration_view
@@ -35,41 +17,21 @@ import meltygui.view.search_view
 import meltygui.view.tab_view
 import meltygui.view.texture_view
 import meltygui.view.window_view
-from meltygui.code.file_converters import rf_dict_to_path
-from meltygui.code.file_converters import rf_str_to_bytes
-from meltygui.code.libcst_conversion import GeneralParse
-from meltygui.code.libcst_conversion import Conditional
-from meltygui.code.libcst_conversion import Comment
-from meltygui.code.libcst_conversion import dict_to_cst
-from meltygui.code.libcst_conversion import cst_module_to_str
-from meltygui.code.libcst_conversion import str_to_cst_module
-from meltygui.code.libcst_conversion import cst_module_to_dict
-from meltygui.code.libcst_conversion import dict_to_cst_module
-from meltygui.code.new_codecs import CallSite
-from meltygui.code.new_codecs import Decorations
 from meltygui.core.rendering.window_decoration import window
 from meltygui.view.header_view import draw_footer
 from meltygui.view.header_view import draw_header_end
 from meltygui.view.header_view import draw_header
-from meltygui.model.code_proxy_model import *
 from meltygui.view.collection_view import draw_collection
-from meltygui.view.code_view import draw_comment
 from meltygui.core.rendering.render_dispatch import sort_dict_alphabetically
 from meltygui.core.rendering.render_dispatch import unsort_dict_alphabetically
 from meltygui.view.inspection_view import draw_with_modes
-from meltygui.view.code_view import draw_type
+from meltygui.view.inspection_view import draw_type
+from meltygui.view.inspection_view import draw_type_name
 from meltygui.core.rendering.render_dispatch import class_to_var_dict
 from meltygui.core.rendering.render_dispatch import var_dict_to_class
 from meltygui.view.dropdown_view import draw_drop_down_item
-from meltygui.view.code_view import draw_type_name
 from meltygui.core.rendering.render_dispatch import type_lens
 from meltygui.view.text_view import draw_text
-from meltygui.code.new_converters import code_file_io
-from meltygui.code.new_converters import convert_in_and_out
-from meltygui.code.new_converters import string_to_cst_module
-from meltygui.code.new_converters import cst_module_to_string
-from meltygui.view.code_view import draw_text_from_code_cache
-from meltygui.view.code_view import draw_code_tabs_from_cache
 
 
 def compute_height(draw_state):
@@ -88,51 +50,121 @@ class ModeOverrides:
     route: Optional[dict] = None
 
 
-@window
-class Mode(Enum):
-    def __reduce_ex__(self, protocol):
-        # Pickle BY NAME. Enum's default pickles by VALUE, and the values are
-        # ModeOverrides dicts full of live functions/classes - unpicklable, so
-        # any structure holding a resolved Mode member (a cst-dict parse of a
-        # span saying `mode=Mode.X`) silently failed to serialize and disabled
-        # the cst-dict cache for that file (full cold parse every session).
-        # getattr(Mode, name) at load also drives hotswap's enum member
-        # reconcile: the loading session's live member is returned.
-        return (getattr, (self.__class__, self._name_))
+class _CodeMode:
+    """The value of a Mode member whose policies belong to the code stack
+    (chain_converters, libcst_conversion, new_converters, code_view: the
+    libcst import). ``build()`` returns the member's {type: ModeOverrides}
+    and runs on the member's first get_config_for, so the enum and every
+    window mode load without the code stack — an app that never shows code
+    never imports it (core/runtime/app.py). The dict literal lives in the
+    builder, where a reader expects it; hotswapping the builder rebuilds the
+    policies on the next use (Mode.__init__ / Mode._policies)."""
 
-    def get_config_for(self, input_value=None, the_type=None):
-        if input_value is not None:
-            the_type = type(input_value)
-        config = self.unwrapped.get(the_type, None)
-        if config is not None:
-            return config
+    def __init__(self, build):
+        self.build = build
 
-        for super_type in type(input_value).__mro__:
-            config = self.unwrapped.get(super_type, None)
-            if config is not None:
-                return config
+    def __repr__(self):
+        return f'<code mode: {self.build.__name__}>'
 
-        if Any in self.unwrapped:
-            return self.unwrapped[Any]
-        return None
 
-    def __init__(self, *args, **kwargs):
-        unwrapped = {}
-        if isinstance(self.value, dict):
-            for key, value in self.value.items():
-                if isinstance(key, tuple):
-                    for sub_key in key:
-                        unwrapped[sub_key] = value
-                else:
-                    unwrapped[key] = value
-            self.unwrapped = unwrapped
+def _code_ui_policies():
+    from meltygui.code.chain_converters import module_to_address, address_to_general_parse
+    from meltygui.code.chain_converters import general_parse_to_address, address_to_module
+    from meltygui.code.chain_converters import class_to_address, address_to_class
+    from meltygui.code.chain_converters import function_to_address, address_to_function
+    from meltygui.code.libcst_conversion import GeneralParse, Conditional, Comment
+    from meltygui.view.code_view import draw_comment
+    code_ui_auto_load = True
+    code_ui_params = {'save': True,
+                      'recompile': False}
+    return {
+        types.FunctionType: ModeOverrides(
+            recursive=True,
+            func=(function_to_address,
+                  (address_to_general_parse, {'load': code_ui_auto_load}),
+                  (draw_collection, {"show_add_delete": True}),
+                  (general_parse_to_address, code_ui_params),
+                  address_to_function),
+        ),
+        types.ModuleType: ModeOverrides(
+            recursive=True,
+            func=(module_to_address,
+                  (address_to_general_parse, {'load': code_ui_auto_load}),
+                  (draw_collection, {"show_add_delete": True}),
+                  (general_parse_to_address, code_ui_params),
+                  address_to_module),
+        ),
+        type: ModeOverrides(
+            func=(class_to_address,
+                  (address_to_general_parse, {'load': code_ui_auto_load}),
+                  (draw_collection, {"show_add_delete": False}),
+                  (general_parse_to_address, code_ui_params),
+                  address_to_class),
+            recursive=True
+        ),
+        Conditional: ModeOverrides(
+            kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': True, 'is_tree': False},
+            recursive=True,
+        ),
+        Comment: ModeOverrides(
+            kwargs={"tint": (0.1, 0.1, 0.1), "show_bg": False, "shadow": False, 'show_add_delete': True,
+                    'is_tree': False},
+            func=draw_comment,
+            recursive=True,
+        ),
+        GeneralParse: ModeOverrides(
+            kwargs={'show_add_delete': False, "disable_scroll": False, "is_tree": True},
+            recursive=True,
+            func=draw_collection
+        ),
+    }
 
+
+def _code_plain_text_policies():
+    from meltygui.code.chain_converters import module_to_address, address_to_general_parse
+    from meltygui.code.chain_converters import general_parse_to_address, address_to_module
+    from meltygui.code.chain_converters import class_to_address, address_to_class
+    from meltygui.code.chain_converters import function_to_address, address_to_function
+    from meltygui.code.chain_converters import general_parse_to_str, str_to_general_parse
+    code_plain_text_auto_load = True
+    code_plain_text_params = {'save': True,
+                              'recompile': False}
+    draw_text_funcs = ((address_to_general_parse,
+                        {'load': code_plain_text_auto_load}),
+                       general_parse_to_str,
+                       draw_text,
+                       str_to_general_parse,
+                       (general_parse_to_address,
+                        code_plain_text_params))
+    return {
+        types.FunctionType: ModeOverrides(
+            recursive=True,
+            route={function_to_address: "jump_to", address_to_general_parse: "code_tree"},
+            func=(function_to_address, *draw_text_funcs, address_to_function),
+        ),
+        types.ModuleType: ModeOverrides(
+            recursive=True,
+            route={module_to_address: "jump_to", address_to_general_parse: "code_tree"},
+            func=(module_to_address, *draw_text_funcs, address_to_module),
+        ),
+        type: ModeOverrides(
+            route={class_to_address: "jump_to", address_to_general_parse: "code_tree"},
+            func=(class_to_address, *draw_text_funcs, address_to_class),
+            recursive=True
+        ),
+    }
+
+
+def _new_code_policies():
     # The code-host-cache route (vs inline convertors): code_file_io owns
     # load/save of the span. draw_code_tabs_from_cache shows the structured |
     # text tabs with the parse loaded from the shared dict_host
     # (code_hosts_for). A class edit in the structured tab also drives the
     # live type immediately (_live_apply_class_vars) ahead of any recompile.
-    NEW_CODE = {
+    from meltygui.code.new_codecs import CallSite, Decorations
+    from meltygui.code.new_converters import code_file_io
+    from meltygui.view.code_view import draw_code_tabs_from_cache
+    return {
         (type, types.FunctionType, types.ModuleType, CallSite, Decorations): ModeOverrides(
             kwargs={"auto_load_edits": True,
                     "auto_load": True,
@@ -147,6 +179,167 @@ class Mode(Enum):
             func=code_file_io
         )
     }
+
+
+def _file_meta_policies():
+    # Path on disk → metadata dict (name, size, modified, raw bytes).
+    # Good for: file browsers, file inspectors, drag-and-drop targets.
+    from meltygui.code.file_converters import path_to_dict, rf_dict_to_path
+    from meltygui.code.file_converters import rf_bytes_to_str, rf_str_to_bytes
+    return {
+        Path: ModeOverrides(
+            kwargs={"convert_in": [path_to_dict],
+                    "convert_out": [rf_dict_to_path],
+                    },
+            func=draw_collection,
+            recursive=True,
+        ),
+        bytes: ModeOverrides(
+            kwargs={"convert_in": [rf_bytes_to_str],
+                    "convert_out": [rf_str_to_bytes]},
+            func=draw_text,
+            recursive=True,
+        ),
+    }
+
+
+def _file_tree_policies():
+    # THE main editor mode: code_file_io + draw_text_from_code_cache, with
+    # the parse pulled from the shared code-host cache (code_hosts_for) instead
+    # of a local convert chain. Each ref's codec owns its load/edit/save
+    # round-trip: a Path leaf in a folder tree (playground.folder_files,
+    # whole-file TextFileCodec), and equally a function / class / module /
+    # CallSite / Decorations span (the context menu's render-func and class
+    # tabs). Recursive so the route survives any depth of folder nesting.
+    from meltygui.code.new_codecs import CallSite, Decorations
+    from meltygui.code.new_converters import code_file_io
+    from meltygui.view.code_view import draw_text_from_code_cache
+    return {
+        (Path, type, types.FunctionType, types.ModuleType, CallSite, Decorations): ModeOverrides(
+            func=code_file_io,
+            # Pin the text editor: draw_any forwards a mode's func override as
+            # the `view_func` kwarg, which would otherwise hand code_file_io
+            # ITSELF as its nested view (str → "No codec"). Mode kwargs win
+            # over call kwargs (`kwargs | override_kwargs`), so this corrects it.
+            # draw_text_from_code_cache = draw_text fed the cst node from the
+            # global code-host cache (code_cache_for), so usage links and
+            # syntax-error highlighting work without an inline chain.
+            kwargs={"auto_load_edits": True, "disable_scroll":True, "view_func": draw_text_from_code_cache},
+            recursive=True,
+        ),
+    }
+
+
+def _code_inner_text_policies():
+    from meltygui.code.chain_converters import general_parse_to_str, str_to_general_parse
+    from meltygui.code.libcst_conversion import GeneralParse
+    return {
+        GeneralParse: ModeOverrides(
+            recursive=True,
+            func=(general_parse_to_str,
+                  (draw_text, {}),
+                  str_to_general_parse),
+        ),
+    }
+
+
+def _code_inner_ui_policies():
+    from meltygui.code.libcst_conversion import GeneralParse
+    return {
+        GeneralParse: ModeOverrides(
+            recursive=True,
+            func=((draw_collection, {"show_add_delete": True}),),
+        ),
+    }
+
+
+def _code_policies():
+    """Mode.CODE: the chain runs the address resolution + GeneralParse
+    load/save ONCE per Mode.CODE invocation. draw_with_modes then dispatches
+    each selected tab to its inner mode (text or UI), which receive the
+    already-loaded GeneralParse. One file-watcher registration, one cache,
+    regardless of how many columns are active."""
+    from meltygui.code.chain_converters import module_to_address, address_to_general_parse
+    from meltygui.code.chain_converters import general_parse_to_address, address_to_module
+    from meltygui.code.chain_converters import class_to_address, address_to_class
+    from meltygui.code.chain_converters import function_to_address, address_to_function
+    inner_modes = (Mode.CODE_INNER_TEXT, Mode.CODE_INNER_UI)
+
+    def chain_for(address_in, address_out):
+        return ModeOverrides(
+            kwargs={"disable_scroll": True, "searchable": True},
+            recursive=True,
+
+            func=(address_in,
+                  (address_to_general_parse, {'load': True, }),
+                  (draw_with_modes, {'modes': inner_modes, 'disable_scroll': True, 'fill_height': compute_height}),
+                  (general_parse_to_address, {'save': True, 'recompile': False}),
+                  address_out),
+        )
+
+    return {
+        types.FunctionType: chain_for(function_to_address, address_to_function),
+        types.ModuleType: chain_for(module_to_address, address_to_module),
+        type: chain_for(class_to_address, address_to_class),
+    }
+
+
+@window
+class Mode(Enum):
+    def __reduce_ex__(self, protocol):
+        # Pickle BY NAME. Enum's default pickles by VALUE, and the values are
+        # ModeOverrides dicts full of live functions/classes - unpicklable, so
+        # any structure holding a resolved Mode member (a cst-dict parse of a
+        # span saying `mode=Mode.X`) silently failed to serialize and disabled
+        # the cst-dict cache for that file (full cold parse every session).
+        # getattr(Mode, name) at load also drives hotswap's enum member
+        # reconcile: the loading session's live member is returned.
+        return (getattr, (self.__class__, self._name_))
+
+    def get_config_for(self, input_value=None, the_type=None):
+        unwrapped = self._policies()
+        if input_value is not None:
+            the_type = type(input_value)
+        config = unwrapped.get(the_type, None)
+        if config is not None:
+            return config
+
+        for super_type in type(input_value).__mro__:
+            config = unwrapped.get(super_type, None)
+            if config is not None:
+                return config
+
+        if Any in unwrapped:
+            return unwrapped[Any]
+        return None
+
+    def __init__(self, *args, **kwargs):
+        self.unwrapped = {}
+        # A _CodeMode value builds its policies on first use (_policies); the
+        # enum hotswap copies the fresh member's `_build` over the live one,
+        # so an edited builder applies at the next get_config_for.
+        self._build = self.value.build if isinstance(self.value, _CodeMode) else None
+        if isinstance(self.value, dict):
+            self._unwrap(self.value)
+
+    def _unwrap(self, policies):
+        for key, value in policies.items():
+            if isinstance(key, tuple):
+                for sub_key in key:
+                    self.unwrapped[sub_key] = value
+            else:
+                self.unwrapped[key] = value
+
+    def _policies(self):
+        """The member's {type: ModeOverrides}, built now for a _CodeMode."""
+        build = self._build
+        if build is not None:
+            self._build = None
+            self.unwrapped = {}
+            self._unwrap(build())
+        return self.unwrapped
+
+    NEW_CODE = _CodeMode(_new_code_policies)
 
     READ_ONLY = {
         (Any): ModeOverrides(
@@ -383,81 +576,9 @@ class Mode(Enum):
         )
     }
 
-    code_ui_auto_load = True
-    code_ui_params = {'save': True,
-                      'recompile': False}
+    CODE_UI = _CodeMode(_code_ui_policies)
 
-    CODE_UI = {
-        types.FunctionType: ModeOverrides(
-            recursive=True,
-            func=(function_to_address,
-                  (address_to_general_parse, {'load': code_ui_auto_load}),
-                  (draw_collection, {"show_add_delete": True}),
-                  (general_parse_to_address, code_ui_params),
-                  address_to_function),
-        ),
-        types.ModuleType: ModeOverrides(
-            recursive=True,
-            func=(module_to_address,
-                  (address_to_general_parse, {'load': code_ui_auto_load}),
-                  (draw_collection, {"show_add_delete": True}),
-                  (general_parse_to_address, code_ui_params),
-                  address_to_module),
-        ),
-        type: ModeOverrides(
-            func=(class_to_address,
-                  (address_to_general_parse, {'load': code_ui_auto_load}),
-                  (draw_collection, {"show_add_delete": False}),
-                  (general_parse_to_address, code_ui_params),
-                  address_to_class),
-            recursive=True
-        ),
-        Conditional: ModeOverrides(
-            kwargs={"tint": (0.2, 0.2, 0.1), 'show_add_delete': True, 'is_tree': False},
-            recursive=True,
-        ),
-        Comment: ModeOverrides(
-            kwargs={"tint": (0.1, 0.1, 0.1), "show_bg": False, "shadow": False, 'show_add_delete': True,
-                    'is_tree': False},
-            func=draw_comment,
-            recursive=True,
-        ),
-        GeneralParse: ModeOverrides(
-            kwargs={'show_add_delete': False, "disable_scroll": False, "is_tree": True},
-            recursive=True,
-            func=draw_collection
-        ),
-    }
-
-
-    code_plain_text_auto_load = True
-    code_plain_text_params = {'save': True,
-                              'recompile': False}
-    draw_text_funcs = ((address_to_general_parse,
-                        {'load': code_plain_text_auto_load}),
-                       general_parse_to_str,
-                       draw_text,
-                       str_to_general_parse,
-                       (general_parse_to_address,
-                        code_plain_text_params))
-
-    CODE_PLAIN_TEXT = {
-        types.FunctionType: ModeOverrides(
-            recursive=True,
-            route={function_to_address: "jump_to", address_to_general_parse: "code_tree"},
-            func=(function_to_address, *draw_text_funcs, address_to_function),
-        ),
-        types.ModuleType: ModeOverrides(
-            recursive=True,
-            route={module_to_address: "jump_to", address_to_general_parse: "code_tree"},
-            func=(module_to_address, *draw_text_funcs, address_to_module),
-        ),
-        type: ModeOverrides(
-            route={class_to_address: "jump_to", address_to_general_parse: "code_tree"},
-            func=(class_to_address, *draw_text_funcs, address_to_class),
-            recursive=True
-        ),
-    }
+    CODE_PLAIN_TEXT = _CodeMode(_code_plain_text_policies)
 
     RUNNING = {
         type: ModeOverrides(
@@ -468,25 +589,7 @@ class Mode(Enum):
     }
 
     # ── File metadata ────────────────────────────────────────
-    #
-    # Path on disk → metadata dict (name, size, modified, raw bytes).
-    # Good for: file browsers, file inspectors, drag-and-drop targets.
-
-    FILE_META = {
-        Path: ModeOverrides(
-            kwargs={"convert_in": [path_to_dict],
-                    "convert_out": [rf_dict_to_path],
-                    },
-            func=draw_collection,
-            recursive=True,
-        ),
-        bytes: ModeOverrides(
-            kwargs={"convert_in": [rf_bytes_to_str],
-                    "convert_out": [rf_str_to_bytes]},
-            func=draw_text,
-            recursive=True,
-        ),
-    }
+    FILE_META = _CodeMode(_file_meta_policies)
 
     # ── Function parameters (draw_function) ─────────────────
     #
@@ -536,29 +639,7 @@ class Mode(Enum):
     }
 
     # ── File tree / cache-backed code editor ────────────────────────────
-    #
-    # THE main editor mode: code_file_io + draw_text_from_code_cache, with
-    # the parse pulled from the shared code-host cache (code_hosts_for) instead
-    # of a local convert chain. Each ref's codec owns its load/edit/save
-    # round-trip: a Path leaf in a folder tree (playground.folder_files,
-    # whole-file TextFileCodec), and equally a function / class / module /
-    # CallSite / Decorations span (the context menu's render-func and class
-    # tabs). Recursive so the route survives any depth of folder nesting.
-
-    FILE_TREE = {
-        (Path, type, types.FunctionType, types.ModuleType, CallSite, Decorations): ModeOverrides(
-            func=code_file_io,
-            # Pin the text editor: draw_any forwards a mode's func override as
-            # the `view_func` kwarg, which would otherwise hand code_file_io
-            # ITSELF as its nested view (str → "No codec"). Mode kwargs win
-            # over call kwargs (`kwargs | override_kwargs`), so this corrects it.
-            # draw_text_from_code_cache = draw_text fed the cst node from the
-            # global code-host cache (code_cache_for), so usage links and
-            # syntax-error highlighting work without an inline chain.
-            kwargs={"auto_load_edits": True, "disable_scroll":True, "view_func": draw_text_from_code_cache},
-            recursive=True,
-        ),
-    }
+    FILE_TREE = _CodeMode(_file_tree_policies)
 
     # ── File tree, names only ───────────────────────────────────────────
     #
@@ -590,60 +671,13 @@ class Mode(Enum):
     # draw_with_modes in Mode.CODE so that load / save / file-watch
     # registration happen ONCE upstream and are shared across columns.
 
-    CODE_INNER_TEXT = {
-        GeneralParse: ModeOverrides(
-            recursive=True,
-            func=(general_parse_to_str,
-                  (draw_text, {}),
-                  str_to_general_parse),
-        ),
-    }
+    CODE_INNER_TEXT = _CodeMode(_code_inner_text_policies)
 
-    CODE_INNER_UI = {
-        GeneralParse: ModeOverrides(
-            recursive=True,
-            func=((draw_collection, {"show_add_delete": True}),),
-        ),
-    }
+    CODE_INNER_UI = _CodeMode(_code_inner_ui_policies)
 
-    # Outer code mode. Populated outside class body (via _populate_code_mode
-    # below) because the chain references Mode.CODE_INNER_TEXT /
-    # Mode.CODE_INNER_UI as enum members, which only exist post-finalization.
-    CODE = {}
-
-def _populate_code_mode():
-    """Fill in Mode.CODE.value. Deferred until after the Mode class is
-    defined so the chain can reference Mode.CODE_INNER_TEXT /
-    Mode.CODE_INNER_UI as proper enum members.
-
-    The chain runs the address resolution + GeneralParse load/save ONCE per
-    Mode.CODE invocation. draw_with_modes then dispatches each selected tab
-    to its inner mode (text or UI), which receive the already-loaded
-    GeneralParse. One file-watcher registration, one cache, regardless of
-    how many columns are active.
-    """
-    inner_modes = (Mode.CODE_INNER_TEXT, Mode.CODE_INNER_UI)
-
-    def chain_for(address_in, address_out):
-        return ModeOverrides(
-            kwargs={"disable_scroll": True, "searchable": True},
-            recursive=True,
-
-            func=(address_in,
-                  (address_to_general_parse, {'load': True, }),
-                  (draw_with_modes, {'modes': inner_modes, 'disable_scroll': True, 'fill_height': compute_height}),
-                  (general_parse_to_address, {'save': True, 'recompile': False}),
-                  address_out),
-        )
-
-    Mode.CODE.unwrapped.update({
-        types.FunctionType: chain_for(function_to_address, address_to_function),
-        types.ModuleType: chain_for(module_to_address, address_to_module),
-        type: chain_for(class_to_address, address_to_class),
-    })
-
-
-_populate_code_mode()
+    # Outer code mode: the chain references Mode.CODE_INNER_TEXT /
+    # Mode.CODE_INNER_UI, enum members that only exist once the class is.
+    CODE = _CodeMode(_code_policies)
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  Lenses - generic, field-parameterized accessors for "where does X live"      ║
@@ -673,11 +707,17 @@ _populate_code_mode()
 
 # Address-resolver pairs (load-side, save-side) per source-object type - the same
 # pairs CODE_UI dispatches on. Generating from these keeps code lenses one-liners.
-_ADDR_PAIRS = {
-    type: (class_to_address, address_to_class),
-    types.FunctionType: (function_to_address, address_to_function),
-    types.ModuleType: (module_to_address, address_to_module),
-}
+def _address_pairs():
+    from meltygui.code.chain_converters import class_to_address, address_to_class
+    from meltygui.code.chain_converters import function_to_address, address_to_function
+    from meltygui.code.chain_converters import module_to_address, address_to_module
+    return {
+        type: (class_to_address, address_to_class),
+        types.FunctionType: (function_to_address, address_to_function),
+        types.ModuleType: (module_to_address, address_to_module),
+    }
+
+
 _CODE_SAVE = {'save': True, 'recompile': False}
 
 
@@ -697,7 +737,7 @@ def _owning_source(draw_state):
 
 
 def _build_code_chain(root, tail, default, kind, prefix_class=True, ensure_import=None,
-                      load_override=None):
+                      include_overrides=False):
     """CODE_UI with `focus` in place of draw_collection: parse → focus → save.
 
     A class span parses to {<ClassName>: {...}}, so things INSIDE the class
@@ -707,10 +747,15 @@ def _build_code_chain(root, tail, default, kind, prefix_class=True, ensure_impor
     prefix_class=False to target the top-level __overrides__ directly.
 
     ensure_import=(module, name) makes the save also insert that import if the
-    file lacks it (so a synthesized @defaults decorator resolves)."""
-    load_node, save_node = _ADDR_PAIRS.get(type(root), _ADDR_PAIRS[type])
-    if load_override is not None and isinstance(root, type):
-        load_node = load_override  # e.g. extend the span to include a leading comment
+    file lacks it (so a synthesized @defaults decorator resolves).
+    include_overrides extends a class span up to its leading override comment
+    (class_to_address_incl_overrides)."""
+    from meltygui.code.chain_converters import address_to_general_parse, general_parse_to_address
+    from meltygui.code.chain_converters import class_to_address_incl_overrides, focus
+    pairs = _address_pairs()
+    load_node, save_node = pairs.get(type(root), pairs[type])
+    if include_overrides and isinstance(root, type):
+        load_node = class_to_address_incl_overrides
     prefix = (root.__name__,) if (prefix_class and isinstance(root, type)) else ()
     save_kwargs = dict(_CODE_SAVE)
     if ensure_import is not None:
@@ -775,8 +820,7 @@ def code_comment(name, default=None):
     return Lens(f"Code comment · {name}", name, root=_owning_source, path=tail,
                 default=default, kind="Code comment",
                 chain=lambda root: _build_code_chain(root, tail, default, "Code comment",
-                                                     prefix_class=False,
-                                                     load_override=class_to_address_incl_overrides))
+                                                     prefix_class=False, include_overrides=True))
 
 
 def caller_arg(name, default=None):
@@ -789,14 +833,16 @@ def caller_arg(name, default=None):
     Reads the cached site rather than re-walking the live stack: during a tint
     drag the stack changes (parents are skipped), so re-deriving would flip the
     site mid-drag and cancel the edit."""
-    chain = (caller_to_address,
-             (address_to_call_parse, {'load': True}),
-             (focus, {'path': (name,), 'default': default, 'kind': "Caller"}),
-             (call_dict_to_save, {'save': True}))
+    def chain(root):
+        from meltygui.code.chain_converters import caller_to_address, address_to_call_parse
+        from meltygui.code.chain_converters import call_dict_to_save, focus
+        return (caller_to_address,
+                (address_to_call_parse, {'load': True}),
+                (focus, {'path': (name,), 'default': default, 'kind': "Caller"}),
+                (call_dict_to_save, {'save': True}))
     return Lens(f"Caller arg · {name}", name,
                 root=lambda ds: getattr(ds, "_call_site", None),
-                path=(name,), default=default, kind="Caller",
-                chain=lambda root: chain)
+                path=(name,), default=default, kind="Caller", chain=chain)
 
 
 # A list of lenses per attribute - draw_tint_context renders every entry, so you

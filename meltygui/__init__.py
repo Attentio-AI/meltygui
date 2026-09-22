@@ -1,7 +1,12 @@
 """MeltyGUI: immediate-mode apps, live code editing, HDR and tensor views.
 
 Install with ``uv pip install meltygui``; define windows with ``@glfw_window``.
-Renderers are imported lazily, so importing this package does not start a GUI.
+Importing this package does not start a GUI, and it stays light: the views
+below import on first use, the render libraries (imgui, numpy, OpenGL) and
+the GL side of the runtime load on the boot's import thread while the first
+``@glfw_window`` opens the display, and the code-editing stack (libcst) loads
+with the first code edit. core/runtime/app.py describes the boot sequence;
+tests/test_startup_imports.py keeps the import graph that shape.
 """
 import os
 import sys
@@ -23,6 +28,7 @@ from meltygui.core.runtime.app import pressed
 from meltygui.core.runtime.app import content_size
 from meltygui.core.runtime.app import mark
 from meltygui.core.runtime.app import persisted
+from meltygui.core.runtime.app import after_first_frame
 
 if TYPE_CHECKING:   # IDE / type checkers only; never executed
     from meltygui.view.text_view import draw_text
@@ -107,5 +113,6 @@ def __getattr__(name):
     return value
 
 
-__all__ = ['Style', 'boot', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', 'toggles', 'window_api', 'imgui',
+__all__ = ['Style', 'boot', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', 'after_first_frame',
+           'toggles', 'window_api', 'imgui',
            *_VIEWS]

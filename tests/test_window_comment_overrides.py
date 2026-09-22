@@ -239,10 +239,13 @@ def test_generic_comment_position_is_movable_without_live_marker(comment_window)
 def parameter_panel_sources(monkeypatch):
     """Use real source discovery on a panel nested under a captured value."""
     from meltygui.core.rendering import render_dispatch as values
+    from meltygui.code import new_converters
     from meltygui.state.inspection_state import ContextMenuState
     from unittest.mock import MagicMock
     empty_host = MagicMock()
-    monkeypatch.setattr(values, 'code_hosts_for',
+    # collect_input_sources imports code_hosts_for at call time (the code
+    # stack loads with the first inputs tab), so patch its home module.
+    monkeypatch.setattr(new_converters, 'code_hosts_for',
                         lambda *args, **kwargs: (empty_host, empty_host))
     monkeypatch.setattr(anywhere, '_input_busy', lambda: False)
     parent = DrawState()

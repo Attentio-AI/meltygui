@@ -476,7 +476,7 @@ def draw_crash_reports(
     from meltygui.editor.text_editor import COLORS
     from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.view.header_view import flat_button
-    from meltygui.core.cache.tile_cache import add_shadow
+    from meltygui.core.cache.tile_marks import add_shadow
     from meltygui.core.layout.header_runtime import _brightness_clamp_fn
     from meltygui.model.trace_report_model import _color_u32
     from meltygui.model.trace_report_model import _ellipsize

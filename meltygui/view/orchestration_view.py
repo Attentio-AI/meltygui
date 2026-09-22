@@ -18,7 +18,7 @@ def draw_orchestrator(input_value=None, draw_state=None, style_manager=None,
     # promotion) but the per-frame name cache keeps one name per key - it
     # silently drops every plain press. DOUBLE_CLICKED is its own key.
     from meltygui.core.windowing.glfw_utils import request_render
-    from meltygui.core.cache.tile_cache import add_shadow
+    from meltygui.core.cache.tile_marks import add_shadow
     from meltygui.core.automation.orchestration_core import Orchestrator
     from meltygui.core.automation.orchestration_core import _format_value
     from meltygui.core.automation.orchestration_core import _wrap_text

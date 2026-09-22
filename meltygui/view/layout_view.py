@@ -163,9 +163,9 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     from meltygui.core.styling.fonts import Font
     from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.view.search_view import draw_search_highlight
-    from meltygui.core.cache.tile_cache import add_glow
-    from meltygui.core.cache.tile_cache import add_shadow
-    from meltygui.core.cache.tile_cache import clear_glows
+    from meltygui.core.cache.tile_marks import add_glow
+    from meltygui.core.cache.tile_marks import add_shadow
+    from meltygui.core.cache.tile_marks import clear_glows
     from meltygui.core.windowing.dock_core import _color_u32
     from meltygui.core.windowing.dock_core import _draw_glyph_ink_centered
     from meltygui.core.windowing.dock_core import _floor_value

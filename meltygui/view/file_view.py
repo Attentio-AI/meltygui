@@ -165,7 +165,7 @@ def draw_changed_file_header(path, tint, draw_state, view_id, width, height=23.0
     from meltygui.editor.file_header import _ellipsize
     from meltygui.editor.source_ui import _tab_text_color
     from meltygui.view.header_view import flat_button
-    from meltygui.core.cache.tile_cache import add_shadow
+    from meltygui.core.cache.tile_marks import add_shadow
 
     if active:
         text_color = _tab_text_color(tint, Toggles.CodeEditor.tab_active_text_brightness,
@@ -611,8 +611,8 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     from meltygui.core.files.file_explorer_core import watch_directory
     from meltygui.models.file_meta import FileMeta
     from meltygui.core.windowing.glfw_utils import request_render
-    from meltygui.core.cache.tile_cache import add_shadow
-    from meltygui.core.cache.tile_cache import clear_glows
+    from meltygui.core.cache.tile_marks import add_shadow
+    from meltygui.core.cache.tile_marks import clear_glows
     from meltygui.core.input.drag_drop_core import DragDrop
 
     # [tint=(0.55, 0.72, 0.95)]
@@ -996,8 +996,8 @@ def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_
     from meltygui.files.fast_file_explorer import tinted_text
     from meltygui.models.file_meta import FileMeta
     from meltygui.core.windowing.glfw_utils import request_render
-    from meltygui.core.cache.tile_cache import add_shadow
-    from meltygui.core.cache.tile_cache import clear_glows
+    from meltygui.core.cache.tile_marks import add_shadow
+    from meltygui.core.cache.tile_marks import clear_glows
     from meltygui.core.input.drag_drop_core import DragDrop
 
     # [tint=(0.55, 0.72, 0.95)]
@@ -1160,7 +1160,7 @@ def draw_fast_file_explorer(input_value: str, draw_state, file_metadata=None, co
                         size_change=getattr(draw_state, "size_change", None))
     from meltygui.files.fast_file_explorer import row_tint_bg
     from meltygui.core.windowing.glfw_utils import request_render
-    from meltygui.core.cache.tile_cache import clear_glows
+    from meltygui.core.cache.tile_marks import clear_glows
     from meltygui.core.layout.column_core import ColumnLayout
 
     # [tint=(0.55, 0.72, 0.95)]
@@ -1442,7 +1442,7 @@ def render_file_tree(input_value=None, draw_state=None,
     # [tint=(0.55, 0.72, 0.95)]
     from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.view.header_view import flat_button
-    from meltygui.core.cache.tile_cache import add_shadow
+    from meltygui.core.cache.tile_marks import add_shadow
     from meltygui.core.input.drag_drop_core import DragDrop
     from meltygui.core.layout.header_runtime import _brightness_clamp_fn
     from meltygui.model.import_graph_model import start_build

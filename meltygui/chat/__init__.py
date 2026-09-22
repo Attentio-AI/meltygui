@@ -84,7 +84,7 @@ _LAZY = {
     'stop_running': ('meltygui.chat.chat_interface', 'stop_running'),
     'disconnect_chats': ('meltygui.chat.chat_interface', 'disconnect_chats'),
     'chat_project': ('meltygui.model.chat_model', 'chat_project'),
-    'ChatInterfaceState': ('meltygui.chat.chat_interface', 'ChatInterfaceState'),
+    'ChatInterfaceState': ('meltygui.state.chat_state', 'ChatInterfaceState'),
     'accounts': ('meltygui.accounts.internet_accounts', 'accounts'),
     'KINDS': ('meltygui.accounts.internet_accounts', 'KINDS'),
     'AccountKind': ('meltygui.accounts.internet_accounts', 'AccountKind'),

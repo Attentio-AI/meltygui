@@ -41,7 +41,7 @@ from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.windowing.glfw_utils import crash_reports_dir
 from meltygui.core.windowing.glfw_utils import request_render
-from meltygui.core.cache.tile_cache import add_shadow
+from meltygui.core.cache.tile_marks import add_shadow
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.window_decoration import window
 from meltygui.core.layout.header_runtime import _brightness_clamp_fn

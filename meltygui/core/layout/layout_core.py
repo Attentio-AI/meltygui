@@ -13,7 +13,7 @@ def dock_header(draw_state=None, style_manager=None, **kwargs):
     draw_state._dock_tab_rects and the BODY resolves clicks there, where
     the left_mouse_down event reliably arrives."""
     from meltygui.view.header_view import draw_header
-    from meltygui.core.cache.tile_cache import add_shadow
+    from meltygui.core.cache.tile_marks import add_shadow
     from meltygui.core.windowing.dock_core import _color_u32
     from meltygui.core.windowing.dock_core import _floor_value
 

@@ -29,7 +29,7 @@ def draw_internet_accounts(
     from meltygui.accounts.internet_accounts import _wrap_usage_label
     from meltygui.accounts.internet_accounts import is_default
     from meltygui.core.windowing.glfw_utils import request_render
-    from meltygui.core.cache.tile_cache import add_shadow
+    from meltygui.core.cache.tile_marks import add_shadow
     import meltygui.accounts.internet_accounts
 
     meltygui.accounts.internet_accounts._window_draw_state = draw_state

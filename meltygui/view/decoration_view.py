@@ -269,7 +269,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
             hovered=False, pressed=False, nested_bg=False, saturation=1.0, max_bg_depth=None,
             max_bg_value=None, **kwargs):
     # -- Constants ---------------------------------
-    from meltygui.core.cache.tile_cache import snap_int
+    from meltygui.core.cache.tile_marks import snap_int
     from meltygui.core.rendering.render_dispatch import _DRAW_BG_COLOUR_MEMO
     from meltygui.core.rendering.render_dispatch import _DRAW_BG_FILL_MEMO
     from meltygui.model.color_model import _clamp_bg_value

@@ -71,11 +71,29 @@ share the same render functions.
 .venv/bin/python examples/voxel_playground.py
 ```
 
-Use `MELTY_BENCH=1` for a first-frame smoke run:
+Use `MELTY_BENCH=1` for a first-frame smoke run; it prints the start-up
+phase table (also appended to `~/.cache/<app_id>/startup.log` on every launch)
+and exits after the first frame:
 
 ```sh
 MELTY_BENCH=1 .venv/bin/python examples/tensor_live.py
 ```
+
+### Start-up
+
+The boot sequence is described at the top of `meltygui/core/runtime/app.py`
+and in the `meltygui` package docstring. An app's own imports run before its
+first `@glfw_window`; that decoration starts an import thread (the render
+libraries — imgui, numpy, OpenGL — and the GL side of the runtime) and opens
+the display on the calling thread, so the two overlap. The overlap is only real
+while the render graph stays light: `meltygui`, `core_render` and the views
+must not import the render libraries or the code-editing stack (libcst) at
+module level. The code stack loads with the first code edit — the inputs tab,
+a code view, a hotswap. `tests/test_startup_imports.py` pins this; when a
+change makes it fail, move the import into the function that needs it or,
+for a renderer of a code-stack type, register it by name
+(`is_default_for='CodeLine'`). Start-up workers belong in
+`meltygui.after_first_frame(fn)`, not in the first frame.
 
 Smoke-run every README example the same way (opens windows; run it from a
 reserved agent desktop):

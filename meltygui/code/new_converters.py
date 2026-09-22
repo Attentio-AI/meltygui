@@ -120,8 +120,8 @@ from meltygui.code.new_codecs import Codec
 from meltygui.code.new_codecs import CallSite
 from meltygui.code.new_codecs import Decorations
 from meltygui.code.new_codecs import SaveConflict
-from meltygui.code.new_codecs import type_to_codec
-from meltygui.code.new_codecs import extension_to_codec
+from meltygui.code.codec_registry import type_to_codec
+from meltygui.code.codec_registry import extension_to_codec
 from meltygui.code.new_codecs import codec_for_path
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.core_decoration import no_save_exclude

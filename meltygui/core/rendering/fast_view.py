@@ -20,7 +20,7 @@ import inspect
 
 import meltygui_imgui as imgui
 
-from meltygui.core.cache.tile_cache import snap_int
+from meltygui.core.cache.tile_marks import snap_int
 from meltygui.core.layout.cursor_core import same_line
 from meltygui.core.melty import Melty
 from meltygui.core.rendering.view_identity import get_draw_state

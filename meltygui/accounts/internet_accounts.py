@@ -52,7 +52,7 @@ from meltygui.chat.backends import chat_backend
 from meltygui.chat.backends import register_chat_backend
 from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.windowing.glfw_utils import request_render
-from meltygui.core.cache.tile_cache import add_shadow
+from meltygui.core.cache.tile_marks import add_shadow
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.window_decoration import window
 

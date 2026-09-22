@@ -15,13 +15,10 @@ from pathlib import Path
 from types import NoneType
 from typing import Any
 
-import OpenGL.GL as gl
 import meltygui.core.windowing.window_api as glfw
 import math
-import numpy
 from meltygui_imgui.core import _DrawList
 
-from meltygui.core.styling.fonts import Font
 from meltygui.core.styling.global_style import GlobalStyle
 from meltygui.core.melty import Melty
 from meltygui.core.melty import CollectionAction
@@ -38,7 +35,6 @@ from meltygui.core.runtime.toggles import Tint
 from meltygui.core.runtime.toggles import mix
 from meltygui.core.runtime.toggles import rgb_to_hsv
 from meltygui.core.runtime.toggles import hsv_to_rgb
-from meltygui.core.graphics.gl_state import GLState
 from meltygui.utils.render_utils import print_colored_traceback
 from meltygui.utils.render_utils import push_style_var
 from meltygui.utils.render_utils import pop_style_var
@@ -49,30 +45,9 @@ from meltygui.core.windowing.glfw_utils import request_render
 from meltygui.core.conversion.bubbling import _BubblingDict
 from meltygui.core.conversion.bubbling import _DeepPath
 from meltygui.core.conversion.cache_tree import UNSET_VALUE
-from meltygui.code.libcst_conversion import Comment
-from meltygui.code.libcst_conversion import GeneralParse
-from meltygui.code.libcst_conversion import UsageRef
-from meltygui.code.libcst_conversion import CallParse
-from meltygui.code.libcst_conversion import ClassParse
-from meltygui.code.libcst_conversion import EnumParse
-from meltygui.code.libcst_conversion import FunctionParse
-from meltygui.code.libcst_conversion import SymbolUsage
-from meltygui.code.libcst_conversion import cst_module_to_dict
-from meltygui.code.libcst_conversion import dict_to_cst_module
-from meltygui.code.new_codecs import CallSite
-from meltygui.code.new_converters import code_file_io
-from meltygui.code.new_converters import convert_in_and_out_value
-from meltygui.code.new_converters import cst_module_to_string
-from meltygui.code.new_converters import string_to_cst_module
-from meltygui.code.new_converters import code_hosts_for
-from meltygui.code.new_converters import host_code_state
-from meltygui.code.new_converters import recompile_button
-from meltygui.code.new_converters import recompile_status
-from meltygui.code.new_converters import run_recompile
 from meltygui.core.conversion.path_finder import Pending
 from meltygui.core.layout.cursor_core import same_line
-from meltygui.core.cache.tile_cache import snap_int
-from meltygui.core.cache.tile_cache import add_shadow
+from meltygui.core.cache.tile_marks import snap_int
 from meltygui.core.core_render import render_func
 from meltygui.core.core_render import render_func_kwarg_names
 from meltygui.core.core_render import SCROLL_BAR_WIDTH_DEFAULT
@@ -92,18 +67,13 @@ from meltygui.core.rendering.parameter_core import flush_deferred_writes
 from meltygui.core.rendering.parameter_core import SET_ANYWHERE_PARAMS
 # Module import (not "from ... import DragDrop`) so hotswaps rebind cleanly.
 import meltygui.core.input.drag_drop_core as _drag_drop
-from meltygui.model.code_proxy_model import *
 from meltygui.core.rendering.core_decoration import hotkey
 from meltygui.core.rendering.core_decoration import Core
 from meltygui.core.cache.invalidation_decoration import live
 from meltygui.core.rendering.window_decoration import window
 from meltygui.view.header_view import draw_header
 from meltygui.core.diagnostics.inspection_core import set_fn_defaults
-from meltygui.view.text_view import draw_text
-from meltygui.editor.text_editor import _scroll_into_view
-from meltygui.graphics.texture_manager import PendingTexture
 from meltygui.core.rendering.core_decoration import defaults
-from meltygui.code.symbol_roster import pass_scope
 
 
 def some_text(input_value: str, draw_state, **kwargs):
@@ -310,15 +280,9 @@ _DM_TRACE_MS = 1.5
 
 @render_func
 def test_widget(input_value, name, unique, **kwargs):
+    from meltygui.view.text_view import draw_text
     imgui.text("Test Widget")
     draw_text("Editable Text", name="editable_text", show_bg=True)
-
-
-source = "x = foo(val=1)\nprint(x)\nsome_list=[0, 1, 2, 3]\n"
-module = cst.parse_module(source)
-proxy = cst_wrap(module)
-name_edits = {}
-code_export_str = "Test"
 
 
 # Main draw function, called by the GUI framework
@@ -335,12 +299,6 @@ test_obj = TestObj()
 
 def draw(vis):
     draw_melty_windows(vis)
-
-
-def export_code(test_param_2: int = 5):
-    # print(f"hello {test_param_2}")
-    global code_export_str
-    code_export_str = proxy.node.code
 
 
 @hotkey(glfw.KEY_O)
@@ -1094,6 +1052,11 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
       comment_owners {source_name: draw_state} separates inherited parameter
                      sources from the target window’s own lifecycle overrides
     """
+    # The code stack (libcst) loads here, on the first inputs tab: a render
+    # graph import must not pull it (core/runtime/app.py, the boot imports).
+    from meltygui.code.libcst_conversion import GeneralParse
+    from meltygui.code.new_codecs import CallSite
+    from meltygui.code.new_converters import code_hosts_for
     # Per-frame memo: the input tab plus the tint tab's get_sources_for /
     # from_anywhere / set_anywhere all this for the same target within one
     # frame, and the parses can't change mid-frame - build once per

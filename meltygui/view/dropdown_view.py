@@ -389,7 +389,7 @@ def fast_draw_dropdown(input_value=None, **kwargs):
     hashes by the body), so an open menu survives a host switch. Returns
     (changed, picked), plus the draw_state with return_extras=True.
     A call carrying a FAST_DROPDOWN_WRAPPER_KWARGS feature goes to the wrapper."""
-    from meltygui.core.cache.tile_cache import snap_int
+    from meltygui.core.cache.tile_marks import snap_int
     from meltygui.core.core_render import pop_id
     from meltygui.core.core_render import push_id
     from meltygui.core.rendering.fast_view import bind_fast_draw_state
@@ -899,7 +899,7 @@ def _dd_popup_geometry(collection, search, trigger_top, trigger_height,
                        open_upwards=None, min_width=None):
     """Content-sized popup contained in the display, independent of old bounds."""
     from meltygui.model.dropdown_model import _dd_visible_entries
-    from meltygui.core.cache.tile_cache import snap_int
+    from meltygui.core.cache.tile_marks import snap_int
 
     rows = _dd_visible_entries(collection, (search or "").strip().lower())
     display_w, display_h = imgui.get_io().display_size
@@ -922,7 +922,7 @@ def _dd_menu_fit(menu_ds, min_width=None, max_height=None):
     group rect (_content_rect), width floored at min_width, height capped
     at max_height and the display (rows scroll past it). None until the
     body has measured."""
-    from meltygui.core.cache.tile_cache import snap_int
+    from meltygui.core.cache.tile_marks import snap_int
 
     rect = getattr(menu_ds, "_content_rect", None)
     if not rect or rect[0] <= 0 or rect[1] <= 0:

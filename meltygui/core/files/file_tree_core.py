@@ -30,7 +30,7 @@ from meltygui.core.files.file_core import folder_proxy
 from meltygui.core.files.file_core import watch_folder
 from meltygui.model.file_model import _file_meta
 from meltygui.core.input.drag_drop_core import DragDrop
-from meltygui.core.cache.tile_cache import add_shadow
+from meltygui.core.cache.tile_marks import add_shadow
 from meltygui.core.rendering.window_decoration import window
 
 from meltygui.core.runtime.paths import application_root

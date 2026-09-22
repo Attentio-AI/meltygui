@@ -7,13 +7,24 @@
         changed, new = draw_text(text)
         ...
 
-The first decoration boots meltygui: the start-up shortcuts (warm_start.py),
-glfw.init and a hidden owner window (the GL share group's root and the imgui
-context that owns the font atlas) on the calling thread, and meltygui's heavy
-imports on a background thread — the two overlap, as hdr-viewer measured.
+The first decoration boots meltygui (``boot``): the start-up shortcuts
+(warm_start.py), then the import thread (``_run_imports``: the render
+libraries — imgui, numpy, OpenGL — and meltygui's GL-side modules) while the
+calling thread does glfw.init, the hidden owner window (the GL share group's
+root and the imgui context that owns the font atlas) and its first
+make_context_current, the driver load. The two overlap, and the overlap is
+implicit: nothing the app imports before its first ``@glfw_window`` touches
+those libraries. ``meltygui``, core_render and the views are light; the GL
+modules load on the thread, and the code-editing stack (libcst: hotswap, the
+inputs tab, code views) loads with the first code edit.
+tests/test_startup_imports.py keeps it that way.
 Every decoration registers its function; the loop starts when the main
 module's top level finishes (a trace hook on that frame's return — atexit
 is too late: threading is already shut down), or explicitly with ``run()``.
+An app whose first frame used the code stack last time (a code editor: the
+warm-start hint) gets it on the thread too. ``run`` joins the thread, builds
+the fonts and session (``_init_melty``), a Surface per window, and enters the
+loop; ``after_first_frame`` callbacks run once the first frame is on screen.
 
 Each window is a Surface (surface.py): frameless with meltygui's own title bar,
 window controls, corner cut and shadow unless Toggles.Melty.wayland_show_frame
@@ -38,6 +49,7 @@ import time
 _T0 = float(os.environ.get('MELTY_T0') or time.time())
 _MARKS = [('launcher exec', _T0), ('interpreter + stdlib', time.time())]
 _ROOTS: list = []            # (fn, kwargs) in decoration order
+_AFTER_FIRST_FRAME: list = []   # after_first_frame callbacks not yet run
 _state = dict(booted=False, ran=False, app_id=None, app_name=None, cache=None, imports=None,
               import_error=None, switch_interval=None, failed=False)
 # The kernel keeps a process's name (/proc/<pid>/comm) in 16 bytes including the terminator.
@@ -153,18 +165,40 @@ def boot(app_id=None):
 
 
 def _run_imports():
+    """The import thread: everything the first frame needs that the app's own
+    imports do not bring in. Imports only — no GL calls (the context belongs
+    to the render thread and ShaderRegistry is not thread safe)."""
+    import meltygui.core.styling.warm_start as warm_start
     try:
         # PyOpenGL only imports numpy during the first renderer call,
-        # after the driver work could have overlapped it. No GL calls here.
+        # after the driver work could have overlapped it.
         from OpenGL.arrays import numpymodule  # noqa: F401
-        import meltygui_imgui as imgui  # noqa: F401
+        import meltygui_imgui  # noqa: F401
         import OpenGL.GL  # noqa: F401
         mark('imgui/numpy/GL imported (bg)')
-        import meltygui.core.melty as runtime  # noqa: F401
-        import meltygui.core.windowing.surface as surface  # noqa: F401
-        import meltygui.editor.text_editor as text_editor
-        import meltygui.view.texture_view as texture_view  # noqa: F401
+        # The GL side of the runtime: surfaces and their overlay renderer,
+        # the tile cache, GLState, textures / filters / shaders (Melty's
+        # RuntimeResources), the texture view; then what run() imports.
+        import meltygui.core.windowing.surface  # noqa: F401
+        import meltygui.core.cache.tile_cache  # noqa: F401
+        import meltygui.core.graphics.gl_state  # noqa: F401
+        import meltygui.graphics  # noqa: F401
+        import meltygui.view.texture_view  # noqa: F401
+        import meltygui.core.windowing.geometry_feed  # noqa: F401
+        import meltygui.core.automation.input_recording_core  # noqa: F401
+        import rtree.index  # noqa: F401  (Melty's collision index)
+        import meltygui.core.rendering.mode  # noqa: F401  (the renderer policies: every built-in view)
         mark('meltygui imported (bg)')
+        # The code-editing stack (libcst) when the app's last first frame
+        # used it (warm_start.code_stack_hint, written by
+        # _first_frame_presented): a code editor's session and views bring
+        # it in before the loop, which would otherwise be serial.
+        if warm_start.code_stack_hint(_state['cache']):
+            import meltygui.code.libcst_conversion  # noqa: F401
+            import meltygui.code.new_converters  # noqa: F401
+            import meltygui.editor.text_editor  # noqa: F401
+            import meltygui.view.code_view  # noqa: F401
+            mark('code stack imported (bg)')
     except BaseException as e:  # re-raised on the main thread
         _state['import_error'] = e
 
@@ -213,7 +247,6 @@ def _init_melty():
     Melty.draw_state_registry = session.draw_state_registry
     Melty.adopt_registered_windows(session)
     Surface.session = session
-    mark('session loaded')
     # meltygui boots in "annotation mode" (view calls return carriers, nothing
     # renders) until the studio's Melty.init() clears it. That init also
     # starts file watchers and a jedi worker we do not need.
@@ -233,7 +266,9 @@ def _init_melty():
 def _load_session():
     """The app's AppSession (app_session.load), read once: by the first
     `persisted` call or by _init_melty, whichever comes first. Needs the
-    meltygui imports (the pickled classes), so it waits for them."""
+    meltygui imports (the pickled classes), so it waits for them. Main
+    thread only: a session pickles the app's own definitions by name, and
+    those exist once the main module has run that far."""
     session = _state.get('session')
     if session is None:
         _wait_imports()
@@ -242,6 +277,32 @@ def _load_session():
         _state['session'] = session
         mark('session loaded')
     return session
+
+
+def after_first_frame(fn):
+    """Run ``fn()`` on the render thread right after the first frame is on
+    screen — the place for an app's start-up workers (probes, indexers,
+    model loads): their imports and GIL time then come after the first
+    frame instead of stretching it. Registered after that frame, ``fn``
+    runs at once."""
+    if _state.get('presented'):
+        fn()
+    else:
+        _AFTER_FIRST_FRAME.append(fn)
+
+
+def _first_frame_presented(surfaces):
+    _state['presented'] = True
+    mark('first frame presented')
+    _write_startup_log(_state['app_id'], ' '.join(s.name for s in surfaces))
+    import meltygui.core.styling.warm_start as warm_start
+    warm_start.remember_code_stack(_state['cache'], 'meltygui.code.libcst_conversion' in sys.modules)
+    callbacks, _AFTER_FIRST_FRAME[:] = list(_AFTER_FIRST_FRAME), []
+    for fn in callbacks:
+        try:
+            fn()
+        except Exception:
+            traceback.print_exc()
 
 
 def persisted(name, factory, *, app_id=None):
@@ -452,7 +513,7 @@ def _searchable_body(body, config=None):
     def searchable(surface):
         body(surface)
         from meltygui.core.runtime.extensions import call
-        from meltygui.view.code_view import draw_pending_preview
+        from meltygui.editor.source_preview import draw_pending_preview
         draw_pending_preview()
         call('root_draw', surface)
         settings = config.get('settings') if config is not None else None
@@ -614,8 +675,7 @@ def run():
                     surface.destroy()
             if first and Surface.all:
                 first = False
-                mark('first frame presented')
-                _write_startup_log(_state['app_id'], ' '.join(s.name for s in Surface.all))
+                _first_frame_presented(Surface.all)
                 if bench:
                     break
             if glfw_utils._needs_render.is_set():
@@ -649,9 +709,11 @@ def _flush_pending_saves():
     runs from Melty.shutdown. An app that draws such hosts (the code editor)
     exits through here, so flush here too — before the surfaces go, while
     the imgui context the codecs' notifications expect is still alive. A
-    failed frame skips it: nothing written from a broken state."""
-    from meltygui.editor.pending_save import PendingSave
-    if not PendingSave.pending_saves:
+    failed frame skips it: nothing written from a broken state. An app that
+    never loaded the code stack (pending_save.py rides it) has nothing
+    pending, and does not load it now."""
+    pending_save = sys.modules.get('meltygui.editor.pending_save')
+    if pending_save is None or not pending_save.PendingSave.pending_saves:
         return
     _debug(f'flushing {len(PendingSave.pending_saves)} pending save(s)')
     PendingSave.apply_all_saves()

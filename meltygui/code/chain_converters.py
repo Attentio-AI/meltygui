@@ -743,7 +743,7 @@ def _do_save(input_value, code_str, ensure_import=None):
     full-span code_str, not a bare call expression. TypeCodec (plain span splice)
     is the fallback when the source type isn't separately registered."""
     from meltygui.editor.pending_save import PendingSave
-    from meltygui.code.new_codecs import type_to_codec
+    from meltygui.code.codec_registry import type_to_codec
     from meltygui.code.new_codecs import TypeCodec
     source = input_value.source
     codec = next((type_to_codec[k] for k in type(source).__mro__ if k in type_to_codec),
@@ -1158,7 +1158,7 @@ def general_parse_to_address(input_value: GeneralParse=None, pending=False, draw
     # every trigger reads from it via `_edited_source`, falling back to the passed
     # value only when the cache is cold (never edited / just loaded).
     from meltygui.editor.pending_save import PendingSave
-    from meltygui.code.new_codecs import type_to_codec
+    from meltygui.code.codec_registry import type_to_codec
     codec = next((type_to_codec[k] for k in type(source).__mro__ if k in type_to_codec), None) \
         if source is not None else None
 

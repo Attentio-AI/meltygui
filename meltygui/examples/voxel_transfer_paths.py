@@ -22,11 +22,14 @@ one process); they are NOT nvidia-smi's. The display GPU is whatever
 cuGLGetDevices reports for the window's GL context.
 
     python -m meltygui.examples.voxel_transfer_paths
+
+or the standalone app in ~/Desktop/melty_draw_voxels (draw_voxel_transfer_paths
+under its own @glfw_window, like the tile manager app wraps tile_manager_demo).
 """
 import math
 
 import meltygui_imgui as imgui
-from meltygui import draw_voxels, draw_voxels_cuda, draw_voxels_opengl, glfw_window
+from meltygui import draw_voxels, draw_voxels_cuda, draw_voxels_opengl
 from meltygui.core.core_render import render_func
 from meltygui.core.runtime.toggles import Toggles
 
@@ -35,12 +38,6 @@ SETTINGS = {
     'animate': False,           # in-place writes: bumps _version, re-uploads / re-bakes every frame
     'cross_gpu_opengl': False,  # the forbidden route, for reproducing what it does
 }
-
-# Module level so a hotswap re-exec keeps the tensors (and their identity,
-# which is the views' cache key).
-cases = []
-built_for = None
-frame = 0
 
 
 def _fill(volume, grid, phase):
@@ -132,30 +129,48 @@ def _route(state, expect):
     return text
 
 
-@glfw_window(name='Voxel transfer paths', app_id='meltygui-voxel-transfer-paths',
-             width=1500, height=980, settings=SETTINGS)
+class VoxelTransferPaths:
+    """The source tensors and the cases drawn from them: the value the view
+    renders. It OWNS the tensors, whose identity is each view's cache key,
+    so the app keeps one instance for its lifetime (module level, like the
+    tile manager app's tree) and the cases are rebuilt only when a setting
+    they depend on changes."""
+
+    def __init__(self, settings=SETTINGS):
+        self.settings = settings
+        self.cases = []
+        self.display = None
+        self._built_for = None
+        self._frame = 0
+
+    def advance(self):
+        """The cases for this frame: built against the current settings,
+        their source tensors rewritten in place when animating."""
+        wanted = (int(self.settings['size']), bool(self.settings['cross_gpu_opengl']))
+        if self._built_for != wanted:
+            self.cases, self.display = _build(*wanted)
+            self._built_for = wanted
+        self._frame += 1
+        if self.settings['animate']:
+            # One write per SOURCE tensor; cases share them per device.
+            for volume, grid in {id(e['volume']): (e['volume'], e['grid']) for e in self.cases}.values():
+                _fill(volume, grid, self._frame * 0.05)
+        return self.cases
+
+
 @render_func(use_cache=False)
-def voxel_transfer_paths(input_value=None, draw_state=None):
-    global cases, built_for, frame
+def draw_voxel_transfer_paths(input_value: VoxelTransferPaths = None, draw_state=None):
+    """Every case as an inline voxel view, the route it took written above it."""
     try:
         import torch  # noqa: F401
     except ImportError:
         imgui.text("needs torch: pip install meltygui[tensor]")
         return False, input_value
-    wanted = (int(SETTINGS['size']), bool(SETTINGS['cross_gpu_opengl']))
-    if built_for is None or built_for[:2] != wanted:
-        cases, display = _build(*wanted)
-        built_for = wanted + (display,)
-    frame += 1
-    display = built_for[2]
+    cases = input_value.advance()
+    display = input_value.display
     imgui.text("display GPU: " + ("none reachable from CUDA (every image rides the pinned host buffer)"
                                   if display is None else f"cuda:{display}"))
-
-    if SETTINGS['animate']:
-        # One write per SOURCE tensor; cases share them per device.
-        for volume, grid in {id(e['volume']): (e['volume'], e['grid']) for e in cases}.values():
-            _fill(volume, grid, frame * 0.05)
-
+    animate = input_value.settings['animate']
     previous = Toggles.Voxels.cuda_image_interop
     try:
         for i, entry in enumerate(cases):
@@ -178,9 +193,21 @@ def voxel_transfer_paths(input_value=None, draw_state=None):
                 dim_names=('z', 'y', 'x'), x_dim=2, y_dim=1, z_dim=0,
                 step_size=0.004, max_steps=512,
                 # animate: the view's cache would otherwise skip the re-render
-                use_cache=not SETTINGS['animate'], return_extras=True)
+                use_cache=not animate, return_extras=True)
             entry['route'] = _route(state, entry['expect'])
             imgui.end_group()
     finally:
         Toggles.Voxels.cuda_image_interop = previous
     return False, input_value
+
+
+if __name__ == '__main__':
+    from meltygui import glfw_window
+
+    paths = VoxelTransferPaths(SETTINGS)
+
+    @glfw_window(name='Voxel transfer paths', app_id='meltygui-voxel-transfer-paths',
+                 width=1500, height=980, settings=SETTINGS)
+    @render_func(use_cache=False)
+    def voxel_transfer_paths(input_value=None, draw_state=None):
+        return draw_voxel_transfer_paths(paths)

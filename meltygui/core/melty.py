@@ -40,13 +40,6 @@ from meltygui.core.styling.fonts import detect_auto_scale
 from meltygui.core.rendering.window_decoration import set_window_registrar
 from meltygui.core.diagnostics.monitor_core import Monitor
 from meltygui.core.styling.style_core import ImGuiStyleManager
-from meltygui.graphics.texture_manager import TextureManager
-from meltygui.graphics.filter import Filter
-# Importing shaders.py is what registers every built-in @register_shader class
-# (brightness_contrast, normalize_remap, ...) on the registry Filter reads. Nothing
-# else in src/ imports it - our launcher force-executed it as a main module - so a
-# vanilla `python latent_descent.py` came up with an EMPTY registry (09-04).
-import meltygui.graphics.shaders  # noqa: F401
 from meltygui.core.input.input_handler import InputHandler
 from meltygui.core.input.input_handler import InputEvent
 from meltygui.core.input.input_handler import EventAction
@@ -59,7 +52,6 @@ from meltygui.core.windowing.glfw_utils import print_stack_trace
 from meltygui.core.windowing.glfw_utils import clamp_ui_scale
 from meltygui.core.diagnostics.perf_trace import trace as _ptrace
 
-import OpenGL.GL as gl
 from meltygui.core.rendering.core_decoration import defaults
 from meltygui.core.rendering.core_decoration import no_save
 from meltygui.core.conversion.dict_conversion import DictConversion
@@ -667,6 +659,40 @@ class _LazyRtree:
 _CACHED_BACKGROUND = object()
 
 
+
+class RuntimeResource:
+    """A Melty class attribute built on its first use and kept from then on.
+    The GL-side graphics modules (texture_manager, filter, shaders) stay out
+    of the import graph until a frame needs them; meltygui's boot imports
+    them on its import thread (core/runtime/app.py) so the first frame
+    finds them loaded."""
+
+    def __init__(self, build):
+        self.build = build
+
+    def __set_name__(self, owner, name):
+        self.name = name
+
+    def __get__(self, instance, owner):
+        value = self.build()
+        setattr(owner, self.name, value)
+        return value
+
+
+def _build_texture_manager():
+    from meltygui.graphics.texture_manager import TextureManager
+    return TextureManager()
+
+
+def _build_filter():
+    # Importing shaders.py is what registers every built-in @register_shader
+    # class (brightness_contrast, normalize_remap, ...) on the registry Filter
+    # reads; nothing else imports it.
+    import meltygui.graphics.shaders  # noqa: F401
+    from meltygui.graphics.filter import Filter
+    return Filter()
+
+
 class Melty:
 
     draw_state_registry = None
@@ -710,7 +736,7 @@ class Melty:
     _render_tasks = []
     _render_tasks_lock = _threading.Lock()
 
-    filter = Filter()
+    filter = RuntimeResource(_build_filter)
     detached = False
 
     @classmethod
@@ -1320,7 +1346,7 @@ class Melty:
     # polling glfw.get_key for missed releases.
     _keys_down = set()
 
-    texture_manager = TextureManager()
+    texture_manager = RuntimeResource(_build_texture_manager)
     returned_values = {}
     pending_return_values = {}
 
@@ -2360,6 +2386,7 @@ class Melty:
         Colours are deferred until draw_backgrounds. The image is only a
         compositing slot, preserving clipping, rounded edges and window order.
         """
+        import OpenGL.GL as gl
         if not Toggles.dynamic_styles:
             return
         from meltygui.core.graphics.gl_state import GLState
@@ -2397,7 +2424,7 @@ class Melty:
         # Submit over the existing shadow pass while its clip/layer are live.
         from meltygui.core.styling.style import resolve_shadow_offset
         from meltygui.core.styling.style import default_scalar_accumulation
-        from meltygui.core.cache.tile_cache import add_shadow
+        from meltygui.core.cache.tile_marks import add_shadow
         if index == 0:
             cls.background_shadow_offsets.clear()
         # Walk up to the nearest ancestor resolved THIS frame, else one whose
@@ -2464,6 +2491,7 @@ class Melty:
     @classmethod
     def draw_backgrounds(cls):
         """Resolve the queued style hierarchy in one pass before draw lists."""
+        import OpenGL.GL as gl
         if not Toggles.dynamic_styles or not cls.backgrounds:
             return
         import numpy as np
@@ -2521,6 +2549,7 @@ class Melty:
 
     @classmethod
     def begin_frame(cls):
+        import OpenGL.GL as gl
         cls._sync_gl_error_checking()
         # Every cached tile holds pixels composed on the previous root colour
         # (and then adjusted against it): a root / toggle change repaints all.
@@ -4884,6 +4913,7 @@ class Melty:
 
     @classmethod
     def post_frame(cls, imgui_impl, window):
+        import OpenGL.GL as gl
         # TEMP perf (present-stall hunt): CPU split of each frame segment
         # plus GPU timestamps at the same boundaries. The CPU numbers say
         # where THIS thread blocked; the GPU numbers (read DEPTH frames late,
@@ -5825,7 +5855,7 @@ class Melty:
         draw_list = imgui.get_window_draw_list()
         current_clip = cls.get_clip_rect()
         if current_clip is not None:
-            from meltygui.core.cache.tile_cache import snap_int
+            from meltygui.core.cache.tile_marks import snap_int
             clip_new_rect = (
                 max(current_clip[0], snap_int(rect[0])),
                 max(current_clip[1], snap_int(rect[1])),

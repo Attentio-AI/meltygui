@@ -78,8 +78,7 @@ class TileManagerDemoModel(DictConversion):
 # auto_resize=False: a fixed-size window gives the tree a stable frame;
 # the tiles inside it and every edge moves independently of the rest.
 @window
-@render_func(tint=(0.24, 0.30, 0.20), auto_resize=False,
-             min_height=420, show_bg=True)
+@render_func(tint=(0.24, 0.30, 0.20), auto_resize=False, show_bg=True)
 def draw_tiled_window_manager_demo(input_value: object, draw_state,
                                    tile_state: TileManagerState = None,
                                    app_model: TileManagerDemoModel = None,

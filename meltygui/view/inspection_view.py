@@ -20,6 +20,7 @@ import meltygui_imgui as imgui
 import threading
 import types
 from meltygui.view.collection_view import fast_draw_collection
+from meltygui.view.header_view import draw_header
 
 
 @render_func(use_cache=False, show_bg=False, disable_scroll=True, shadow=False, selectable=False)
@@ -1782,3 +1783,43 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             draw_state.window_pos = (wp[0] + dx, wp[1] + dy)
             request_render()
     return False, input_value
+
+
+# The type renderers: a type's name (the default for `type` values) and its
+# class variables as an editable collection.
+@render_func(is_default_for=(type), tint=(0.928, 0.836, 0.655, 0.308), use_cache=True,
+             header_single_line=True, show_name=True, temp=True, is_tree=False, shadow=False,
+             show_bg=True, with_header=draw_header)
+def draw_type_name(input_value, **kwargs):
+    try:
+        if isinstance(input_value, str):
+            imgui.text(f"{input_value}")
+
+        else:
+            imgui.text(f"{input_value.__name__}")
+    except Exception as e:
+        imgui.text(f"Error displaying type: {e}")
+
+
+@render_func(show_bg=True, align_header=False, use_cache=True, shadow=False,
+             with_header=draw_header)
+def draw_type(input_value: type, **kwargs):
+    from meltygui.view.collection_view import draw_collection
+
+    try:
+        class_vars = {**{k: getattr(input_value, k) for k in vars(input_value)}}
+
+        changed, new_dict = draw_collection(class_vars, real_type=input_value, disable_scroll=True,
+                                            name=f"Class: {input_value.__name__}")
+
+        if changed:
+            for k, v in new_dict.items():
+                if k.startswith("_"):
+                    continue
+                try:
+                    imgui.text(f"Setting attribute {k} to value {v} on class {input_value.__name__}")
+                    setattr(input_value, k, v)
+                except Exception as e:
+                    imgui.text(f"Error setting attribute {k} on class {input_value.__name__}: {e}")
+    except Exception as e:
+        imgui.text(f"Error rendering type {input_value}: {e}")

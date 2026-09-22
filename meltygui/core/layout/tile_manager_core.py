@@ -42,8 +42,8 @@ from meltygui.model.tile_model import Split
 import meltygui.core.input.mouse_cursor as mouse_cursor
 from meltygui.hdr_color import pack_color
 from meltygui.core.conversion.dict_conversion import DictConversion
-from meltygui.core.cache.tile_cache import snap_int
-from meltygui.core.cache.tile_cache import add_shadow
+from meltygui.core.cache.tile_marks import snap_int
+from meltygui.core.cache.tile_marks import add_shadow
 from meltygui.core.layout.column_core import ColumnLayout
 from meltygui.core.layout.column_core import RowLayout
 from meltygui.core.layout.column_core import MIN_COLUMN_WIDTH

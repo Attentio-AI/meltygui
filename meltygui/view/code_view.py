@@ -2297,14 +2297,6 @@ def draw_source_preview(input_value=None, draw_state=None, preview: SourcePrevie
     return False, input_value
 
 
-def draw_pending_preview():
-    import meltygui.editor.source_preview
-
-    request, meltygui.editor.source_preview._pending = meltygui.editor.source_preview._pending, None
-    draw_source_preview(request, name='Source preview', closable=True,
-                        open_requested=request is not None, width=900, height=650)
-
-
 @render_func(use_cache=True, show_bg=True, shadow=True, selectable=False, temp=True,
              closable=True, melty_window=False, auto_resize=False, with_header=None,
              min_width=Toggles.UsagePicker.min_width, swoosh=False, min_height=Toggles.UsagePicker.min_height,
@@ -2332,20 +2324,6 @@ def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
 
-@render_func(is_default_for=(type), tint=(0.928, 0.836, 0.655, 0.308), use_cache=True,
-             header_single_line=True, show_name=True, temp=True, is_tree=False, shadow=False,
-             show_bg=True, with_header=draw_header)
-def draw_type_name(input_value, **kwargs):
-    try:
-        if isinstance(input_value, str):
-            imgui.text(f"{input_value}")
-
-        else:
-            imgui.text(f"{input_value.__name__}")
-    except Exception as e:
-        imgui.text(f"Error displaying type: {e}")
-
-
 @render_func(use_cache=True, is_default_for=SymbolUsage)
 def draw_symbol_usage(input_value):
     imgui.text(str(input_value))
@@ -2354,30 +2332,6 @@ def draw_symbol_usage(input_value):
 @render_func(is_default_for=(property))
 def draw_property(input_value: property, draw_state, **kwargs):
     imgui.text_colored(f"Property: {input_value.fget.__name__}", 1.0, 0.5, 0.0, 1.0)
-
-
-@render_func(show_bg=True, align_header=False, use_cache=True, shadow=False,
-             with_header=draw_header)
-def draw_type(input_value: type, **kwargs):
-    from meltygui.view.collection_view import draw_collection
-
-    try:
-        class_vars = {**{k: getattr(input_value, k) for k in vars(input_value)}}
-
-        changed, new_dict = draw_collection(class_vars, real_type=input_value, disable_scroll=True,
-                                            name=f"Class: {input_value.__name__}")
-
-        if changed:
-            for k, v in new_dict.items():
-                if k.startswith("_"):
-                    continue
-                try:
-                    imgui.text(f"Setting attribute {k} to value {v} on class {input_value.__name__}")
-                    setattr(input_value, k, v)
-                except Exception as e:
-                    imgui.text(f"Error setting attribute {k} on class {input_value.__name__}: {e}")
-    except Exception as e:
-        imgui.text(f"Error rendering type {input_value}: {e}")
 
 
 @render_func(is_default_for=UsageRef, use_cache=True, shadow=True, z_offset=2, show_bg=True, with_header=draw_header,

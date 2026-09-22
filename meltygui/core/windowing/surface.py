@@ -459,7 +459,7 @@ class Surface:
         radius = titlebar.frame_corner_radius() if transparent else 0.0
         previous_tint, bg_color = self._root_background(disp_w, disp_h, radius)
         if transparent and Toggles.Melty.window_shadow_lift > 0:
-            from meltygui.core.cache.tile_cache import add_shadow
+            from meltygui.core.cache.tile_marks import add_shadow
             add_shadow((0, 0, disp_w, disp_h), offset=0.5, corner_radius=radius, clip=False)
 
         top = titlebar.top_inset() if self.chrome else 0.0

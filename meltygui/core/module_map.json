@@ -892,5 +892,15 @@
   "meltygui.chat.chat_interface.project_tint": "meltygui.model.chat_model.project_tint",
   "meltygui.chat.chat_interface.conversation_folder_tint": "meltygui.model.chat_model.conversation_folder_tint",
   "meltygui.chat.chat_interface.conversation_tint_setter": "meltygui.model.chat_model.conversation_tint_setter",
-  "meltygui.view.file_view._trace_browser_size": "meltygui.core.files.file_explorer_core._trace_browser_size"
+  "meltygui.view.file_view._trace_browser_size": "meltygui.core.files.file_explorer_core._trace_browser_size",
+  "src.lsd.gl_gui.view.playground.chat_interface.ChatInterfaceState": "meltygui.state.chat_state.ChatInterfaceState",
+  "lsd.gl_gui.view.playground.chat_interface.ChatInterfaceState": "meltygui.state.chat_state.ChatInterfaceState",
+  "meltygui.chat.chat_interface.ChatInterfaceState": "meltygui.state.chat_state.ChatInterfaceState",
+  "src.lsd.gl_gui.view.playground.internet_accounts.AccountsPanelState": "meltygui.state.account_state.AccountsPanelState",
+  "lsd.gl_gui.view.playground.internet_accounts.AccountsPanelState": "meltygui.state.account_state.AccountsPanelState",
+  "meltygui.accounts.ui.AccountsPanelState": "meltygui.state.account_state.AccountsPanelState",
+  "meltygui.accounts.internet_accounts.AccountsPanelState": "meltygui.state.account_state.AccountsPanelState",
+  "src.lsd.gl_gui.model.inline_dependency_state": "meltygui_pro.models.inline_dependency_state",
+  "lsd.gl_gui.model.inline_dependency_state": "meltygui_pro.models.inline_dependency_state",
+  "meltygui.model.inline_dependency_state": "meltygui_pro.models.inline_dependency_state"
 }

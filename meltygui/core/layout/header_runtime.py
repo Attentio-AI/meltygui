@@ -26,7 +26,7 @@ from meltygui.core.windowing.glfw_utils import request_render
 from meltygui.core.windowing.glfw_utils import print_stack_trace
 from meltygui.core.conversion.bubbling import _BubblingDict
 from meltygui.core.layout.cursor_core import same_line
-from meltygui.core.cache.tile_cache import add_shadow
+from meltygui.core.cache.tile_marks import add_shadow
 from meltygui.core.rendering.window_decoration import window
 
 

@@ -112,11 +112,6 @@ class _Modes:
     WINDOW_CLEAN = _LazyMode("WINDOW_CLEAN")
     WINDOW_MANAGER_SORTED = _LazyMode("WINDOW_MANAGER_SORTED")
     WINDOW_NO_HEADER = _LazyMode("WINDOW_NO_HEADER")
-    code_plain_text_auto_load = _LazyMode("code_plain_text_auto_load")
-    code_plain_text_params = _LazyMode("code_plain_text_params")
-    code_ui_auto_load = _LazyMode("code_ui_auto_load")
-    code_ui_params = _LazyMode("code_ui_params")
-    draw_text_funcs = _LazyMode("draw_text_funcs")
 
     def __getattr__(self, name):
         # Dunders must NOT fabricate a handle. No Mode member is a dunder, and a

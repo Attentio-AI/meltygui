@@ -18,13 +18,13 @@ Everything else is grouped by the runtime responsibility it serves:
 | `input/` | Event delivery, devices, hit testing, drag/drop and selection: `input_handler.py`, `collision.py`, `drag_drop_core.py` |
 | `rendering/` | Render dispatch, registration, view identity, parameter injection support, modes and decorators: `render_dispatch.py`, `view_identity.py`, `parameter_core.py`, `mode.py` |
 | `conversion/` | Dict-like objects, conversion graphs, hosting and persistence: `dict_conversion.py`, `render_host.py`, `load_save_v2.py` |
-| `cache/` | Drawing caches and invalidation: `tile_cache.py`, `invalidation_tracker.py` |
+| `cache/` | Drawing caches and invalidation: `tile_marks.py` (the shadow/glow marks views emit), `tile_cache.py` (the GL side), `invalidation_tracker.py` |
 | `windowing/` | Surface lifecycle, native windows, chrome and platform backends: `surface.py`, `window_api.py`, `backends/` |
 | `graphics/` | Shared GL resources, shaders, overlays, capture and tensor/graph integration: `gl_state.py`, `shader_func.py`, `lut_core.py`, `cuda_context_core.py`, `cuda_interop_core.py`, `cuda_kernel_core.py` |
 | `layout/` | Cursor, grid, column, header and dropdown plumbing |
 | `styling/` | Shared styles, colours, fonts and font warmup |
 | `files/` | Filesystem polling, metadata and file/import-tree integration |
-| `runtime/` | App/session lifecycle, scheduling, settings and shared process helpers |
+| `runtime/` | App/session lifecycle (`app.py` describes the boot sequence and its import thread), scheduling, settings and shared process helpers |
 | `diagnostics/` | Notifications, profiling, tracing, inspection and diagnostics integration |
 | `automation/` | Orchestration, actions, queries, search and MCP integration; [input recording and replay](../../docs/INPUT_RECORDING.md): `input_recording_core.py`, `input_replay.py` |
 | `services/` | Terminal, chat and account runtime integration |
@@ -75,7 +75,10 @@ presentation live in `view/voxel_cuda_view.py` and `view/graph_cuda_view.py`.
 provides lazy `Modes.X` handles so decorators can refer to modes before their
 renderers finish importing. `rendering/mode_defaults.py` holds shared type-to-mode defaults,
 including delayed registration for optional dependencies. Combining these at
-import time would recreate the mode/renderer import cycle.
+import time would recreate the mode/renderer import cycle. The code-editing
+members of `Mode` (`CODE_UI`, `FILE_TREE`, ...) are `_CodeMode` values whose
+policies build on first use, so `mode.py` and the window modes load without
+the libcst stack; the boot's import thread imports `mode.py` for the first frame.
 
 The public package exports remain available from `meltygui`. Internal imports
 use current modules; there are no legacy import aliases, forwarding shims or
