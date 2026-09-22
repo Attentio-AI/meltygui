@@ -26,7 +26,7 @@ Everything else is grouped by the runtime responsibility it serves:
 | `files/` | Filesystem polling, metadata and file/import-tree integration |
 | `runtime/` | App/session lifecycle, scheduling, settings and shared process helpers |
 | `diagnostics/` | Notifications, profiling, tracing, inspection and diagnostics integration |
-| `automation/` | Orchestration, actions, queries, search and MCP integration |
+| `automation/` | Orchestration, actions, queries, search and MCP integration; [input recording and replay](../../docs/INPUT_RECORDING.md): `input_recording_core.py`, `input_replay.py` |
 | `services/` | Terminal, chat and account runtime integration |
 
 These folders organize wiring; they do not turn feature algorithms or local

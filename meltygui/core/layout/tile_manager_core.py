@@ -57,6 +57,7 @@ from meltygui.core.layout.column_core import frame_edges
 from meltygui.core.layout.column_core import layout_window
 from meltygui.core.layout.column_core import _drag_inc
 from meltygui.core.layout.column_core import _grab_zone
+from meltygui.core.windowing.os_frame import _any_button_down
 from meltygui.core.rendering.core_decoration import Core
 from meltygui.core.rendering.core_decoration import no_save
 from meltygui.core.cache.invalidation_tracker import Note
@@ -181,16 +182,57 @@ def corner_rect(rect, on_left, on_top, size):
     return cx0, cy0, cx0 + size, cy0 + size
 
 
+def corner_view_id(tile, corner):
+    """The on_action view id of one corner grip; keyed on the tile OBJECT
+    because a split shifts the path while the drag is still captured."""
+    return f"tile_corner_{id(tile)}_{corner}"
+
+
+def corner_triangle(grip, on_left, on_top, size, inset):
+    """The three points of the grip's handle: a right triangle tucked into
+    the tile's corner with its hypotenuse facing inward, legs ``size`` px,
+    ``inset`` px off the tile's edges."""
+    gx0, gy0, gx1, gy1 = grip
+    if on_left:
+        ax, bx = gx0 + inset, gx0 + inset + size
+    else:
+        ax, bx = gx1 - inset, gx1 - inset - size
+    if on_top:
+        ay, by = gy0 + inset, gy0 + inset + size
+    else:
+        ay, by = gy1 - inset, gy1 - inset - size
+    return (ax, ay), (bx, ay), (ax, by)
+
+
+def hover_shown(draw_state, rect, owns_gesture):
+    """Whether a drag handle over ``rect`` lights up: always while it owns
+    the live gesture, on hover only while NO mouse button is held. A
+    right-drag (or any other button's drag) sweeping across handles must
+    not light them up as the cursor passes."""
+    if owns_gesture:
+        return True
+    if _any_button_down():
+        return False
+    return draw_state.hover_eligible(rect=rect)
+
+
 def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
               tile_state=None, gap=4.0):
     """Paint one leaf — no background (``draw_split_dividers`` draws the
     lines between tiles), a shadow lifting the tile off the host, and a
-    corner grip where hovered — and run the corner split gesture when
+    small triangle in each corner (brighter when hovered or dragged) that
+    marks the split / join grip — and run the corner split gesture when
     ``tree`` / ``root_frame`` / ``tile_state`` are given (``draw_tiles``
     passes them). Returns True when the gesture changed the tree."""
     # [tint=(1.0, 0.8, 0.3)]
+    # Change the corner grips here: the grab zone size, the visible
+    # triangle's leg length and inset from the tile edge, and its resting /
+    # hovered (or dragging) colour.
     corner_size = 14.0
-    corner_hover_color = (1.0, 1.0, 1.0, 0.35)
+    corner_triangle_size = 9.0
+    corner_triangle_inset = 1.0
+    corner_color = (1.0, 1.0, 1.0, 0.16)
+    corner_hover_color = (1.0, 1.0, 1.0, 0.55)
     # Change the tile lift here: how far each tile rises above the host
     # (its shadow spread) and the rounding of that shadow.
     tile_shadow_offset = 1.0
@@ -212,10 +254,16 @@ def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
         draw_list.add_rect_filled(x0, y0, x1, y1, fill, tile_shadow_radius)
 
     changed = False
+    gesture = tile_state.gesture if tile_state is not None else None
     for name, on_left, on_top in CORNERS:
         grip = corner_rect(rect, on_left, on_top, corner_size)
-        if draw_state.hover_eligible(rect=grip):
-            draw_list.add_rect_filled(*grip, pack_color(*corner_hover_color))
+        owns = gesture is not None and gesture["corner"] == corner_view_id(tile, name)
+        hot = hover_shown(draw_state, grip, owns)
+        (ax, ay), (bx, by), (cx, cy) = corner_triangle(
+            grip, on_left, on_top, corner_triangle_size, corner_triangle_inset)
+        draw_list.add_triangle_filled(
+            ax, ay, bx, by, cx, cy,
+            pack_color(*(corner_hover_color if hot else corner_color)))
         if tree is not None and root_frame is not None and tile_state is not None:
             changed = tile_corner_gesture(
                 tile, frame, draw_state, path, tree, root_frame, tile_state,
@@ -238,7 +286,7 @@ def tile_corner_gesture(tile, frame, draw_state, path, tree, root_frame,
     # [tint=(1.0, 0.8, 0.3)]
     split_threshold = 8.0
 
-    view_id = f"tile_corner_{id(tile)}_{corner}"
+    view_id = corner_view_id(tile, corner)
     draw_state.on_action("left_mouse_down", view_id=view_id, rect=grip,
                          priority_delta=2, cursor=mouse_cursor.RESIZE_ALL)
     drag = draw_state.on_action("left_mouse_drag", view_id=view_id, rect=grip,
@@ -270,6 +318,16 @@ def tile_corner_gesture(tile, frame, draw_state, path, tree, root_frame,
         axis = gesture["axis"]
         increment = _drag_inc(draw_state, view_id, drag,
                               total="total_dx" if axis == "x" else "total_dy")
+        lag = gesture.get("lag", 0.0)
+        if lag and increment:
+            # The hand still leads the edge (a clamped split): motion toward
+            # the edge closes the gap, motion away widens it, and only the
+            # overshoot past the edge moves it.
+            lag += increment
+            if (lag > 0) == (gesture["lag"] > 0):
+                gesture["lag"], increment = lag, 0.0
+            else:
+                gesture["lag"], increment = 0.0, lag
         if increment:
             _ensure_window_state(window)
             edge = gesture["edge"]
@@ -305,6 +363,14 @@ def tile_corner_gesture(tile, frame, draw_state, path, tree, root_frame,
                           "new_tile": node_at(tree, new_path)}
     _drag_inc(draw_state, view_id, drag,
               total="total_dx" if axis == "x" else "total_dy")
+    # The edge lands where the minimum let it, not necessarily under the
+    # pointer (a split started within a cell's floor of its far edge). The
+    # hand's lead is remembered: the edge waits until the hand reaches it
+    # and follows from there, instead of moving at that fixed distance for
+    # the rest of the drag - pushing its neighbours while the pointer was
+    # nowhere near them (09-21). Never a jump to the pointer: an edge moves
+    # at the hand's speed or not at all (diagnostics/edge_motion_guard).
+    tile_state.gesture["lag"] = along - at
     return True
 
 
@@ -351,10 +417,14 @@ def draw_join_preview(tree, root_frame, draw_state, tile_state):
             break
 
 
-def draw_split_dividers(layout, axis, frame, draw_state):
+def draw_split_dividers(layout, axis, frame, draw_state, tile_state=None):
     """Draw one Split's interior edges as lines across its band: black at
     rest, highlighted while the cursor is in that edge's grab zone (the
-    same zone the layout drags from) or the edge is being dragged."""
+    same zone the layout drags from) with no button held, or while the
+    edge itself is being dragged, by its grab zone or by the corner split
+    gesture that created it (``tile_state.gesture["edge"]``). Another
+    handle's drag (a right-drag, a corner split elsewhere) passing over the
+    zone does not light it."""
     # [tint=(1.0, 0.8, 0.3)]
     # Change the divider look here: resting / hovered colour and line width.
     divider_color = (0.0, 0.0, 0.0, 1.0)
@@ -365,6 +435,8 @@ def draw_split_dividers(layout, axis, frame, draw_state):
     x0, y0, x1, y1 = frame_rect(frame, window)
     origin = window.abs_left if axis == "x" else window.abs_top
     edges = layout.edges
+    gesture = tile_state.gesture if tile_state is not None else None
+    gesture_edge = gesture.get("edge") if gesture is not None else None
     draw_list = imgui.get_window_draw_list()
     for k in range(1, len(edges) - 1):
         lo, hi = _grab_zone(edges, k, axis=axis)
@@ -375,7 +447,8 @@ def draw_split_dividers(layout, axis, frame, draw_state):
         else:
             grab = (x0, origin + lo, x1, origin + hi)
             ends = (x0, line, x1, line)
-        hot = layout.active_edge == k or draw_state.hover_eligible(rect=grab)
+        dragging = layout.active_edge == k or edges[k] is gesture_edge
+        hot = hover_shown(draw_state, grab, dragging)
         draw_list.add_line(*ends,
                            pack_color(*(divider_hover_color if hot else divider_color)),
                            divider_thickness)
@@ -417,7 +490,7 @@ def draw_tile_node(node, frame, draw_state, path=(), tree=None,
                 or len(node.edges) != len(interior):
             node.edges = interior
     edges = layout.edges
-    draw_split_dividers(layout, axis, frame, draw_state)
+    draw_split_dividers(layout, axis, frame, draw_state, tile_state=tile_state)
     changed = False
     for index, child in enumerate(list(children)):
         if draw_tile_node(child, child_frame(frame, axis, edges[index], edges[index + 1]),
@@ -426,6 +499,36 @@ def draw_tile_node(node, frame, draw_state, path=(), tree=None,
             changed = True
             break                                # the tree moved under us
     return changed
+
+
+def tree_edge_ids(tree):
+    """The ids of every interior edge dict stored in the tree."""
+    return {id(edge) for _path, node in walk(tree)
+            if isinstance(node, Split) for edge in node.edges}
+
+
+def retire_layouts(window, draw_state, dead=frozenset()):
+    """Drop the registrations a topology change left behind, before the
+    next collision solve: the host's keyed layouts (``key=path``: paths
+    and axes moved, they re-register at their new paths next frame) and
+    every layout whose edge list or band holds an edge that left the tree
+    (``dead``: ids of the removed dividers). The latter are the layouts a
+    tile RENDERER built over its tile's frame (a chat tile's columns, a
+    code editor's compare split - ``layout_frame`` adopts the tile's edge
+    dicts by reference): the joined-away tile's view never renders again
+    and never closes, so the window's own eviction (closed views only)
+    never reached it, and its cells kept linking the dead divider to the
+    surviving edges in every solve (Lukas 09-21: old edges leaking into
+    the collisions after a join)."""
+    for axis in ("x", "y"):
+        views, specs, bands = _views(window, axis), _specs(window, axis), _bands(window, axis)
+        for key, (owner, edges) in list(views.items()):
+            keyed = isinstance(key, tuple) and len(key) == 3 and owner is draw_state
+            if keyed or any(id(e) in dead for e in edges) \
+                    or any(id(e) in dead for e in bands.get(key) or ()):
+                del views[key]
+                specs.pop(key, None)
+                bands.pop(key, None)
 
 
 def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
@@ -446,17 +549,12 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
         top = tile_state.content_top if tile_state is not None else {}
         top["y"] = content_top - window.abs_top
         root_frame = (*root_frame[:2], top, root_frame[3])
+    before = tree_edge_ids(tree)
     changed = draw_tile_node(tree, root_frame, draw_state, (), tree=tree,
                              root_frame=root_frame, tile_state=tile_state,
                              gap=gap)
     if changed:
-        # Retire layouts whose paths/axes moved before the next collision solve.
-        for axis in ("x", "y"):
-            for key, entry in list(_views(window, axis).items()):
-                if isinstance(key, tuple) and len(key) == 3 and entry[0] is draw_state:
-                    del _views(window, axis)[key]
-                    _specs(window, axis).pop(key, None)
-                    _bands(window, axis).pop(key, None)
+        retire_layouts(window, draw_state, dead=before - tree_edge_ids(tree))
     # Render content after topology edits, using the final leaf frames. The
     # conversion's existing identity scopes views independently of tree paths.
     from meltygui.view.tile_view import draw_tile_content

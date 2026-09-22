@@ -3416,6 +3416,18 @@ def render_func(*args, **o_kwargs):
             draw_state._melty_cursor = (0, 0)  # column -> (x, y)
 
             _wtC = time.perf_counter()   # TEMP perf: pre-cache is done
+            if Melty.channels_split and _has_imgui:
+                # A cache hit blits the tile from inside mark_start_offscreen,
+                # into whatever channel is current: the parent's. The live
+                # body paints two selections later at this view's z_offset
+                # channel (offscreen_depth + z_offsets, below). Select that
+                # same channel here, so a cache-served frame and a live frame
+                # compose the same way; otherwise a label the parent painted
+                # over a cached child showed until the child went live
+                # (hover invalidation) and vanished under its fill, the
+                # commit-message placeholder flicker of 09-21.
+                imgui.get_window_draw_list().channels_set_current(
+                    max(0, min(Melty.get_channel() + passed_z_offset + ds_z_offset, Melty.max_depth - 1)))
             _render_body = Melty.cache.mark_start_offscreen(draw_state=draw_state)
             if Melty.frame_count % 10 == 0 and (
                     getattr(draw_state, "_resize_from_top_left", None) is not None

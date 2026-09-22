@@ -121,3 +121,29 @@ def test_frame_hit_regions_use_both_solved_dimensions(monkeypatch):
     assert rectangles['left_mouse_drag', 'win_edge_x_1'] == (x+360-half, y, x+360+half, y+450)
     assert rectangles['left_mouse_drag', 'win_edge_y_1'] == (x, y+450-half, x+360, y+450+half)
 
+
+
+def test_window_minimum_follows_the_pile_back_down():
+    """The frame pass floors min_width at the compressed pile of the
+    window's layouts. That floor must come back DOWN when a layout loses a
+    cell: raise-only, a tile column added and joined away kept the window
+    at five columns' floor for good (the tiles demo, 09-21)."""
+    w, left, right, (d0, d1) = make_window(min_width=100)   # 3 columns: pile 180
+    run_pass(w)
+    assert w.min_width == 180
+    d2 = {"x": 250.0}                                        # a fourth column
+    w._edge_views[("row", "r")] = (w, [left, d0, d1, d2, right])
+    run_pass(w)
+    assert w.min_width == 240
+    w._edge_views[("row", "r")] = (w, [left, d0, d1, right])  # joined away again
+    run_pass(w)
+    assert w.min_width == 180
+    # A minimum the wrapper re-stamps from its kwarg every frame is the
+    # declared base: the floor is the larger of it and the pile.
+    for edges, expected in (([left, d0, d1, right], 200),
+                            ([left, d0, d1, d2, right], 240),
+                            ([left, d0, d1, right], 200)):
+        w._edge_views[("row", "r")] = (w, edges)
+        w.min_width = 200
+        run_pass(w)
+        assert w.min_width == expected

@@ -2167,6 +2167,11 @@ class DrawState(DictConversion):
         and priorities to the current z_pos, then go through the normal
         hover / blocker gauntlet — a covered or un-hovered rect registers
         nothing, exactly as the live call would."""
+        # A fast host (fast_draw_collection: no tile of its own) paints into
+        # this tile, so its rows' subscriptions come back with this tile's.
+        for child in [*self._children.values(), *self._view_children.values()]:
+            if child is not None and child is not self and getattr(child._wrapper, "fast_host", False):
+                child.replay_body_actions()
         record = self._body_actions
         if not record or not record[1]:
             return

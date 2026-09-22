@@ -42,6 +42,20 @@ def draw_tile_notes(input_value: object):
     return changed, value if changed else input_value
 
 
+@render_func(multi_instance=True, tint=(0.40, 0.32, 0.20), icon=f"\uf0db",
+             display_name="Columns")
+def draw_tile_columns(input_value: object, layout_frame=None):
+    """Two resizable cells over the tile's own edges: a renderer whose columns
+    register on the window through ``layout_frame`` (the chat tile, the code
+    editor's compare split do the same). Split and join this tile to exercise
+    the retirement of the layouts a removed tile leaves behind."""
+    from meltygui.view.layout_view import draw_columns
+    edges = ({"left_edge": layout_frame[0], "right_edge": layout_frame[1]}
+             if layout_frame is not None else {})
+    changed, _ = draw_columns({"left": "left cell", "right": "right cell"}, **edges)
+    return changed, input_value
+
+
 class TileManagerDemoModel(DictConversion):
     """The demo app owns the layout, including each tile's selected function."""
 

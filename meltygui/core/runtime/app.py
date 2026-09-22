@@ -558,6 +558,10 @@ def run():
                           width=kw['width'], height=kw['height'], tint=ground_tint, on_close=kw.get('on_close'))
         surface.settings = kw.get('settings')
     mark(f'{len(Surface.all)} window(s) created')
+    # Input recording (MELTY_RECORD_INPUT / Toggles.InputRecording.record_on_launch):
+    # from the first frame, so a crashing session is on disk up to the crash.
+    import meltygui.core.automation.input_recording_core as input_recording_core
+    input_recording_core.start_on_launch()
     import meltygui.core.windowing.glfw_utils as glfw_utils
     glfw_utils._render_thread_id = threading.get_ident()
     bench = os.environ.get('MELTY_BENCH')
@@ -626,6 +630,7 @@ def run():
             glfw.wait_events_timeout(1 / 60 if any(s.children for s in Surface.all) else 1.0)
     finally:
         _debug(f'{frames} frames rendered')
+        input_recording_core.stop_on_exit()
         if not _state['failed']:
             _flush_pending_saves()
             _save_session()

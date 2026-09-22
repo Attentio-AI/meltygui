@@ -93,7 +93,7 @@ class EffectLedger:
     next_seq = 0
 
     @classmethod
-    def note(cls, kind, name, ds=None, rect=None):
+    def note(cls, kind, name, ds=None, rect=None, text=None):
         cls.next_seq += 1
         cls.entries.append(types.SimpleNamespace(
             seq=cls.next_seq, kind=str(kind), name=str(name),
@@ -2627,8 +2627,10 @@ draw_orchestrator = window(input_value=None, tint=(1.11, 0.34, 0.38), icon=f'\uf
 set_input_tap(Orchestrator.tap)
 
 # Execution points publish observable, not-undoable effects here (an actual
-# window raise, a fired flat_button) - the third cue source.
-Melty.effect_hook = EffectLedger.note
+# window raise, a fired flat_button) - the third cue source. Guarded so a
+# hotswap re-exec of this module does not listen twice.
+if EffectLedger.note not in Melty.effect_listeners:
+    Melty.effect_listeners.append(EffectLedger.note)
 
 # Ctrl+Shift+O anywhere: stop a recording / abort a replay - the mouse is
 # busy driving (or being driven), so this must not depend on the window.

@@ -1241,12 +1241,27 @@ class Melty:
     # note still sticks while nothing is happening.
     emphasis_hold_grace = 30
     emphasis_notes = {}
-    # Effect-ledger hook (the Orchestrator binds EffectLedger.note here):
-    # framework points publish observable, NOT-undoable effects through it -
-    # an actual window raise (apply_move_to_front), a fired show_button
-    # (headers.py) - the record/replay engine's third cue source beside the
-    # edit stacks. None until the orchestrator module loads.
-    effect_hook = None
+    # Effect hook: framework points publish observable, NOT-undoable effects
+    # through it - an actual window raise (apply_move_to_front), a fired
+    # button (header_view.flat_button, control_view.draw_button), an expand /
+    # collapse. It fans out to effect_listeners: the Orchestrator's
+    # EffectLedger.note (its third cue source beside the edit stacks) and the
+    # input recorder (the button text is a replay's OCR anchor). To listen,
+    # append `fn(kind, name, draw_state=None, rect=None, text=None)`.
+    effect_listeners = []
+    # The input recorder (model/input_recording_model.InputRecorder), one per
+    # process: created and connected by core/automation/input_recording_core.py.
+    input_recorder = None
+
+    @classmethod
+    def effect_hook(cls, kind, name, draw_state=None, rect=None, text=None):
+        """`text` is what the user can read on the control when that differs
+        from `name` (a flat_button's name is its view_id)."""
+        for listener in tuple(cls.effect_listeners):
+            try:
+                listener(kind, name, draw_state, rect=rect, text=text)
+            except Exception:
+                pass
 
     # File-text cache keyed by resolved path name. Populated by read_code,
     # invalidated by FileWatch on external change. Lets the symbol-usage index

@@ -135,6 +135,7 @@ from meltygui.core.automation.search_core import search_activate_target
 
 
 from meltygui.view.collection_view import draw_collection
+from meltygui.view.collection_view import collection_view_for_draw_any
 from meltygui.view.collection_view import fast_draw_collection
 
 
@@ -1827,8 +1828,10 @@ def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=No
     if view_func is None:
         new_default = Core.melty.get_default_view_function(real_type=real_type, collection_type=collection_type,
                                                            attrib_key=key, value=input_value)
-        if new_default is None:
-            new_default = fast_draw_collection
+        if new_default is None or new_default is fast_draw_collection:
+            # The registered default for collections; the toggle and the
+            # outermost-tile rule decide between the fast host and the wrapper.
+            new_default = collection_view_for_draw_any()
         if view_func is None:
             view_func = new_default
 

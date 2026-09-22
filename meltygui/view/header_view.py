@@ -348,7 +348,7 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
     if fired and Melty.effect_hook is not None:
         try:
             Melty.effect_hook("button", str(view_id).split("##")[0], draw_state,
-                              rect=(x, y, w, h))
+                              rect=(x, y, w, h), text=label)
         except Exception:
             pass
     return fired

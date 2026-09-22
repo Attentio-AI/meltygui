@@ -1914,6 +1914,27 @@ class Toggles:
         # [tint=(0.939, 0.453, 0.245)]
         continuous_mouse = True
 
+    @defaults(tint=(0.85, 0.22, 0.25))
+    class InputRecording:
+        # Record every launch to a new file in ~/.cache/meltygui/input_recordings,
+        # so the session that crashed is already on disk (crash reproduction,
+        # usage analytics). MELTY_RECORD_INPUT=1 does the same for one launch.
+        # Applies at the next launch.
+        record_on_launch = False
+        # Typed characters and unmodified keys are part of a recording. Turn
+        # off to keep keystrokes out of analytics recordings: shortcuts, clicks,
+        # drags and scrolls are still recorded, but text fields replay empty.
+        # Applies to the next recording.
+        record_typed_text = True
+        # Cursor moves smaller than this (px, both axes) are not recorded.
+        # A replayed drag follows at most 8 waypoints, so raising it mainly
+        # shrinks the file. Applies to the next recording.
+        # [tint=(0.939, 0.453, 0.245)]
+        move_sample_min_px = 1.0
+        # Starting a recording deletes the oldest files beyond this many.
+        # [tint=(0.939, 0.453, 0.245)]
+        keep_recordings = 50
+
     @defaults(tint=(0.103, 0.341, 0.617))
     class FastDock:
         # Floor on the hsv VALUE of an OPEN (active) row's name/icon text in

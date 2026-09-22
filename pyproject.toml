@@ -33,7 +33,7 @@ dev = ["pytest>=8", "build>=1.2", "PyGLM>=2.8"]
 packages = ["meltygui"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/meltygui", "/tests", "/examples", "/tools/native_wheels", "/tools/release.py", "/README.md", "/LICENSE", "/docs/APPS.md", "/docs/DEVELOPMENT.md", "/docs/SUPPORT_WHEELS.md", "/docs/PUBLISHING.md", "/pyproject.toml"]
+include = ["/meltygui", "/tests", "/examples", "/tools/native_wheels", "/tools/release.py", "/README.md", "/LICENSE", "/docs/APPS.md", "/docs/INPUT_RECORDING.md", "/docs/DEVELOPMENT.md", "/docs/SUPPORT_WHEELS.md", "/docs/PUBLISHING.md", "/pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

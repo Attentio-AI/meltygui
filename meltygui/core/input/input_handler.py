@@ -169,12 +169,40 @@ def set_input_tap(fn):
 
 def input_tap(kind, *args):
     fn = _INPUT_TAP["fn"]
-    if fn is None:
-        return False
-    try:
-        return bool(fn(kind, *args))
-    except Exception:
-        return False
+    consumed = False
+    if fn is not None:
+        try:
+            consumed = bool(fn(kind, *args))
+        except Exception:
+            consumed = False
+    if _INPUT_OBSERVERS and not consumed:
+        for observer in tuple(_INPUT_OBSERVERS):
+            try:
+                observer(kind, *args)
+            except Exception:
+                pass
+    return consumed
+
+
+# Passive listeners on the same funnel (the input recorder,
+# model/input_recording_model.py). An observer sees every event the app is
+# about to receive - `fn(kind, *args)`, the tap's vocabulary - and cannot
+# consume it; an event the tap consumed (a muted real click during an
+# Orchestrator replay) never reached the app, so observers do not see it.
+# Runs inside the input callbacks: an observer must only queue, never do I/O.
+# The list is empty unless something is listening, which keeps the idle cost
+# at one truthiness check per event. Hotswap-surviving, as _INPUT_TAP.
+_INPUT_OBSERVERS: list = globals().get("_INPUT_OBSERVERS") or []
+
+
+def add_input_observer(fn):
+    if fn not in _INPUT_OBSERVERS:
+        _INPUT_OBSERVERS.append(fn)
+
+
+def remove_input_observer(fn):
+    if fn in _INPUT_OBSERVERS:
+        _INPUT_OBSERVERS.remove(fn)
 
 
 _parse_cache: dict[str, tuple[str, str, bool, bool]] = {}  # (input_id, action, inverted, non_blocking)

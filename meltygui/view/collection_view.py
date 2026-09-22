@@ -908,6 +908,26 @@ def collection_append_slot(draw_state, insert_index):
     return (insert_index, left, left + (draw_state.width or 0), imgui.get_cursor_screen_pos()[1], False)
 
 
+# DrawState.replay_body_actions replays the records of children whose wrapper carries this
+# (a tileless host under a cached tile), so the fast host is marked once its body is defined.
+FAST_HOST_MARK = "fast_host"
+
+
+def collection_view_for_draw_any():
+    """The renderer draw_any hands a collection to: the fast host under a
+    collection body when Toggles.Collection.fast_draw_collection is on, else
+    the draw_collection wrapper. The OUTERMOST collection keeps the wrapper
+    and its tile: a cache hit then skips the whole tree (a fast collection
+    owns no tile, so without this boundary every level re-runs whenever the
+    enclosing view's body does). Every collection below it is fast."""
+    if not Toggles.Collection.fast_draw_collection or Melty.in_annotation_mode():
+        return draw_collection
+    enclosing = Melty.draw_state_stack[-1] if Melty.draw_state_stack else None
+    if enclosing is None or enclosing._view_func is not draw_collection.__wrapped__:
+        return draw_collection
+    return fast_draw_collection
+
+
 def fast_draw_collection(input_value=None, **kwargs):
     """draw_collection without the @render_func wrapper: what draw_any
     forwards every collection type to. Nested data pays the wrapper once per
@@ -941,18 +961,13 @@ def fast_draw_collection(input_value=None, **kwargs):
     from meltygui.core.rendering.render_dispatch import compute_bg_color
     from meltygui.view.decoration_view import draw_bg
 
-    if (not Toggles.Collection.fast_draw_collection or Melty.in_annotation_mode()
-            or any(kwargs.get(wrapper_kwarg) for wrapper_kwarg in FAST_COLLECTION_WRAPPER_KWARGS)):
+    # A direct call is a caller asking for the fast host: only a wrapper-only
+    # feature sends it to the wrapper. Toggles.Collection.fast_draw_collection
+    # and the outermost-tile rule apply to draw_any's routing (collection_view_for).
+    if any(kwargs.get(wrapper_kwarg) for wrapper_kwarg in FAST_COLLECTION_WRAPPER_KWARGS):
         return draw_collection(input_value, **kwargs)
 
     body = draw_collection.__wrapped__
-    enclosing = Melty.draw_state_stack[-1] if Melty.draw_state_stack else None
-    if enclosing is None or enclosing._view_func is not body:
-        # The OUTERMOST collection keeps the wrapper and its tile: a cache hit
-        # then skips the whole tree (a fast collection owns no tile, so
-        # without this boundary every level re-runs whenever the enclosing
-        # view's body does). Every collection below it is fast.
-        return draw_collection(input_value, **kwargs)
     return_extras = kwargs.pop("return_extras", False)
     input_value = kwargs.pop("input_value", input_value)
     if Melty.depth > Melty.max_depth:
@@ -1076,6 +1091,11 @@ def fast_draw_collection(input_value=None, **kwargs):
             start_cursor = imgui.get_cursor_screen_pos()
             body_kwargs = {k: v for k, v in kwargs.items() if k not in ("input_value", "immediate_dnd")}
             body_kwargs.setdefault("meta", None)
+            # This host owns no tile: when the enclosing tile is a blit-cache
+            # hit its body (the rows' drag handles, DragDrop.on_drag) does not
+            # run, so the on_action calls are recorded here and the tile's
+            # replay_body_actions re-issues them through fast_host below.
+            draw_state._body_actions = (Melty.frame_count, [])
             Melty.silence_invalidate = False
             body_return = body(input_value, immediate_dnd=True, **body_kwargs)
             Melty.silence_invalidate = True
@@ -1458,3 +1478,6 @@ def draw_mapping_proxy(input_value):
         return False, input_value
 
     return changed, input_value
+
+
+fast_draw_collection.fast_host = True

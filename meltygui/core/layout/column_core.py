@@ -1051,6 +1051,41 @@ def window_edge_pass(window):
                         ds.invalidate(note=Note(reason="edge solve", **_NOTE))
 
 
+def _declared_window_min(window, axis):
+    """The minimum the window DECLARES on ``axis`` - a wrapper kwarg
+    re-stamped every frame, a foreign write - as opposed to the floor
+    ``_hold_window_min`` stamped over it last frame. Remembered per axis
+    next to that stamp: a min_width / min_height still equal to the stamp
+    is this pass's own, anything else is a new declaration."""
+    attr = "min_width" if axis == "x" else "min_height"
+    record = getattr(window, "_layout_min", None)
+    if record is None:
+        record = window._layout_min = {}
+    current = getattr(window, attr) or 0
+    declared, stamped = record.get(axis, (current, None))
+    if stamped is None or current != stamped:
+        declared = current
+    record[axis] = (declared, stamped)
+    return declared
+
+
+def _hold_window_min(window, axis, declared, pile):
+    """Floor the window's min_width (min_height on the row axis) at
+    ``pile``, the span of its fully compressed layouts, over the minimum it
+    declares - and let that floor FOLLOW the pile back down. Raise-only
+    until 09-21, the floor kept every cell a layout ever had: a tile column
+    added and joined away left the window unable to shrink below five
+    columns' floor and the OS-level solve compressing its remaining columns
+    unevenly (Lukas, the tiles demo). The frame's own cell is floored at
+    the DECLARED minimum (see _frame_pass), never at this stamp, or the
+    stamp would feed itself back through the chain."""
+    attr = "min_width" if axis == "x" else "min_height"
+    need = max(declared, pile)
+    if (getattr(window, attr) or 0) != need:
+        setattr(window, attr, need)
+    window._layout_min[axis] = (declared, need)
+
+
 def _hand_moved(window, frame):
     """Was ``window`` moved by hand this frame — itself (the move drag
     stamps ``_hand_move_frame``) or through an ANCESTOR it rides with (a
@@ -1095,7 +1130,7 @@ def _frame_pass(window, axis):
     # and uncapped - the stamps on the far edge belong to the LAST column /
     # row, never to the frame. The floor is what an OS edge pushing the
     # window meets (os_frame): the window compresses to it, then slides.
-    declared = float((window.min_width if axis == "x" else window.min_height) or 0)
+    declared = float(_declared_window_min(window, axis))
     specs[window.id] = ([max(_axis_min(axis), declared)], [None])
     near, far = fe
 
@@ -1118,19 +1153,13 @@ def _frame_pass(window, axis):
     # The frame can never out-compress the window: keep min_width /
     # min_height at the fully-compressed span so a pending shrink always
     # triggers its collision pass instead of fighting the resize latch.
-    # Raise-only, re-stamped every frame (the wrapper rewrites the minimum
-    # from resolved kwargs each frame).
     # The compressed span is the LONGEST chain of cell floors from the near
     # frame edge to the far one - NOT the sum over every edge, which
     # double-counts layouts stacked in different rows.
     graph = _window_graph(window, axis)
     span = graph.chain(near, far)
-    need = snap_int(near[axis] + max(_axis_min(axis), span or 0.0))
-    if axis == "x":
-        if (window.min_width or 0) < need:
-            window.min_width = need
-    elif (window.min_height or 0) < need:
-        window.min_height = need
+    _hold_window_min(window, axis, declared,
+                     snap_int(near[axis] + max(_axis_min(axis), span or 0.0)))
 
     # Delivered events refer to the previous committed hit regions. Consume
     # them before solving; register the next regions only after both axes.

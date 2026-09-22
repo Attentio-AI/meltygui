@@ -156,6 +156,10 @@ Rows follow the same rules with axes exchanged. Do not implement weaker behavior
 
 A row inside a column and a column inside a row must propagate through their actual shared bounds. Geometry connected by the layout can constrain an enclosing frame. Unrelated layouts or windows do not become connected merely because they share a screen or DrawState implementation.
 
+A window's minimum span on an axis is the larger of the minimum it declares and the compressed pile of the layouts it currently holds. That floor follows the layouts in both directions: a cell added and then removed (a tile column joined away) must not leave the window unable to shrink past a floor it no longer contains. The frame's own cell is floored at the declared minimum only, never at the stamped floor.
+
+A layout a view built over another layout's edges (a tile renderer's columns over its tile frame) is retired with those edges when the enclosing layout drops them; a view that merely stops rendering does not release its registration by itself.
+
 A divider reaching an enclosing frame can push it outward; a capped chain can pull an applicable frame inward. When that frame is coupled to a native frame, propagation must respect the coupling and backend capabilities. This is layout-to-frame propagation, not permission for arbitrary window-to-window collision.
 
 At a true immovable boundary, respect the available span and connected constraints. Do not produce negative sizes or solve an impossible min/max combination by silently changing the user's limits. Exact precedence for contradictory constraints remains unspecified and should be resolved explicitly if encountered.
