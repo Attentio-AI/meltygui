@@ -308,3 +308,74 @@ double-right gesture, and the inspector popup's on-display shift when the
 native frame grows, are unchanged behaviors observed in both old and new runs
 and are not addressed here.
 
+## 2026-09-23: single-frame inspector jitter
+
+The `draw-state-jitter` baseline and disposable-process probes reproduced two
+geometry errors. The fixes preserve the existing collision rules and position
+caches:
+
+1. A native near-edge resize left an inspector's measured-anchor rebase pending
+   until parent layout. The native solve snapshotted its unrebased proxy, so
+   sticky replay compensated the native movement and `rebase_pin` compensated
+   again. A top movement of 8px briefly put the child 8px below its intended
+   screen position; the following frame removed the extra offset. The solve now
+   includes the booked displacement in its proxy **before** its start snapshot.
+   The actual child still rebases once, after layout. The proxy calculation uses
+   the solve's saved `applied` origin, because its OS edges can temporarily be
+   rewound while processing an acknowledgement.
+2. `draw_context_menu` treated every zero `window_pos` as a new opening. Sticky
+   right-resize can restore zero while native growth is still queued. The menu
+   then clamped itself against the old display width (for example, a pending
+   1283px frame still reported 1280px), moved left for one frame, and snapped
+   back. Initial placement now runs once per opening, after fitting. The caller
+   supplies the opening frame; replaying that same call does not re-arm the
+   clamp, and reopening the retained menu does. This is injected menu state,
+   not another DrawState field.
+
+Both axes of the new native-resize regression failed with an extra 8px before
+the compensation fix. They now pass through consecutive moves, pauses and
+reversal. Opening-state regressions cover fitting, deferred replay, restored
+menus and reopening. The focused layout, collision, diagnostics and hotswap
+selection passed **291 tests**. A separate headless whole-file hotswap check
+preserved class identity and live menu values while adding the new fields.
+
+All **14 admin-melty coded edge-drag smoke tests passed** on a reserved desktop
+with disposable editor sessions, using native Wayland and live GPU rendering.
+GLFW and other GPU configurations were not replayed. Results are under
+`~/.local/state/melty-admin/integration/20260923-jitter-fix-smoke`.
+The diagnostic thresholds and sampling were unchanged:
+
+| Case | Baseline jitter candidates | After fixes |
+| --- | ---: | ---: |
+| Nested resize pushes parent | 10 | 6 |
+| Parent resize pushes nested | 3 | 3 |
+| Nested move pushes parent | 0 | 1 |
+| Column resize pushes parent | 0 | 10 |
+| Display top | 12 (capped) | 0 |
+| Display left | 12 (capped) | 0 |
+| Remaining eight cases | 0 | 0 |
+
+The full updated run has 20 candidates: six tab-row reflows and fourteen forward
+updates following native expansion/input timing. It has zero flagged
+`one-frame reversal without pointer reversal` field changes, versus 45 in the
+baseline. Counts are timing-sensitive, not a count of unique bugs. A subsequent
+replay with the pre-fix solve and menu functions installed only inside disposable
+test processes reproduced six of the same 3px column-width timing candidates
+(`20260923-jitter-before-fix-timing`); these are not a newly introduced pattern.
+All final native frame sizes matched the baseline except a 2px difference in
+one column drag. There were no diagnostic errors. The older edge-motion guard
+still emitted 51 reports (baseline 52); this change does not claim to resolve
+all of that guard's findings.
+
+One separate input issue remains: the native Wayland fallback can combine a
+fresh surface-local pointer event with an older asynchronously polled frame
+origin. That can reverse the apparent pointer and queue a wrong-way native
+resize. The earlier compensation-only left-edge replay still captured one
+jitter candidate, even though the complete run did not. No speculative pointer
+correction or event delay was added. Fixing that path requires a coherent
+pointer/origin pair; the existing generation guard only handles the opposite
+ordering (an old pointer with a new origin). Also interpret diagnostic pointer
+budgets cautiously during native moves: the guard currently adds the applied
+origin to input that the renderer has already corrected into press-origin
+coordinates. These remaining input/diagnostic concerns are outside the two
+geometry fixes above.

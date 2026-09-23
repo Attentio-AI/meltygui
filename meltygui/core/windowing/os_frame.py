@@ -1261,6 +1261,23 @@ def solve(bindings=()):
             if root is not ds:
                 children_of.setdefault(id(root), []).append(ds)
         frames = {id(ds): _frame_of(ds, axis, applied) for ds in windows}
+        # A native move may have landed while this child's placement rebase
+        # still awaits parent layout. Its proxy must include that booked
+        # displacement BEFORE taking the solve's start snapshot. Otherwise
+        # sticky replay restores the child's screen position here and
+        # rebase_pin applies the same displacement a second time later.
+        # Only proxy edges move here; the real window still rebases once,
+        # after layout. Use `applied`: os_moved may have rewound the OS edges
+        # above, so applied_origin() is not this frame's origin inside solve.
+        for ds in windows:
+            previous = _STATE["pin_rebases"].get(id(ds))
+            if previous is not None:
+                base = _anchor_base(ds)
+                if base is not None:
+                    displacement = previous[i] - (applied + base[i])
+                    near_proxy, far_proxy, _floor, _size = frames[id(ds)]
+                    near_proxy[axis] += displacement
+                    far_proxy[axis] += displacement
         start = {wid: (n[axis], f[axis]) for wid, (n, f, _fl, _sz) in frames.items()}
         placement_origins = {id(ds): pin_origin(ds) for ds in windows
                              if id(_frame_parent(ds)) in frames

@@ -206,6 +206,20 @@ be correlated by frame. Logging is capped at 12 detections per gesture and 20
 views per detection (with the full candidate count), with two 4 MiB log backups.
 Diagnostics failures emit `draw-state-jitter-error` once per distinct error.
 
+Two timing rules protect against the reproduced inspector snap-backs:
+
+- A child awaiting `rebase_pin` must enter the native solve at its compensated
+  proxy position, including the booked anchor displacement. Snapshotting its
+  unrebased position lets sticky replay compensate once and the later layout
+  rebase compensate again. The real child still rebases after parent layout.
+- An inspector's display clamp is opening placement, after its initial fit.
+  `window_pos == (0, 0)` alone cannot identify an opening: sticky resize can
+  restore that offset while a native expansion is pending. Reopening explicitly
+  starts a new placement; normal resizing does not.
+
+The [September 23 investigation](WINDOW_COLLISION_INVESTIGATION.md#2026-09-23-single-frame-inspector-jitter)
+records the regressions, live comparison and remaining native input timing issue.
+
 ## Native chrome inset: investigation and resolution
 
 The independent source review observed working-tree edits removing fixed-inset accounting in `column_core.py` and `os_frame.py`, while existing surface-body tests expected the inset to remain. That was a source/test observation during concurrent edits, not proof of a regression or an intentional product change.

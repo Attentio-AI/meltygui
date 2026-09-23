@@ -4313,6 +4313,7 @@ def render_func(*args, **o_kwargs):
                                                                    saturation_scale=0.5,
                                                                    alpha=1.0)
                         returned_val = draw_context_menu(input_value=draw_state, mode=Mode.WINDOW_NO_HEADER, func=func,
+                                                         opening_frame=Melty.frame_count if (right_click or open_inspector) else None,
                                                          tint=mixed_color, show_tint=False, show_add_delete=False,
                                                          min_width=100, min_height=100, pin_to_clip=Pin.PARENT,
                                                          persistent=False, anchor=Anchor.TOP_LEFT, parent_anchor=Anchor.TOP_RIGHT,

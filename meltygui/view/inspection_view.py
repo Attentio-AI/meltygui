@@ -1338,7 +1338,7 @@ def draw_context_menu_items(draw_state, items, right_click, name, unique):
 @render_func(use_cache=False, disable_scroll=True, show_header=False,
              header_same_line=False, show_tint=False, show_name=False, is_tree=False)
 def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, search_text='',
-                      search_active=False,
+                      search_active=False, opening_frame=None,
                       enter_key_down=None, tab_state: TabState = None,
                       menu_state: ContextMenuWindowState = None, **kwargs):
     from meltygui.core.conversion.cache_tree import UNSET_VALUE
@@ -1786,14 +1786,11 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                 request_render()
             menu_state.fit_done = True
 
-    # Never open the menu partially off-display. While the window offset is
-    # still the fresh default reset (0,0) - core_render does that on every
-    # right-click open - shift window_pos (the additive offset in the pinned
-    # branch of _abs_left/_abs_top) so the whole window fits inside the
-    # display. A user drag writes window_pos and ends this clamping; blit
-    # placement follows abs pos anyway, so no invalidate is needed for a move.
+    # Place once per opening, after first-load fitting. A zero offset alone
+    # is not an opening: sticky right-resize restores it, and clamping then
+    # would fight the native expansion that has not landed yet.
     wp = draw_state.window_pos or (0, 0)
-    if not fitting and tuple(wp) == (0, 0):
+    if menu_state.take_opening_placement(opening_frame, fitting) and tuple(wp) == (0, 0):
         disp = imgui.get_io().display_size
         x0, y0 = draw_state._abs_left(), draw_state._abs_top()
         w = draw_state.width or draw_state.content_width or 0

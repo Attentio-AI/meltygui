@@ -121,7 +121,7 @@ class ColorPickerState(DictConversion):
 
 
 
-@no_save("fit_phase")
+@no_save("fit_phase", "placement_pending", "opening_frame")
 class ContextMenuWindowState(DictConversion):
     """Per-menu persisted state for the context menu WINDOW, draw_context_menu
     (injected via `menu_state: ContextMenuWindowState = None` — the TabState
@@ -138,6 +138,19 @@ class ContextMenuWindowState(DictConversion):
         # The fit's two-frame sequence (0: stamp header width, 1: measure
         # height). Session-only - a fit never spans a restart.
         self.fit_phase = 0
+        # Opening placement is separate from drag position: sticky resizing
+        # can legitimately restore window_pos to (0, 0) many times.
+        self.placement_pending = True
+        self.opening_frame = None
+
+    def take_opening_placement(self, opening_frame, fitting):
+        if opening_frame is not None and opening_frame != self.opening_frame:
+            self.opening_frame = opening_frame
+            self.placement_pending = True
+        if fitting or not self.placement_pending:
+            return False
+        self.placement_pending = False
+        return True
 
 
 @exclude("restore_first_line", "restore_total_lines", "restore_text",

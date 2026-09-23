@@ -262,3 +262,30 @@ def test_caller_sized_workspace_edges_resize_native_parent(studio, hand, monkeyp
     assert studio.size[index] == (800 if axis == 'x' else 600)
     # A child's constraints must not overwrite the ancestor's declared policy.
     assert (app.min_width, app.min_height) == declared_minimum
+
+
+@pytest.mark.parametrize('axis', ['x', 'y'])
+def test_native_near_resize_compensates_deferred_anchor_once_per_frame(studio, hand, axis):
+    """A queued native move and sticky replay must not both carry the inspector."""
+    from test_os_frame import app_root, app_frame, FakeWindow
+    studio.size = [800., 600.]
+    app = app_root(studio)
+    placement = SimpleNamespace(parent_window=app, closable=False,
+                                window_pos=(0., 0.), width=800, height=600)
+    child = FakeWindow(width=200, min_width=100, x=200)
+    child.height = 150
+    child.window_pos = (200., 100.)
+    child.parent_window = placement
+    child.id = child.name = 'inspector'
+    child.closable = True
+    studio.nested.append(child)
+    app_frame(studio, app, child)
+    i = 0 if axis == 'x' else 1
+    initial = os_frame.applied_origin(axis) + abs_of(child)[i]
+    # Consecutive movement, pauses while an acknowledgement lands, and reversal.
+    for delta in (-8., -7., 0., -8., -7., 0., 7., 8., 7., 8., 0., 0.):
+        if delta:
+            os_frame.queue_drag(axis, 0, delta)
+        app_frame(studio, app, child)
+        actual = os_frame.applied_origin(axis) + abs_of(child)[i]
+        assert actual == pytest.approx(initial), (axis, delta, actual, initial)
