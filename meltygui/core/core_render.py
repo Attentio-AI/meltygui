@@ -445,7 +445,7 @@ _AUTO_PARAM_EXCLUDE = {
     'kwargs', 'args', 'o_kwargs', 'next_kwargs', 'changed',
     # per-call context / converter args, never view state
     'key', 'collection', 'meta', 'mode', 'current_mode', 'real_type',
-    'data', 'ref', 'chain', 'initial', 'auto_state',
+    'data', 'ref', 'chain', 'initial', 'auto_state', 'source_context',
 }
 
 # Object-attached params: a VALUE OBJECT can set one of these as a

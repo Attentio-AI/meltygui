@@ -134,6 +134,17 @@ def three_way_merge(base, mine, theirs):
 
 @window(view_func=RenderFuncs.draw_type, disable_scroll=False)
 class PendingSave:
+    # Non-view models subscribe to the same edit edge as draw-state consumers.
+    _listeners = set()
+
+    @classmethod
+    def subscribe(cls, callback):
+        cls._listeners.add(callback)
+
+    @classmethod
+    def unsubscribe(cls, callback):
+        cls._listeners.discard(callback)
+
     pending_saves = defaultdict(Any)
     originals = defaultdict(Any)
     # Result lines from manual merge actions (MERGED / ADOPTED / KEPT OURS /
@@ -245,6 +256,11 @@ class PendingSave:
             call('pending_save_changed', address)
         except Exception as error:
             print_stack_trace(exception=error)
+        for callback in tuple(cls._listeners):
+            try:
+                callback(address)
+            except Exception as error:
+                print_stack_trace(exception=error)
 
     @classmethod
     def pending_gen_for(cls, path):
@@ -598,9 +614,7 @@ class PendingSave:
                                           ExternalChanges.originals.get(key))
         if base is None:
             base = Melty.read_code(path)
-        if base is None:
-            return None
-        base_n = _norm(base)
+        base_n = None if base is None else _norm(base)
         try:
             rp = _P(path).resolve()
         except OSError:
@@ -630,6 +644,8 @@ class PendingSave:
         whole = [d for (s, e, d) in edits if s is None]
         if whole:
             return _norm(whole[-1])
+        if base_n is None:
+            return None
         lines = base_n.split("\n")
         for start, end, data in sorted((e for e in edits if e[0] is not None),
                                        key=lambda e: -e[0]):

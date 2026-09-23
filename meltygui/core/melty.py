@@ -151,6 +151,7 @@ from watchdog.events import FileSystemEventHandler
 
 
 class FileWatch:
+    _start_lock = _threading.Lock()
     observer = Observer()
     handler = FileSystemEventHandler()
     # Every directory events are expected from (by any means) - what the
@@ -330,16 +331,17 @@ class FileWatch:
     def start(cls):
         # Idempotent: the studio starts it from Melty.init; a @glfw_window
         # app starts it from the first view that watches a directory.
-        if cls.observer.is_alive():
-            return
-        cls.handler.on_modified = cls._on_event
-        cls.handler.on_created = cls._on_event
-        cls.handler.on_moved = cls._on_moved
-        cls.handler.on_deleted = cls._on_deleted
-        try:
-            cls.observer.start()
-        except OSError as error:
-            cls._polling_fallback(error)
+        with cls._start_lock:
+            if cls.observer.is_alive():
+                return
+            cls.handler.on_modified = cls._on_event
+            cls.handler.on_created = cls._on_event
+            cls.handler.on_moved = cls._on_moved
+            cls.handler.on_deleted = cls._on_deleted
+            try:
+                cls.observer.start()
+            except OSError as error:
+                cls._polling_fallback(error)
 
     @classmethod
     def _on_deleted(cls, event):

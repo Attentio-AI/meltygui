@@ -1091,7 +1091,7 @@ def draw_text(input_value: str, height=None,
               highlight_token_matches=True, roster_live_hold=True,
               roster_world=None, roster_table=None,
               fim="", fim_state: FimState = None,
-              source_tools: SourceToolsState = None):
+              source_tools: SourceToolsState = None, source_context=None):
     """`show_widgets=False` hides every inline token widget (run/eye buttons,
     number drags, bool switches, icon pickers -- the token_views layer).
     `highlight_token_matches=False` turns off the caret-rest same-token wash
@@ -6304,6 +6304,7 @@ def draw_text(input_value: str, height=None,
                     _fn_root = code_dict if code_dict is not None else code_tree
                     _fp = (getattr(_fn_root, 'file_path', None)
                            or getattr(getattr(_fn_root, 'address', None), 'path', None)
+                           or (source_context.display_path if source_context is not None else None)
                            or getattr(jump_to, 'path', None))
                     _extra['file_path'] = str(_fp) if _fp else None
                     _extra['def_line'] = _usage_off + _bl + 1

@@ -2335,7 +2335,14 @@ def _fnrun_start(editor_ds, file_path, def_line, def_name,
     mode = 'live' if instrumented else 'run'
     from meltygui.core.runtime.extensions import call
     try:
-        external_run = call('source_run', file_path, def_name, params, console, instrumented)
+        source = (editor_ds._kwargs or {}).get('source_context')
+        if source is None:
+            external_run = call('source_run', file_path, def_name, params, console, instrumented)
+        else:
+            external_run = call('source_run', file_path, def_name, params, console,
+                                instrumented, source=source)
+            if external_run is None:
+                raise RuntimeError('No runner for the selected source context')
         python = external_run is not None
         fn = None if python else _fnrun_resolve(file_path, def_line, def_name, prefer_pending=True)
     except Exception as error:
