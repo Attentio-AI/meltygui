@@ -1110,12 +1110,15 @@ def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_
 
     def section_header(label, expanded, head_y, identity):
         from meltygui.view.header_view import flat_button
+        if draw_state.on_action("left_mouse_clicked", view_id=identity,
+                                rect=(x, head_y, x + width, head_y + row_h),
+                                priority_delta=4) is not None:
+            expanded = not expanded
         caret = f"\uf078" if expanded else f"\uf054"
         imgui.set_cursor_screen_pos((x, head_y))
-        if flat_button(f"{caret}  {label}", draw_state, view_id=identity,
-                       width=width, height=row_h, alpha=0, shadow=False,
-                       text_offset_x=px(left_pad), text_color=Tint.dd_text()[:3]):
-            expanded = not expanded
+        flat_button(f"{caret}  {label}", draw_state, view_id=identity,
+                    width=width, height=row_h, alpha=0, shadow=False, layout=False,
+                    text_offset_x=px(left_pad), text_color=Tint.dd_text()[:3])
         return expanded
 
     shortcut_state.shortcuts_expanded = section_header(
