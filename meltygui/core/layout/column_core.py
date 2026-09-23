@@ -956,10 +956,9 @@ def _register_frame_handles(window):
                 rect = (win_x, y-half, win_x+window.width, y+half)
                 cursor = mouse_cursor.RESIZE_NS
             view_id = f"win_edge_{axis}_{k}"
-            window.on_action("left_mouse_drag", view_id=view_id, rect=rect,
+            window.on_action(("left_mouse_drag", "left_mouse_down"),
+                             view_id=view_id, rect=rect,
                              priority_delta=1, cursor=cursor)
-            window.on_action("left_mouse_down", view_id=view_id, rect=rect,
-                             priority_delta=1)
 
 
 def window_edge_pass(window):
@@ -1710,13 +1709,11 @@ class ColumnLayout:
                         self.win_x + hi, grab_bottom)
                 if draw_state.hover_eligible(rect=rect):
                     self.edge_hovered = True
-                drag = draw_state.on_action("left_mouse_drag",
-                                            view_id=f"col_edge{handle_tag}_{k}",
-                                            rect=rect, priority_delta=1,
-                                            cursor=mouse_cursor.RESIZE_EW)
-                press = draw_state.on_action("left_mouse_down",
-                                             view_id=f"col_edge{handle_tag}_{k}",
-                                             rect=rect, priority_delta=1)
+                events = draw_state.on_action(
+                    ("left_mouse_drag", "left_mouse_down"),
+                    view_id=f"col_edge{handle_tag}_{k}", rect=rect,
+                    priority_delta=1, cursor=mouse_cursor.RESIZE_EW) or {}
+                drag, press = events.get("left_mouse_drag"), events.get("left_mouse_down")
                 if press:
                     # Resize press, before any drag motion: freeze hosts
                     # snap their clean pre-drag capture this frame
@@ -2098,13 +2095,11 @@ class RowLayout:
                 rect = (grab_left, self.win_y + lo, grab_right, self.win_y + hi)
                 if draw_state.hover_eligible(rect=rect):
                     self.edge_hovered = True
-                drag = draw_state.on_action("left_mouse_drag",
-                                            view_id=f"row_edge{handle_tag}_{k}",
-                                            rect=rect, priority_delta=1,
-                                            cursor=mouse_cursor.RESIZE_NS)
-                press = draw_state.on_action("left_mouse_down",
-                                             view_id=f"row_edge{handle_tag}_{k}",
-                                             rect=rect, priority_delta=1)
+                events = draw_state.on_action(
+                    ("left_mouse_drag", "left_mouse_down"),
+                    view_id=f"row_edge{handle_tag}_{k}", rect=rect,
+                    priority_delta=1, cursor=mouse_cursor.RESIZE_NS) or {}
+                drag, press = events.get("left_mouse_drag"), events.get("left_mouse_down")
                 if press:
                     from meltygui.core.melty import Melty
                     Melty.resize_press_frame = Melty.frame_count

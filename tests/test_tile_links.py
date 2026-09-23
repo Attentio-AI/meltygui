@@ -204,11 +204,11 @@ def test_link_status_keeps_toolbar_geometry_stable(layout, monkeypatch, width):
     for identity in (None, next(candidates(consumer, 'source', endpoints))[0],
                      ('removed', 'module.long_missing_view_name', None)):
         set_binding(consumer, 'source', identity)
-        tile_view.draw_tile_link(consumer, "source", endpoints, width, 28)
+        tile_view.draw_tile_links(consumer, endpoints, width, 28)
     assert {call['width'] for call in calls} == {width}
     assert {call['height'] for call in calls} == {28}
-    assert {call['display_label'] for call in calls} == {f'\uf0c1'}
-    assert len({call['menu_title'] for call in calls}) == 1
+    assert all(call['display_label'].startswith('\uf0c1 ') for call in calls)
+    assert all(call['name'] == 'Links' for call in calls)
     assert all(call['trigger_caret'] == ('', '') for call in calls)
 
 
@@ -420,7 +420,7 @@ def test_split_copies_all_link_settings_without_aliasing(layout, axis, before, s
     assert restored_duplicate.links == duplicate.links
 
 
-def test_each_parameter_picker_lists_only_eligible_sources_and_edits_itself(layout, monkeypatch):
+def test_combined_picker_lists_parameter_columns_and_edits_only_selected_parameter(layout, monkeypatch):
     import meltygui.view.tile_view as tile_view
     from meltygui.core.layout.tile_links import AUTO
     endpoints = prepare_endpoints(layout)
@@ -428,25 +428,30 @@ def test_each_parameter_picker_lists_only_eligible_sources_and_edits_itself(layo
     calls = []
     def dropdown(value, **kwargs):
         calls.append(kwargs)
-        return True, AUTO
+        return True, ('source', AUTO)
     monkeypatch.setattr(tile_view, 'draw_dropdown', dropdown)
+    tile_view.draw_tile_links(target, endpoints, 28, 28)
+    assert len(calls) == 1
+    assert bindings_for(target) == {'source': AUTO}
+    columns = calls[0]['menu_columns']
+    assert [(column['title'], column['subtitle']) for column in columns] == [
+        ('source', 'DrawState[source_view]'), ('selection', 'SelectionState')]
+    assert calls[0]['keep_open_on_select']
+    values = list(calls[0]['collection'].values())
     for name in target.parameters:
-        tile_view.draw_tile_link(target, name, endpoints, 400, 28)
-        assert bindings_for(target)[name] == AUTO
-        entries = list(calls[-1]['collection'].values())
-        assert AUTO in entries and None in entries
-        assert {item for item in entries if isinstance(item, tuple)} == {
+        assert (name, AUTO) in values and (name, None) in values
+        assert {binding for parameter, binding in values if parameter == name and isinstance(binding, tuple)} == {
             identity for identity, _ in candidates(target, name, endpoints)}
-    assert len({call['key'] for call in calls}) == 2
-    assert calls[0]['menu_title'] == 'source: DrawState[source_view]'
-    assert calls[1]['menu_title'] == 'selection: SelectionState'
+    assert all(not label.startswith('✓') for column in columns for _, label in column['rows'])
+    assert all(column['rows'][-1][1] == '\uf1c0 Self contained' for column in columns)
+    assert all(calls[0]['collection'][column['rows'][-1][0]][1] is None for column in columns)
 
 
 @pytest.mark.parametrize('width,height,count', [(960, 640, 3), (320, 640, 2), (80, 28, 3), (320, 60, 5), (28, 28, 12)])
 def test_parameter_picker_layout_fits_and_does_not_overlap(width, height, count):
     from meltygui.view.tile_view import tile_control_layout
     content_height, editor_width, slots = tile_control_layout(width, height, count)
-    assert len(slots) == count
+    assert len(slots) == bool(count)
     rectangles = [(0, 0, editor_width, 28)] + [(x, y, x + w, y + 28) for x, y, w in slots]
     for index, (left, top, right, bottom) in enumerate(rectangles):
         assert 0 <= left <= right <= width + 0.001
@@ -470,7 +475,7 @@ def test_link_buttons_keep_a_single_compact_row_and_leave_toolbar_space():
     content, editor, slots = tile_control_layout(960, 600, 2)
     assert content == 572
     assert editor == 180
-    assert slots == [(184, 0, 28), (216, 0, 28)]
+    assert slots == [(184, 0, 72)]
     assert all(y == 0 for _, y, _ in slots)
 
 
@@ -538,3 +543,119 @@ def test_hover_preview_tracks_geometry_and_stops_when_not_hovered(monkeypatch):
     monkeypatch.setattr(Melty, 'popover_focused_ds', None)
     draw()
     overlay.add_rect.assert_not_called()
+
+
+def test_explicit_untyped_state_forwarded_by_wrapper_tracks_dependencies(gl_context):
+    from conftest import begin_frame, end_frame
+    from test_render_func_integration import _init_melty, _tick_frame
+    runtime = _init_melty()
+    owners = []
+
+    @render_func(show_bg=False, use_cache=False)
+    def library_view(input_value, draw_state=None, project_source=None):
+        owners.append(draw_state)
+        return False, input_value
+
+    supplied = SelectionState()
+    for source in (supplied, None):
+        _tick_frame(runtime)
+        begin_frame()
+        try:
+            library_view(None, name='explicit project selection', project_source=source)
+            subscribers = runtime.cache.parameter_dependencies.subscribers(supplied)
+            assert (owners[-1] in subscribers) == (source is supplied)
+            assert owners[-1] not in runtime.cache.parameter_dependencies.subscribers(owners[-1])
+        finally:
+            end_frame()
+
+
+def test_source_nickname_icon_and_live_tint_do_not_change_binding(layout, monkeypatch):
+    import meltygui.view.tile_view as tile_view
+    endpoints = prepare_endpoints(layout)
+    consumer, first, second = endpoints.values()
+    first.draw_state.nickname = 'project-one'
+    second.draw_state.nickname = 'project-two'
+    first.draw_state.current_tint = (0.2, 0.7, 0.4)
+    monkeypatch.setattr(source_view, '__header_defaults__', {'icon': '\uf07c', 'tint': (0.9, 0.1, 0.1)})
+    identity = next(identity for identity, _ in candidates(consumer, 'source', endpoints)
+                    if identity[0] == first.tile.id)
+    set_binding(consumer, 'source', identity)
+    unique = first.draw_state.unique
+    calls = []
+    monkeypatch.setattr(tile_view, 'draw_dropdown',
+                        lambda value, **kwargs: (calls.append((value, kwargs)) or False, None))
+    tile_view.draw_tile_links(consumer, endpoints, 28, 28)
+    assert calls[-1][1]['collection']['source: \uf07c project-one'] == ('source', identity)
+    assert calls[-1][1]['row_tints'][('source', identity)] == (0.2, 0.7, 0.4)
+    first.draw_state.nickname = 'renamed'
+    first.draw_state.current_tint = (0.4, 0.3, 0.8)
+    tile_view.draw_tile_links(consumer, endpoints, 28, 28)
+    assert calls[-1][1]['collection']['source: \uf07c renamed'] == ('source', identity)
+    assert calls[-1][1]['row_tints'][('source', identity)] == (0.4, 0.3, 0.8)
+    assert calls[0][0] != calls[1][0]
+    assert bindings_for(consumer)['source'] == identity
+    assert first.draw_state.unique == unique
+    second.draw_state.nickname = 'renamed'
+    available = list(candidates(consumer, 'source', endpoints))
+    assert str(first.tile.id) in tile_view.source_label(identity, endpoints, available)
+    first.draw_state.nickname = None
+    assert tile_view.source_display_name(first) == '\uf07c Left'
+
+
+def test_drawstate_nickname_is_independent_display_metadata():
+    state = DrawState()
+    assert state.nickname is None
+    state.unique, state.name, state.nickname = 'stable-id', 'internal-name', 'Project'
+    restored = loads(dumps(state))
+    assert restored.nickname == 'Project'
+    assert state.unique == 'stable-id'
+    assert state.name == 'internal-name'
+
+
+@pytest.mark.parametrize('width', [320, 700, 1200])
+def test_column_menu_wraps_without_overlapping(monkeypatch, width):
+    from meltygui.view import dropdown_view
+    monkeypatch.setattr(dropdown_view.imgui, 'calc_text_size', lambda text: (len(text) * 7, 16))
+    columns = [dict(title=f'parameter_{i}', subtitle='DrawState[view]',
+                    rows=[(str(j), f'Instance {j}') for j in range(i + 2)]) for i in range(3)]
+    menu_width, height, positions = dropdown_view._dd_column_layout(columns, width)
+    assert menu_width <= width
+    assert len(positions) == 3
+    if width == 320:
+        assert len({y for x, y, cell in positions}) == 3
+    else:
+        assert positions[0][1] == positions[1][1]
+    for column, (x, y, cell) in zip(columns, positions):
+        assert 0 <= x < x + cell <= menu_width
+        assert y + 46 + len(column['rows']) * dropdown_view.Toggles.Dropdown.row_height <= height
+
+
+def test_link_trigger_shows_source_icons_and_fallbacks(layout, monkeypatch):
+    from meltygui.view.tile_view import link_trigger_label, tile_link_column
+    from meltygui.core.layout.tile_links import AUTO
+    endpoints = prepare_endpoints(layout)
+    consumer, source, _ = endpoints.values()
+    assert link_trigger_label(consumer, endpoints) == '\uf0c1 \uf1c0 \uf1c0'
+    set_binding(consumer, 'source', AUTO)
+    monkeypatch.setattr(source_view, '__header_defaults__', {'icon': '\uf07c'})
+    assert link_trigger_label(consumer, endpoints) == '\uf0c1 \uf07c \uf1c0'
+    assert next(iter(tile_link_column(consumer, 'source', endpoints)['choices'])).startswith('\uf0d0 Auto')
+    monkeypatch.setattr(source_view, '__header_defaults__', {})
+    assert link_trigger_label(consumer, endpoints) == '\uf0c1 \uf0c1 \uf1c0'
+
+
+def test_auto_label_previews_target_when_not_selected(layout):
+    from meltygui.view.tile_view import tile_link_column, source_label
+    from meltygui.core.layout.tile_links import AUTO, selected_candidate
+    endpoints = prepare_endpoints(layout)
+    consumer = endpoints[layout.children[0].id]
+    available = list(candidates(consumer, 'source', endpoints))
+    for binding in (None, available[-1][0]):
+        set_binding(consumer, 'source', binding)
+        before = dict(bindings_for(consumer))
+        target = selected_candidate(consumer, 'source', endpoints, preview_auto=True)
+        column = tile_link_column(consumer, 'source', endpoints)
+        label = next(label for label, value in column['choices'].items() if value == AUTO)
+        assert label == '\uf0d0 Auto → ' + source_label(target[0], endpoints, available)
+        assert bindings_for(consumer) == before
+        assert column['selected'] == binding

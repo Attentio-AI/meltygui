@@ -249,6 +249,7 @@ class TextEditorState(DictConversion):
 class DropDownState(DictConversion):
     def __init__(self):
         super().__init__()
+        self.column_signature = None
         self.selected = None
         # The single chain of branch labels currently expanded, e.g. ("color",
         # "rgb"). One path only - guarantees at most one sub-menu open per level.
@@ -695,6 +696,8 @@ class DrawState(DictConversion):
         self.tint = (0.11, 0.12, 0.14)
         self.current_tint = None
 
+        # User-facing instance label; never participates in identity/cache keys.
+        self.nickname = None
         self.unique = None  # stable UI ID
         self.expanded = True
         self.name = ""

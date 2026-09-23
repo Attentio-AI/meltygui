@@ -33,6 +33,54 @@ def test_extension_registry_is_normalized():
     assert extension_to_codec[".py"] is TextFileCodec
 
 
+def test_file_icons_are_distinct_supported_and_do_not_read_files(monkeypatch):
+    from meltygui.code.codec_registry import file_icon_for_path
+    from meltygui.model.icon_model import FA_ICONS
+
+    def unexpected_io(*args, **kwargs):
+        raise AssertionError("Icon lookup must not inspect files")
+
+    monkeypatch.setattr(Path, "stat", unexpected_io)
+    monkeypatch.setattr(Path, "open", unexpected_io)
+    icons = [file_icon_for_path(f"/missing/file.{ext}")
+             for ext in ("png", "jpeg", "txt", "py", "md")]
+    assert len(set(icons)) == 5
+    supported = {glyph for group in FA_ICONS.values() for glyph in group.values()}
+    assert all(icon in supported for icon in icons)
+    assert file_icon_for_path("PHOTO.JPG") == icons[1]
+    assert file_icon_for_path("PHOTO.PNG") == icons[0]
+    assert file_icon_for_path("unknown.whatever") is None
+
+
+def test_file_rows_preserve_custom_icons_and_folder_fallback():
+    from meltygui.files.fast_file_explorer import row_icon
+    path = Path("photo.png")
+    assert row_icon(path, False, None, "folder", "file") == ImageCodec.icon_for_path(path)
+    assert row_icon(path, False, {"icon": "custom"}, "folder", "file") == "custom"
+    assert row_icon(path, True, None, "folder", "file") == "folder"
+    assert row_icon(Path("unknown.bin"), False, None, "folder", "file") == "file"
+
+
+def test_codec_badges_keep_extension_and_accent_separate_from_file_tint(monkeypatch):
+    from meltygui.code.codec_registry import file_badge_for_path
+
+    def unexpected_io(*args, **kwargs):
+        raise AssertionError("Badge lookup must not inspect files")
+
+    monkeypatch.setattr(Path, "stat", unexpected_io)
+    monkeypatch.setattr(Path, "open", unexpected_io)
+    badges = {ext: file_badge_for_path(f"file.{ext.upper()}")
+              for ext in ("png", "jpeg", "jpg", "txt", "md", "py")}
+    assert all(badge[0] == ext.upper() for ext, badge in badges.items())
+    assert badges["jpeg"][1] == badges["jpg"][1]
+    assert badges["png"][1][1] > badges["png"][1][0]
+    assert badges["jpeg"][1][0] > badges["jpeg"][1][1]
+    assert badges["md"][1][0] < badges["jpeg"][1][0]
+    assert badges["txt"][1][0] > badges["txt"][1][2]
+    assert badges["py"][2] == "python"
+    assert file_badge_for_path("unknown.bin") is None
+
+
 def test_codec_for_path_extension_case_insensitive(tmp_path):
     p = tmp_path / "PHOTO.PNG"
     Image.new("RGB", (2, 2)).save(p, format="PNG")
@@ -219,7 +267,5 @@ def test_asset_extensions_are_the_non_text_codecs():
     exts = asset_extensions()
     assert ".png" in exts and ".jpg" in exts
     assert ".py" not in exts and ".md" not in exts     # TextFileCodec's
-
-
 
 

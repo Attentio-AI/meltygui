@@ -110,8 +110,10 @@ def test_frame_hit_regions_use_both_solved_dimensions(monkeypatch):
     window = FakeWindow(width=300, height=400)
     C.window_edge_pass(window)
     rectangles = {}
-    monkeypatch.setattr(window, 'on_action', lambda event, **kwargs:
-                        rectangles.__setitem__((event, kwargs['view_id']), kwargs['rect']))
+    def register(events, **kwargs):
+        for event in (events,) if isinstance(events, str) else events:
+            rectangles[event, kwargs['view_id']] = kwargs['rect']
+    monkeypatch.setattr(window, 'on_action', register)
     window._pending_drags.append((window._frame_edges[1], 360., True))
     window._pending_row_drags.append((window._frame_rows[1], 450., True))
     run_pass(window)

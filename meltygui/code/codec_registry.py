@@ -11,6 +11,16 @@ extension_to_codec = {}
 type_to_codec = {}
 
 
+def file_icon_for_path(path):
+    """Extension-only codec glyph for file lists and tabs; never read file data."""
+    from pathlib import Path
+    # File browsers also work before any editor has initialized the codecs.
+    from meltygui.code import new_codecs
+
+    codec = extension_to_codec.get(Path(path).suffix.lower())
+    return codec.icon_for_path(path) if codec is not None else None
+
+
 def codec_for_type(value_type):
     """The codec class registered for `value_type` or a base of it (MRO
     walk), or None."""
@@ -19,3 +29,12 @@ def codec_for_type(value_type):
         if codec is not None:
             return codec
     return None
+
+
+def file_badge_for_path(path):
+    """Codec-owned (extension label, accent RGB, mark) without file I/O."""
+    from pathlib import Path
+    from meltygui.code import new_codecs
+
+    codec = extension_to_codec.get(Path(path).suffix.lower())
+    return codec.badge_for_path(path) if codec is not None else None

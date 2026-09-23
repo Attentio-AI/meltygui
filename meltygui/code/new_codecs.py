@@ -286,6 +286,19 @@ class Codec:
     # Tab glyph (unicode) for files of this type - the editor's tab bar
     # falls back to it if the file's FileMeta entry carries no icon.
     icon = None
+    # Override individual extensions here when one codec handles several formats.
+    extension_icons = {}
+    # Small badge accents; the surrounding file icon keeps the user's tint.
+    extension_badges = {}
+
+    @classmethod
+    def badge_for_path(cls, path):
+        return cls.extension_badges.get(Path(path).suffix.lower())
+
+    @classmethod
+    def icon_for_path(cls, path):
+        """File glyph without loading or inspecting the file's contents."""
+        return cls.extension_icons.get(Path(path).suffix.lower(), cls.icon)
 
     @staticmethod
     def show_code_buttons(address):
@@ -1049,6 +1062,17 @@ class TextFileCodec(TypeCodec):
     inherited TypeCodec load/save, so this codec is just address resolution:
     point at the file, register the watcher, cache by mtime."""
     name = "Text File"
+    extension_badges = {
+        ".txt": ("TXT", (0.94, 0.76, 0.28), None),
+        ".py": ("PY", (0.35, 0.62, 0.84), "python"),
+        ".md": ("MD", (0.48, 0.10, 0.15), None),
+    }
+    icon = f""  # file-alt; default for other text extensions
+    extension_icons = {
+        ".txt": f"",  # file-alt
+        ".py": f"",   # file-code
+        ".md": f"",   # paragraph
+    }
 
     @staticmethod
     def show_code_buttons(address):
@@ -1116,10 +1140,20 @@ class ImageCodec(Codec):
     (editable=False): view edits never dirty the host and save() refuses."""
 
     name = "Image"
+    extension_badges = {
+        ".png": ("PNG", (0.33, 0.72, 0.47), "image"),
+        ".jpg": ("JPG", (0.88, 0.28, 0.31), "image"),
+        ".jpeg": ("JPEG", (0.88, 0.28, 0.31), "image"),
+    }
     # PendingTexture has a default renderer (draw_pending_texture is
     # register_default_for_type), so no draw_func: type routing finds it.
     editable = False
-    icon = "\uf03e"   # FA image
+    icon = f""  # image; default for other image extensions
+    extension_icons = {
+        ".png": f"",   # file-image
+        ".jpg": f"",   # camera
+        ".jpeg": f"",  # camera (same format as .jpg)
+    }
     resolve_address = staticmethod(_resolve_plain_file)
 
     # claims() runs in the render thread (codec_for_path is re-ried ever

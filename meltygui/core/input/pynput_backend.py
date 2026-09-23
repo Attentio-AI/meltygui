@@ -648,12 +648,15 @@ class GlfwQueueBackend:
         regardless of how often GLFW delivers REPEAT edges."""
         if io.key_ctrl or io.key_shift or io.key_alt or io.key_super:
             return True
+        # A resize/selection drag already proves input is held. Reading
+        # keys_down materializes the keyboard array; avoid that work while
+        # a mouse button is down, without changing keyboard-only behavior.
+        for i in range(5):
+            if imgui.is_mouse_down(i):
+                return True
         kd = io.keys_down
         for i in range(len(kd)):
             if kd[i]:
-                return True
-        for i in range(5):
-            if imgui.is_mouse_down(i):
                 return True
         return False
 

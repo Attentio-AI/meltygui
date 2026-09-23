@@ -70,7 +70,7 @@ from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.windowing.glfw_utils import request_render
-from meltygui.code.codec_registry import extension_to_codec
+from meltygui.code.codec_registry import file_icon_for_path
 from meltygui.core.cache.tile_marks import add_shadow
 from meltygui.core.cache.tile_marks import clear_glows
 from meltygui.core.layout.header_runtime import _brightness_clamp_fn
@@ -85,9 +85,7 @@ def row_icon(path, is_dir, entry, folder_icon, file_icon):
         return icon
     if is_dir:
         return folder_icon
-    codec = extension_to_codec.get(path.suffix.lower())
-    codec_icon = getattr(codec, "icon", None) if codec is not None else None
-    return codec_icon or file_icon
+    return file_icon_for_path(path) or file_icon
 
 
 def row_tint_bg():

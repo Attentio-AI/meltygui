@@ -9,10 +9,14 @@ def parameter_annotations(func):
     """Resolve independently: one unrelated forward ref must not hide a link."""
     raw = inspect.unwrap(func)
     params = inspect.signature(raw).parameters
+    # Resolve self-referential view annotations while @render_func is decorating.
+    namespace = dict(getattr(raw, "__globals__", {}))
+    if inspect.isfunction(raw):
+        namespace[raw.__name__] = raw
     resolved = {}
     if any(isinstance(p.annotation, str) for p in params.values()):
         try:
-            resolved = get_type_hints(raw)
+            resolved = get_type_hints(raw, globalns=namespace)
         except (NameError, TypeError, SyntaxError, AttributeError):
             pass
     result = {}
@@ -22,9 +26,9 @@ def parameter_annotations(func):
             annotation = resolved[name]
         elif isinstance(annotation, str):
             try:
-                annotation = eval(annotation, raw.__globals__)
+                annotation = eval(annotation, namespace)
                 if isinstance(annotation, str):
-                    annotation = eval(annotation, raw.__globals__)
+                    annotation = eval(annotation, namespace)
             except (NameError, TypeError, SyntaxError, AttributeError):
                 pass
         result[name] = annotation

@@ -11,8 +11,24 @@ import meltygui_imgui as imgui
 import traceback
 
 
-@render_func(use_cache=True, show_bg=False, shadow=False, selectable=False, is_tree=False,
-             with_header=None, disable_scroll=True, show_add_delete=False)
+def _direct_menu_bar(body):
+    """Retain a full host for explicit window/conversion features only."""
+    from functools import wraps
+    wrapped = render_func(use_cache=True, show_bg=False, shadow=False,
+                          selectable=False, is_tree=False, with_header=None,
+                          disable_scroll=True, show_add_delete=False)(body)
+
+    @wraps(body)
+    def host(input_value=None, **kwargs):
+        from meltygui.core.rendering.fast_view import draw_fast_control
+        from meltygui.view.dropdown_view import FAST_DROPDOWN_WRAPPER_KWARGS
+        return draw_fast_control(input_value, kwargs, wrapped=wrapped, host=host,
+                                 state_name="menu_bar_state", state_type=MenuBarState,
+                                 wrapper_kwargs=FAST_DROPDOWN_WRAPPER_KWARGS)
+    return host
+
+
+@_direct_menu_bar
 def draw_menu_bar(input_value: dict, draw_state, name, unique, menu_bar_state: MenuBarState,
                   bar_height=25.0, title_pad=12.0, title_gap=2.0, **kwargs):
     """The bar: `input_value` is {title: menu}, a menu being what draw_dd_menu

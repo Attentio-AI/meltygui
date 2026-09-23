@@ -65,7 +65,7 @@ from meltygui.core.cache.invalidation_tracker import Note
 _NOTE = dict(name="draw_tiles", tint=(0.55, 0.85, 0.45))
 
 
-@no_save("gesture")
+@no_save("gesture", "_link_endpoints", "_resize_tiles", "_resize_signature", "_resize_active")
 class TileManagerState(DictConversion):
     """Injected state of a tile-manager host (declare
     ``tile_state: TileManagerState = None`` on the render_func). ``gesture``
@@ -77,6 +77,9 @@ class TileManagerState(DictConversion):
         self.gesture = None
         self.content_top = {"y": 0.0}
         self._link_endpoints = {}
+        self._resize_tiles = {}
+        self._resize_signature = ()
+        self._resize_active = False
 
 
 # Split/join handles: leave bottom-left clear for the tile selector.
@@ -220,7 +223,7 @@ def hover_shown(draw_state, rect, owns_gesture, view_id=None):
 
 
 def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
-              tile_state=None, gap=4.0):
+              tile_state=None, gap=4.0, leaf_frames=None):
     """Paint one leaf — no background (``draw_split_dividers`` draws the
     lines between tiles), a shadow lifting the tile off the host, and a
     small triangle in each corner (brighter when hovered or dragged) that
@@ -242,6 +245,8 @@ def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
     tile_shadow_radius = 4.0
 
     rect = tile_rect(frame, draw_state, gap=gap)
+    if leaf_frames is not None:
+        leaf_frames.append((path, tile, frame, rect))
     if rect is None:
         return False
     draw_list = imgui.get_window_draw_list()
@@ -290,10 +295,12 @@ def tile_corner_gesture(tile, frame, draw_state, path, tree, root_frame,
     split_threshold = 8.0
 
     view_id = corner_view_id(tile, corner)
-    draw_state.on_action("left_mouse_down", view_id=view_id, rect=grip,
-                         priority_delta=2, cursor=mouse_cursor.RESIZE_ALL)
-    drag = draw_state.on_action("left_mouse_drag", view_id=view_id, rect=grip,
-                                priority_delta=2)
+    # Both events share the same hit region and priority. Register once;
+    # this also keeps a single retained subscription for cached replay.
+    events = draw_state.on_action(
+        ("left_mouse_down", "left_mouse_drag"), view_id=view_id, rect=grip,
+        priority_delta=2, cursor=mouse_cursor.RESIZE_ALL) or {}
+    drag = events.get("left_mouse_drag")
     gesture = tile_state.gesture
     window = layout_window(draw_state)
 
@@ -459,7 +466,7 @@ def draw_split_dividers(layout, axis, frame, draw_state, tile_state=None, path=(
 
 
 def draw_tile_node(node, frame, draw_state, path=(), tree=None,
-                   root_frame=None, tile_state=None, gap=4.0):
+                   root_frame=None, tile_state=None, gap=4.0, leaf_frames=None):
     """Render one node into ``frame``. A Tile paints (and runs its corner
     gestures when ``tree`` / ``root_frame`` / ``tile_state`` are given); a
     Split builds ONE layout over its children (columns for axis "x", rows
@@ -470,7 +477,8 @@ def draw_tile_node(node, frame, draw_state, path=(), tree=None,
     snapshotted first, so a split mid-walk renders on the next frame."""
     if not isinstance(node, Split):
         return draw_tile(node, frame, draw_state, path=path, tree=tree,
-                         root_frame=root_frame, tile_state=tile_state, gap=gap)
+                         root_frame=root_frame, tile_state=tile_state, gap=gap,
+                         leaf_frames=leaf_frames)
     children = node.children
     if not children:
         return False
@@ -499,7 +507,8 @@ def draw_tile_node(node, frame, draw_state, path=(), tree=None,
     for index, child in enumerate(list(children)):
         if draw_tile_node(child, child_frame(frame, axis, edges[index], edges[index + 1]),
                           draw_state, path + (index,), tree=tree,
-                          root_frame=root_frame, tile_state=tile_state, gap=gap):
+                          root_frame=root_frame, tile_state=tile_state, gap=gap,
+                          leaf_frames=leaf_frames):
             changed = True
             break                                # the tree moved under us
     return changed
@@ -554,31 +563,49 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
         top["y"] = content_top - window.abs_top
         root_frame = (*root_frame[:2], top, root_frame[3])
     before = tree_edge_ids(tree)
+    leaves = []
     changed = draw_tile_node(tree, root_frame, draw_state, (), tree=tree,
                              root_frame=root_frame, tile_state=tile_state,
-                             gap=gap)
+                             gap=gap, leaf_frames=leaves)
     if changed:
         retire_layouts(window, draw_state, dead=before - tree_edge_ids(tree))
     # Render content after topology edits, using the final leaf frames. The
     # conversion's existing identity scopes views independently of tree paths.
     from meltygui.view.tile_view import draw_tile_content
     from meltygui.core.layout.tile_links import prepare_endpoints
-    endpoints = prepare_endpoints(tree)
+    from meltygui.core.layout.tile_resize import TileResizeRecord, renderer_version
+    from meltygui.core.melty import Melty
+    # The layout walk already measured each leaf for its chrome. Reuse those
+    # exact rectangles for content; never retain them across frames. A corner
+    # split/join aborts the walk, so resolve the new topology in that case.
+    if changed:
+        leaves = [(path, tile, frame, tile_rect(frame, draw_state, gap))
+                  for path, tile, frame in resolve_frames(tree, root_frame)
+                  if not isinstance(tile, Split)]
+    signature = tuple((path, tile.id, renderer_version(tile.render_func)) for path, tile, _, _ in leaves)
+    records = getattr(tile_state, '_resize_tiles', {}) if tile_state is not None else {}
+    same_tree = tile_state is not None and signature == getattr(tile_state, '_resize_signature', ())
+    moved = any(tile.id in records and rect is not None
+                and records[tile.id].rect != rect for _, tile, _, rect in leaves)
+    resizing = bool(same_tree and Melty.resize_gesture_live()
+                    and (moved or getattr(tile_state, '_resize_active', False)))
+    endpoints = tile_state._link_endpoints if resizing else prepare_endpoints(tree)
     if tile_state is not None:
         from meltygui.core.layout.tile_links import retire_endpoints
         retire_endpoints(getattr(tile_state, '_link_endpoints', {}), endpoints)
         tile_state._link_endpoints = endpoints
+        tile_state._resize_signature = signature
+        tile_state._resize_active = resizing
+        tile_state._resize_tiles = records = {tile.id: records[tile.id] for _, tile, _, _ in leaves
+                                             if tile.id in records}
     cursor = imgui.get_cursor_screen_pos()
-    for _path, tile, frame in resolve_frames(tree, root_frame):
-        if isinstance(tile, Split):
-            continue
+    for _path, tile, frame, rect in leaves:
         if (tile_state is not None and tile_state.gesture is not None
                 and tile_state.gesture.get("new_tile") is tile):
             # Instantiate the new editor at the committed split size, not the
             # tiny first drag frame; otherwise its own column widths persist
             # that transient geometry while the corner is still moving.
             continue
-        rect = tile_rect(frame, draw_state, gap)
         if rect is None:
             continue
         left, top, right, bottom = rect
@@ -590,17 +617,25 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
         # Keep the 28px picker/toolbar usable when a row reaches its 40px minimum.
         vertical_inset = min(content_padding, max(0.0, (bottom - top - 28.0) * 0.5))
         imgui.set_cursor_screen_pos((left + content_padding, top + vertical_inset))
+        content_rect = (left + content_padding, top + vertical_inset,
+                        right - left - 2 * content_padding, bottom - top - 2 * vertical_inset)
+        previous = records.get(tile.id)
+        if resizing and previous is not None and previous.replay(tile, content_rect, Melty.cache):
+            continue
+        record = TileResizeRecord(renderer_version(tile.render_func), tile.input_value, rect)
         content_changed, _ = draw_tile_content(
             tile, width=right - left - 2 * content_padding,
             height=bottom - top - 2 * vertical_inset,
             multi_instance_renderers=multi_instance_renderers,
             endpoints=endpoints, tile_path=_path,
             layout_frame=frame,
+            resize_record=record,
             # Each tile is its own blit-cache unit: only the tiles whose view
             # was invalidated run their renderer, the rest draw their captured
             # texture. Set False here to render every tile live each frame.
             use_cache=True,
         )
+        records[tile.id] = record
         changed |= content_changed
     imgui.set_cursor_screen_pos(cursor)
     if tile_state is not None:

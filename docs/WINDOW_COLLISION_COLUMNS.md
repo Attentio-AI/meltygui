@@ -179,6 +179,22 @@ A divider reaching an enclosing frame can push it outward; a capped chain can pu
 
 At a true immovable boundary, respect the available span and connected constraints. Do not produce negative sizes or solve an impossible min/max combination by silently changing the user's limits. Exact precedence for contradictory constraints remains unspecified and should be resolved explicitly if encountered.
 
+## Tile texture replay during resize
+
+Once tile geometry changes during a live resize gesture, `draw_tiles` may
+replay its children's resident blit textures directly, bypassing their render
+wrappers. Content remains at native scale and anchored to the tile's top-left;
+the captured toolbar strip and tile controls follow the current bottom edge.
+Every image is clipped to its current tile, including when the tile shrinks.
+
+The tile manager borrows cache-owned draw states and textures. It falls back
+to normal rendering for missing/incomplete captures, external changes, replaced
+input values, changed renderers or changed tree topology. A delivered drag keeps
+its receiver and cached ancestors live: an internal divider must keep consuming
+input when it pushes an enclosing tile or native edge. Other tiles may freeze. Replay participates
+in the cache's existing frozen-frame lifecycle so release invalidates the
+frozen views and restores normal rendering. It does not dispatch overlays yet.
+
 ## Sticky reversal
 
 The retained September requirement is sticky behavior across Melty windows, native windows, columns and rows: reversing within the same drag restores geometry displaced by that drag, including pushed or pulled edges and opposite-edge expansion.

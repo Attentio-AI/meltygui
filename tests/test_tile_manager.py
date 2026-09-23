@@ -394,6 +394,9 @@ def test_corner_split_edge_waits_for_the_hand_after_a_clamped_start():
         abs_left, abs_top = 100.0, 50.0
 
         def on_action(self, name, view_id=None, **_kw):
+            if isinstance(name, (tuple, list)):
+                return {event: events[(event, view_id)] for event in name
+                        if (event, view_id) in events}
             return events.get((name, view_id))
 
         def invalidate(self, note=None):

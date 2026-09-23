@@ -12,6 +12,7 @@ def requested_window_closed(closed, kwargs, *, first_request=False):
 
 
 from meltygui.core.conversion.dict_conversion import DictConversion
+from meltygui.core.rendering.core_decoration import no_save
 
 
 class WindowOverrideState(DictConversion):
@@ -160,3 +161,32 @@ def sync_marker_visibility(marker, comment_args):
 def window_edit_is_local(draw_state, parameter):
     source = (getattr(draw_state, '_sa_last_source', None) or {}).get(parameter)
     return source in (None, 'draw state')
+
+
+@no_save('draw_state', 'tile_id')
+class WindowCallState(DictConversion):
+    """Injected lifetime for a window whose closed call site can be skipped.
+
+    Keep calling while open and once more to consume a deferred close result.
+    Only runtime handles live here; the window retains its own saved view state.
+    """
+    def __init__(self):
+        super().__init__()
+        self.draw_state = None
+        self.tile_id = None
+
+    def needs_call(self, open_requested=False):
+        from meltygui.core.melty import Melty
+        return bool(open_requested or (
+            self.draw_state is not None and (
+                not self.draw_state.closed
+                or self.tile_id in Melty.returned_values
+                or self.tile_id in Melty.pending_return_values)))
+
+    def draw(self, renderer, input_value=None, **kwargs):
+        changed, value, draw_state = renderer(input_value, return_extras=True, **kwargs)
+        self.draw_state = draw_state
+        # The child's render call can temporarily give this same DrawState a
+        # different tile id. Results are delivered to the parent call's id.
+        self.tile_id = draw_state._tile_id if draw_state is not None else None
+        return changed, value

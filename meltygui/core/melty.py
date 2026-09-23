@@ -4350,6 +4350,14 @@ class Melty:
             Melty.active_layer = idx
             Melty.active_layer_stack = []
 
+            # Most of the reserved layer band is empty. Once pending root
+            # channels have merged, there is nothing to split or merge here.
+            # Keep the cursor/layer/depth bookkeeping identical to a full pass.
+            if (not layer and not cls.root_draw_states_by_layer[idx]
+                    and not Melty.channels_split):
+                Melty.depth = 0
+                continue
+
             if not Melty.channels_split:
                 imgui.get_window_draw_list().channels_split(Melty.max_depth)
                 imgui.get_window_draw_list().channels_set_current(Melty.max_depth - 1)

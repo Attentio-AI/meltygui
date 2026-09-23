@@ -30,6 +30,14 @@ frame, returning `(changed, value)`. For nested windows, pass `closable=True` an
 an `open_requested` event to the same call every frame. Use `glfw_window=True` to
 host a child in a native window; its lifecycle follows the same rules.
 
+Closed, event-opened dialogs may skip the renderer call entirely. Inject a
+`WindowCallState` from `meltygui.core.windowing.window_visibility`, guard with
+`dialog.needs_call(open_requested)`, and call `dialog.draw(draw_renderer, value,
+open_requested=open_requested, ...)` inside the guard. The state keeps active
+windows receiving lifecycle calls and consumes deferred results even when a
+selection closes the window. Put default-value lookups inside the guard too.
+The guard's handles are runtime-only; the renderer still owns its saved state.
+
 ### Window size and position: `initial=`, never `width=` / `height=`
 
 `width=`, `height=` and `window_pos=` on a call are applied **every frame**: they
@@ -160,11 +168,17 @@ shares the input value, while creating a new view instance. See
 
 ### Sibling state parameters
 
-Each consuming tile gets a compact link-icon dropdown for each injected parameter,
-arranged horizontally beside the tile switcher. Opening an icon shows the parameter
-name and its source choices. The controls stay one fixed-height row:
+Each consuming tile gets one compact link-icon dropdown beside the tile switcher.
+The menu presents one column per injected parameter, with its name, required type,
+and eligible sources. Columns wrap on narrow displays. Selected rows have an
+outline, stronger fill and a fixed checkmark gutter so labels stay aligned.
+Selections leave the menu open; Escape or a click outside closes it.
 
-`[tile switcher] [link] [link]`
+`[tile switcher] [chain · selected-source icons]`
+
+The trigger reserves one icon slot per parameter. Auto shows the resolved source
+icon; missing icons use a chain, and Self contained uses a database. Auto rows
+use a wand icon.
 
 Parameters come from the selected function's signature:
 
@@ -186,14 +200,23 @@ reference exists before either tile renders; geometry and body-produced fields
 reflect its latest render, so a newly created view has no rendered geometry yet.
 This convention is runtime metadata, not a standard static Python generic.
 
+A view can set `draw_state.nickname = "My instance"` to identify itself in link
+menus. Nicknames are display metadata: changing one never changes the unique ID,
+cache identity, or saved bindings. Leave it `None` to use the tile name. Source
+rows colour the renderer icon and subtly tint the text using the instance's
+`current_tint`, falling back
+to its renderer/tile tint before its first render. Duplicate nicknames retain a
+tile-ID suffix so distinct instances remain selectable.
+
 A `DictConversion` state parameter (default `None`, or without a default) offers
 compatible owned state from siblings. Unlinked state is still created locally
 by core. Linking borrows the source instance without changing its owner or
 replacing the consumer's retained local instance. State sources are the sibling's
 owned instances, not the instances it may itself borrow from another tile.
 
-Each dropdown lists **Auto**, **Unlinked** (or **Local state**), and all eligible
-sibling sources in the same tile tree. Existing manual and local settings are
+Each parameter column lists **Auto**, eligible sibling sources in the same tile
+tree, then **Self contained** with a database icon. Self contained uses a private
+local state object, or `None` for a view reference. Existing manual and local settings are
 preserved. Auto chooses the source with the fewest parent/child edges through
 the tile tree, not pixel distance, so resizing cannot change its selection.
 Equal distances retain the current eligible source; without one, stable tile ID

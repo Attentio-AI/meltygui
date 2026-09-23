@@ -411,3 +411,128 @@ def finish_fast_view(draw_state, input_value, changed, value, on_rows_moved=None
     else:
         handle_undo(changed, input_value, value, draw_state)
     return changed, value
+
+
+def draw_fast_control(input_value, kwargs, *, wrapped, host, state_name, state_type,
+                      wrapper_kwargs):
+    """Draw a stateful control into its parent's draw list, without a cache tile.
+
+    Keep the wrapped body's identity and popup parent across host changes.
+    Explicit wrapper features still use the full render host.
+    """
+    from meltygui.core.cache.tile_marks import snap_int
+    from meltygui.core.core_render import pop_id
+    from meltygui.core.core_render import push_id
+    from meltygui.core.windowing.glfw_utils import request_render
+
+    if (Melty.in_annotation_mode() or any(kwargs.get(key) for key in wrapper_kwargs)):
+        return wrapped(input_value, **kwargs)
+    body = wrapped.__wrapped__
+    return_extras = kwargs.pop("return_extras", False)
+    input_value = kwargs.pop("input_value", input_value)
+    if Melty.depth > Melty.max_depth:
+        return (False, None, None) if return_extras else (False, None)
+    decoration = {param_name: param_value for param_name, param_value in wrapped.__header_defaults__.items()
+                  if param_name not in wrapper_kwargs}
+    kwargs, mode_stacked = resolve_fast_kwargs(body, decoration, input_value, kwargs)
+    if kwargs.get("view_func") is not None or (Melty.in_annotation_mode() or any(kwargs.get(key) for key in wrapper_kwargs)):
+        # A mode / comment asked for another renderer or a wrapper feature.
+        if mode_stacked:
+            Melty.mode_stack.pop()
+        return wrapped(input_value, return_extras=return_extras, **kwargs)
+    kwargs.pop("view_func", None)
+
+    # Host bookkeeping writes are silenced (see fast_draw_collection);
+    # tracking is back on for the body.
+    caller_silence = Melty.silence_invalidate
+    Melty.silence_invalidate = True
+    draw_state = bind_fast_draw_state(body, host, input_value, kwargs)
+    state = kwargs.get(state_name)
+    if state is None:
+        state = draw_state.misc.get(state_name)
+        if state.__class__.__name__ != state_type.__name__:
+            state = draw_state.misc[state_name] = state_type()
+        kwargs[state_name] = state
+    draw_state.misc_used.add(state_name)
+    unique = draw_state.unique
+    measure_fast_box(draw_state, kwargs)
+    if kwargs.get("width"):
+        # A caller's width is the box: hover and the click rect stop at the
+        # trigger's edge (a strip of triggers shares one row).
+        stamp(draw_state, "width", snap_int(kwargs["width"]))
+        stamp(draw_state, "_bounding_hovered", draw_state.is_bounding_hovered())
+    start_z_pos, start_shadow_depth = Melty.z_pos, Melty.shadow_depth
+    Melty.depth += 1
+    Melty.unique_stack.append(unique)
+    Melty.draw_state_stack.append(draw_state)
+    stamp(draw_state, "depth", Melty.depth)
+    stamp(draw_state, "layer", Melty.active_layer)
+    Melty.z_pos = (Melty.paint_rank * Melty.max_depth) + Melty.depth
+    stamp(draw_state, "z_pos", Melty.z_pos)
+    total_z_offset = (draw_state.z_offset or 0) + (kwargs.get("z_offset", 0) or 0)
+    Melty.shadow_depth = Melty.shadow_depth + total_z_offset
+    stamp(draw_state, "depth_and_layer", (Melty.shadow_depth, Melty.paint_rank))
+    kwargs["depth"] = Melty.depth
+    push_id(unique)
+
+    changed, value = False, input_value
+    previous_tint = None
+    try:
+        previous_tint = push_view_tint(draw_state, input_value, kwargs)
+        draw_list = imgui.get_window_draw_list()
+        if not Melty.channels_split:
+            draw_list.channels_split(Melty.max_depth)
+            Melty.channels_split = True
+        draw_list.channels_set_current(max(0, min(Melty.get_channel() + total_z_offset, Melty.max_depth - 1)))
+
+        imgui.begin_group()
+        header_changed, header_value = draw_fast_header(draw_state, kwargs)
+        if header_changed:
+            changed, value = True, header_value
+        imgui.begin_group()
+        body_kwargs = {param_name: param_value for param_name, param_value in kwargs.items()
+                       if param_name != "input_value"}
+        Melty.silence_invalidate = False
+        try:
+            body_return = body(input_value, **body_kwargs)
+        except Exception as body_error:
+            # Reported, not raised: the groups opened above still have to
+            # close or imgui's stacks are unbalanced for the whole frame.
+            from meltygui.core.windowing.glfw_utils import print_stack_trace
+            print(f"Error rendering {draw_state.name} ({body.__name__}): {body_error}")
+            print_stack_trace(exception=body_error)
+            body_return = None
+        Melty.silence_invalidate = True
+        if isinstance(body_return, tuple) and len(body_return) >= 2 and body_return[0]:
+            changed, value = True, body_return[1]
+        imgui.end_group()
+        stamp(draw_state, "_content_rect", imgui.get_item_rect_size())
+        stamp(draw_state, "content_height", draw_state._content_rect[1])
+        if close_fast_box(draw_state, kwargs):
+            draw_state.invalidate()
+            request_render()
+        if draw_state._parent is not None and draw_state._parent is not draw_state:
+            draw_state._parent._melty_content_height += draw_state.height
+        draw_state.pos_changed()
+        stamp(draw_state, "last_seen", Melty.frame_count)
+        draw_state.frame_count += 1
+    finally:
+        if previous_tint is not None:
+            Melty.style_manager.set_imgui_tint(*previous_tint)
+        pop_id()
+        Melty.draw_state_stack.pop()
+        Melty.unique_stack.pop()
+        Melty.depth -= 1
+        Melty.z_pos = start_z_pos
+        Melty.shadow_depth = start_shadow_depth
+        if mode_stacked:
+            Melty.mode_stack.pop()
+        if Melty.depth == 0 and Melty.channels_split:
+            Melty.channels_split = False
+            imgui.get_window_draw_list().channels_merge()
+
+    changed, value = finish_fast_view(draw_state, input_value, changed, value)
+    Melty.silence_invalidate = caller_silence
+    if return_extras:
+        return changed, value, draw_state
+    return changed, value

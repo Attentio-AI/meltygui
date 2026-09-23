@@ -253,7 +253,14 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     # leave the items. Neither may become the next menu's permanent size.
     menu_width, menu_height, menu_top = _dd_popup_geometry(
         collection, getattr(drop_down_state, "search_query", ""),
-        trigger_top, trigger_h, open_upwards, max(trigger_w, menu_min_width or 0), menu_title)
+        trigger_top, trigger_h, open_upwards, max(trigger_w, menu_min_width or 0), menu_title,
+        kwargs.get("menu_columns"))
+    revision = kwargs.get("menu_revision")
+    if drop_down_state.column_signature != revision:
+        drop_down_state.column_signature = revision
+        previous_menu = getattr(drop_down_state, "_menu_ds", None)
+        if previous_menu is not None:
+            previous_menu.invalidate_up(force=True)
     menu_left = max(0, min(trigger_left, imgui.get_io().display_size[0] - menu_width))
     changed, new_item, menu_ds = draw_dd_menu(
         collection, tint=draw_state.tint,
@@ -266,6 +273,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         row_tints=kwargs.get("row_tints"),
         row_actions=kwargs.get("row_actions"),
         row_previews=kwargs.get("row_previews"), preview_owner=draw_state,
+        menu_columns=kwargs.get("menu_columns"),
         text_toward_bg=kwargs.get("text_toward_bg", 0.0),
         root_state=drop_down_state, path_prefix=(), menu_title=menu_title, return_extras=True)
     drop_down_state._menu_ds = menu_ds
@@ -282,8 +290,9 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
             if _DD_DBG:
                 with open(debug_log_path("dd_debug.log"), "a") as _f:
                     _f.write(f"[DD-DBG] CLOSE via menu-pick f={Melty.frame_count} name={name!r} picked={_p}\n")
-            Melty.popover_focused_ds = None  # picking dismisses the popover
-            _dd_close(drop_down_state)
+            if not kwargs.get("keep_open_on_select", False):
+                Melty.popover_focused_ds = None
+                _dd_close(drop_down_state)
             draw_state.invalidate()
             request_render()
             return True, new_item
@@ -296,7 +305,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         box_tile = getattr(drop_down_state, "_search_box_tile", None)
         text_focused = (Melty.text_focused_ds is not None and box_tile is not None
                         and getattr(Melty.text_focused_ds, "_tile_id", None) == box_tile)
-        if len(collection) <= 4:
+        if len(collection) <= 4 or kwargs.get("menu_columns"):
             text_focused = True
 
         # Esc dismisses the open dropdown (and releases its text focus via
@@ -322,10 +331,12 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
                 _p = _dd_as_tuple(getattr(drop_down_state, "_picked_path", ()))
                 drop_down_state.selected_path = _p
                 drop_down_state.selected_label = _dd_label_for_path(collection, _p)
-                Melty.popover_focused_ds = None
-                _dd_close(drop_down_state)
+                if not kwargs.get("keep_open_on_select", False):
+                    Melty.popover_focused_ds = None
+                    _dd_close(drop_down_state)
                 draw_state.invalidate()
                 request_render()
+                drop_down_state._pending_pick = None
                 return True, picked
 
         # Window press dispatch owns click-away dismissal. It uses the captured
@@ -390,132 +401,11 @@ def fast_draw_dropdown(input_value=None, **kwargs):
     hashes by the body), so an open menu survives a host switch. Returns
     (changed, picked), plus the draw_state with return_extras=True.
     A call carrying a FAST_DROPDOWN_WRAPPER_KWARGS feature goes to the wrapper."""
-    from meltygui.core.cache.tile_marks import snap_int
-    from meltygui.core.core_render import pop_id
-    from meltygui.core.core_render import push_id
-    from meltygui.core.rendering.fast_view import bind_fast_draw_state
-    from meltygui.core.rendering.fast_view import close_fast_box
-    from meltygui.core.rendering.fast_view import draw_fast_header
-    from meltygui.core.rendering.fast_view import finish_fast_view
-    from meltygui.core.rendering.fast_view import measure_fast_box
-    from meltygui.core.rendering.fast_view import push_view_tint
-    from meltygui.core.rendering.fast_view import resolve_fast_kwargs
-    from meltygui.core.rendering.fast_view import stamp
-    from meltygui.core.windowing.glfw_utils import request_render
-
-    if _dropdown_wants_wrapper(kwargs):
-        return draw_dropdown(input_value, **kwargs)
-    body = draw_dropdown.__wrapped__
-    return_extras = kwargs.pop("return_extras", False)
-    input_value = kwargs.pop("input_value", input_value)
-    if Melty.depth > Melty.max_depth:
-        return (False, None, None) if return_extras else (False, None)
-    decoration = {param_name: param_value for param_name, param_value in draw_dropdown.__header_defaults__.items()
-                  if param_name not in FAST_DROPDOWN_WRAPPER_KWARGS}
-    kwargs, mode_stacked = resolve_fast_kwargs(body, decoration, input_value, kwargs)
-    if kwargs.get("view_func") is not None or _dropdown_wants_wrapper(kwargs):
-        # A mode / comment asked for another renderer or a wrapper feature.
-        if mode_stacked:
-            Melty.mode_stack.pop()
-        return draw_dropdown(input_value, return_extras=return_extras, **kwargs)
-    kwargs.pop("view_func", None)
-
-    # Host bookkeeping writes are silenced (see fast_draw_collection);
-    # tracking is back on for the body.
-    caller_silence = Melty.silence_invalidate
-    Melty.silence_invalidate = True
-    draw_state = bind_fast_draw_state(body, fast_draw_dropdown, input_value, kwargs)
-    # The wrapper's typed-state injection: the DropDownState lives in the
-    # draw_state's misc under the param's name (where either host finds it).
-    drop_down_state = kwargs.get("drop_down_state")
-    if drop_down_state is None:
-        drop_down_state = draw_state.misc.get("drop_down_state")
-        if drop_down_state.__class__.__name__ != DropDownState.__name__:
-            drop_down_state = draw_state.misc["drop_down_state"] = DropDownState()
-        kwargs["drop_down_state"] = drop_down_state
-    draw_state.misc_used.add("drop_down_state")
-    unique = draw_state.unique
-    measure_fast_box(draw_state, kwargs)
-    if kwargs.get("width"):
-        # A caller's width is the box: hover and the click rect stop at the
-        # trigger's edge (a strip of triggers shares one row).
-        stamp(draw_state, "width", snap_int(kwargs["width"]))
-        stamp(draw_state, "_bounding_hovered", draw_state.is_bounding_hovered())
-    start_z_pos, start_shadow_depth = Melty.z_pos, Melty.shadow_depth
-    Melty.depth += 1
-    Melty.unique_stack.append(unique)
-    Melty.draw_state_stack.append(draw_state)
-    stamp(draw_state, "depth", Melty.depth)
-    stamp(draw_state, "layer", Melty.active_layer)
-    Melty.z_pos = (Melty.paint_rank * Melty.max_depth) + Melty.depth
-    stamp(draw_state, "z_pos", Melty.z_pos)
-    total_z_offset = (draw_state.z_offset or 0) + (kwargs.get("z_offset", 0) or 0)
-    Melty.shadow_depth = Melty.shadow_depth + total_z_offset
-    stamp(draw_state, "depth_and_layer", (Melty.shadow_depth, Melty.paint_rank))
-    kwargs["depth"] = Melty.depth
-    push_id(unique)
-
-    changed, value = False, input_value
-    previous_tint = None
-    try:
-        previous_tint = push_view_tint(draw_state, input_value, kwargs)
-        draw_list = imgui.get_window_draw_list()
-        if not Melty.channels_split:
-            draw_list.channels_split(Melty.max_depth)
-            Melty.channels_split = True
-        draw_list.channels_set_current(max(0, min(Melty.get_channel() + total_z_offset, Melty.max_depth - 1)))
-
-        imgui.begin_group()
-        header_changed, header_value = draw_fast_header(draw_state, kwargs)
-        if header_changed:
-            changed, value = True, header_value
-        imgui.begin_group()
-        body_kwargs = {param_name: param_value for param_name, param_value in kwargs.items()
-                       if param_name != "input_value"}
-        Melty.silence_invalidate = False
-        try:
-            body_return = body(input_value, **body_kwargs)
-        except Exception as body_error:
-            # Reported, not raised: the groups opened above still have to
-            # close or imgui's stacks are unbalanced for the whole frame.
-            from meltygui.core.windowing.glfw_utils import print_stack_trace
-            print(f"Error rendering {draw_state.name} (draw_dropdown): {body_error}")
-            print_stack_trace(exception=body_error)
-            body_return = None
-        Melty.silence_invalidate = True
-        if isinstance(body_return, tuple) and len(body_return) >= 2 and body_return[0]:
-            changed, value = True, body_return[1]
-        imgui.end_group()
-        stamp(draw_state, "_content_rect", imgui.get_item_rect_size())
-        stamp(draw_state, "content_height", draw_state._content_rect[1])
-        if close_fast_box(draw_state, kwargs):
-            draw_state.invalidate()
-            request_render()
-        if draw_state._parent is not None and draw_state._parent is not draw_state:
-            draw_state._parent._melty_content_height += draw_state.height
-        draw_state.pos_changed()
-        stamp(draw_state, "last_seen", Melty.frame_count)
-        draw_state.frame_count += 1
-    finally:
-        if previous_tint is not None:
-            Melty.style_manager.set_imgui_tint(*previous_tint)
-        pop_id()
-        Melty.draw_state_stack.pop()
-        Melty.unique_stack.pop()
-        Melty.depth -= 1
-        Melty.z_pos = start_z_pos
-        Melty.shadow_depth = start_shadow_depth
-        if mode_stacked:
-            Melty.mode_stack.pop()
-        if Melty.depth == 0 and Melty.channels_split:
-            Melty.channels_split = False
-            imgui.get_window_draw_list().channels_merge()
-
-    changed, value = finish_fast_view(draw_state, input_value, changed, value)
-    Melty.silence_invalidate = caller_silence
-    if return_extras:
-        return changed, value, draw_state
-    return changed, value
+    from meltygui.core.rendering.fast_view import draw_fast_control
+    return draw_fast_control(input_value, kwargs, wrapped=draw_dropdown,
+                             host=fast_draw_dropdown, state_name="drop_down_state",
+                             state_type=DropDownState,
+                             wrapper_kwargs=FAST_DROPDOWN_WRAPPER_KWARGS)
 
 
 @render_func(use_cache=True, show_bg=True, shadow=True, selectable=False, temp=True,
@@ -525,7 +415,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
                  show_search=None, text_align="right", row_tags=None, row_tints=None,
                  row_suffixes=None, row_actions=None, text_toward_bg=0.0,
                  full_render=False, row_code=None, menu_title=None,
-                 row_previews=None, preview_owner=None, **kwargs):
+                 row_previews=None, preview_owner=None, menu_columns=None, **kwargs):
     """One level of the dropdown, drawn as its own temp popover window. Iterates
     the level's entries and renders each as a row (`_dd_menu_row`); a leaf click
     or a pick inside a nested sub-menu bubbles back up as (changed, value).
@@ -559,6 +449,10 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
     from meltygui.model.dropdown_model import _dd_row_lookup
     from meltygui.core.layout.dropdown_core import _dd_set_cursor
     from meltygui.model.dropdown_model import _dd_visible_entries
+
+    if menu_columns:
+        return _draw_dd_columns(input_value, draw_state, root_state, menu_columns,
+                                tint, row_tints, row_previews, preview_owner)
 
     if menu_title and not path_prefix:
         title_x, title_y = imgui.get_cursor_screen_pos()
@@ -909,7 +803,7 @@ def _dd_submenu_position(left, top, row_width, width, height, display_w, display
 
 
 def _dd_popup_geometry(collection, search, trigger_top, trigger_height,
-                       open_upwards=None, min_width=None, menu_title=None):
+                       open_upwards=None, min_width=None, menu_title=None, menu_columns=None):
     """Content-sized popup contained in the display, independent of old bounds."""
     from meltygui.model.dropdown_model import _dd_visible_entries
     from meltygui.core.cache.tile_marks import snap_int
@@ -917,6 +811,8 @@ def _dd_popup_geometry(collection, search, trigger_top, trigger_height,
     rows = _dd_visible_entries(collection, (search or "").strip().lower())
     display_w, display_h = imgui.get_io().display_size
     natural_height = (len(rows) + (2 if len(collection) > 4 else 1) + bool(menu_title)) * Toggles.Dropdown.row_height
+    if menu_columns:
+        column_width, natural_height, _ = _dd_column_layout(menu_columns, display_w)
     above = max(0, trigger_top)
     below = max(0, display_h - trigger_top - trigger_height)
     upwards = (below < min(natural_height, Toggles.Dropdown.max_height) and above > below
@@ -926,6 +822,8 @@ def _dd_popup_geometry(collection, search, trigger_top, trigger_height,
         Toggles.Dropdown.min_width if min_width is None else min_width,
         imgui.calc_text_size(menu_title)[0] + 24 if menu_title else 0,
         max((imgui.calc_text_size(row[2])[0] + 48 for row in rows), default=0)))
+    if menu_columns:
+        width = column_width
     top = trigger_top - height if upwards else trigger_top + trigger_height
     return snap_int(width), snap_int(height), snap_int(top)
 
@@ -1042,7 +940,8 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                  cursor_path, tint=None, row_tags=None, row_tints=None,
                  row_suffixes=None, row_actions=None, left_pad=10,
                  text_toward_bg=0.0, row_code=None, code_label_w=None,
-                 row_width=None, row_previews=None, preview_owner=None):
+                 row_width=None, row_previews=None, preview_owner=None,
+                 selected=False, selection_gutter=False, tint_background=True):
     """Render ONE leaf menu row inline with raw imgui — NO per-row render_func.
     Leaves are the bulk of a big menu, so skipping the dd_menu_row wrapper (its
     own draw_state / cache / BVH / hover machinery, tens of µs each) is the whole
@@ -1115,7 +1014,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     _ROW_TINT_A = Toggles.Dropdown.row_tint_alpha
     _ROW_TINT_V_CAP = 0.55  # max RGB component - near-white text must stay legible
     _ROW_TINT_S_BOOST = 1.25  # saturation bump on capped tints — keeps hue vivid
-    if row_tint is not None:
+    if row_tint is not None and tint_background:
         r, g, b = row_tint[:3]
         v = max(r, g, b)
         if v > _ROW_TINT_V_CAP:
@@ -1130,6 +1029,16 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
         dl.add_rect_filled(x, y + 1, x + w, y + h - 1,
                            pack_color(r, g, b, _ROW_TINT_A),
                            rounding=getattr(draw_state, 'corner_radius', 6))
+    if selected:
+        dl.add_rect_filled(x, y + 1, x + w, y + h - 1,
+                           pack_color(1, 1, 1, 0.20), rounding=4)
+        dl.add_rect(x + 0.5, y + 1.5, x + w - 0.5, y + h - 1.5,
+                    pack_color(1, 1, 1, 0.48), rounding=4, thickness=1)
+    if selection_gutter:
+        if selected:
+            dl.add_text(x + 8, y + (h - line_h) * 0.5,
+                        pack_color(1, 1, 1, 1), f"\uf00c")
+        left_pad = 28
     if active:
         dl.add_rect_filled(x, y, x + w, y + h,
                            pack_color(1, 1, 1, 0.16),
@@ -1248,7 +1157,12 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                 return value
         imgui.set_cursor_screen_pos((x, y + h))
     else:
-        imgui.text_colored(str(label), *color)
+        if not tint_background:
+            _draw_link_label(dl, str(label), x + left_pad, y + (h - line_h) * 0.5,
+                             row_tint, color)
+            imgui.dummy(imgui.calc_text_size(str(label))[0], line_h)
+        else:
+            imgui.text_colored(str(label), *color)
 
         # Dim '(param, param2)' suffix right after the callable's name (autocomplete
         # rows): same hue as the label at reduced alpha, so it stays subtle on
@@ -1324,3 +1238,83 @@ def _preview_source(target, menu, owner, row_rect):
     finally:
         if clip is not None:
             overlay.pop_clip_rect()
+
+
+def _dd_column_layout(columns, available_width):
+    """Fit compact columns; wrap parameter groups on narrow displays."""
+    gap, pad = 12.0, 8.0
+    desired = max((max(imgui.calc_text_size(column['title'])[0] + 16,
+                       imgui.calc_text_size(column['subtitle'])[0] + 16,
+                       max((imgui.calc_text_size(label)[0] + 40 for _, label in column['rows']), default=0))
+                   for column in columns), default=220)
+    desired = min(300.0, max(220.0, desired))
+    across = max(1, min(len(columns), int((available_width - 2 * pad + gap) // (desired + gap))))
+    width = min(available_width, across * desired + (across - 1) * gap + 2 * pad)
+    cell = max(1.0, (width - 2 * pad - (across - 1) * gap) / across)
+    positions, top = [], pad
+    for start in range(0, len(columns), across):
+        group = columns[start:start + across]
+        for index, column in enumerate(group):
+            positions.append((pad + index * (cell + gap), top, cell))
+        top += 46 + max(len(column['rows']) for column in group) * Toggles.Dropdown.row_height + 12
+    return width, top, positions
+
+
+def _draw_dd_columns(collection, draw_state, root_state, columns, tint, row_tints,
+                     row_previews, preview_owner):
+    """Flat independent choice groups, sharing the normal dropdown interaction."""
+    from meltygui.core.conversion.cache_tree import UNSET_VALUE
+    left, top = imgui.get_cursor_screen_pos()
+    width, height, positions = _dd_column_layout(columns, max(1, draw_state.width))
+    scale = min(1.0, max(1, draw_state.content_width) / width)
+    dl = imgui.get_window_draw_list()
+    color = Tint.dd_text(requested_tint=tint)
+    cursor_path = getattr(root_state, 'cursor_path', ())
+    result = (False, None)
+    for column, (dx, dy, cell) in zip(columns, positions):
+        x, y, cell = left + dx * scale, top + dy, cell * scale
+        dl.push_clip_rect(x, y, x + cell, top + height, True)
+        try:
+            dl.add_text(x + 4, y, pack_color(*color[:3], 1), column['title'])
+            dl.add_text(x + 4, y + 21, pack_color(*color[:3], 0.60), column['subtitle'])
+            for index, (key, label) in enumerate(column['rows']):
+                imgui.set_cursor_screen_pos((x, y + 46 + index * Toggles.Dropdown.row_height))
+                value = collection[key]
+                picked = _dd_leaf_row(key, value, label, draw_state, root_state, (), cursor_path,
+                                      tint=tint, row_tints=row_tints, row_width=cell,
+                                      row_previews=row_previews, preview_owner=preview_owner,
+                                      selected=value == column['selected'], selection_gutter=True,
+                                      tint_background=False)
+                if picked is not UNSET_VALUE:
+                    result = (True, picked)
+        finally:
+            dl.pop_clip_rect()
+    imgui.set_cursor_screen_pos((left, top))
+    imgui.dummy(width * scale, height)
+    return result
+
+
+def _draw_link_label(draw_list, label, x, y, tint, base_color):
+    """Colour the icon clearly, and keep the accompanying text nearly neutral."""
+    if tint is None:
+        icon_color = tuple(base_color[:3])
+    else:
+        peak = max(tint[:3])
+        boost = max(1.0, 0.85 / peak) if peak > 0 else 1.0
+        icon_color = tuple(min(1.0, channel * boost) for channel in tint[:3])
+    text_color = tuple(0.88 * 0.88 + channel * 0.12 for channel in icon_color)
+    # Icons come from the renderer's Font Awesome label; Auto can have a
+    # prefix before the icon. Render runs separately without moving the gutter.
+    start = 0
+    for index, char in enumerate(label):
+        if not 0xE000 <= ord(char) <= 0xF8FF:
+            continue
+        prefix = label[start:index]
+        if prefix:
+            draw_list.add_text(x, y, pack_color(*text_color, 1), prefix)
+            x += imgui.calc_text_size(prefix)[0]
+        draw_list.add_text(x, y, pack_color(*icon_color, 1), char)
+        x += imgui.calc_text_size(char)[0]
+        start = index + 1
+    if start < len(label):
+        draw_list.add_text(x, y, pack_color(*text_color, 1), label[start:])
