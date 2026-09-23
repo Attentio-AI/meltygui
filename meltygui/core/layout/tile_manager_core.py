@@ -78,9 +78,9 @@ class TileManagerState(DictConversion):
         self.content_top = {"y": 0.0}
 
 
-# The four corners of a tile: (name, on the left?, on the top?).
-CORNERS = (("nw", True, True), ("ne", False, True),
-           ("sw", True, False), ("se", False, False))
+# Split/join handles: leave bottom-left clear for the tile selector.
+# Each entry is (name, on the left?, on the top?).
+CORNERS = (("nw", True, True), ("ne", False, True), ("se", False, False))
 
 
 def other_axis(axis):

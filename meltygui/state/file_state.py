@@ -24,11 +24,13 @@ class FileExplorerState(DictConversion):
 
 
 class ShortcutState(DictConversion):
-    """Persist sidebar order independently of directory listing order."""
+    """Persist sidebar order and section expansion independently per view."""
 
     def __init__(self):
         super().__init__()
         self.order = []
+        self.shortcuts_expanded = True
+        self.projects_expanded = True
 
 
 class FileSelectorState(DictConversion):

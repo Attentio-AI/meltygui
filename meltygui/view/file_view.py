@@ -1108,20 +1108,36 @@ def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_
                              show_brush=path == current)
         return picked
 
-    picked = draw_rows(shortcuts, y, draggable=True)
-    total_h = len(shortcuts) * row_h
-    if projects:
-        # A dim "Projects" heading half a row below the shortcuts.
+    def section_header(label, expanded, head_y, identity):
+        from meltygui.view.header_view import flat_button
+        caret = f"\uf078" if expanded else f"\uf054"
+        imgui.set_cursor_screen_pos((x, head_y))
+        if flat_button(f"{caret}  {label}", draw_state, view_id=identity,
+                       width=width, height=row_h, alpha=0, shadow=False,
+                       text_offset_x=px(left_pad), text_color=Tint.dd_text()[:3]):
+            expanded = not expanded
+        return expanded
+
+    shortcut_state.shortcuts_expanded = section_header(
+        "Shortcuts", shortcut_state.shortcuts_expanded, y, "shortcuts-section")
+    picked = None
+    total_h = row_h
+    if shortcut_state.shortcuts_expanded:
+        picked = draw_rows(shortcuts, y + total_h, draggable=True)
+        total_h += len(shortcuts) * row_h
+    if show_projects:
         head_y = y + total_h + section_gap
-        draw_list.add_text(x + text_x, head_y + text_y_pad,
-                           imgui.get_color_u32_rgba(*text_rgba[:3], text_rgba[3] * 0.55),
-                           "Projects")
-        picked = draw_rows(projects, head_y + row_h, draggable=False) or picked
-        total_h += section_gap + row_h + len(projects) * row_h
+        shortcut_state.projects_expanded = section_header(
+            "Projects", shortcut_state.projects_expanded, head_y, "projects-section")
+        total_h += section_gap + row_h
+        if shortcut_state.projects_expanded:
+            picked = draw_rows(projects, y + total_h, draggable=False) or picked
+            total_h += len(projects) * row_h
     drop = DragDrop.on_drop(draw_state=draw_state)
     if drop is not None and drop.kind == "reorder" and drop.apply(shortcuts):
         shortcut_state.order = [str(path) for _label, path in shortcuts]
         picked = None
+    imgui.set_cursor_screen_pos((x, y))
     imgui.dummy(width, total_h)
     if picked is not None:
         request_render()
