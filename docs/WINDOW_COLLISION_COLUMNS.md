@@ -172,6 +172,40 @@ Sticky does not mean permanently snapping to a contacted edge. Repeated frames a
 
 The implementation may use snapshots, constraint solving or another mechanism. This document requires the behavior, not a particular algorithm. Exact behavior across external geometry changes, release/regrab, and simultaneous competing constraints is not fully specified by the recovered requirements.
 
+## Diagnosing single-frame drag jitter
+
+`Toggles.Melty.edge_motion_guard` also enables the observational
+`draw-state-jitter` logger. It samples `width`, `height`, `abs_top` and
+`abs_left` as each render wrapper finishes, including cache replays, while a
+mouse button is held and for two frames after release. It does not traverse
+the app's draw-state registry, force cached descendants to render, or change
+collision decisions. A descendant skipped inside a cached ancestor has no
+sample; a newly appearing view needs consecutive samples before comparison.
+
+Candidates are a step exceeding that frame's pointer/native-origin motion
+budget (two moving ends are allowed for width/height), or a one-frame geometry
+reversal of more than 2px on both legs without a pointer reversal on that axis.
+A continuing same-direction, same-size step paid for by the preceding frame's
+pointer motion is allowed as smooth one-frame settling; budgets are not pooled
+to excuse new jumps or reversals.
+The threshold is `JITTER_PX` in `core/diagnostics/geometry_jitter.py`. These are
+investigation signals, not new collision rules: legitimate content changes or
+an opposite-edge transition can also trigger a candidate. The existing edge
+guard's multi-frame budgets and report cap do not suppress these reports.
+
+Look for `draw-state-jitter` in `~/.cache/meltygui/resize-<pid>.log`
+(`XDG_CACHE_HOME` overrides `~/.cache`). Entries include the surface, renderer,
+view and parent identities, affected fields, step budgets, buttons, pointer and native
+origin, and up to five recent frames of the four raw geometry values. Up to two
+`draw-state-jitter-followup` entries keyed by `detection_frame` capture subsequent
+frames, including snap-back or settling on release, if those frames render.
+Unrendered views are absent,
+not filled with stale geometry. The shared resize trace supplies native expected
+and unapplied geometry and the generation; its existing solve/drag records can
+be correlated by frame. Logging is capped at 12 detections per gesture and 20
+views per detection (with the full candidate count), with two 4 MiB log backups.
+Diagnostics failures emit `draw-state-jitter-error` once per distinct error.
+
 ## Native chrome inset: investigation and resolution
 
 The independent source review observed working-tree edits removing fixed-inset accounting in `column_core.py` and `os_frame.py`, while existing surface-body tests expected the inset to remain. That was a source/test observation during concurrent edits, not proof of a regression or an intentional product change.

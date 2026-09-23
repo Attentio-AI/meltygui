@@ -204,12 +204,14 @@ def corner_triangle(grip, on_left, on_top, size, inset):
     return (ax, ay), (bx, ay), (ax, by)
 
 
-def hover_shown(draw_state, rect, owns_gesture):
+def hover_shown(draw_state, rect, owns_gesture, view_id=None):
     """Whether a drag handle over ``rect`` lights up: always while it owns
-    the live gesture, on hover only while NO mouse button is held. A
-    right-drag (or any other button's drag) sweeping across handles must
+    the captured press or live gesture, on hover only while NO mouse button
+    is held. A right-drag (or any other button's drag) sweeping across handles must
     not light them up as the cursor passes."""
     if owns_gesture:
+        return True
+    if view_id is not None and draw_state.is_drag_captured(view_id=view_id):
         return True
     if _any_button_down():
         return False
@@ -258,7 +260,7 @@ def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
     for name, on_left, on_top in CORNERS:
         grip = corner_rect(rect, on_left, on_top, corner_size)
         owns = gesture is not None and gesture["corner"] == corner_view_id(tile, name)
-        hot = hover_shown(draw_state, grip, owns)
+        hot = hover_shown(draw_state, grip, owns, view_id=corner_view_id(tile, name))
         (ax, ay), (bx, by), (cx, cy) = corner_triangle(
             grip, on_left, on_top, corner_triangle_size, corner_triangle_inset)
         draw_list.add_triangle_filled(
@@ -417,18 +419,18 @@ def draw_join_preview(tree, root_frame, draw_state, tile_state):
             break
 
 
-def draw_split_dividers(layout, axis, frame, draw_state, tile_state=None):
+def draw_split_dividers(layout, axis, frame, draw_state, tile_state=None, path=()):
     """Draw one Split's interior edges as lines across its band: black at
     rest, highlighted while the cursor is in that edge's grab zone (the
     same zone the layout drags from) with no button held, or while the
-    edge itself is being dragged, by its grab zone or by the corner split
+    edge itself is pressed or dragged, by its grab zone or by the corner split
     gesture that created it (``tile_state.gesture["edge"]``). Another
     handle's drag (a right-drag, a corner split elsewhere) passing over the
     zone does not light it."""
     # [tint=(1.0, 0.8, 0.3)]
     # Change the divider look here: resting / hovered colour and line width.
     divider_color = (0.0, 0.0, 0.0, 1.0)
-    divider_hover_color = (0.35, 0.65, 1.0, 1.0)
+    divider_hover_color = (0.25, 0.25, 0.25, 1.0)
     divider_thickness = 2.0
 
     window = layout_window(draw_state)
@@ -448,7 +450,8 @@ def draw_split_dividers(layout, axis, frame, draw_state, tile_state=None):
             grab = (x0, origin + lo, x1, origin + hi)
             ends = (x0, line, x1, line)
         dragging = layout.active_edge == k or edges[k] is gesture_edge
-        hot = hover_shown(draw_state, grab, dragging)
+        handle = "col_edge" if axis == "x" else "row_edge"
+        hot = hover_shown(draw_state, grab, dragging, view_id=f"{handle}_{path}_{k}")
         draw_list.add_line(*ends,
                            pack_color(*(divider_hover_color if hot else divider_color)),
                            divider_thickness)
@@ -490,7 +493,7 @@ def draw_tile_node(node, frame, draw_state, path=(), tree=None,
                 or len(node.edges) != len(interior):
             node.edges = interior
     edges = layout.edges
-    draw_split_dividers(layout, axis, frame, draw_state, tile_state=tile_state)
+    draw_split_dividers(layout, axis, frame, draw_state, tile_state=tile_state, path=path)
     changed = False
     for index, child in enumerate(list(children)):
         if draw_tile_node(child, child_frame(frame, axis, edges[index], edges[index + 1]),

@@ -144,6 +144,37 @@ Files in an installed library are read-only to the live editor. App source roots
 are registered from the app's entry point and decorated functions. An editable
 framework checkout can also be edited; an ordinary wheel in site-packages cannot.
 
+## Designing a feature
+
+**Locality.** Each thing lives next to what it belongs to, at the smallest scope that holds
+all of its users. Apply it to code, state, UI and lifetime, and let structure grow only when a
+second user appears somewhere else:
+
+- **Code**: a feature is one file in the app that uses it: its state class, its handful of
+  functions and its view together. Move a part into meltygui / meltygui_pro when a second app or
+  view needs it, or the package-split rules require it, and say what asked for it.
+- **State and config**: state lives on the thing it describes. View state is one injected
+  `DictConversion` per view (`@no_save` for process-lifetime fields); config a user edits lives
+  in the project it configures (`[tool.melty.<feature>]` in `pyproject.toml`), read the way the
+  app already reads it, in the flattest form that works; machine-local state lives in the
+  injected state or the file-meta store. Prefer plain data (`dict`, tuples, strings); add a class,
+  registry or service when two things must share it, not because a feature might grow.
+- **UI**: a feature appears beside the things it acts on and takes its context (project, file,
+  selection) from those neighbours, the way the app's most recent features do. It is built from
+  the widgets already here; menus and chords go in the app's entry module; both backends
+  identical.
+- **Lifetime**: what a feature starts (a process, a thread, a watch) belongs to it: stopped
+  by its own explicit action and at app exit, never as a side effect of something unrelated.
+  Background work is a daemon thread writing plain fields and calling `request_render()`, the
+  view invalidating while it runs; heavier machinery only when that pattern cannot do it.
+
+Older subsystems grew under different pressures; take proven recipes from them (spawning,
+streaming, waking the UI), not a new feature's shape.
+
+**A design doc is a page**: the state fields, the function signatures, the view, the build order,
+and a "later" list. The first version ships the core; extras wait in "later" until someone wants
+them. When a design genuinely needs more than this, say why in a sentence and go ahead.
+
 ## Native binding imports
 
 MeltyGUI uses a namespaced ImGui binding. Low-level app code should use

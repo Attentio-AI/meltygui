@@ -304,6 +304,42 @@ def test_handle_hover_is_muted_while_another_button_drags(monkeypatch):
     assert core.hover_shown(hovered, (0, 0, 10, 10), owns_gesture=True)
 
 
+@pytest.mark.parametrize("handle", ["col_edge_()_1", "row_edge_(0,)_1", "tile_corner_123_tl"])
+def test_handle_highlight_survives_press_before_drag(monkeypatch, handle):
+    import meltygui.core.layout.tile_manager_core as core
+    from meltygui.core.input.input_handler import InputHandler
+    from meltygui.core.melty import Melty
+    from meltygui.core.rendering.core_decoration import Core
+    from meltygui.state.new_core_model import DrawState
+
+    handler = InputHandler()
+    monkeypatch.setattr(Melty, "get_latest_mouse", lambda: (5, 5))
+    monkeypatch.setattr(Core.melty, "event_handler", handler)
+    monkeypatch.setattr(core, "_any_button_down", lambda: handler.is_down("left_mouse"))
+    state = SimpleNamespace(_tile_id="tiles", hover_eligible=lambda rect=None: True)
+    state.is_drag_captured = lambda **kwargs: DrawState.is_drag_captured(state, **kwargs)
+    rect = (0, 0, 10, 10)
+    handler.register_hovered(f"tiles_{handle}", ["left_mouse_drag"])
+    handler.feed_down("left_mouse", x=5, y=5)
+    handler.process_frame()
+    assert not handler._drag_activated["left_mouse"]
+    assert core.hover_shown(state, rect, False, view_id=handle)
+    assert not core.hover_shown(state, rect, False, view_id="another_handle")
+    # Stationary held frames must remain lit too, without a new DOWN event.
+    handler.process_frame()
+    assert core.hover_shown(state, rect, False, view_id=handle)
+    monkeypatch.setattr(Melty, "get_latest_mouse", lambda: (25, 5))
+    handler.feed_move(25, 5)
+    handler.process_frame()
+    assert handler._drag_activated["left_mouse"]
+    assert core.hover_shown(state, rect, False, view_id=handle)
+    assert not core.hover_shown(state, rect, False, view_id="another_handle")
+    handler.feed_up("left_mouse", x=5, y=5)
+    handler.process_frame()
+    assert not state.is_drag_captured(view_id=handle)
+    assert core.hover_shown(state, rect, False, view_id=handle)
+
+
 def test_corner_triangle_sits_in_its_corner_with_hypotenuse_inward():
     from meltygui.core.layout.tile_manager_core import corner_rect, corner_triangle
 

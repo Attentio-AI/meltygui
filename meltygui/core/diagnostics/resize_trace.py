@@ -1,6 +1,7 @@
 """Bounded, always-on resize diagnostics; records metadata, never view values.
 
-Each process writes .melty/resize-<pid>.log (JSON lines, two 4 MiB backups).
+Each process writes <cache_root>/resize-<pid>.log (JSON lines, two 4 MiB
+backups; normally ~/.cache/meltygui, respecting XDG_CACHE_HOME).
 No draw-state references are retained and logging failures cannot break a drag.
 """
 import json

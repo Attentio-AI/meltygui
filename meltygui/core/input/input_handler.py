@@ -1121,6 +1121,11 @@ class InputHandler:
 
         return result, result_by_type
 
+    def is_drag_captured(self, input_id: str, view_id) -> bool:
+        """Whether this view owns the press, including before drag activation."""
+        capture = self._drag_capture.get(input_id)
+        return capture is not None and capture[0] == view_id
+
     def is_down(self, input_id: str) -> bool:
         s = self._states.get(input_id)
         return s.is_down if s else False

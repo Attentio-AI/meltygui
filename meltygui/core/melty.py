@@ -3876,10 +3876,13 @@ class Melty:
             cls.pending_return_values[draw_state._tile_id] = return_val
             if return_val[0]:
                 note=Note(name="delayed return", reason=f"{draw_state.name}", tint=(0, 1, 1))
-                if draw_state.parent_window is not None:
-                    Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=6, frame_delta=1, note=note)
-                else:
-                    Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=6, force=True, frame_delta=1, note=note)
+                # The inline caller consumes the deferred result. Its enclosing
+                # window may contain deeper cached views, so waking only that
+                # window can leave the caller cached and lose the edit.
+                caller = draw_state._parent or draw_state.parent_window
+                if caller is not None:
+                    Melty.cache.invalidate_up(caller._tile_id, max_depth=0,
+                                              force=True, frame_delta=1, note=note)
 
                 request_render()
         else:
@@ -4851,6 +4854,8 @@ class Melty:
         # against the pointer's (diagnostics/edge_motion_guard).
         from meltygui.core.diagnostics.edge_motion_guard import check_frame
         check_frame()
+        from meltygui.core.diagnostics import geometry_jitter
+        geometry_jitter.check_frame()
 
         # Drop key events now that every view has rendered - including the
         # windows drawn above in this method's layer loop (the editors, the

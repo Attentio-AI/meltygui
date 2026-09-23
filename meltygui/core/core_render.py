@@ -20,6 +20,7 @@ from meltygui_imgui.core import _DrawList
 
 import meltygui.core.input.mouse_cursor as mouse_cursor
 import meltygui.core.diagnostics.resize_trace as resize_trace
+import meltygui.core.diagnostics.geometry_jitter as geometry_jitter
 from meltygui.core.runtime.background import Background
 from meltygui.core.runtime.background import Pending
 from meltygui.core.input.input_handler import ALL_ACTIONS
@@ -5244,6 +5245,8 @@ def render_func(*args, **o_kwargs):
                 # here, just unwind the stack.
                 Melty.search_stack.pop()
 
+            if _has_imgui:
+                geometry_jitter.sample(draw_state, func)
             draw_state.frame_count += 1
             if Melty.imgui_crashed:
                 if return_extras:

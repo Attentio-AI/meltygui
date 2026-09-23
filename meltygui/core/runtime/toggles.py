@@ -1675,7 +1675,9 @@ class Toggles:
         # button is held, an edge moving faster or farther than the pointer
         # is logged to the resize trace with the app's geometry state and the
         # solver stacks that moved it. Cheap (one pass over the edges per
-        # frame); off only to silence a known report while investigating.
+        # frame). Also enables draw-state geometry jitter candidates, sampled
+        # at wrapper exit with bounded before/after frames in the resize log.
+        # Off only to silence a known report while investigating.
         edge_motion_guard = True
         # Hyprland has no window-geometry event, so the position feed
         # (geometry_feed's hyprland backend) POLLS its request intervals

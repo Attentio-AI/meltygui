@@ -2256,6 +2256,12 @@ class DrawState(DictConversion):
             if melty.surface_windows.get(req.tile_id) is req and not req.closed:
                 req.tick = melty.app_tick
 
+    def is_drag_captured(self, input_id="left_mouse", view_id=None):
+        """True from a handle's captured press through release, before motion too."""
+        target = self._tile_id if view_id is None else f"{self._tile_id}_{view_id}"
+        handler = Core.melty.event_handler
+        return handler is not None and handler.is_drag_captured(input_id, target)
+
     def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None, cursor=None,
                   cursor_gate=None):
         """Subscribe this view to `event_names` (or, with an empty list, just

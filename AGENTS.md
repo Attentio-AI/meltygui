@@ -62,6 +62,20 @@ For window, column/row, resize or collision changes, read the [reconciled behavi
 
 For anything that draws or moves a tensor, read the [tensor rendering requirements](docs/TENSOR_RENDERING_REQUIREMENTS.md): a CUDA tensor is raymarched in place on its own GPU (80 GB at 120 fps), only the image crosses, and a failure is an error, never a copy.
 
+## Designing a feature
+
+Locality: each thing lives next to what it belongs to, at the smallest scope that
+holds all of its users (code, state, UI, lifetime). A feature starts as one file in the app that
+uses it and grows structure only when a second user appears. The full rule is in
+[docs/APPS.md](docs/APPS.md#designing-a-feature); apply it to any new view, model or app work.
+
+## Designing a feature
+
+Locality: each thing lives next to what it belongs to, at the smallest scope that
+holds all of its users (code, state, UI, lifetime). A feature starts as one file in the app that
+uses it and grows structure only when a second user appears. The full rule is in
+[docs/APPS.md](docs/APPS.md#designing-a-feature); apply it to any new view, model or app work.
+
 ## Verification
 
 Preserve unrelated work/sessions; the editor refactor is deferred. Run focused
