@@ -201,3 +201,74 @@ def test_relocation_preserves_distinct_metadata_across_many_consumers(load_modul
         assert function.__annotations__ == {}
         assert isinstance(function.__annotations__, dict)
     assert destination.FeatureState is original.FeatureState
+
+
+def test_hotswap_updates_mapping_bases_and_keeps_live_base_identity(load_modules):
+    source = '''class MappingMethods:
+    def describe(self):
+        return "before", self["held"]
+class Files(dict):
+    pass
+'''
+    module = load_modules('mapping_inheritance_test', source)
+    held_class, held_base = module.Files, module.MappingMethods
+    value = module.Files(held="runtime")
+    revised = source.replace('class Files(dict):', 'class Files(MappingMethods, dict):')
+    assert _recompile_module(module, revised, module.__file__) is None
+    assert module.Files is held_class and module.MappingMethods is held_base
+    assert module.Files.__bases__ == (held_base, dict)
+    assert isinstance(value, held_base)
+    assert value.describe() == ("before", "runtime")
+    revised = revised.replace('"before"', '"after"')
+    assert _recompile_module(module, revised, module.__file__) is None
+    assert value.describe() == ("after", "runtime")
+    assert module.Files.__bases__[0] is held_base
+
+
+def test_mapping_base_change_rolls_back_without_losing_instances():
+    from meltygui.code.file_converters import _snapshot_class, _hotswap_class
+    class Methods:
+        def read(self):
+            return self["held"]
+    class Before(dict):
+        pass
+    class After(Methods, dict):
+        pass
+    held = Before(held="value")
+    snapshot = _snapshot_class(Before)
+    _hotswap_class(Before, After)
+    assert held.read() == "value"
+    _hotswap_class(Before, snapshot, force=True)
+    assert Before.__bases__ == (dict,)
+    assert held["held"] == "value" and not hasattr(held, "read")
+
+
+def test_class_only_hotswap_binds_methods_and_wrappers_to_live_module(load_modules):
+    from meltygui.code.file_converters import _recompile_class
+    source = '''import functools
+from meltygui.core.runtime.lifecycle import module_is_live
+VALUE = "first"
+def decorate(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        return fn(*args, **kwargs)
+    return wrapper
+class State:
+    @decorate
+    def read(self):
+        return VALUE, module_is_live(globals())
+    @property
+    def value(self):
+        return VALUE
+    @staticmethod
+    def namespace():
+        return globals()
+'''
+    module = load_modules('class_namespace_test', source)
+    held = module.State()
+    class_source = source[source.index('class State:'):]
+    assert _recompile_class(module.State, class_source, module.__file__) is None
+    module.VALUE = "changed"
+    assert held.read() == ("changed", True)
+    assert held.value == "changed"
+    assert held.namespace() is vars(module)

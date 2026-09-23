@@ -27,6 +27,7 @@ from pathlib import Path
 from meltygui.core.melty import Melty
 from meltygui.core.definition_hotswap import patch_function
 from meltygui.core.definition_hotswap import canonicalize_definitions
+from meltygui.core.definition_hotswap import bind_class_namespace
 
 import libcst as cst
 
@@ -99,6 +100,9 @@ def _snapshot_class(cls: type) -> type:
     if isinstance(cls, EnumMeta):
         members["_enum_member_state_"] = {
             name: dict(vars(m)) for name, m in cls.__members__.items()}
+    # The snapshot itself uses object as its base (Enums/C extension layouts
+    # cannot be reconstructed freely); retain the real bases for rollback.
+    members["__hotswap_bases__"] = cls.__bases__
     return type(f"_snapshot_{cls.__name__}", (), members)
 
 
@@ -856,6 +860,8 @@ def _recompile_class(cls: type, source: str, filename: str) -> None:
     new_cls = namespace.get(cls.__name__)
     if new_cls is None:
         return NameError(f"Class '{cls.__name__}' not found in recompiled code")
+    if mod is not None:
+        bind_class_namespace(new_cls, namespace, vars(mod))
 
     # Snapshot the PREVIOUS compiled state before patching: a throwaway clone whose
     # members (incl. live method code objects) mirror the current class. Rollback
@@ -1323,6 +1329,11 @@ def _hotswap_class(old_cls: type, new_cls: type, src_map: dict = None,
     attr_src = src_map.get(qualname) if (src_map and qualname) else None
     baseline = vars(old_cls).get("__hotswap_attr_src__") if not force else None
     _is_enum = isinstance(old_cls, EnumMeta)
+    # Pure-Python mixins can change without replacing held instances. Let
+    # Python reject incompatible C/slot layouts before any methods are patched.
+    bases = vars(new_cls).get("__hotswap_bases__", new_cls.__bases__)
+    if old_cls.__bases__ != bases:
+        old_cls.__bases__ = bases
     # NOTE: do NOT invalidate the address cache here.  The caller
     # (recompile_cls_fn) handles cache updates via update_address_cache.
     # Invalidating here creates a race window where a concurrent
@@ -1348,7 +1359,7 @@ def _hotswap_class(old_cls: type, new_cls: type, src_map: dict = None,
         # that defines `__class__` as a property (transparent-proxy pattern,
         # e.g. _LazyMode) puts it in vars(); setattr(old_cls, '__class__', prop)
         # then raises "must be set to a class". Never patch it in place.
-        if name in ("__dict__", "__weakref__", "_instances", "__class__"):
+        if name in ("__dict__", "__weakref__", "_instances", "__class__", "__hotswap_bases__"):
             continue
         if _is_enum and name in _ENUM_INTERNALS:
             continue

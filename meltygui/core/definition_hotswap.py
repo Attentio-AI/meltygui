@@ -7,6 +7,55 @@ import types
 from meltygui.core.melty import Melty
 
 
+def bind_class_namespace(cls, compiled_namespace, live_namespace):
+    """Class-only compilation isolates bindings, but methods use live globals.
+
+    A temporary exec dictionary is not a new module. Leaving methods attached
+    to it freezes global values and makes module_is_live(globals()) false.
+    Only fresh functions from that dictionary are rebound, including wrappers.
+    """
+    rebound = {}
+
+    def function(value):
+        if not isinstance(value, types.FunctionType):
+            return value
+        if id(value) in rebound:
+            return rebound[id(value)]
+        result = value
+        if value.__globals__ is compiled_namespace:
+            result = types.FunctionType(value.__code__, live_namespace, value.__name__,
+                                        value.__defaults__, value.__closure__)
+        rebound[id(value)] = result
+        if result is not value:
+            result.__dict__.update(value.__dict__)
+            result.__kwdefaults__ = value.__kwdefaults__
+            result.__annotations__ = value.__annotations__
+            result.__qualname__, result.__module__ = value.__qualname__, value.__module__
+            result.__doc__ = value.__doc__
+        for cell in result.__closure__ or ():
+            try:
+                held = cell.cell_contents
+            except ValueError:
+                continue
+            if isinstance(held, types.FunctionType):
+                cell.cell_contents = function(held)
+        if isinstance(result.__dict__.get('__wrapped__'), types.FunctionType):
+            result.__wrapped__ = function(result.__wrapped__)
+        return result
+
+    for name, value in tuple(vars(cls).items()):
+        if isinstance(value, types.FunctionType):
+            setattr(cls, name, function(value))
+        elif isinstance(value, (staticmethod, classmethod)):
+            setattr(cls, name, type(value)(function(value.__func__)))
+        elif isinstance(value, property):
+            setattr(cls, name, property(function(value.fget), function(value.fset),
+                                        function(value.fdel), value.__doc__))
+        elif (isinstance(value, type)
+              and value.__qualname__.startswith(cls.__qualname__ + '.')):
+            bind_class_namespace(value, compiled_namespace, live_namespace)
+
+
 def _patch_nested_functions(previous, replacement, namespace):
     """Update existing factory-created callbacks without recreating closures."""
     def nested_codes(code):
@@ -204,6 +253,11 @@ def canonicalize_definitions(replacements):
         if isinstance(value, types.FunctionType):
             function_metadata(value)
         elif isinstance(value, type):
+            # A re-executed subclass points at freshly compiled bases. Keep its
+            # inheritance on the same live definitions as imports and closures.
+            bases = tuple(replace(base) for base in value.__bases__)
+            if bases != value.__bases__:
+                value.__bases__ = bases
             for member in vars(value).values():
                 if isinstance(member, types.FunctionType):
                     function_metadata(member)
