@@ -314,6 +314,7 @@ def hyprland_window_info(client):
         "fullscreen": fullscreen == 2,
         "focused": client.get("focusHistoryID") == 0,
         "floating": bool(client.get("floating")),
+        "xwayland": bool(client.get("xwayland")),
         "mapped": bool(client.get("mapped", True)),
     }
 
@@ -344,6 +345,51 @@ def hyprland_monitor_info(monitor):
     }
 
 
+def _hypr_resize_constraints(windows, path):
+    """Read native border limits on the feed thread, at most once a second.
+
+    Hyprview's keep-on-screen policy clamps the decorated frame. Its border
+    is outside the content rectangle reported by clients, so a content-only
+    solve otherwise asks for y=0 and is moved back by the border next tick.
+    Unsupported queries leave the normal observed-constraint learning intact.
+    """
+    cache = _STATE.setdefault("hypr_resize_constraints", {})
+    now = time.monotonic()
+    if cache.get("path") != path or now - cache.get("checked", -1e9) >= 1.0:
+        same_server = cache.get("path") == path
+        mode = cache.get("mode") if same_server else None
+        previous = cache.get("windows", {}) if same_server else {}
+        try:
+            mode = json.loads(hypr_request("j/getoption plugin:hyprview:keep_on_screen", path))["str"]
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        cache.update(path=path, checked=now, windows={}, previous=previous, mode=mode)
+    mode = cache["mode"]
+    for window in windows:
+        window["resize_insets"] = (0, 0, 0, 0)
+        if (mode not in ("top", "all") or not window["floating"]
+                or window["fullscreen"] or window["maximized"] or window["xwayland"]):
+            continue
+        identity = window["id"]
+        if identity not in cache["windows"]:
+            # A transient optional-query failure must not remove a known
+            # border for one poll and make the next drag discover it again.
+            border = cache["previous"].get(identity, 0)
+            try:
+                selector = "address:" + window["address"]
+                decorated = json.loads(hypr_request("j/getprop " + selector + " decorate", path))["decorate"]
+                if decorated:
+                    border = max(0, int(json.loads(hypr_request("j/getprop " + selector + " border_size", path))["border_size"]))
+                else:
+                    border = 0
+            except (OSError, ValueError, KeyError, TypeError, OverflowError):
+                pass
+            cache["windows"][identity] = border
+        border = cache["windows"][identity]
+        window["resize_insets"] = ((border, border, border, border) if mode == "all"
+                                   else (0, border, 0, 0))
+
+
 def _hypr_poll_windows(pid, path):
     """One `j/clients` poll: our window into _STATE. `updates` moves only
     when the rect (or the window) changed — the count is the consumers'
@@ -352,7 +398,9 @@ def _hypr_poll_windows(pid, path):
     infos = [hyprland_window_info(c) for c in clients]
     # Every window of ours (app.py surfaces: several per process), for the
     # by-title lookups (surface_rect / place_window / _current_frame).
-    _STATE["windows"] = [w for w in infos if w.get("pid") == pid]
+    windows = [w for w in infos if w.get("pid") == pid]
+    _hypr_resize_constraints(windows, path)
+    _STATE["windows"] = windows
     win = pick_window(infos, pid)
     cur = _STATE["frame"]
     if win is None:
@@ -361,7 +409,7 @@ def _hypr_poll_windows(pid, path):
             _STATE["updates"] += 1
         return None
     if cur is None or any(win[k] != cur.get(k) for k in ("id", "x", "y", "width", "height", "monitor",
-                                                          "maximized", "fullscreen")):
+                                                          "maximized", "fullscreen", "resize_insets")):
         _STATE["frame"] = win
         _STATE["updates"] += 1
         _refresh_workarea()
@@ -875,6 +923,21 @@ def workarea():
     if not _STATE["available"]:
         return None
     return _STATE["workarea"]
+
+
+def resize_workarea():
+    """Content resize limits, accounting for known native decoration clamps.
+
+    Keep workarea() itself as the monitor rectangle: placement, display
+    queries and other surfaces must not inherit this window's border.
+    """
+    area = workarea()
+    if area is None:
+        return None
+    frame = _current_frame() or {}
+    left, top, right, bottom = frame.get("resize_insets", (0, 0, 0, 0))
+    x, y, width, height = area
+    return x + left, y + top, max(0, width - left - right), max(0, height - top - bottom)
 
 
 def updates():

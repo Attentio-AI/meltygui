@@ -379,3 +379,53 @@ budgets cautiously during native moves: the guard currently adds the applied
 origin to input that the renderer has already corrected into press-origin
 coordinates. These remaining input/diagnostic concerns are outside the two
 geometry fixes above.
+
+## 2026-09-23: full-height bottom-contact pixel bounce
+
+The editor's retained trace showed the native model alternating between top
+0/1px and height 2160/2161px before settling at top 1px, height 2159px. These
+1–2px changes fit inside the jitter detector's rounding allowance. The 44px
+text-pane height changes in the same session were editor-tab reflow, a separate
+effect (41px tabs plus a 3px row gap).
+
+A disposable native Wayland replay grew the editor to full display height,
+then repeatedly shrank and grew it back. A read-only probe around native
+observation, foreign-change classification and flush confirmed the sequence:
+
+1. The compositor acknowledged the requested top 0px and height 2160px.
+2. Melty cleared `last_offset` at that acknowledgement.
+3. The compositor's keep-on-screen policy subsequently moved the decorated
+   frame back to top 1px, with the content height unchanged.
+4. Melty treated that as a foreign move, granted another pixel of room and
+   retried top 0px at height 2161px. The probe reproduced growth up to 2163px.
+
+The fix retains move direction at the display boundary until the gesture ends
+or the frame leaves that boundary. A delayed clamp is then learned immediately.
+Confirmed limits persist across release and are invalidated by changed work
+areas/native identities/backends or accepted native movement past the limit.
+Four axis/inset regression cases and two invalidation cases failed before this
+change and pass afterwards.
+
+The initial correction is prevented by reading the compositor's actual border
+size and decoration setting together with Hyprview's keep-on-screen policy.
+The content resize limits include that border on the policy's constrained
+sides. This is per native window, refreshed at most once a second on the feed
+thread, with complete snapshots published after the optional queries finish.
+The monitor work area is unchanged. Failed optional queries retain previously
+confirmed values; unsupported configurations fall back to observed constraints.
+Other reserved decorations can still require constraint learning.
+
+The nine-gesture full-height replay changed from **nine small native
+corrections to zero**, including the first contact. Maximum observed native
+height changed from 2163px to 2159px, with top never below 1px. Evidence runs:
+`~/.local/state/melty-admin/integration/20260923-bottom-boundary-before` and
+`20260923-bottom-boundary-known-border`. The final combined run is
+`20260923-bottom-boundary-final`: all **15 cases passed** (the 14 standard
+scenarios plus the nine-gesture full-height case). That final replay again
+recorded zero small native corrections. The remaining nine jitter candidates
+in other scenarios had no one-frame reversal flags; there were no diagnostic
+errors or app tracebacks. Focused checks passed **316 tests**, and a headless
+whole-file hotswap check preserved function identities, native model state and
+cached constraints. Live coverage uses native Wayland rendering on this
+machine; GLFW and other GPU configurations were not replayed. Position caches
+and collision ordering are not part of this change.

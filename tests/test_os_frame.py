@@ -104,7 +104,7 @@ def studio(monkeypatch):
                  size_expected=[None, None], pending={"x": [], "y": []},
                  consumed={"x": False, "y": False}, unapplied=[0.0, 0.0], os_seen=[None, None],
                  window_id=None, feed_far=[None, None], reset_frame=-10 ** 6, gestures={},
-                 last_offset=[0, 0], learned={"x": [None, None], "y": [None, None]},
+                 last_offset=[0, 0], learned={"x": [None, None], "y": [None, None]}, learned_area=None,
                  size_requests={"x": [], "y": []}, unapplied_far=[0.0, 0.0], pin_rebases={},
                  size_observed=[None, None], size_request_frame=[None, None])
     fresh["move_requests"] = {"x": [], "y": []}
@@ -1138,6 +1138,58 @@ def test_a_refused_move_teaches_the_wall_and_the_far_edge_never_ratchets_past_th
     for _ in range(3):
         app_frame(studio, root)
     assert studio.pos[1] + studio.size[1] == 2160.0 and os_y() == (1.0, 2160.0)
+
+
+@pytest.mark.parametrize('axis', ['x', 'y'])
+@pytest.mark.parametrize('inset', [1., 2.])
+def test_compositor_clamp_after_acknowledgement_does_not_retry_on_next_drag(
+        studio, hand, monkeypatch, axis, inset):
+    """The requested origin lands before a compositor decoration clamp does."""
+    i = 0 if axis == 'x' else 1
+    limit = studio.area[i + 2]
+    studio.pos[i] = inset
+    studio.size[i] = studio.feed_size[i] = limit - inset
+    root = app_root(studio)
+    app_frame(studio, root)
+    os_frame.queue_drag(axis, 1, 20.)
+    app_frame(studio, root)
+    app_frame(studio, root)  # Native reply briefly acknowledges origin zero.
+    assert studio.pos[i] == 0.
+    studio.pos[i] = inset   # The compositor clamps it on the following update.
+    os_frame.queue_drag(axis, 1, 20.)
+    app_frame(studio, root)
+    assert os_frame._STATE['learned'][axis][0] == inset
+    assert studio.size[i] == limit - inset
+    assert os_frame.edges(axis)[0][axis] == inset
+    app_frame(studio, root)
+
+    for _ in range(2):
+        monkeypatch.setattr(os_frame, '_any_button_down', lambda: False)
+        app_frame(studio, root)
+        monkeypatch.setattr(os_frame, '_any_button_down', lambda: True)
+        # A new gesture shrinks and fills the display again. Its confirmed
+        # native boundary must not bounce back to zero and relearn the inset.
+        for delta in (-100., 120., 20., 0., 0.):
+            if delta:
+                os_frame.queue_drag(axis, 1, delta)
+            app_frame(studio, root)
+            assert os_frame.edges(axis)[0][axis] == inset
+            assert studio.size[i] <= limit - inset
+
+
+@pytest.mark.parametrize('change', ['workarea', 'native_move'])
+def test_confirmed_compositor_wall_expires_when_its_boundary_changes(studio, hand, change):
+    studio.pos[1] = 1.
+    studio.size[1] = studio.feed_size[1] = 2159.
+    root = app_root(studio)
+    app_frame(studio, root)
+    os_frame._STATE['learned']['y'][0] = 1.
+    if change == 'workarea':
+        studio.area = (0., -100., 3840., 2260.)
+    else:
+        studio.pos[1] = 0.  # An actual native move proves zero is now allowed.
+    app_frame(studio, root)
+    assert os_frame._STATE['learned']['y'][0] is None
 
 
 @pytest.mark.parametrize('axis', ['x', 'y'])

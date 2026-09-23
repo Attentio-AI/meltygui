@@ -37,7 +37,7 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
     mark_end_offscreen around its body): a tile whose view was not invalidated
     draws its captured texture instead of running the renderer."""
     # Change the picker size here; it sits in the tile's bottom-left corner and
-    # the editor receives the area above it.
+    # renderers may opt into the remaining row with tile_toolbar=True.
     picker_height = 28.0
     picker_width = 180.0
     tile = input_value
@@ -67,17 +67,25 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
     if tile.render_func is not None:
         from meltygui.core.melty import Melty
         imgui.set_cursor_screen_pos((left, top))
+        toolbar = renderer_decoration(tile.render_func).get("tile_toolbar", False)
+        renderer_height = height if toolbar else content_height
+        toolbar_kwargs = {}
+        if toolbar:
+            toolbar_left = min(picker_width + 4.0, width)
+            # Local geometry keeps view state and process ownership in the renderer.
+            toolbar_kwargs["tile_toolbar_rect"] = (
+                toolbar_left, content_height, max(0.0, width - toolbar_left), picker_height)
         # A renderer that lays out wider than its tile (a view's own minimums)
         # is cut at the tile, never drawn over its neighbours.
-        Melty.push_clip((left, top, left + width, top + content_height))
+        Melty.push_clip((left, top, left + width, top + renderer_height))
         try:
             content_changed, value = tile.render_func(
                 tile.input_value,
                 unique_name=f"{tile.render_func.__module__}.{tile.render_func.__qualname__}",
                 width=width,
-                height=content_height,
+                height=renderer_height,
                 auto_resize=False, show_header=False, use_cache=use_cache,
-                key=tile.id, instance=tile.id, layout_frame=layout_frame,
+                key=tile.id, instance=tile.id, layout_frame=layout_frame, **toolbar_kwargs,
             )
         finally:
             Melty.pop_clip()

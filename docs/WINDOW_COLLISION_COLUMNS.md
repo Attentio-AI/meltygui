@@ -99,6 +99,21 @@ Parity has real limits. Some OS environments do not let the app position native 
 
 When a backend cannot move a native frame, honor the geometry/control capabilities it actually exposes. Do not pretend an OS move succeeded by changing internal coordinates alone. Backend restrictions should be documented as restrictions, not generalized into different Melty interaction rules.
 
+Native decoration constraints also count. On Hyprland with Hyprview's
+`keep_on_screen` policy, the compositor clamps the decorated frame while its
+geometry feed reports the content rectangle. `geometry_feed.resize_workarea()`
+accounts for the reported border on the constrained sides; `workarea()` remains
+the monitor rectangle. These optional properties are read on the background
+feed thread and cached, with prior values retained through transient failures.
+Unsupported policies/backends continue to use observed constraint learning.
+
+A native acknowledgement can precede the compositor's final clamp by a frame.
+Keep the requested move direction while pressing against the display boundary
+so that correction is recognized as a constraint, not a new independent move.
+Confirmed limits survive mouse release; clear them when the work area, native
+window or backend changes, or an accepted native move proves the limit obsolete.
+Relearning the same 1px limit on every drag is itself a visible jitter.
+
 Pinned app bodies, native roots, root Melty windows and nested Melty windows are implementation/integration categories with different coordinate relationships. They are not interchangeable meanings of “root.”
 
 ## Display boundaries: move versus resize

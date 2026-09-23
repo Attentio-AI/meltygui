@@ -575,14 +575,17 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
         if rect is None:
             continue
         left, top, right, bottom = rect
-        # Leave the corner grips free to receive split/join gestures.
-        grip_inset = 14.0
-        if right - left <= 2 * grip_inset or bottom - top <= 2 * grip_inset:
+        # Shared content padding for every tile; corner grab zones keep their
+        # larger hit targets, with this edge strip clear of content controls.
+        content_padding = 6.0
+        if right - left <= 2 * content_padding or bottom <= top:
             continue
-        imgui.set_cursor_screen_pos((left + grip_inset, top + grip_inset))
+        # Keep the 28px picker/toolbar usable when a row reaches its 40px minimum.
+        vertical_inset = min(content_padding, max(0.0, (bottom - top - 28.0) * 0.5))
+        imgui.set_cursor_screen_pos((left + content_padding, top + vertical_inset))
         content_changed, _ = draw_tile_content(
-            tile, width=right - left - 2 * grip_inset,
-            height=bottom - top - 2 * grip_inset,
+            tile, width=right - left - 2 * content_padding,
+            height=bottom - top - 2 * vertical_inset,
             multi_instance_renderers=multi_instance_renderers,
             layout_frame=frame,
             # Each tile is its own blit-cache unit: only the tiles whose view

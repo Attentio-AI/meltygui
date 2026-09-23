@@ -96,6 +96,28 @@ def test_selection_stores_callable_and_propagates_editor_changes(monkeypatch):
     assert tile.input_value == "original edited"
 
 
+@pytest.mark.parametrize("height", [28, 200])
+def test_toolbar_renderer_receives_bottom_row_beside_picker(monkeypatch, height):
+    import meltygui.view.tile_view as tile_view
+    from meltygui.core.melty import Melty
+    calls, clips = [], []
+
+    def editor(input_value, **kwargs):
+        calls.append(kwargs)
+        return False, input_value
+
+    editor.__header_defaults__ = {"tile_toolbar": True}
+    monkeypatch.setattr(tile_view, "draw_dropdown", lambda *a, **kw: (False, editor))
+    monkeypatch.setattr(tile_view.imgui, "get_cursor_screen_pos", lambda: (10, 20))
+    monkeypatch.setattr(tile_view.imgui, "set_cursor_screen_pos", lambda pos: None)
+    monkeypatch.setattr(Melty, "push_clip", lambda rect: clips.append(rect))
+    monkeypatch.setattr(Melty, "pop_clip", lambda: None)
+    tile_view.draw_tile_content(Tile(render_func=editor), 600, height)
+    assert calls[0]["tile_toolbar_rect"] == (184, height - 28, 416, 28)
+    assert calls[0]["height"] == height
+    assert clips == [(10, 20, 610, 20 + height)]
+
+
 class ProbeState(DictConversion):
     def __init__(self):
         super().__init__()

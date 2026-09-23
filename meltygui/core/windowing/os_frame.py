@@ -64,9 +64,9 @@ _STATE.setdefault("reset_frame", 0)
 # The move we last asked for per axis (flush) - a foreign move that exactly
 # cancels it is the compositor REFUSING it (a gap we don't see: the
 # floating-window top gap, a bar), and the edge we tried to move is walled
-# there for the rest of the gesture: `learned` = [near_or_None, far_or_None]
-# per axis, applied by _walls_to_edges and removed when the gesture ends or
-# the compositor lets the edge past it after all (begin_frame).
+# there: `learned` = [near_or_None, far_or_None] per axis. Confirmed limits
+# survive release; forget them when the work area changes or the compositor
+# actually lets the edge pass. Relearning on every drag makes a 1px bounce.
 _STATE.setdefault("last_offset", [0, 0])
 # Outstanding content sizes, oldest first. Retire an acknowledged prefix
 # so an older request cannot rewind a newer drag, but a later compositor
@@ -76,6 +76,7 @@ _STATE.setdefault("size_requests", {"x": [], "y": []})
 _STATE.setdefault("size_observed", [None, None])
 _STATE.setdefault("size_request_frame", [None, None])
 _STATE.setdefault("learned", {"x": [None, None], "y": [None, None]})
+_STATE.setdefault("learned_area", None)
 _STATE.setdefault("pin_rebases", {})
 _STATE.setdefault("move_requests", {"x": [], "y": []})
 
@@ -103,6 +104,7 @@ def reset(reason="studio start"):
     _STATE["gestures"] = {}
     _STATE["last_offset"] = [0, 0]
     _STATE["learned"] = {"x": [None, None], "y": [None, None]}
+    _STATE["learned_area"] = None
     _STATE["size_requests"] = {"x": [], "y": []}
     _STATE["size_observed"] = [None, None]
     _STATE["size_request_frame"] = [None, None]
@@ -178,7 +180,7 @@ def _observe():
         geometry_feed.ensure_started()      # a hotswap, not a restart (or a backend switch): start it here
         # the Hyprland backend reports the SURFACE: shrink by the shadow
         # inset to the content (a no-op on the GNOME feed's geometry rect)
-        rect, area = geometry_feed.frame_rect(inset=titlebar.window_inset()), geometry_feed.workarea()
+        rect, area = geometry_feed.frame_rect(inset=titlebar.window_inset()), geometry_feed.resize_workarea()
         if rect is None or area is None:
             return None
         frame = geometry_feed._current_frame() or {}     # the ACTIVE surface's window (extension.py)
@@ -509,6 +511,7 @@ def _set_mode(new_mode):
         _STATE["size_requests"] = {"x": [], "y": []}
         _STATE["size_observed"] = [None, None]
         _STATE["size_request_frame"] = [None, None]
+        _STATE["learned_area"] = None
         _trace(f"mode → {new_mode}")
 
 
@@ -559,6 +562,11 @@ def begin_frame():
     if _STATE["window_id"] is not None and window_id != _STATE["window_id"]:
         reset(f"window {_STATE['window_id']} → {window_id}")
     _STATE["window_id"] = window_id
+    if _STATE.get("learned_area") != tuple(area):
+        _STATE["learned"] = {"x": [None, None], "y": [None, None]}
+        _STATE["learned_area"] = tuple(area)
+    if not _any_button_down():
+        _STATE["last_offset"] = [0, 0]
     for axis, i in _AXIS.items():
         scr_near, scr_far = _STATE["screen"][axis]
         scr_near[axis], scr_far[axis] = area[i], area[i] + area[i + 2]
@@ -627,7 +635,15 @@ def begin_frame():
         else:
             _STATE["inflight"][i] = None
             _STATE["move_requests"][axis].clear()
-            _STATE["last_offset"][i] = 0
+            # A native box can be acknowledged before the compositor applies
+            # its decoration clamp. While pressing into the display boundary,
+            # retain the requested direction: the later 1px correction is a
+            # refusal, not a foreign move that grants another pixel of growth.
+            asked = _STATE["last_offset"][i]
+            at_wall = ((asked < 0 and pos[i] <= scr_near[axis] + 0.5)
+                       or (asked > 0 and feed_far[i] >= scr_far[axis] - 0.5))
+            if not at_wall:
+                _STATE["last_offset"][i] = 0
             _STATE["feed_far"][i] = feed_far[i]
         # Size: ours lands at frame start (size_expected); anything else is
         # the compositor's - the far edge moved.
@@ -669,10 +685,8 @@ def _walls_to_edges(axis):
     near, far = _STATE["edges"][axis]
     scr_near, scr_far = _STATE["screen"][axis]
     learned = _STATE["learned"][axis]
-    # A wall the compositor taught us (a refused move): forget once the
-    # hand lets go, or once the edge is seen past it after all.
-    if not _any_button_down():
-        learned[0] = learned[1] = None
+    # Keep confirmed native limits across gestures; changing the work area
+    # or accepting a native move past the limit invalidates them.
     if learned[0] is not None and near[axis] < learned[0] - 1.5:
         learned[0] = None
     if learned[1] is not None and far[axis] > learned[1] + 1.5:
@@ -729,6 +743,7 @@ def _foreign_change(axis, d, size, far_held, constrained=False):
             _STATE["os_seen"][i] = (os_seen[0] + d, os_seen[1] + d)
         far[axis] = near[axis] + size
     asked = _STATE["last_offset"][i]
+    learned = _STATE["learned"][axis]
     if constrained or (asked and d * asked < 0):
         # The compositor constrained our move/resize, possibly only partly:
         # the displaced edge is clamped THERE. Learn that wall
@@ -738,7 +753,6 @@ def _foreign_change(axis, d, size, far_held, constrained=False):
         # left "where it is" the next flip grew it by one more screen
         # size (the studio's bottom ratcheting below the display).
         scr_near, scr_far = _STATE["screen"][axis]
-        learned = _STATE["learned"][axis]
         if d > 0:
             learned[0] = near[axis]
             far[axis] = min(far[axis], scr_far[axis])
@@ -747,6 +761,13 @@ def _foreign_change(axis, d, size, far_held, constrained=False):
             near[axis] = max(near[axis], scr_near[axis])
         _trace(f"{axis}: move/resize constrained (offset {asked:+.0f}) — wall learned at "
                f"{learned[0] if d > 0 else learned[1]:.0f}")
+    else:
+        # This accepted, independent native move proves a saved constraint
+        # no longer applies (for example, decoration policy changed).
+        if learned[0] is not None and near[axis] < learned[0] - 0.5:
+            learned[0] = None
+        if learned[1] is not None and far[axis] > learned[1] + 0.5:
+            learned[1] = None
     _STATE["size_expected"][i] = size
 
 
