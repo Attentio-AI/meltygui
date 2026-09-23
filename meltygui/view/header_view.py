@@ -221,7 +221,7 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
                 event="left_mouse_clicked", text_offset_x=None,
                 style_manager=None, layout=True, draw_list=None,
                 shadow=True, shadow_offset=2.0, text_color=None, pos=None,
-                hovered=None, style=None, **kwargs):
+                hovered=None, style=None, paint=True, **kwargs):
     """Draw-list button — the fast-dock interaction model instead of a
     @render_func widget (~0.7ms of wrapper per call, measured): a rounded
     rect + centered label straight to the draw list, hover from the live
@@ -233,6 +233,8 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
     Styling mirrors `button`'s make_color_rgb + brightness-clamp pipeline so
     converted call sites keep their look. alpha=0 draws no bg (label-only
     buttons, e.g. inactive tabs). Returns True on click.
+
+    paint=False retains layout and input while an overlay owns the visuals.
 
     pos=(x, y) / hovered=: draw-only callers outside any view (the OS-window
     controls in titlebar.py, on the overlay list with their own hit logic)
@@ -261,67 +263,69 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
     # draw_list: paint into a caller-provided list instead of the window's
     # (e.g. the overlay list a DragDrop ghost rides) — pairs with layout=False.
     dl = draw_list if draw_list is not None else imgui.get_window_draw_list()
-    if alpha > 0.0 and color is not None:
-        # Shadow under any button that draws a bg — a standalone depth mark
-        # (no draw_state for the compositor to shadow; the default offset +2
-        # mirrors the legacy active-button z_offset lift). Label-only buttons
-        # (alpha=0, e.g. inactive tabs) cast nothing, matching the old
-        # per-call-site marks. layout=False draw-only ghosts skip it too —
-        # they ride an overlay list outside the mark's snapshotted clip.
-        # shadow_offset = the lift (depth delta); a smaller one sits the
-        # button lower, so e.g. inactive tabs stay under the active tab.
-        rounding = corner_radius * scale
-        if shadow and layout:
-            add_shadow((x, y, w, h), offset=shadow_offset,
-                       corner_radius=rounding)
-        if Toggles.dynamic_styles:
-            # Legacy callers supply a hue; its strength becomes a residual.
-            # Explicit Style values can supply signed shifts or absolutes.
-            bg_style = style
-            if bg_style is None:
-                strength = tint_value + (hover_boost if hovered else 0.0)
-                bg_style = Style(tuple(c * strength for c in color[:3]) + (alpha,))
-            Melty.add_background(bg_style, rect=(x, y, w, h),
-                                 corner_radius=rounding, draw_list=dl)
+    # Interaction-only bodies leave painting to their lightweight overlay.
+    if paint:
+        if alpha > 0.0 and color is not None:
+            # Shadow under any button that draws a bg — a standalone depth mark
+            # (no draw_state for the compositor to shadow; the default offset +2
+            # mirrors the legacy active-button z_offset lift). Label-only buttons
+            # (alpha=0, e.g. inactive tabs) cast nothing, matching the old
+            # per-call-site marks. layout=False draw-only ghosts skip it too —
+            # they ride an overlay list outside the mark's snapshotted clip.
+            # shadow_offset = the lift (depth delta); a smaller one sits the
+            # button lower, so e.g. inactive tabs stay under the active tab.
+            rounding = corner_radius * scale
+            if shadow and layout:
+                add_shadow((x, y, w, h), offset=shadow_offset,
+                           corner_radius=rounding)
+            if Toggles.dynamic_styles:
+                # Legacy callers supply a hue; its strength becomes a residual.
+                # Explicit Style values can supply signed shifts or absolutes.
+                bg_style = style
+                if bg_style is None:
+                    strength = tint_value + (hover_boost if hovered else 0.0)
+                    bg_style = Style(tuple(c * strength for c in color[:3]) + (alpha,))
+                Melty.add_background(bg_style, rect=(x, y, w, h),
+                                     corner_radius=rounding, draw_list=dl)
+            else:
+                clamp = _brightness_clamp
+                bg = style_manager.make_color_rgb(
+                    color[0], color[1], color[2],
+                    value=tint_value + (hover_boost if hovered else 0.0),
+                    factor=factor, saturation_scale=saturation, alpha=1.0)
+                bg = clamp(bg[0], bg[1], bg[2], 0.0, max_bg_brightness)
+                dl.add_rect_filled(x, y, x + w, y + h,
+                                   pack_color(bg[0], bg[1], bg[2], alpha),
+                                   rounding=rounding)
+        # text_color: use this exact rgb for the label instead of the theme-mix
+        # pipeline below — that pipeline only lets text_value/text_saturation
+        # touch `factor` worth of the final color (the rest is the raw `color`),
+        # so callers needing FULL-range text control (the editor tabs' hsv
+        # knobs) pre-compute the color and pass it here. Hover still brightens.
+        if text_color is not None:
+            tc_key = (text_color[0], text_color[1], text_color[2], hovered)
+            tc = _TEXT_COLOR_MEMO.get(tc_key)
+            if tc is None:
+                th, tsat, tv = colorsys.rgb_to_hsv(*text_color[:3])
+                if hovered:
+                    tv = min(1.0, tv + 0.25)
+                tc = colorsys.hsv_to_rgb(th, tsat, tv)
+                if len(_TEXT_COLOR_MEMO) > 2048:
+                    _TEXT_COLOR_MEMO.clear()
+                _TEXT_COLOR_MEMO[tc_key] = tc
         else:
-            clamp = _brightness_clamp
-            bg = style_manager.make_color_rgb(
+            tc = style_manager.make_color_rgb(
                 color[0], color[1], color[2],
-                value=tint_value + (hover_boost if hovered else 0.0),
-                factor=factor, saturation_scale=saturation, alpha=1.0)
-            bg = clamp(bg[0], bg[1], bg[2], 0.0, max_bg_brightness)
-            dl.add_rect_filled(x, y, x + w, y + h,
-                               pack_color(bg[0], bg[1], bg[2], alpha),
-                               rounding=rounding)
-    # text_color: use this exact rgb for the label instead of the theme-mix
-    # pipeline below — that pipeline only lets text_value/text_saturation
-    # touch `factor` worth of the final color (the rest is the raw `color`),
-    # so callers needing FULL-range text control (the editor tabs' hsv
-    # knobs) pre-compute the color and pass it here. Hover still brightens.
-    if text_color is not None:
-        tc_key = (text_color[0], text_color[1], text_color[2], hovered)
-        tc = _TEXT_COLOR_MEMO.get(tc_key)
-        if tc is None:
-            th, tsat, tv = colorsys.rgb_to_hsv(*text_color[:3])
-            if hovered:
-                tv = min(1.0, tv + 0.25)
-            tc = colorsys.hsv_to_rgb(th, tsat, tv)
-            if len(_TEXT_COLOR_MEMO) > 2048:
-                _TEXT_COLOR_MEMO.clear()
-            _TEXT_COLOR_MEMO[tc_key] = tc
-    else:
-        tc = style_manager.make_color_rgb(
-            color[0], color[1], color[2],
-            value=text_value + (hover_text_boost if hovered else 0.0),
-            factor=factor, saturation_scale=text_saturation, alpha=1.0)
-    # text_offset_x: left-align the label at a fixed inset instead of
-    # centering — for buttons whose left edge hosts another element (the
-    # editor tabs' tint swatch) that centered text would overlap.
-    # Optical-centering nudges (same as the fast dock / `button`): glyphs sit
-    # low-left of their geometric cell, so shift right and up a hair.
-    tx = x + text_offset_x if text_offset_x is not None else x + (w - ts.x) * 0.5
-    dl.add_text(tx + 2.0 * scale, y + (h - ts.y) * 0.5 - scale,
-                pack_color(tc[0], tc[1], tc[2], 1.0), text)
+                value=text_value + (hover_text_boost if hovered else 0.0),
+                factor=factor, saturation_scale=text_saturation, alpha=1.0)
+        # text_offset_x: left-align the label at a fixed inset instead of
+        # centering — for buttons whose left edge hosts another element (the
+        # editor tabs' tint swatch) that centered text would overlap.
+        # Optical-centering nudges (same as the fast dock / `button`): glyphs sit
+        # low-left of their geometric cell, so shift right and up a hair.
+        tx = x + text_offset_x if text_offset_x is not None else x + (w - ts.x) * 0.5
+        dl.add_text(tx + 2.0 * scale, y + (h - ts.y) * 0.5 - scale,
+                    pack_color(tc[0], tc[1], tc[2], 1.0), text)
     # layout=False: draw-only — no dummy (nothing submitted to the window
     # group, so an out-of-flow draw like a DragDrop ghost can't stretch the
     # view's measured content) and no click subscription.

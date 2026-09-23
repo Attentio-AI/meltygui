@@ -1351,6 +1351,7 @@ class TileCacheMasked:
         self._prog_mask_textured_rounded: Optional[int] = None
         self._prog_mask_textured_offset: Optional[int] = None
         self._prog_mask_textured_offset_rounded: Optional[int] = None
+        self._mask_batch = None
         self._prog_copy: Optional[int] = None
         self._prog_blit: Optional[int] = None
         self._prog_solid: Optional[int] = None
@@ -2141,6 +2142,9 @@ class TileCacheMasked:
         if self._prog_mask_textured_offset_rounded:
             gl.glDeleteProgram(self._prog_mask_textured_offset_rounded)
             self._prog_mask_textured_offset_rounded = None
+        if getattr(self, "_mask_batch", None) is not None:
+            self._mask_batch.close()
+            self._mask_batch = None
         if self._prog_copy:
             gl.glDeleteProgram(self._prog_copy)
             self._prog_copy = None
@@ -3820,20 +3824,35 @@ class TileCacheMasked:
                     and filled[2] >= tile.size[0] and filled[3] >= tile.size[1])
 
     def replay_resize(self, draw_state, rect, *, footer_height=0):
-        """Replay resident pixels at a layout's current rect, without stretching.
+        """Replay one resident view; see replay_resize_batch for grouped replay."""
+        return self.replay_resize_batch(((draw_state, rect, footer_height),))
 
-        The content stays top-left anchored; an optional footer strip stays at
-        the bottom. The layout keeps ownership of clipping and input. This
-        deliberately does not dispatch draw_overlay or descendant scrollbars.
-        Normal rendering resumes (and invalidates) through _frozen_served.
+    def replay_resize_batch(self, items):
+        """Replay an ordered group of resident views with one shared setup.
+
+        Preflight every member before painting anything. This lets layouts fall
+        back to live rendering without leaving a partially replayed tile.
+        Pixels retain native scale; overlays remain outside the captured images.
         """
-        if not self.can_replay_resize(draw_state):
-            return False
-        from meltygui.core.rendering.view_identity import place_in_parent_window
+        prepared = []
+        for draw_state, rect, footer in items:
+            if not self.can_replay_resize(draw_state):
+                return False
+            rect = tuple(map(snap_int, rect))
+            if rect[2] <= 0 or rect[3] <= 0:
+                return False
+            prepared.append((draw_state, rect, footer))
+        if not prepared:
+            return True
+        dl, clip = imgui.get_window_draw_list(), Melty.get_clip_rect()
+        parent_key = self._stack[-1].key if self._stack else None
+        for draw_state, rect, footer in prepared:
+            self._replay_resize_prepared(draw_state, rect, footer, dl, clip, parent_key)
+        return True
 
-        x, y, width, height = map(snap_int, rect)
-        if width <= 0 or height <= 0:
-            return False
+    def _replay_resize_prepared(self, draw_state, rect, footer_height, dl, clip, parent_key):
+        from meltygui.core.rendering.view_identity import place_in_parent_window
+        x, y, width, height = rect
         key = draw_state._tile_id
         tile = self._tiles[key]
         imgui.set_cursor_screen_pos((x, y))
@@ -3847,21 +3866,19 @@ class TileCacheMasked:
             draw_state.left, draw_state.top = draw_state.abs_left, draw_state.abs_top
             draw_state.last_seen = Melty.frame_count
             draw_state._blit_served_frame = Melty.frame_count
-            draw_state.clip_rect = Melty.get_clip_rect()
+            draw_state.clip_rect = clip
             parent = draw_state.parent_window
             draw_state._clip_win_anchor = (parent.abs_left, parent.abs_top) if parent is not None else None
         finally:
             Melty.silence_invalidate = was_silenced
         draw_state.replay_surface_requests()
         self._frozen_served[key] = draw_state
-        parent_ctx = self._stack[-1] if self._stack else None
-        self.key_to_parent_key[key] = parent_ctx.key if parent_ctx else None
+        self.key_to_parent_key[key] = parent_key
         self.key_to_draw_state[key] = draw_state
         ctx = _Ctx(draw_state, key, (x, y), (width, height), draw_state.z_pos,
                    draw_state.shadow_depth, True, draw_state.auto_resize)
         self._key_to_ctx[key] = ctx
 
-        dl = imgui.get_window_draw_list()
         if Melty.channels_split:
             dl.channels_set_current(Melty.get_channel(draw_state.depth))
         self.draw_freeze_bg(draw_state, x, y, width, height, live=False)
@@ -3872,22 +3889,25 @@ class TileCacheMasked:
             # A captured toolbar is not content: remove its old position,
             # then replay that strip against the destination's bottom edge.
             resident_w, resident_h = tile.size[0], tile.size[1] - footer
-        dl.push_clip_rect(x, y, x + width, y + height - footer, True)
-        dl.add_image(tile.tex, (x, y), (x + resident_w, y + resident_h),
-                     (0, 1), (resident_w / alloc_w, 1 - resident_h / alloc_h))
-        dl.pop_clip_rect()
-        if footer:
-            dl.push_clip_rect(x, y + height - footer, x + width, y + height, True)
-            dl.add_image(tile.tex, (x, y + height - footer), (x + resident_w, y + height),
+        # Crop only the native-scale image's right/bottom edges. The group's
+        # enclosing draw-list clip handles the screen/parent intersection.
+        visible_w, visible_h = min(resident_w, width), min(resident_h, height - footer)
+        if visible_w > 0 and visible_h > 0:
+            dl.add_image(tile.tex, (x, y), (x + visible_w, y + visible_h),
+                         (0, 1), (visible_w / alloc_w, 1 - visible_h / alloc_h))
+        if footer and visible_w > 0:
+            dl.add_image(tile.tex, (x, y + height - footer), (x + visible_w, y + height),
                          (0, 1 - resident_h / alloc_h),
-                         (resident_w / alloc_w, 1 - tile.size[1] / alloc_h))
-            dl.pop_clip_rect()
-        clipped = self._clip_rect(x, y, width, height, Melty.get_clip_rect())
+                         (visible_w / alloc_w, 1 - tile.size[1] / alloc_h))
+        clipped = self._clip_rect(x, y, width, height, clip)
         if clipped is None:
             clipped = (x, y, width, height)
         if clipped[2] > 0 and clipped[3] > 0:
             self.mask_mark_view(draw_state, ctx.layer, ctx.depth_and_layer, *clipped, key,
                                 getattr(draw_state, 'corner_radius', 0))
+        from meltygui.core.rendering.overlay import finish_cached_overlays
+        ctx.drew_cached = True
+        finish_cached_overlays(self, ctx)
         self._frame_cache_hits += 1
         return True
 
@@ -5385,7 +5405,7 @@ class TileCacheMasked:
                 gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
                 # gl.glDisable(gl.GL_BLEND)
-                mask_batch = {}
+                mask_stamps = []
                 for r in _full_mask_rects(subtree_rects_by_root):
                     draw_state = self.key_to_draw_state.get(r.key)
                     t = self._tiles.get(r.key)
@@ -5432,8 +5452,6 @@ class TileCacheMasked:
                     if r.w <= 0 or r.h <= 0 or iw <= 0 or ih <= 0 or clip_iw <= 0 or clip_ih <= 0:
                         continue
 
-                    gl.glEnable(gl.GL_SCISSOR_TEST)
-                    gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
 
                     depth_and_layer = r.depth_and_layer
                     if can_use_cached:
@@ -5442,27 +5460,20 @@ class TileCacheMasked:
 
                         shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
 
-                        self._draw_mask_rect_cached(t.mask_tex, ix0, iy0, iw, ih, offset,
-                                                    r.corner_radius, shadow_margin,
-                                                    uv_rect=_tile_uv_rect(t), batch=mask_batch)
+                        mask_stamps.append((t.mask_tex, (ix0, iy0, iw, ih),
+                                            (clip_ix0, clip_iy0, clip_iw, clip_ih),
+                                            _tile_uv_rect(t), offset, r.corner_radius, shadow_margin))
                     else:
-                        mask_batch.clear()
-                        rank_norm = float(depth_and_layer) / 65535.5
-                        gl.glViewport(clip_ix0, clip_iy0, clip_iw, clip_ih)
-                        cr = r.corner_radius
-                        if cr > 0:
-                            gl.glUseProgram(self._prog_mask_rounded)
-                            gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
-                            gl.glUniform2f(self._loc_maskr_uRectSize, float(clip_iw), float(clip_ih))
-                            gl.glUniform1f(self._loc_maskr_uCornerRadius, cr)
-                            shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
-                            gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
+                        clip = (clip_ix0, clip_iy0, clip_iw, clip_ih)
+                        shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
+                        mask_stamps.append((None, clip, clip, (1, 1, 0, 0),
+                                            float(depth_and_layer) / 65535.5,
+                                            r.corner_radius, shadow_margin))
 
-                        else:
-                            gl.glUseProgram(self._prog_mask)
-                            gl.glUniform1f(self._loc_mask_uRankNorm, rank_norm)
-
-                        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+                if getattr(self, "_mask_batch", None) is None:
+                    from meltygui.core.cache.mask_batch import MaskBatch
+                    self._mask_batch = MaskBatch()
+                self._mask_batch.draw(mask_stamps, fb_w, fb_h, restore_vao=self._dummy_vao)
 
                 gl.glDisable(gl.GL_SCISSOR_TEST)
 

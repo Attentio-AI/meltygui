@@ -14,7 +14,8 @@ def resident():
     ds = SimpleNamespace(use_cache=True, closed=False, _external_change=False,
                          _tile_id='child', width=300, height=200, abs_left=40, abs_top=60,
                          parent_window=None, depth=4, z_pos=100, shadow_depth=2,
-                         auto_resize=False, corner_radius=0, replay_surface_requests=Mock())
+                         auto_resize=False, corner_radius=0, replay_surface_requests=Mock(),
+                         _kwargs={}, misc={}, misc_used=set())
     texture = Tile(ds, 1, 2, None, None, (300, 200), alloc_size=(512, 256),
                    last_clean_frame=4, filled_bbox=(0, 0, 300, 200))
     cache = object.__new__(TileCacheMasked)
@@ -64,14 +65,29 @@ def test_pixels_do_not_stretch_and_footer_tracks_bottom(monkeypatch, size):
     placement = Mock(side_effect=lambda _: pytest.fail('geometry must be silenced')
                      if not Melty.silence_invalidate else None)
     monkeypatch.setattr(view_identity, 'place_in_parent_window', placement)
+    # Direct replay paints descendant and own overlays, then retains both
+    # for a cached parent on the next frame.
+    from meltygui.core.rendering import overlay
+    descendant = SimpleNamespace()
+    tex.overlay_views = (descendant,)
+    parent = SimpleNamespace(key="parent", overlay_views=())
+    cache._stack = [parent]
+    ds._kwargs = {"draw_overlay": lambda: None}
+    painted = []
+    monkeypatch.setattr(overlay, "draw_overlay", lambda view: painted.append(view))
     width, height = size
     assert cache.replay_resize(ds, (40, 60, width, height), footer_height=28)
+    assert painted == [descendant, ds]
+    assert parent.overlay_views == (descendant, ds)
     assert Melty.silence_invalidate is False
     body, footer = dl.add_image.call_args_list
-    assert body.args == (2, (40, 60), (340, 232), (0, 1), (300 / 512, 1 - 172 / 256))
-    assert footer.args == (2, (40, 60 + height - 28), (340, 60 + height),
-                           (0, 1 - 172 / 256), (300 / 512, 1 - 200 / 256))
-    assert dl.push_clip_rect.call_args_list[0].args == (40, 60, 40 + width, 60 + height - 28, True)
+    visible_w, visible_h = min(width, 300), min(height - 28, 172)
+    assert body.args == (2, (40, 60), (40 + visible_w, 60 + visible_h),
+                         (0, 1), (visible_w / 512, 1 - visible_h / 256))
+    assert footer.args == (2, (40, 60 + height - 28), (40 + visible_w, 60 + height),
+                           (0, 1 - 172 / 256), (visible_w / 512, 1 - 200 / 256))
+    dl.push_clip_rect.assert_not_called()
+    dl.pop_clip_rect.assert_not_called()
     assert ds.width == width and ds.height == height
     assert ds.last_seen == ds._blit_served_frame == 12
     ds.replay_surface_requests.assert_called_once()
@@ -86,18 +102,17 @@ def test_tile_replay_is_atomic_and_rejects_renderer_or_input_replacement(monkeyp
     tile = LayoutTile(render_func=renderer, input_value={})
     record = TileResizeRecord(renderer_version(renderer), tile.input_value, (0, 0, 300, 200),
                               body='body', controls=['picker', 'link'], toolbar=True, link_parameter_count=2)
-    cache = SimpleNamespace(can_replay_resize=lambda ds: ds != 'link', replay_resize=Mock())
-    assert not record.replay(tile, (10, 20, 240, 180), cache)
-    cache.replay_resize.assert_not_called()
-    cache.can_replay_resize = lambda ds: True
+    cache = SimpleNamespace(replay_resize_batch=Mock(return_value=False))
     monkeypatch.setattr(Melty, 'push_clip', Mock())
     monkeypatch.setattr(Melty, 'pop_clip', Mock())
     monkeypatch.setattr(Melty, 'channels_split', False)
+    assert not record.replay(tile, (10, 20, 240, 180), cache)
+    cache.replay_resize_batch.return_value = True
     assert record.replay(tile, (10, 20, 240, 180), cache)
-    assert cache.replay_resize.call_args_list[0].args == ('body', (10, 20, 240, 180))
-    assert cache.replay_resize.call_args_list[0].kwargs == {'footer_height': 28}
-    assert cache.replay_resize.call_args_list[1].args == ('picker', (10, 172, 164, 28))
-    assert cache.replay_resize.call_args_list[2].args == ('link', (178, 172, 72, 28))
+    assert cache.replay_resize_batch.call_args.args == ([
+        ('body', (10, 20, 240, 180), 28),
+        ('picker', (10, 172, 164, 28), 0),
+        ('link', (178, 172, 72, 28), 0)],)
     tile.input_value = {}
     assert not record.replay(tile, (10, 20, 240, 180), cache)
     tile.input_value = record.input_value
@@ -109,6 +124,8 @@ def test_geometry_guard_is_restored_on_failed_placement(monkeypatch):
     from meltygui.core.cache import tile_cache
     from meltygui.core.rendering import view_identity
     cache, ds, _ = resident()
+    monkeypatch.setattr(tile_cache.imgui, 'get_window_draw_list', Mock())
+    monkeypatch.setattr(Melty, 'get_clip_rect', lambda: (0, 0, 500, 400))
     monkeypatch.setattr(tile_cache.imgui, 'set_cursor_screen_pos', Mock())
     monkeypatch.setattr(view_identity, 'place_in_parent_window',
                         Mock(side_effect=RuntimeError('placement failed')))
@@ -150,3 +167,13 @@ def test_drag_receiver_ancestry_tolerates_a_stale_cycle(monkeypatch):
     monkeypatch.setattr(Melty, 'events', {'inner_handle': {'double_left_mouse_drag': event}})
     cache._refresh_resize_input_keys()
     assert cache._resize_input_keys == {'inner', 'child'}
+
+
+def test_batch_preflight_does_not_paint_or_stamp_any_member_on_miss(monkeypatch):
+    cache, ds, _ = resident()
+    cache._replay_resize_prepared = Mock()
+    bad = SimpleNamespace(use_cache=False)
+    assert not cache.replay_resize_batch([(ds, (0, 0, 100, 100), 0),
+                                          (bad, (100, 0, 100, 100), 0)])
+    cache._replay_resize_prepared.assert_not_called()
+    assert not cache._frozen_served

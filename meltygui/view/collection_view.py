@@ -1214,7 +1214,7 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
 def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
                     outline=False, info=None, priority_delta=4, setter=None,
                     swatch=None, view_owner=None, empty_tint_icon=False,
-                    icon=None, icon_color=None, hovered=False):
+                    icon=None, icon_color=None, hovered=False, paint=True):
     """draw_tuple's colour chip for immediate-mode bodies (the code editor's
     tab bar) — the fast_dock idea: no render_func / imgui widget per chip,
     the swatch goes straight to the draw list and the click is a plain
@@ -1236,6 +1236,7 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
     file tints; clicking creates opaque black and opens the picker.
     `icon` replaces the swatch with a caller-supplied glyph; `icon_color`
     and `hovered` let the caller supply its row tint and hover state.
+    `paint=False` retains input and picker lifecycle for an overlay-painted chip.
     `view_owner` is the VIEW draw_state whose paint the chip edits (a
     window header's tint chip passes its host — not the `owner` flag below,
     which is this chip owning the popover): given, the picker also carries
@@ -1271,60 +1272,62 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
         not is_color or input_value == (0, 0, 0, 0))
     if not is_color and not unpainted:
         # Missing tint: a hollow chip; a click stamps in an opaque black.
-        draw_list.add_rect(x, y, x + size, y + size,
-                           pack_color(1.0, 1.0, 1.0, 0.35),
-                           rounding=corner_radius)
+        if paint:
+            draw_list.add_rect(x, y, x + size, y + size,
+                               pack_color(1.0, 1.0, 1.0, 0.35),
+                               rounding=corner_radius)
         if draw_state.on_action("left_mouse_down", view_id=view_id, rect=rect,
                                 priority_delta=priority_delta) is not None:
             request_render()
             return True, (0.0, 0.0, 0.0, 1.0)
         return False, input_value
 
-    if icon is not None or unpainted:
-        glyph = icon if icon is not None else f"\uf043"
-        extent = imgui.calc_text_size(glyph)
-        if hovered:
-            draw_list.add_rect_filled(x - 2, y - 2, x + size + 2, y + size + 2,
-                                      pack_color(1.0, 1.0, 1.0, 0.10),
-                                      rounding=corner_radius)
-        color = pack_color(1.0, 1.0, 1.0, 1.0) if unpainted else icon_color
-        if color is None:
-            color = pack_color(1.0, 1.0, 1.0, 1.0)
-        draw_list.add_text(x + (size - extent.x) * 0.5,
-                           y + (size - extent.y) * 0.5, color, glyph)
-    else:
-        shown = swatch if swatch is not None else input_value
-        r, g, b = float(shown[0]), float(shown[1]), float(shown[2])
-        alpha = float(shown[3]) if len(shown) == 4 else 1.0
-        if alpha < 1.0:
-            # Left half: colour over a checkerboard at its real alpha; right
-            # half: the colour opaque - so transparency shows in the chip.
-            half = x + size * 0.5
-            draw_list.add_rect_filled(x, y, half, y + size,
-                                      pack_color(*checker_dark, 1.0),
-                                      rounding=corner_radius,
-                                      flags=imgui.DRAW_ROUND_CORNERS_LEFT)
-            cell = size * 0.5
-            draw_list.add_rect_filled(x + cell * 0.5, y, half, y + cell * 0.5,
-                                      pack_color(*checker_light, 1.0))
-            draw_list.add_rect_filled(x, y + cell * 0.5, x + cell * 0.5, y + size,
-                                      pack_color(*checker_light, 1.0))
-            draw_list.add_rect_filled(x, y, half, y + size,
-                                      pack_color(r, g, b, alpha),
-                                      rounding=corner_radius,
-                                      flags=imgui.DRAW_ROUND_CORNERS_LEFT)
-            draw_list.add_rect_filled(half, y, x + size, y + size,
-                                      pack_color(r, g, b, 1.0),
-                                      rounding=corner_radius,
-                                      flags=imgui.DRAW_ROUND_CORNERS_RIGHT)
+    if paint:
+        if icon is not None or unpainted:
+            glyph = icon if icon is not None else f"\uf043"
+            extent = imgui.calc_text_size(glyph)
+            if hovered:
+                draw_list.add_rect_filled(x - 2, y - 2, x + size + 2, y + size + 2,
+                                          pack_color(1.0, 1.0, 1.0, 0.10),
+                                          rounding=corner_radius)
+            color = pack_color(1.0, 1.0, 1.0, 1.0) if unpainted else icon_color
+            if color is None:
+                color = pack_color(1.0, 1.0, 1.0, 1.0)
+            draw_list.add_text(x + (size - extent.x) * 0.5,
+                               y + (size - extent.y) * 0.5, color, glyph)
         else:
-            draw_list.add_rect_filled(x, y, x + size, y + size,
-                                      pack_color(r, g, b, 1.0),
-                                      rounding=corner_radius)
-        if outline:
-            draw_list.add_rect(x - 1.5, y - 1.5, x + size + 1.5, y + size + 1.5,
-                               pack_color(*outline_color),
-                               rounding=corner_radius)
+            shown = swatch if swatch is not None else input_value
+            r, g, b = float(shown[0]), float(shown[1]), float(shown[2])
+            alpha = float(shown[3]) if len(shown) == 4 else 1.0
+            if alpha < 1.0:
+                # Left half: colour over a checkerboard at its real alpha; right
+                # half: the colour opaque - so transparency shows in the chip.
+                half = x + size * 0.5
+                draw_list.add_rect_filled(x, y, half, y + size,
+                                          pack_color(*checker_dark, 1.0),
+                                          rounding=corner_radius,
+                                          flags=imgui.DRAW_ROUND_CORNERS_LEFT)
+                cell = size * 0.5
+                draw_list.add_rect_filled(x + cell * 0.5, y, half, y + cell * 0.5,
+                                          pack_color(*checker_light, 1.0))
+                draw_list.add_rect_filled(x, y + cell * 0.5, x + cell * 0.5, y + size,
+                                          pack_color(*checker_light, 1.0))
+                draw_list.add_rect_filled(x, y, half, y + size,
+                                          pack_color(r, g, b, alpha),
+                                          rounding=corner_radius,
+                                          flags=imgui.DRAW_ROUND_CORNERS_LEFT)
+                draw_list.add_rect_filled(half, y, x + size, y + size,
+                                          pack_color(r, g, b, 1.0),
+                                          rounding=corner_radius,
+                                          flags=imgui.DRAW_ROUND_CORNERS_RIGHT)
+            else:
+                draw_list.add_rect_filled(x, y, x + size, y + size,
+                                          pack_color(r, g, b, 1.0),
+                                          rounding=corner_radius)
+            if outline:
+                draw_list.add_rect(x - 1.5, y - 1.5, x + size + 1.5, y + size + 1.5,
+                                   pack_color(*outline_color),
+                                   rounding=corner_radius)
 
     # `owner`: this chip last opened the popover. It stays the owner past an
     # outside click / escape / re-run (which clear the slot) until its next

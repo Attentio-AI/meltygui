@@ -60,7 +60,8 @@ out by their parent (a tile, a cell, a button), where the parent owns the size.
 
 Pass a plain callable as `@render_func(draw_overlay=draw_status)` or as a
 per-call `draw_overlay=` override. It runs after the body on each rendered
-frame, including blit hits, frozen resizes, and cached ancestors. Uncached
+frame, including blit hits, layout-owned child texture replay during frozen
+resize, and cached ancestors. Uncached
 views support the same callback. Normal idle-window sleeping still applies.
 
 The callback may accept any subset of the keyword arguments `input_value`,

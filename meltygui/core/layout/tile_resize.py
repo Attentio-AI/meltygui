@@ -31,27 +31,24 @@ class TileResizeRecord:
                 or tile.input_value is not self.input_value or not self.controls
                 or (tile.render_func is not None and self.body is None)):
             return False
-        states = [*self.controls, *([self.body] if self.body is not None else [])]
-        if not all(cache.can_replay_resize(ds) for ds in states):
-            return False
         x, y, width, height = rect
         content_height, picker_width, slots = tile_control_layout(width, height, self.link_parameter_count)
         body_height = height if self.toolbar else content_height
         if width <= 0 or body_height <= 0:
             return False
+        items = []
+        if self.body is not None:
+            items.append((self.body, (x, y, width, body_height),
+                          height - content_height if self.toolbar else 0))
+        # Body first, then its controls, retaining the original paint order.
+        items.append((self.controls[0], (x, y + content_height, picker_width, height - content_height), 0))
+        items.extend((ds, (x + left, y + content_height + top, slot_width,
+                           height - content_height), 0)
+                     for ds, (left, top, slot_width) in zip(self.controls[1:], slots))
         Melty.push_clip((x, y, x + width, y + height))
         try:
-            if self.body is not None:
-                cache.replay_resize(self.body, (x, y, width, body_height),
-                                    footer_height=height - content_height if self.toolbar else 0)
-            # Repaint controls after a toolbar-bearing body; its capture may
-            # include their old pixels. Both use the same live footer slots.
-            cache.replay_resize(self.controls[0], (x, y + content_height, picker_width, height - content_height))
-            for ds, (left, top, slot_width) in zip(self.controls[1:], slots):
-                cache.replay_resize(ds, (x + left, y + content_height + top,
-                                         slot_width, height - content_height))
+            return cache.replay_resize_batch(items)
         finally:
             Melty.pop_clip()
             if Melty.channels_split:
                 imgui.get_window_draw_list().channels_set_current(Melty.get_channel())
-        return True
