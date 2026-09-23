@@ -76,6 +76,7 @@ class TileManagerState(DictConversion):
         super().__init__()
         self.gesture = None
         self.content_top = {"y": 0.0}
+        self._link_endpoints = {}
 
 
 # Split/join handles: leave bottom-left clear for the tile selector.
@@ -561,6 +562,12 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
     # Render content after topology edits, using the final leaf frames. The
     # conversion's existing identity scopes views independently of tree paths.
     from meltygui.view.tile_view import draw_tile_content
+    from meltygui.core.layout.tile_links import prepare_endpoints
+    endpoints = prepare_endpoints(tree)
+    if tile_state is not None:
+        from meltygui.core.layout.tile_links import retire_endpoints
+        retire_endpoints(getattr(tile_state, '_link_endpoints', {}), endpoints)
+        tile_state._link_endpoints = endpoints
     cursor = imgui.get_cursor_screen_pos()
     for _path, tile, frame in resolve_frames(tree, root_frame):
         if isinstance(tile, Split):
@@ -587,6 +594,7 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
             tile, width=right - left - 2 * content_padding,
             height=bottom - top - 2 * vertical_inset,
             multi_instance_renderers=multi_instance_renderers,
+            endpoints=endpoints,
             layout_frame=frame,
             # Each tile is its own blit-cache unit: only the tiles whose view
             # was invalidated run their renderer, the rest draw their captured

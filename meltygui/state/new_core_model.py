@@ -469,6 +469,12 @@ class DrawState(DictConversion):
     # Same fallback for the persisted Eval snippet (context menu's Eval-tab).
     eval_code = None
 
+    @classmethod
+    def __class_getitem__(cls, view):
+        """Declare an injected reference to a selected instance of ``view``."""
+        from meltygui.state.view_reference import DrawStateSource
+        return DrawStateSource(view)
+
     def __init__(self):
         super().__init__()
         self._external_change = False

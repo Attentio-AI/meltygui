@@ -1389,8 +1389,12 @@ def _func_param_names(func):
         return []
     from meltygui.core.core_render import _AUTO_PARAM_EXCLUDE
     from meltygui.core.core_render import _is_event_param_name
+    from meltygui.core.rendering.injected_state import state_parameters
+    injected = state_parameters(func)
     out = []
     for name, p in params.items():
+        if name in injected:
+            continue
         if name in _AUTO_PARAM_EXCLUDE or _is_event_param_name(name):
             continue
         if name.startswith("_"):

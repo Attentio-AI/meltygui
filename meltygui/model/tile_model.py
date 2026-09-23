@@ -34,6 +34,7 @@ class Tile(DictConversion):
         self.tint = tint
         self.render_func = render_func
         self.input_value = input_value
+        self.links = {}
 
 
 class Split(DictConversion):

@@ -1907,7 +1907,7 @@ def _transfer_wrapper_state(live_wrapper, new_wrapper, new_raw) -> None:
     # search flag, header defaults. Copy fresh values; drop ones the edit
     # removed. NEVER __wrapped__ - it must keep pointing at the live raw.
     for attr in ("_load_data", "_save_data", "_searchable",
-                 "__header_defaults__", "__params__", "multi_instance"):
+                 "__header_defaults__", "__params__", "__state_parameters__", "multi_instance"):
         if hasattr(new_wrapper, attr):
             try:
                 setattr(live_wrapper, attr, getattr(new_wrapper, attr))

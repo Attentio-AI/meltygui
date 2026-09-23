@@ -30,8 +30,47 @@ def renderer_tint(renderer):
     return None
 
 
+def draw_tile_links(endpoint, endpoints, width, height):
+    """One compact picker, with a section of choices for each dependency."""
+    from meltygui.core.layout.tile_links import bindings_for, candidates, set_binding
+    from meltygui.state.view_reference import DrawStateSource
+    bindings = bindings_for(endpoint)
+    choices = {}
+    linked = missing = 0
+    for name, annotation in endpoint.parameters.items():
+        fallback = "Unlinked" if isinstance(annotation, DrawStateSource) else "Local state"
+        saved = bindings.get(name)
+        prefix = "✓ " if saved is None else ""
+        choices[f"{prefix}{name}: {fallback}"] = (name, None)
+        found = False
+        for identity, _value in candidates(endpoint, name, endpoints):
+            source = endpoints[identity[0]]
+            label = f"{source.tile.name or renderer_label(source.renderer)} · {source.tile.id}"
+            if identity[2] is not None:
+                label += f" / {identity[2]}"
+            active = saved is not None and tuple(saved) == identity
+            choices[f"{'✓ ' if active else ''}{name}: {label}"] = (name, identity)
+            found |= active
+        linked += found
+        if saved is not None and not found:
+            missing += 1
+            # Keep the unavailable selection visible; never silently retarget it.
+            choices[f"{name}: Source unavailable"] = (name, tuple(saved))
+    label = f"Links: {linked}/{len(endpoint.parameters)}"
+    if missing:
+        label = f"Links: {missing} missing"
+    changed, selection = draw_dropdown(
+        label, collection=choices, name="Sibling links", key=f"{endpoint.tile.id}:links",
+        show_name=False, show_header=False, display_label=label,
+        width=width, height=height,
+    )
+    if changed and selection is not None:
+        set_binding(endpoint, *selection)
+    return changed
+
+
 def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers=(),
-                      layout_frame=None, use_cache=False):
+                      layout_frame=None, use_cache=False, endpoints=None):
     """The tile's editor picker and its selected renderer. ``use_cache`` puts
     the renderer on the blit cache (the wrapper's mark_start_offscreen /
     mark_end_offscreen around its body): a tile whose view was not invalidated
@@ -41,6 +80,10 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
     picker_height = 28.0
     picker_width = 180.0
     tile = input_value
+    endpoint = endpoints.get(tile.id) if endpoints is not None else None
+    has_links = endpoint is not None and bool(endpoint.parameters)
+    # Fixed allocation depends on the signature, never on dynamic labels.
+    picker_width = min(picker_width, max(0.0, (width - 4.0) / 2)) if has_links else min(picker_width, width)
     choices = {"Empty": None}
     row_tints = {}
     for renderer in multi_instance_renderers:
@@ -64,6 +107,26 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
         tile.render_func = renderer
 
     changed = selected
+    if selected and endpoints is not None:
+        from meltygui.core.layout.tile_links import prepare_endpoint, retire_endpoints
+        previous = {tile.id: endpoint} if endpoint is not None else {}
+        endpoint = prepare_endpoint(tile)
+        retire_endpoints(previous, {tile.id: endpoint} if endpoint is not None else {})
+        if endpoint is None:
+            endpoints.pop(tile.id, None)
+        else:
+            endpoints[tile.id] = endpoint
+    toolbar_left = min(picker_width + 4.0, width)
+    injected = {}
+    if endpoint is not None:
+        from meltygui.core.layout.tile_links import resolve_parameters
+        if endpoint.parameters:
+            link_width = min(200.0, max(0.0, width - toolbar_left))
+            imgui.set_cursor_screen_pos((left + toolbar_left, top + content_height))
+            changed |= draw_tile_links(endpoint, endpoints, link_width, picker_height)
+            toolbar_left = min(toolbar_left + link_width + 4.0, width)
+        injected = resolve_parameters(endpoint, endpoints)
+        injected['draw_state'] = endpoint.draw_state
     if tile.render_func is not None:
         from meltygui.core.melty import Melty
         imgui.set_cursor_screen_pos((left, top))
@@ -71,7 +134,6 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
         renderer_height = height if toolbar else content_height
         toolbar_kwargs = {}
         if toolbar:
-            toolbar_left = min(picker_width + 4.0, width)
             # Local geometry keeps view state and process ownership in the renderer.
             toolbar_kwargs["tile_toolbar_rect"] = (
                 toolbar_left, content_height, max(0.0, width - toolbar_left), picker_height)
@@ -85,12 +147,17 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
                 width=width,
                 height=renderer_height,
                 auto_resize=False, show_header=False, use_cache=use_cache,
-                key=tile.id, instance=tile.id, layout_frame=layout_frame, **toolbar_kwargs,
+                key=tile.id, instance=tile.id, layout_frame=layout_frame, **toolbar_kwargs, **injected,
             )
         finally:
             Melty.pop_clip()
         if content_changed:
             tile.input_value = value
+            if endpoint is not None and Melty.cache is not None:
+                dependencies = getattr(Melty.cache, 'parameter_dependencies', None)
+                if dependencies is not None:
+                    for source in (endpoint.draw_state, *endpoint.states.values()):
+                        dependencies.invalidate(Melty.cache, source)
         changed |= content_changed
     imgui.set_cursor_screen_pos((left, top + height))
     return changed, tile

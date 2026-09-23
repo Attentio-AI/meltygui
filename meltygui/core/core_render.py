@@ -10,7 +10,7 @@ from copy import copy
 from enum import Enum
 from functools import wraps
 from math import ceil
-from typing import Any, get_type_hints
+from typing import Any
 
 from meltygui.core.runtime.paths import debug_log_path
 import meltygui.core.windowing.window_api as glfw
@@ -666,24 +666,11 @@ def render_func(*args, **o_kwargs):
     sig = inspect.signature(func)
     params = sig.parameters
     view_func_selection = o_kwargs.pop("view_func_selection", "view_func" not in params)
-    param_types = [params[p].annotation for p in params]
-    # A module under `from __future__ import annotations` (PEP 563) hands us
-    # STRINGS here, and the injected-state path (`set_default`'s misc type:
-    # `panel_state: PanelState = None`) needs the class to instantiate - so
-    # resolve string annotations against the function's globals. Only the
-    # string ones: a real class passes through untouched, and a name that
-    # doesn't resolve (lazy import) stays a string for now.
-    if any(isinstance(annotation, str) for annotation in param_types):
-        try:
-            resolved_hints = get_type_hints(func)
-        except Exception:
-            resolved_hints = {}
-        param_types = [resolved_hints.get(p, params[p].annotation)
-                       if isinstance(params[p].annotation, str) else params[p].annotation
-                       for p in params]
-    name_to_param_type = {}
-    for idx, param_name in enumerate(params):
-        name_to_param_type[param_name] = param_types[idx]
+    from meltygui.core.rendering.injected_state import parameter_annotations, state_parameters, owned_state
+    from meltygui.state.view_reference import DrawStateSource
+    name_to_param_type = parameter_annotations(func)
+    param_types = list(name_to_param_type.values())
+    injected_parameters = state_parameters(func, name_to_param_type)
 
     wanted_params = list(params.keys())
     wanted_params.remove("args") if "args" in wanted_params else None
@@ -730,12 +717,16 @@ def render_func(*args, **o_kwargs):
         reserved = _draw_state_reserved_names()
         if reserved is None:
             return ()
-        if reserved is not _auto_params_for:
+        plan_identity = (id(reserved), id(_default_plan))
+        if plan_identity != _auto_params_for:
             out = []
+            annotations = dict(_default_plan)
             for p in wanted_params:
                 if p in _AUTO_PARAM_EXCLUDE or p in reserved or _is_event_param_name(p):
                     continue
-                ann = name_to_param_type.get(p)
+                ann = annotations.get(p)
+                if isinstance(ann, DrawStateSource):
+                    continue
                 if (ann is not inspect.Parameter.empty and inspect.isclass(ann)
                         and param_defaults.get(p) is None):
                     # Injected-state param (CodeObject / GLState / ...): owned
@@ -744,7 +735,7 @@ def render_func(*args, **o_kwargs):
                     continue
                 out.append(p)
             _auto_params_cache = tuple(out)
-            _auto_params_for = reserved
+            _auto_params_for = plan_identity
         return _auto_params_cache
 
 
@@ -1107,6 +1098,19 @@ def render_func(*args, **o_kwargs):
 
         tile_id = view_tile_id(name, unique, draw_state)
         draw_state._tile_id = tile_id
+        # Subscribe before the blit-cache gate: changing a link must wake an
+        # otherwise cached consumer. This also supports explicit caller injection.
+        from meltygui.core.cache.parameter_dependencies import ParameterDependencies
+        from meltygui.core.conversion.dict_conversion import DictConversion
+        if Melty.cache is not None:
+            dependencies = getattr(Melty.cache, 'parameter_dependencies', None)
+            if dependencies is None:
+                dependencies = Melty.cache.parameter_dependencies = ParameterDependencies()
+            sources = {p: kwargs[p] for p in injected_parameters
+                       if isinstance(kwargs.get(p), DictConversion)}
+            if dependencies.bind(draw_state, sources):
+                draw_state.invalidate_up(force=True)
+
         _wtB = time.perf_counter()   # TEMP perf: unique/draw_state computation
 
         if closable and not deferred_entry:
@@ -1278,6 +1282,7 @@ def render_func(*args, **o_kwargs):
         collection = kwargs.get("collection", None)
 
 
+        previous_raw_input_value = draw_state._raw_input_value
         draw_state._raw_input_value = input_value
         if draw_state._input_cache["external_state"][0] is UNSET_VALUE:
             if not isinstance(input_value, Pending):
@@ -1649,14 +1654,15 @@ def render_func(*args, **o_kwargs):
         if not hasattr(input_value, "__melty__"):
             if Melty.frame_count > 2 and draw_state.frame_count > 2:
                 if isinstance(input_value, (type(None), int, float, str, bool, tuple, set)):
-                    if draw_state._raw_input_value != input_value:
+                    if previous_raw_input_value != input_value:
+                        # Always wake this view. A rebuilt collection (e.g. a
+                        # sibling picker menu) has no previous object-cache key.
+                        Melty.cache.invalidate(draw_state._tile_id)
                         if kwargs.get("collection", None) is not None:
                             note = Note(name=f"Untracked value changed: {input_value}", draw_state=draw_state, tint=(0.1, 0.1, 0.4))
                             Melty.cache.invalidate_up_by_obj(collection, name=name, max_depth=5, note=note)
                             Melty.last_attr = draw_state.name
                             request_render()
-                        else:
-                            Melty.cache.invalidate(draw_state._tile_id)
 
         kwargs['return_extras'] = False
 
@@ -1776,6 +1782,12 @@ def render_func(*args, **o_kwargs):
             def set_default(key, default_value, type=None):
                 # if key in vars(meta) and vars(meta)[key] is not None:
                 #     default_value = vars(meta)[key]
+                if isinstance(type, DrawStateSource):
+                    kwargs.setdefault(key, None)
+                    return
+                if key in injected_parameters:
+                    kwargs.setdefault(key, owned_state(draw_state, key, type))
+                    return
                 draw_state_misc = draw_state.misc
                 # Custom draw state object to be dynamically created for unmatched params
                 if key in draw_state.misc and type is not None:
@@ -5987,6 +5999,7 @@ def render_func(*args, **o_kwargs):
     wrapper.multi_instance = multi_instance
     wrapper.__header_defaults__ = header_defaults
     wrapper.__params__ = params
+    wrapper.__state_parameters__ = injected_parameters
     # on_cleanup(draw_state): called once per draw_state of this view at
     # Melty teardown (run_cleanup_callbacks). Stamped on the RAW func too -
     # draw_state._view_func is the raw function, which is how the teardown

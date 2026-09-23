@@ -1195,6 +1195,8 @@ class TileCacheMasked:
         self.frame_tint = (0.5 + 0.5 * rf(), 0.5 + 0.5 * rf(), 0.5 + 0.5 * rf(), 1.0)
 
         self.py_id_to_keys: Dict[str, set] = {}
+        from meltygui.core.cache.parameter_dependencies import ParameterDependencies
+        self.parameter_dependencies = ParameterDependencies()
         # Maps a draw function's id() -> set of view keys it produced, so we
         # can invalidate every view drawn by a given @draw_func (e.g. draw_text).
         self.func_id_to_keys: Dict[int, set] = {}
@@ -1564,24 +1566,34 @@ class TileCacheMasked:
 
     def invalidate_up_by_obj(self, obj, name=None, max_depth=4, force=False, frame_delta=0, note=None,
                              other_windows=True):
+        dependencies = getattr(self, 'parameter_dependencies', None)
+        if dependencies is not None:
+            dependencies.invalidate(self, obj, frame_delta=frame_delta, note=note)
         obj_key = self._obj_key(obj, name)
         keys = self.py_id_to_keys.get(obj_key, None)
         if keys is not None:
             for k in keys:
                 self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta, note=note)
         if other_windows:
-            self._invalidate_other_windows("invalidate_up_by_obj", lambda cache: obj_key in cache.py_id_to_keys,
+            self._invalidate_other_windows("invalidate_up_by_obj", lambda cache: (obj_key in cache.py_id_to_keys or
+                                                (getattr(cache, "parameter_dependencies", None) is not None
+                                                 and cache.parameter_dependencies.subscribers(obj))),
                                            obj, name=name, max_depth=max_depth, force=force,
                                            frame_delta=frame_delta, note=note)
 
     def invalidate_by_obj(self, obj, name=None, frame_delta=0, note=None, other_windows=True):
+        dependencies = getattr(self, 'parameter_dependencies', None)
+        if dependencies is not None:
+            dependencies.invalidate(self, obj, frame_delta=frame_delta, note=note)
         obj_key = self._obj_key(obj, name)
         keys = self.py_id_to_keys.get(obj_key, None)
         if keys is not None:
             for k in keys:
                 self.invalidate(k, frame_delta=frame_delta, note=note)
         if other_windows:
-            self._invalidate_other_windows("invalidate_by_obj", lambda cache: obj_key in cache.py_id_to_keys,
+            self._invalidate_other_windows("invalidate_by_obj", lambda cache: (obj_key in cache.py_id_to_keys or
+                                                (getattr(cache, "parameter_dependencies", None) is not None
+                                                 and cache.parameter_dependencies.subscribers(obj))),
                                            obj, name=name, frame_delta=frame_delta, note=note)
 
     @staticmethod

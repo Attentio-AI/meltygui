@@ -134,6 +134,47 @@ back restores that tile's editor state. Splitting inherits the renderer and
 shares the input value, while creating a new view instance. See
 `examples/tile_manager.py` for a runnable demo with counters and notes.
 
+### Sibling state parameters
+
+A tile's **Links** picker is inferred from the selected function's signature:
+
+```python
+from meltygui import DrawState, render_func
+
+@render_func()
+def draw_consumer(input_value, source: DrawState[draw_source] = None,
+                  selection: SelectionState = None):
+    ...
+    return changed, input_value
+```
+
+`DrawState[draw_source]` is a runtime framework annotation: `source` receives the
+actual draw state of the selected sibling instance of `draw_source`, or `None`
+when unlinked/unavailable. Declare/import the source function before using it in
+an annotation. The consumer's own `draw_state` parameter is unchanged. A source
+reference exists before either tile renders; geometry and body-produced fields
+reflect its latest render, so a newly created view has no rendered geometry yet.
+This convention is runtime metadata, not a standard static Python generic.
+
+A `DictConversion` state parameter (default `None`, or without a default) offers
+compatible owned state from siblings. Unlinked state is still created locally
+by core. Linking borrows the source instance without changing its owner or
+replacing the consumer's retained local instance. State sources are the sibling's
+owned instances, not the instances it may itself borrow from another tile.
+
+Bindings persist by renderer, parameter, source tile ID and source parameter.
+Reordering a tile preserves its links. A missing or incompatible source is shown
+as **Source unavailable** and uses `None`/local state until restored or explicitly
+changed. Switching a consumer's renderer preserves that renderer's bindings for
+when it is selected again. Sources belong to the same `draw_tiles` tree; views
+don't need sibling traversal or registration code. Caller-supplied state also
+works outside tiles, including `source=some_draw_state`.
+
+Injected objects are cache dependencies: attribute edits invalidate consumers,
+including across cached frames. As elsewhere, report in-place edits with the
+view's `changed` result. See `examples/tile_sibling_links.py` for both annotation
+forms without changing any existing file-tree or editor view.
+
 Hosted renderers can declare `instance` and `layout_frame` parameters. These
 receive the tile's existing conversion identity and its four shared frame edges,
 so instance-targeted commands and nested column layouts stay within that tile.

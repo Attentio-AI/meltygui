@@ -31,6 +31,7 @@ from meltygui.core.runtime.app import persisted
 from meltygui.core.runtime.app import after_first_frame
 
 if TYPE_CHECKING:   # IDE / type checkers only; never executed
+    from meltygui.state.new_core_model import DrawState
     from meltygui.view.text_view import draw_text
     from meltygui.model.tile_model import multi_instance
     from meltygui.view.chat_view import draw_claude_chat
@@ -58,6 +59,7 @@ if TYPE_CHECKING:   # IDE / type checkers only; never executed
 
 _NCV = 'meltygui.core.rendering.render_dispatch'
 _VIEWS = {
+    'DrawState': ('meltygui.state.new_core_model', 'DrawState'),
     'draw_voxels': ('meltygui.view.voxel_view', 'draw_voxels'),
     'draw_voxels_opengl': ('meltygui.view.voxel_view', 'draw_voxels_opengl'),
     'draw_voxels_cuda': ('meltygui.view.voxel_view', 'draw_voxels_cuda'),
