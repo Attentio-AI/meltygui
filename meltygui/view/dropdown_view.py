@@ -51,7 +51,7 @@ def draw_drop_down_item(input_value, name="", unique=0, shadow=False, draw_state
 @window
 def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_state: DropDownState, shadow=True,
                   text_align="left", open_upwards=None, menu_min_width=None, display_label=None,
-                  collection_source=None, trigger_text_color=None, trigger_caret=None, **kwargs):
+                  collection_source=None, trigger_text_color=None, trigger_caret=None, menu_title=None, **kwargs):
     """Root of a recursive dropdown. Renders a trigger button showing the current
     selection; clicking it opens the (click-o-open) root popover. Nested dict
     rows inside the popover open their own sub-menus on hover. Returns
@@ -253,7 +253,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     # leave the items. Neither may become the next menu's permanent size.
     menu_width, menu_height, menu_top = _dd_popup_geometry(
         collection, getattr(drop_down_state, "search_query", ""),
-        trigger_top, trigger_h, open_upwards, max(trigger_w, menu_min_width or 0))
+        trigger_top, trigger_h, open_upwards, max(trigger_w, menu_min_width or 0), menu_title)
     menu_left = max(0, min(trigger_left, imgui.get_io().display_size[0] - menu_width))
     changed, new_item, menu_ds = draw_dd_menu(
         collection, tint=draw_state.tint,
@@ -265,8 +265,9 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         row_tags=kwargs.get("row_tags"),
         row_tints=kwargs.get("row_tints"),
         row_actions=kwargs.get("row_actions"),
+        row_previews=kwargs.get("row_previews"), preview_owner=draw_state,
         text_toward_bg=kwargs.get("text_toward_bg", 0.0),
-        root_state=drop_down_state, path_prefix=(), return_extras=True)
+        root_state=drop_down_state, path_prefix=(), menu_title=menu_title, return_extras=True)
     drop_down_state._menu_ds = menu_ds
     if is_open:
         pending = getattr(drop_down_state, "_pending_pick", None)
@@ -523,7 +524,8 @@ def fast_draw_dropdown(input_value=None, **kwargs):
 def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix=(), tint=None,
                  show_search=None, text_align="right", row_tags=None, row_tints=None,
                  row_suffixes=None, row_actions=None, text_toward_bg=0.0,
-                 full_render=False, row_code=None, **kwargs):
+                 full_render=False, row_code=None, menu_title=None,
+                 row_previews=None, preview_owner=None, **kwargs):
     """One level of the dropdown, drawn as its own temp popover window. Iterates
     the level's entries and renders each as a row (`_dd_menu_row`); a leaf click
     or a pick inside a nested sub-menu bubbles back up as (changed, value).
@@ -557,6 +559,16 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
     from meltygui.model.dropdown_model import _dd_row_lookup
     from meltygui.core.layout.dropdown_core import _dd_set_cursor
     from meltygui.model.dropdown_model import _dd_visible_entries
+
+    if menu_title and not path_prefix:
+        title_x, title_y = imgui.get_cursor_screen_pos()
+        color = Tint.dd_text(requested_tint=tint)
+        title_height = Toggles.Dropdown.row_height
+        imgui.get_window_draw_list().add_text(
+            title_x + 6, title_y + (title_height - imgui.get_text_line_height()) * 0.5,
+            pack_color(color[0], color[1], color[2], 0.85), menu_title)
+        imgui.dummy(max(0.0, draw_state.content_width), title_height)
+        imgui.set_cursor_screen_pos((title_x, title_y + title_height))
 
     if show_search is None:
         show_search = len(input_value) > 4
@@ -709,7 +721,8 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
                                   text_toward_bg=text_toward_bg,
                                   row_code=row_code,
                                   code_label_w=code_label_w,
-                                  row_width=row_width)
+                                  row_width=row_width, row_previews=row_previews,
+                                  preview_owner=preview_owner)
             if picked is not UNSET_VALUE:
                 result = (True, picked)
     return result
@@ -896,14 +909,14 @@ def _dd_submenu_position(left, top, row_width, width, height, display_w, display
 
 
 def _dd_popup_geometry(collection, search, trigger_top, trigger_height,
-                       open_upwards=None, min_width=None):
+                       open_upwards=None, min_width=None, menu_title=None):
     """Content-sized popup contained in the display, independent of old bounds."""
     from meltygui.model.dropdown_model import _dd_visible_entries
     from meltygui.core.cache.tile_marks import snap_int
 
     rows = _dd_visible_entries(collection, (search or "").strip().lower())
     display_w, display_h = imgui.get_io().display_size
-    natural_height = (len(rows) + (2 if len(collection) > 4 else 1)) * Toggles.Dropdown.row_height
+    natural_height = (len(rows) + (2 if len(collection) > 4 else 1) + bool(menu_title)) * Toggles.Dropdown.row_height
     above = max(0, trigger_top)
     below = max(0, display_h - trigger_top - trigger_height)
     upwards = (below < min(natural_height, Toggles.Dropdown.max_height) and above > below
@@ -911,6 +924,7 @@ def _dd_popup_geometry(collection, search, trigger_top, trigger_height,
     height = min(natural_height, Toggles.Dropdown.max_height, above if upwards else below)
     width = min(display_w, max(
         Toggles.Dropdown.min_width if min_width is None else min_width,
+        imgui.calc_text_size(menu_title)[0] + 24 if menu_title else 0,
         max((imgui.calc_text_size(row[2])[0] + 48 for row in rows), default=0)))
     top = trigger_top - height if upwards else trigger_top + trigger_height
     return snap_int(width), snap_int(height), snap_int(top)
@@ -1028,7 +1042,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                  cursor_path, tint=None, row_tags=None, row_tints=None,
                  row_suffixes=None, row_actions=None, left_pad=10,
                  text_toward_bg=0.0, row_code=None, code_label_w=None,
-                 row_width=None):
+                 row_width=None, row_previews=None, preview_owner=None):
     """Render ONE leaf menu row inline with raw imgui — NO per-row render_func.
     Leaves are the bulk of a big menu, so skipping the dd_menu_row wrapper (its
     own draw_state / cache / BVH / hover machinery, tens of µs each) is the whole
@@ -1084,6 +1098,11 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
             hovered = False
     if hovered and not kbd_mode:
         _dd_set_cursor(root_state, row_path, False, menu_ds=draw_state)
+
+    if hovered and row_previews:
+        target = _dd_row_lookup(row_previews, value)
+        if target is not None:
+            _preview_source(target, draw_state, preview_owner, (x, y, x + w, y + h))
 
     active = is_cursor if kbd_mode else hovered
     dl = imgui.get_window_draw_list()
@@ -1280,3 +1299,28 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
         _dd_pick(root_state, row_path)
         return value
     return UNSET_VALUE
+
+def _preview_source(target, menu, owner, row_rect):
+    """Draw a one-frame source outline, with no hold, fill, glow or fade."""
+    if Melty.popover_focused_ds is not owner or menu.closed or target.closed:
+        return
+    x, y = imgui.get_mouse_pos()
+    left, top, right, bottom = row_rect
+    if not (left <= x < right and top <= y < bottom):
+        return
+    if not (menu.abs_top <= y < menu.abs_top + menu.height):
+        return
+    overlay = imgui.get_overlay_draw_list()
+    if Melty._overlay_channels_active:
+        overlay.channels_set_current(Melty.overlay_channel_for(target))
+    clip = target.abs_clip_rect
+    if clip is not None:
+        overlay.push_clip_rect(*clip, True)
+    try:
+        # Translucent white, a single thin line; leave source content untouched.
+        overlay.add_rect(target.abs_left, target.abs_top,
+                         target.abs_left + target.width, target.abs_top + target.height,
+                         pack_color(1.0, 1.0, 1.0, 0.4), rounding=4.0, thickness=1.0)
+    finally:
+        if clip is not None:
+            overlay.pop_clip_rect()

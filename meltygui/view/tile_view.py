@@ -30,47 +30,100 @@ def renderer_tint(renderer):
     return None
 
 
-def draw_tile_links(endpoint, endpoints, width, height):
-    """One compact picker, with a section of choices for each dependency."""
-    from meltygui.core.layout.tile_links import bindings_for, candidates, set_binding
+def parameter_label(endpoint, parameter):
+    """Show the exact parameter and required state type in the open picker."""
     from meltygui.state.view_reference import DrawStateSource
-    bindings = bindings_for(endpoint)
-    choices = {}
-    linked = missing = 0
-    for name, annotation in endpoint.parameters.items():
-        fallback = "Unlinked" if isinstance(annotation, DrawStateSource) else "Local state"
-        saved = bindings.get(name)
-        prefix = "✓ " if saved is None else ""
-        choices[f"{prefix}{name}: {fallback}"] = (name, None)
-        found = False
-        for identity, _value in candidates(endpoint, name, endpoints):
-            source = endpoints[identity[0]]
-            label = f"{source.tile.name or renderer_label(source.renderer)} · {source.tile.id}"
-            if identity[2] is not None:
-                label += f" / {identity[2]}"
-            active = saved is not None and tuple(saved) == identity
-            choices[f"{'✓ ' if active else ''}{name}: {label}"] = (name, identity)
-            found |= active
-        linked += found
-        if saved is not None and not found:
-            missing += 1
-            # Keep the unavailable selection visible; never silently retarget it.
-            choices[f"{name}: Source unavailable"] = (name, tuple(saved))
-    label = f"Links: {linked}/{len(endpoint.parameters)}"
-    if missing:
-        label = f"Links: {missing} missing"
+    annotation = endpoint.parameters[parameter]
+    if isinstance(annotation, DrawStateSource):
+        required_type = f"DrawState[{annotation.view.__name__}]"
+    else:
+        required_type = annotation.__name__
+    return f"{parameter}: {required_type}"
+
+
+def source_label(identity, endpoints, available):
+    source = endpoints[identity[0]]
+    label = source.tile.name or renderer_label(source.renderer)
+    # Keep ordinary labels short, but distinguish duplicate names/parameters.
+    duplicates = sum((endpoints[item[0]].tile.name or renderer_label(endpoints[item[0]].renderer)) == label
+                     for item, _value in available)
+    if duplicates > 1:
+        label += f" · {source.tile.id}"
+    if identity[2] is not None and sum(item[0] == identity[0] for item, _value in available) > 1:
+        label += f" / {identity[2]}"
+    return label
+
+
+def draw_tile_link(endpoint, parameter, endpoints, width, height):
+    """A consumer-owned picker for exactly one signature parameter."""
+    from meltygui.core.layout.tile_links import AUTO, bindings_for, candidates, set_binding, selected_candidate
+    from meltygui.state.view_reference import DrawStateSource
+    annotation = endpoint.parameters[parameter]
+    saved = bindings_for(endpoint).get(parameter)
+    available = list(candidates(endpoint, parameter, endpoints))
+    selected = selected_candidate(endpoint, parameter, endpoints)
+    fallback = "Unlinked" if isinstance(annotation, DrawStateSource) else "Local state"
+    auto_label = "Auto"
+    if saved == AUTO and selected is not None:
+        auto_label += f" → {source_label(selected[0], endpoints, available)}"
+    choices = {auto_label: AUTO, fallback: None}
+    for identity, _value in available:
+        label = source_label(identity, endpoints, available)
+        if label in choices or label == "Source unavailable":
+            label += f" · {identity[0]}"
+        choices[label] = identity
+    if saved == AUTO:
+        current = "Auto"
+        current += f" → {source_label(selected[0], endpoints, available)}" if selected else " (no match)"
+    elif selected is not None:
+        current = source_label(selected[0], endpoints, available)
+    elif saved is not None:
+        current = "Source unavailable"
+        choices[current] = tuple(saved)
+    else:
+        current = fallback
+    normalized = tuple(saved) if isinstance(saved, (tuple, list)) else saved
+    choices = {(f"✓ {label}" if value == normalized else label): value
+               for label, value in choices.items()}
+    previews = {identity: endpoints[identity[0]].draw_state
+                for identity, _value in available}
+    auto = selected_candidate(endpoint, parameter, endpoints, preview_auto=True)
+    if auto is not None:
+        previews[AUTO] = endpoints[auto[0][0]].draw_state
+    if not isinstance(annotation, DrawStateSource):
+        previews[None] = endpoint.draw_state
+    title = parameter_label(endpoint, parameter)
+    # Status participates in the input so cached triggers follow Auto/topology.
     changed, selection = draw_dropdown(
-        label, collection=choices, name="Sibling links", key=f"{endpoint.tile.id}:links",
-        show_name=False, show_header=False, display_label=label,
+        (saved, current), collection=choices, name=title,
+        key=f"{endpoint.tile.id}:link:{parameter}",
+        show_name=False, show_header=False, display_label=f"\uf0c1",
+        trigger_caret=("", ""), text_align="center", text_pad=3,
+        menu_title=title, menu_min_width=260, row_previews=previews,
         width=width, height=height,
     )
-    if changed and selection is not None:
-        set_binding(endpoint, *selection)
+    if changed:
+        set_binding(endpoint, parameter, selection)
     return changed
 
 
+def tile_control_layout(width, height, parameter_count):
+    """One compact footer: tile switcher followed by fixed-size link buttons."""
+    row_height = 28.0
+    gap = min(4.0, width / (2 * max(1, parameter_count)))
+    if not parameter_count:
+        return max(0.0, height - row_height), min(180.0, width), []
+    available = max(0.0, width - gap * parameter_count)
+    # Preserve 28px icons while allowing the switcher to shrink on small tiles.
+    link_width = min(28.0, available / (parameter_count + 1))
+    editor_width = min(180.0, max(0.0, available - parameter_count * link_width))
+    slots = [(editor_width + gap + index * (link_width + gap), 0.0, link_width)
+             for index in range(parameter_count)]
+    return max(0.0, height - row_height), editor_width, slots
+
+
 def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers=(),
-                      layout_frame=None, use_cache=False, endpoints=None):
+                      layout_frame=None, use_cache=False, endpoints=None, tile_path=()):
     """The tile's editor picker and its selected renderer. ``use_cache`` puts
     the renderer on the blit cache (the wrapper's mark_start_offscreen /
     mark_end_offscreen around its body): a tile whose view was not invalidated
@@ -81,9 +134,8 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
     picker_width = 180.0
     tile = input_value
     endpoint = endpoints.get(tile.id) if endpoints is not None else None
-    has_links = endpoint is not None and bool(endpoint.parameters)
-    # Fixed allocation depends on the signature, never on dynamic labels.
-    picker_width = min(picker_width, max(0.0, (width - 4.0) / 2)) if has_links else min(picker_width, width)
+    parameter_count = len(endpoint.parameters) if endpoint is not None else 0
+    content_height, picker_width, link_slots = tile_control_layout(width, height, parameter_count)
     choices = {"Empty": None}
     row_tints = {}
     for renderer in multi_instance_renderers:
@@ -95,7 +147,6 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
         if tint is not None:
             row_tints[renderer] = tint
     left, top = imgui.get_cursor_screen_pos()
-    content_height = max(0.0, height - picker_height)
     imgui.set_cursor_screen_pos((left, top + content_height))
     selected, renderer = draw_dropdown(
         tile.render_func, collection=choices, name="Editor type", key=tile.id,
@@ -110,7 +161,7 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
     if selected and endpoints is not None:
         from meltygui.core.layout.tile_links import prepare_endpoint, retire_endpoints
         previous = {tile.id: endpoint} if endpoint is not None else {}
-        endpoint = prepare_endpoint(tile)
+        endpoint = prepare_endpoint(tile, endpoint.path if endpoint is not None else tile_path)
         retire_endpoints(previous, {tile.id: endpoint} if endpoint is not None else {})
         if endpoint is None:
             endpoints.pop(tile.id, None)
@@ -120,11 +171,14 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
     injected = {}
     if endpoint is not None:
         from meltygui.core.layout.tile_links import resolve_parameters
-        if endpoint.parameters:
-            link_width = min(200.0, max(0.0, width - toolbar_left))
-            imgui.set_cursor_screen_pos((left + toolbar_left, top + content_height))
-            changed |= draw_tile_links(endpoint, endpoints, link_width, picker_height)
-            toolbar_left = min(toolbar_left + link_width + 4.0, width)
+        # A renderer change gets its new footer layout on the next frame.
+        if not selected:
+            for parameter, (slot_left, slot_top, slot_width) in zip(endpoint.parameters, link_slots):
+                imgui.set_cursor_screen_pos((left + slot_left, top + content_height + slot_top))
+                changed |= draw_tile_link(endpoint, parameter, endpoints, slot_width, picker_height)
+            if link_slots:
+                last_left, _last_top, last_width = link_slots[-1]
+                toolbar_left = min(width, last_left + last_width + 4.0)
         injected = resolve_parameters(endpoint, endpoints)
         injected['draw_state'] = endpoint.draw_state
     if tile.render_func is not None:

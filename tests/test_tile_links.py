@@ -204,11 +204,12 @@ def test_link_status_keeps_toolbar_geometry_stable(layout, monkeypatch, width):
     for identity in (None, next(candidates(consumer, 'source', endpoints))[0],
                      ('removed', 'module.long_missing_view_name', None)):
         set_binding(consumer, 'source', identity)
-        tile_view.draw_tile_links(consumer, endpoints, width, 28)
+        tile_view.draw_tile_link(consumer, "source", endpoints, width, 28)
     assert {call['width'] for call in calls} == {width}
     assert {call['height'] for call in calls} == {28}
-    assert [call['display_label'] for call in calls] == [
-        'Links: 0/2', 'Links: 1/2', 'Links: 1 missing']
+    assert {call['display_label'] for call in calls} == {f'\uf0c1'}
+    assert len({call['menu_title'] for call in calls}) == 1
+    assert all(call['trigger_caret'] == ('', '') for call in calls)
 
 
 def test_cached_consumer_tracks_source_and_rebinding(gl_context, monkeypatch):
@@ -331,3 +332,209 @@ def test_changed_picker_input_invalidates_even_with_rebuilt_collection(gl_contex
         finally:
             end_frame()
     assert seen[-1]._tile_id in invalidated
+
+
+def test_auto_uses_tree_edges_retains_ties_and_ignores_size(layout):
+    from meltygui.core.layout.tile_links import AUTO, tree_distance
+    consumer, near, far = layout.children
+    near.id, far.id = 'z-near', 'a-far'
+    group = Split('y', [consumer, near], edges=[{'y': 500.0}])
+    layout.children = [far, group]
+    endpoints = prepare_endpoints(layout)
+    target = endpoints[consumer.id]
+    assert tree_distance(target.path, endpoints[near.id].path) == 2
+    assert tree_distance(target.path, endpoints[far.id].path) == 3
+    set_binding(target, 'source', AUTO)
+    set_binding(target, 'selection', AUTO)
+    assert resolve_parameters(target, endpoints)['source'] is endpoints[near.id].draw_state
+    assert resolve_parameters(target, endpoints)['selection'] is endpoints[near.id].states['selection']
+    group.edges[0]['y'] = 10_000.0
+    assert resolve_parameters(target, endpoints)['source'] is endpoints[near.id].draw_state
+    # Equal graph distance keeps the previous source, even when its ID sorts last.
+    layout.children = [far, consumer, near]
+    endpoints = prepare_endpoints(layout)
+    assert resolve_parameters(endpoints[consumer.id], endpoints)['source'] is endpoints[near.id].draw_state
+    # Without history, the stable tile ID breaks ties, independent of traversal order.
+    consumer._auto_link_sources = {}
+    assert resolve_parameters(endpoints[consumer.id], endpoints)['source'] is endpoints[far.id].draw_state
+    layout.children.reverse()
+    consumer._auto_link_sources = {}
+    endpoints = prepare_endpoints(layout)
+    assert resolve_parameters(endpoints[consumer.id], endpoints)['source'] is endpoints[far.id].draw_state
+
+
+def test_auto_fallback_return_and_manual_source_is_pinned(layout):
+    from meltygui.core.layout.tile_links import AUTO
+    consumer, first, second = layout.children
+    endpoints = prepare_endpoints(layout)
+    target = endpoints[consumer.id]
+    for name in ('source', 'selection'):
+        set_binding(target, name, AUTO)
+    layout.children = [consumer]
+    endpoints = prepare_endpoints(layout)
+    target = endpoints[consumer.id]
+    assert resolve_parameters(target, endpoints) == {'source': None, 'selection': target.states['selection']}
+    assert bindings_for(target)['source'] == AUTO
+    layout.children = [consumer, first]
+    endpoints = prepare_endpoints(layout)
+    target = endpoints[consumer.id]
+    assert resolve_parameters(target, endpoints)['source'] is endpoints[first.id].draw_state
+    identity = next(candidates(target, 'source', endpoints))[0]
+    set_binding(target, 'source', identity)
+    layout.children = [first, Split('y', [consumer, second])]
+    endpoints = prepare_endpoints(layout)
+    assert resolve_parameters(endpoints[consumer.id], endpoints)['source'] is endpoints[first.id].draw_state
+
+
+@pytest.mark.parametrize('axis,before,supplied', [('x', False, False), ('y', True, False), ('y', False, True)])
+def test_split_copies_all_link_settings_without_aliasing(layout, axis, before, supplied):
+    from meltygui.core.layout.tile_links import AUTO
+    from meltygui.core.layout.tile_manager_core import split_tile, node_at
+    original = layout.children[0]
+    endpoints = prepare_endpoints(layout)
+    target = endpoints[original.id]
+    identity = next(candidates(target, 'source', endpoints))[0]
+    set_binding(target, 'source', identity)
+    set_binding(target, 'selection', AUTO)
+    original.links['another.view'] = {'unavailable': ['missing', 'other.source', None]}
+    resolve_parameters(target, endpoints)
+    frame = ({'x': 0.0}, {'x': 900.0}, {'y': 0.0}, {'y': 600.0})
+    layout.edges = [{'x': 300.0}, {'x': 600.0}]
+    new_path = split_tile(layout, (0,), axis, frame, before=before,
+                          new_tile=Tile(render_func=consumer_view) if supplied else None)
+    duplicate = node_at(layout, new_path)
+    assert duplicate.id != original.id
+    assert duplicate.links == original.links
+    assert duplicate.links is not original.links
+    assert duplicate._auto_link_sources == original._auto_link_sources
+    assert duplicate._auto_link_sources is not original._auto_link_sources
+    duplicate.links['another.view']['unavailable'][0] = 'changed'
+    assert original.links['another.view']['unavailable'][0] == 'missing'
+    endpoints = prepare_endpoints(layout)
+    assert resolve_parameters(endpoints[duplicate.id], endpoints)['source'] is endpoints[identity[0]].draw_state
+    set_binding(endpoints[duplicate.id], 'source', None)
+    assert bindings_for(endpoints[original.id])['source'] == identity
+    restored = loads(dumps(layout))
+    restored_duplicate = next(endpoint.tile for endpoint in prepare_endpoints(restored).values()
+                              if endpoint.tile.id == duplicate.id)
+    assert restored_duplicate.links == duplicate.links
+
+
+def test_each_parameter_picker_lists_only_eligible_sources_and_edits_itself(layout, monkeypatch):
+    import meltygui.view.tile_view as tile_view
+    from meltygui.core.layout.tile_links import AUTO
+    endpoints = prepare_endpoints(layout)
+    target = endpoints[layout.children[0].id]
+    calls = []
+    def dropdown(value, **kwargs):
+        calls.append(kwargs)
+        return True, AUTO
+    monkeypatch.setattr(tile_view, 'draw_dropdown', dropdown)
+    for name in target.parameters:
+        tile_view.draw_tile_link(target, name, endpoints, 400, 28)
+        assert bindings_for(target)[name] == AUTO
+        entries = list(calls[-1]['collection'].values())
+        assert AUTO in entries and None in entries
+        assert {item for item in entries if isinstance(item, tuple)} == {
+            identity for identity, _ in candidates(target, name, endpoints)}
+    assert len({call['key'] for call in calls}) == 2
+    assert calls[0]['menu_title'] == 'source: DrawState[source_view]'
+    assert calls[1]['menu_title'] == 'selection: SelectionState'
+
+
+@pytest.mark.parametrize('width,height,count', [(960, 640, 3), (320, 640, 2), (80, 28, 3), (320, 60, 5), (28, 28, 12)])
+def test_parameter_picker_layout_fits_and_does_not_overlap(width, height, count):
+    from meltygui.view.tile_view import tile_control_layout
+    content_height, editor_width, slots = tile_control_layout(width, height, count)
+    assert len(slots) == count
+    rectangles = [(0, 0, editor_width, 28)] + [(x, y, x + w, y + 28) for x, y, w in slots]
+    for index, (left, top, right, bottom) in enumerate(rectangles):
+        assert 0 <= left <= right <= width + 0.001
+        assert 0 <= content_height + top < content_height + bottom <= height
+        for other_left, other_top, other_right, other_bottom in rectangles[index + 1:]:
+            assert right <= other_left or other_right <= left or bottom <= other_top or other_bottom <= top
+
+
+def test_auto_keeps_manual_source_when_it_is_tied_for_closest(layout):
+    from meltygui.core.layout.tile_links import AUTO
+    endpoints = prepare_endpoints(layout)
+    target = endpoints[layout.children[0].id]
+    identity, value = list(candidates(target, 'source', endpoints))[-1]
+    set_binding(target, 'source', identity)
+    set_binding(target, 'source', AUTO)
+    assert resolve_parameters(target, endpoints)['source'] is value
+
+
+def test_link_buttons_keep_a_single_compact_row_and_leave_toolbar_space():
+    from meltygui.view.tile_view import tile_control_layout
+    content, editor, slots = tile_control_layout(960, 600, 2)
+    assert content == 572
+    assert editor == 180
+    assert slots == [(184, 0, 28), (216, 0, 28)]
+    assert all(y == 0 for _, y, _ in slots)
+
+
+def test_dropdown_title_is_measured_as_a_nonselectable_header(monkeypatch):
+    import meltygui.view.dropdown_view as dropdown
+    from meltygui.core.runtime.toggles import Toggles
+    io = SimpleNamespace(display_size=(800, 600))
+    monkeypatch.setattr(dropdown.imgui, 'get_io', lambda: io)
+    monkeypatch.setattr(dropdown.imgui, 'calc_text_size', lambda text: (len(text) * 8, 18))
+    rows = {'Auto': 'auto', 'Local state': None}
+    plain = dropdown._dd_popup_geometry(rows, '', 400, 28, True, 260)
+    titled = dropdown._dd_popup_geometry(rows, '', 400, 28, True, 260, 'Counter state')
+    assert titled[0] == plain[0]
+    assert titled[1] == plain[1] + Toggles.Dropdown.row_height
+    assert titled[2] + titled[1] == plain[2] + plain[1] == 400
+
+
+def test_auto_preview_does_not_change_links_or_tie_memory(layout):
+    endpoints = prepare_endpoints(layout)
+    consumer, first, second = endpoints.values()
+    identity = next(identity for identity, _ in candidates(consumer, 'source', endpoints)
+                    if identity[0] == second.tile.id)
+    set_binding(consumer, 'source', identity)
+    before_links = dict(bindings_for(consumer))
+    before_memory = dict(consumer.tile._auto_link_sources)
+    from meltygui.core.layout.tile_links import selected_candidate
+    assert selected_candidate(consumer, 'source', endpoints, preview_auto=True)[0] == identity
+    assert bindings_for(consumer) == before_links
+    assert consumer.tile._auto_link_sources == before_memory
+
+
+def test_hover_preview_tracks_geometry_and_stops_when_not_hovered(monkeypatch):
+    from meltygui.core.melty import Melty
+    from meltygui.view import dropdown_view
+    owner = object()
+    menu = SimpleNamespace(closed=False, abs_top=10, height=100)
+    target = SimpleNamespace(closed=False, abs_left=200, abs_top=30,
+                             width=100, height=80, abs_clip_rect=(200, 30, 300, 110))
+    monkeypatch.setattr(Melty, 'emphasis_notes', {})
+    monkeypatch.setattr(Melty, 'popover_focused_ds', owner)
+    mouse = [25, 25]
+    monkeypatch.setattr(dropdown_view.imgui, 'get_mouse_pos', lambda: mouse)
+    from unittest.mock import Mock
+    overlay = Mock()
+    monkeypatch.setattr(dropdown_view.imgui, 'get_overlay_draw_list', lambda: overlay)
+    monkeypatch.setattr(Melty, '_overlay_channels_active', False)
+    def draw():
+        overlay.reset_mock()
+        dropdown_view._preview_source(target, menu, owner, (10, 20, 110, 40))
+    draw()
+    assert overlay.add_rect.call_args.args[:4] == (200, 30, 300, 110)
+    assert overlay.add_rect.call_args.kwargs['thickness'] == 1.0
+    assert not Melty.emphasis_notes
+    target.abs_left = 250
+    draw()
+    assert overlay.add_rect.call_args.args[:4] == (250, 30, 350, 110)
+    mouse[1] = 45
+    draw()
+    overlay.add_rect.assert_not_called()
+    mouse[1] = 25
+    menu.closed = True
+    draw()
+    overlay.add_rect.assert_not_called()
+    menu.closed = False
+    monkeypatch.setattr(Melty, 'popover_focused_ds', None)
+    draw()
+    overlay.add_rect.assert_not_called()

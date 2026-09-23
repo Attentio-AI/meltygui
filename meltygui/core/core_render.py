@@ -241,33 +241,11 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
     other view. Dragging the grab mutates ``draw_state.scroll_offset`` in place;
     the wheel-scroll path in the wrapper still owns wheel input.
 
-    overlay=False (default): the window draw list, a few channels up — the
-    normal z-order, and captured into the view's tile with the rest of its
-    pixels. Called from the wrapper body (draw_inner_main) for ordinary
-    views (the content gives up a gutter for it, ``SCROLLBAR_MARGIN``) and
-    from ``BlitCache.draw_freeze_scrollbar`` for cached freeze_resize views
-    at rest.
-
-    overlay=True: the BACKGROUND draw list, clipped to the view's clip rect
-    — deliberately UNDER the whole UI. blit_offscreen routes exactly one
-    frame here: a freeze_resize drag's clean-capture frame, where the bar
-    must stay out of the tile capture. The freshly rendered body covers it,
-    so the capture takes the body's clean pixels while the grab's on_action
-    subs and shadow mark still run. Every other freeze frame uses the
-    normal window-list path above — mid-drag nothing re-captures the frozen
-    tile, so drawing it "regularly" there is both un-baked and correctly
-    colored (the pre-filter brightness / shadow-composite chain; the
-    foreground list, tried first, renders after the filters and always
-    read slightly darker).
-
-    Either way the grab stamps an add_shadow depth mark
-    (``Toggles.ScrollSettings.scrollbar_shadow_offset``): its own raised
-    silhouette in the depth map, so the composite lights it as a thing of
-    its own instead of as part of the view's edge (specular rim, neighbours'
-    shadows) — that is what kept the window-list bar looking lighter / more
-    shadowed than the overlay one. Inside a recording body the mark bakes
-    into the tile's cached mask like the bar itself; from blit_offscreen it
-    is re-issued every frame.
+    Ordinary views draw on the window list and include the bar in their
+    cached pixels. Cached freeze_resize views use overlay=True on every
+    frame: the deferred foreground pass excludes the bar from all tile
+    captures, clips it to the view and masks it behind higher windows.
+    The grab's separate retained shadow group is refreshed on either path.
     """
     # This call owns the grab's retained depth mark for the frame: clear
     # its group FIRST (before any early return), and the add_shadow below
@@ -372,8 +350,10 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
 
     overlay_clip = None
     if overlay:
-        dl = imgui.get_background_draw_list()
-        # The background list has no window clip of its own; scissor the bar
+        dl = imgui.get_overlay_draw_list()
+        if Melty._overlay_channels_active:
+            dl.channels_set_current(Melty.overlay_channel_for(draw_state))
+        # The overlay list has no window clip of its own; scissor the bar
         # to what the view actually shows (a parent scroll / window edge).
         overlay_clip = draw_state.abs_clip_rect
         if overlay_clip is not None:
@@ -386,13 +366,10 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
         # get_channel() + 10 and its take arrows at + 11 (take_files /
         # merge_files) from the editor WINDOW's depth, and the pane the bar
         # belongs to is never shallower than that window, so + 12 clears
-        # them at any nesting. (Blit's served-frame bar already landed on
-        # top - it paints after the tile image - so this only matched the
-        # live view to date.) Bump this if a new chrome offset outgrows it.
+        # them at any nesting. Bump this if a new chrome offset outgrows it.
         channel_lift = 12
         # Only while the window list is actually split (the split is lazy —
-        # Melty.channels_split; blit's draw_freeze_scrollbar can run when it
-        # is not), and clamped into the split's channel count: get_channel()
+        # Melty.channels_split), and clamped into its channel count: get_channel()
         # caps at max_depth - 1, so the lift can run past the last channel
         # at deep nesting and imgui asserts on an out-of-range channel.
         if Melty.channels_split:
@@ -402,8 +379,11 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
     if grab_y2 > grab_y1:
         dl.add_rect_filled(track_x1, grab_y1, track_x2, grab_y2, col_grab, rounding=3.0)
         # dl.add_rect(track_x1, grab_y1, track_x2, grab_y2, col_border, rounding=3.0)
-    if overlay and overlay_clip is not None:
-        dl.pop_clip_rect()
+    if overlay:
+        if overlay_clip is not None:
+            dl.pop_clip_rect()
+        if Melty._overlay_channels_active:
+            dl.channels_set_current(Melty.max_layer - 1)
 
 
 # ── Auto draw_state params ──────────────────────────────────────────────────
@@ -1106,8 +1086,9 @@ def render_func(*args, **o_kwargs):
             dependencies = getattr(Melty.cache, 'parameter_dependencies', None)
             if dependencies is None:
                 dependencies = Melty.cache.parameter_dependencies = ParameterDependencies()
-            sources = {p: kwargs[p] for p in injected_parameters
-                       if isinstance(kwargs.get(p), DictConversion)}
+            sources = {p: value for p, value in kwargs.items()
+                       if p not in {"draw_state", "input_value"}
+                       and isinstance(value, DictConversion)}
             if dependencies.bind(draw_state, sources):
                 draw_state.invalidate_up(force=True)
 
@@ -2278,10 +2259,6 @@ def render_func(*args, **o_kwargs):
                     # edge-target from the old gesture made the new one leap
                     # (old_baseline + new_total, and total_dx - stale_x0).
                     #
-                    # Also the freeze_resize clean-capture trigger: a press
-                    # on a resize handle, before any drag has started -
-                    # freeze views snap their clean pre-drag capture this
-                    # frame (mark_start_offscreen).
                     Melty.resize_press_frame = Melty.frame_count
                     draw_state._resize_target_edge = None
                     draw_state._resize_target_edge_x0 = None
@@ -4986,6 +4963,10 @@ def render_func(*args, **o_kwargs):
                 # here, after the body / the blitted tile frame
                 # (BlitCache.draw_freeze_scrollbar).
                 Melty.cache.mark_end_offscreen()
+
+            if _has_imgui and not use_cache and kwargs.get("draw_overlay") is not None:
+                from meltygui.core.rendering.overlay import finish_overlay
+                finish_overlay(draw_state, Melty.cache)
 
             if _has_imgui:
                 if closable:

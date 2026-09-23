@@ -500,7 +500,7 @@ class Surface:
         if Toggles.show_fps:
             # Here in the root loop, outside every view and Melty.end_frame:
             # no cache, tile or invalidation decides whether it is current.
-            titlebar.paint_fps(Melty.overlay_top_channel(), self.chrome, self.fps_counter.frame_ms)
+            titlebar.paint_fps(Melty.overlay_top_channel(), self.chrome, self.fps_counter.frame_ms, self.fps_counter.fps)
         views.end_frame()
         try:
             Melty.post_frame(self.impl, self.window)   # imgui render, shadow, corner cut, PQ, swap

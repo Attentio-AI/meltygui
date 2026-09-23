@@ -1,7 +1,7 @@
 """Run with .venv/bin/python examples/tile_sibling_links.py.
 
-Choose a source for either parameter in the observer's Links picker, then
-increment a counter. Unlink to restore the observer's retained local state.
+Choose a source (or Auto) in either of the observer's parameter dropdowns,
+then increment a counter. Unlink to restore the observer's retained local state.
 """
 import meltygui
 from meltygui import DrawState, render_func

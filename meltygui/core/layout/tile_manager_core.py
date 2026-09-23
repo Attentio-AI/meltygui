@@ -594,7 +594,7 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
             tile, width=right - left - 2 * content_padding,
             height=bottom - top - 2 * vertical_inset,
             multi_instance_renderers=multi_instance_renderers,
-            endpoints=endpoints,
+            endpoints=endpoints, tile_path=_path,
             layout_frame=frame,
             # Each tile is its own blit-cache unit: only the tiles whose view
             # was invalidated run their renderer, the rest draw their captured
@@ -637,6 +637,11 @@ def split_tile(tree, path, axis, root_frame, new_tile=None, at=None,
     if new_tile is None:
         new_tile = Tile(name=f"{tile.name}'", tint=tile.tint,
                         render_func=tile.render_func, input_value=tile.input_value)
+    # Copy bindings, never the injected state objects. Each tile can relink
+    # independently, including settings for renderers it switched away from.
+    from copy import deepcopy
+    new_tile.links = deepcopy(getattr(tile, 'links', {}))
+    new_tile._auto_link_sources = dict(getattr(tile, '_auto_link_sources', {}))
     pair = [new_tile, tile] if before else [tile, new_tile]
     new_offset = 0 if before else 1
     parent = node_at(tree, path[:-1]) if path else None

@@ -48,6 +48,30 @@ draw_dep_manager(value, name="Dependencies", closable=True, as_window=True,
 `initial` wins over the decorator's. Pass `width=` / `height=` only to views laid
 out by their parent (a tile, a cell, a button), where the parent owns the size.
 
+## Live overlays on cached views
+
+Pass a plain callable as `@render_func(draw_overlay=draw_status)` or as a
+per-call `draw_overlay=` override. It runs after the body on each rendered
+frame, including blit hits, frozen resizes, and cached ancestors. Uncached
+views support the same callback. Normal idle-window sleeping still applies.
+
+The callback may accept any subset of the keyword arguments `input_value`,
+`draw_state`, and `draw_list`. `input_value` is the current input supplied to
+the view; `draw_state` is its existing state. Draw primitives into the supplied
+`draw_list`, which is clipped and masked behind higher windows. Use
+`draw_state._abs_left()` / `_abs_top()` for live screen coordinates. Balance
+any draw-list pushes/pops inside the callback. Use `draw_state.on_action` for
+interactions, as with the built-in scrollbar. Keep ordinary controls and
+`render_func` calls in the body; the overlay itself must not be decorated.
+
+Callbacks must be very lightweight: taking **more than 0.5 ms** disables that
+callback for the view. Exceptions and invalid callbacks also draw an error
+instead. The first slow call must finish before it can be measured; its
+geometry is discarded, and subsequent frames skip it. Replacing the callback
+or hot-swapping its code retries it. Failure state is independent per view.
+
+See [the runnable overlay example](../examples/render_overlay.py).
+
 ## Common imports
 
 ```python
@@ -136,7 +160,13 @@ shares the input value, while creating a new view instance. See
 
 ### Sibling state parameters
 
-A tile's **Links** picker is inferred from the selected function's signature:
+Each consuming tile gets a compact link-icon dropdown for each injected parameter,
+arranged horizontally beside the tile switcher. Opening an icon shows the parameter
+name and its source choices. The controls stay one fixed-height row:
+
+`[tile switcher] [link] [link]`
+
+Parameters come from the selected function's signature:
 
 ```python
 from meltygui import DrawState, render_func
@@ -161,6 +191,19 @@ compatible owned state from siblings. Unlinked state is still created locally
 by core. Linking borrows the source instance without changing its owner or
 replacing the consumer's retained local instance. State sources are the sibling's
 owned instances, not the instances it may itself borrow from another tile.
+
+Each dropdown lists **Auto**, **Unlinked** (or **Local state**), and all eligible
+sibling sources in the same tile tree. Existing manual and local settings are
+preserved. Auto chooses the source with the fewest parent/child edges through
+the tile tree, not pixel distance, so resizing cannot change its selection.
+Equal distances retain the current eligible source; without one, stable tile ID
+order breaks ties. Auto remains selected when there are no eligible sources and
+uses `None`/local state until a source becomes available. Manual choices stay pinned.
+
+Splitting copies the original tile's link settings, including Auto and settings
+for other renderers, into an independent dictionary on the new tile. It also
+inherits Auto's tie preference. The new tile keeps its own local state; editing
+its links does not change the original's links.
 
 Bindings persist by renderer, parameter, source tile ID and source parameter.
 Reordering a tile preserves its links. A missing or incompatible source is shown

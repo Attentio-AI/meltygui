@@ -82,9 +82,15 @@ class GpuFrameTimer:
                 avail = gl.glGetQueryObjectiv(self._rings[nxt][n - 1],
                                               gl.GL_QUERY_RESULT_AVAILABLE)
                 if avail:
-                    ts = [int(gl.glGetQueryObjectui64v(self._rings[nxt][i],
-                                                       gl.GL_QUERY_RESULT))
-                          for i in range(n)]
+                    # Supply the output explicitly: PyOpenGL's automatic
+                    # uint64 result allocation fails on some GL bindings.
+                    from ctypes import byref, c_uint64
+                    ts = []
+                    for i in range(n):
+                        timestamp = c_uint64()
+                        gl.glGetQueryObjectui64v(self._rings[nxt][i],
+                                                gl.GL_QUERY_RESULT, byref(timestamp))
+                        ts.append(timestamp.value)
                     segs = {}
                     for i in range(1, n):
                         segs[self._labels[nxt][i]] = (ts[i] - ts[i - 1]) / 1e6
