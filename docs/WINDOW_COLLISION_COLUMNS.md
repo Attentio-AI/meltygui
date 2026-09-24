@@ -194,7 +194,7 @@ its receiver and cached ancestors live: an internal divider must keep consuming
 input when it pushes an enclosing tile or native edge. Other tiles may freeze. Replay participates
 in the cache's existing frozen-frame lifecycle so release invalidates the
 frozen views and restores normal rendering. Replay dispatches lightweight overlays
-and descendant freeze scrollbars. Overlay layout may place cached children at
+and descendant scrollbars (for all views, not only freeze-resize views). Overlay layout may place cached children at
 live bounds and replay their own resident pixels when a flattened parent image
 contains blank space from an earlier child viewport.
 

@@ -5,12 +5,14 @@ from unittest.mock import Mock
 import pytest
 
 from meltygui.core import core_render
+from meltygui.core.rendering import overlay as overlays
 from meltygui.core.cache.tile_cache import TileCacheMasked
 from meltygui.core.melty import Melty
 
 
+@pytest.mark.parametrize('freeze_resize', [False, True])
 @pytest.mark.parametrize('width', [300, 300, 240, 360, 300])
-def test_freeze_scrollbar_uses_deferred_window_masked_overlay(monkeypatch, width):
+def test_scrollbar_uses_deferred_window_masked_overlay(monkeypatch, width, freeze_resize):
     overlay = Mock()
     monkeypatch.setattr(core_render.imgui, 'get_overlay_draw_list', lambda: overlay)
     window = Mock(side_effect=AssertionError('bar entered captured window list'))
@@ -20,15 +22,15 @@ def test_freeze_scrollbar_uses_deferred_window_masked_overlay(monkeypatch, width
     monkeypatch.setattr(Melty, '_overlay_channels_active', True)
     monkeypatch.setattr(Melty, 'overlay_channel_for', lambda ds: 7)
     ds = SimpleNamespace(
-        freeze_resize=True, scroll_visible=True, closed=False, just_shadow=False,
+        freeze_resize=freeze_resize, scroll_visible=True, closed=False, just_shadow=False,
         height=200, width=width, footer_height=0, header_height=0,
         abs_content_height=1000, abs_clipped_height=200,
-        _kwargs={}, _abs_left=lambda: 20, _abs_top=lambda: 30,
+        _kwargs={}, abs_left=20, abs_top=30,
         abs_clip_rect=(20, 30, 20 + width, 230),
         scroll_offset=(0, 100), current_tint=(0.3, 0.5, 0.7),
         on_action=Mock(return_value=None),
     )
-    TileCacheMasked.draw_freeze_scrollbar(SimpleNamespace(clear_shadows=Mock()), ds)
+    overlays.draw_scrollbar(ds)
     overlay.add_rect_filled.assert_called_once()
     x1, y1, x2, y2, _ = overlay.add_rect_filled.call_args.args
     assert 20 < x1 < x2 < 20 + width
@@ -40,43 +42,35 @@ def test_freeze_scrollbar_uses_deferred_window_masked_overlay(monkeypatch, width
     assert any(call.args[0] == 'left_mouse_drag' for call in ds.on_action.call_args_list)
 
 
-def test_hidden_freeze_scrollbar_clears_retained_shadow(monkeypatch):
-    paint = Mock()
+def test_closed_scrollbar_clears_retained_shadow(monkeypatch):
+    paint, clear = Mock(), Mock()
     monkeypatch.setattr(core_render, 'draw_overlay_scrollbar', paint)
-    cache = SimpleNamespace(clear_shadows=Mock())
-    ds = SimpleNamespace(freeze_resize=True, scroll_visible=False)
-    TileCacheMasked.draw_freeze_scrollbar(cache, ds)
-    cache.clear_shadows.assert_called_once_with(ds, core_render.SCROLLBAR_SHADOW_GROUP)
+    monkeypatch.setattr(core_render, 'clear_shadows', clear)
+    ds = SimpleNamespace(scroll_visible=True, closed=True)
+    overlays.draw_scrollbar(ds)
+    clear.assert_called_once_with(ds, core_render.SCROLLBAR_SHADOW_GROUP)
     paint.assert_not_called()
 
 
-def test_cached_parent_replays_and_retains_descendant_scrollbars():
-    from meltygui.core.cache.tile_cache import Tile, _Ctx
-
-    child = SimpleNamespace(freeze_resize=True)
-    parent = SimpleNamespace(freeze_resize=False)
-    ancestor = SimpleNamespace(freeze_scrollbars=())
-    tile = Tile(parent, 0, 0, 0, None, (300, 200), freeze_scrollbars=(child,))
-    cache = SimpleNamespace(_tiles={'parent': tile}, _stack=[ancestor],
-                            draw_freeze_scrollbar=Mock())
-    ctx = _Ctx(parent, 'parent', (0, 0), (300, 200), 0, 0, True, False)
-    TileCacheMasked._draw_freeze_scrollbars(cache, ctx)
-    assert [call.args[0] for call in cache.draw_freeze_scrollbar.call_args_list] == [child, parent]
-    assert ctx.freeze_scrollbars == ancestor.freeze_scrollbars == (child,)
-
-
-def test_live_parent_does_not_draw_descendant_scrollbar_twice():
+@pytest.mark.parametrize('cached', [False, True])
+def test_parent_replays_scrollbars_once_and_retains_uncached_children(monkeypatch, cached):
     from meltygui.core.cache.tile_cache import _Ctx
-
-    child = SimpleNamespace(freeze_resize=True)
-    parent = SimpleNamespace(freeze_resize=True)
-    ancestor = SimpleNamespace(freeze_scrollbars=())
-    cache = SimpleNamespace(_tiles={}, _stack=[ancestor], draw_freeze_scrollbar=Mock())
-    ctx = _Ctx(parent, 'parent', (0, 0), (300, 200), 0, 0, False, False,
-               freeze_scrollbars=(child,))
-    TileCacheMasked._draw_freeze_scrollbars(cache, ctx)
-    cache.draw_freeze_scrollbar.assert_called_once_with(parent)
-    assert ancestor.freeze_scrollbars == (child, parent)
+    child = SimpleNamespace(_kwargs={}, scroll_visible=True, use_cache=False)
+    parent = SimpleNamespace(_kwargs={}, scroll_visible=True)
+    ancestor = SimpleNamespace(overlay_views=())
+    cache = SimpleNamespace(enabled=True, _tiles={'parent': SimpleNamespace(overlay_views=(child,))},
+                            _stack=[ancestor])
+    paint = Mock()
+    monkeypatch.setattr(overlays, 'draw_scrollbar', paint)
+    monkeypatch.setattr(overlays, 'draw_overlay', Mock())
+    ctx = _Ctx(parent, 'parent', (0, 0), (300, 200), 0, 0, cached, False)
+    if not cached:
+        cache._stack = [ctx]
+        overlays.finish_overlay(child, cache)
+        cache._stack = [ancestor]
+    overlays.finish_cached_overlays(cache, ctx)
+    assert [call.args[0] for call in paint.call_args_list] == [child, parent]
+    assert ancestor.overlay_views == (child, parent)
 
 
 @pytest.mark.parametrize("existing_size", [None, (300, 200)])
@@ -91,7 +85,7 @@ def test_first_pane_during_click_uses_live_size_until_cache_tile_exists(monkeypa
     cache = SimpleNamespace(
         enabled=True, _stack=[ctx], _key_to_ctx={},
         _tiles={"pane": tile} if tile else {}, _dummy_vao=1,
-        _draw_freeze_scrollbars=Mock(), _get_current_clip_rect_screen=lambda: None,
+        _get_current_clip_rect_screen=lambda: None,
         _clip_rect=lambda *args: (0, 0, 400, 240), mask_mark_view=Mock(),
         _oversized=lambda size: False, _scrub_stale_content=Mock(),
         _is_dirty=lambda tile: True, _enq_copy_keys=set(), _pending=[])

@@ -124,6 +124,26 @@ def discard_geometry(draw_list, vertex_start):
                       0, count * imgui.VERTEX_SIZE)
 
 
+def draw_scrollbar(draw_state):
+    """Refresh framework scrollbar input and paint outside all tile captures."""
+    from meltygui.core.core_render import (
+        clear_shadows, draw_overlay_scrollbar, SCROLLBAR_SHADOW_GROUP,
+        SCROLL_BAR_WIDTH_DEFAULT, SCROLL_BAR_BRIGHTNESS_DEFAULT)
+    if not getattr(draw_state, 'scroll_visible', False):
+        # Lightweight non-scroll views have no retained scrollbar group.
+        return
+    if draw_state.closed or draw_state.just_shadow or draw_state.height is None:
+        clear_shadows(draw_state, SCROLLBAR_SHADOW_GROUP)
+        return
+    options = draw_state._kwargs or {}
+    max_scroll_y = max(0, draw_state.abs_content_height - draw_state.abs_clipped_height + 1)
+    draw_state._max_scroll_y = max_scroll_y
+    draw_overlay_scrollbar(
+        draw_state, max_scroll_y, draw_state.height - draw_state.footer_height,
+        bar_width=options.get('scroll_bar_width', SCROLL_BAR_WIDTH_DEFAULT),
+        bar_brightness=options.get('scroll_bar_brightness', SCROLL_BAR_BRIGHTNESS_DEFAULT))
+
+
 def finish_cached_overlays(cache, ctx):
     """Prepare parents first, then paint descendants and owning foregrounds."""
     draw_overlay_background(ctx.draw_state)
@@ -136,6 +156,7 @@ def finish_cached_overlays(cache, ctx):
             draw_overlay_background(child)
         for child in ctx.overlay_views:
             draw_overlay(child)
+            draw_scrollbar(child)
     if cache._stack:
         cache._stack[-1].overlay_views += ctx.overlay_views
     finish_overlay(ctx.draw_state, cache, background_done=True)
@@ -146,8 +167,10 @@ def finish_overlay(draw_state, cache, *, background_done=False):
     if not background_done:
         draw_overlay_background(draw_state)
     draw_overlay(draw_state)
+    draw_scrollbar(draw_state)
     options = draw_state._kwargs or {}
-    if (any(options.get(name) is not None for name in ('draw_overlay', 'draw_overlay_background'))
+    if ((getattr(draw_state, 'scroll_visible', False)
+         or any(options.get(name) is not None for name in ('draw_overlay', 'draw_overlay_background')))
             and cache.enabled and cache._stack):
         cache._stack[-1].overlay_views += (draw_state,)
 

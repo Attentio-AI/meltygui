@@ -64,6 +64,13 @@ frame, including blit hits, layout-owned child texture replay during frozen
 resize, and cached ancestors. Uncached
 views support the same callback. Normal idle-window sleeping still applies.
 
+Framework scrollbars use this same path for every view, with or without
+caching or freeze resize. They are never baked into tile textures. Cached
+ancestors retain descendant scrollbar owners alongside custom overlays, so
+live clipping, thumb geometry and drag subscriptions continue during replay.
+Scrollbar drag input still uses the normal event router; wheel input remains
+in the wrapper. Scroll changes invalidate content through `scroll_offset`.
+
 The callback may accept any subset of the keyword arguments `input_value`,
 `draw_state`, and `draw_list`. `input_value` is the current input supplied to
 the view; `draw_state` is its existing state. Draw primitives into the supplied

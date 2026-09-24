@@ -28,7 +28,6 @@ def resident():
     cache.key_to_draw_state = {}
     cache._frame_cache_hits = 0
     cache.draw_freeze_bg = Mock()
-    cache._draw_freeze_scrollbars = Mock()
     cache.mask_mark_view = Mock()
     return cache, ds, texture
 
@@ -79,7 +78,6 @@ def test_pixels_do_not_stretch_and_footer_tracks_bottom(monkeypatch, size):
     width, height = size
     assert cache.replay_resize(ds, (40, 60, width, height), footer_height=28)
     assert painted == [descendant, ds]
-    cache._draw_freeze_scrollbars.assert_called_once_with(cache._key_to_ctx['child'])
     assert parent.overlay_views == (descendant, ds)
     assert Melty.silence_invalidate is False
     body, footer = dl.add_image.call_args_list

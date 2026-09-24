@@ -182,9 +182,8 @@ class Tile:
     # instead of misaligned stale pixels.
     content_scroll: Optional[Tuple[int, int]] = None
     content_bg: bool = False
-    # Deferred descendant bars are not pixels in this tile. Replay only this
-    # retained set when its body is skipped; lifetime follows the tile.
-    freeze_scrollbars: tuple = ()
+    # Descendant foregrounds (including scrollbars) are outside tile pixels.
+    # Replay this retained set when the body is skipped; lifetime follows the tile.
     overlay_views: tuple = ()
 
 
@@ -203,7 +202,6 @@ class _Ctx:
     # inside this one, subtracted so the readout is this view's own cost.
     started: float = 0.0
     child_ms: float = 0.0
-    freeze_scrollbars: tuple = ()
     overlay_views: tuple = ()
 
 
@@ -3908,7 +3906,6 @@ class TileCacheMasked:
         from meltygui.core.rendering.overlay import finish_cached_overlays
         ctx.drew_cached = True
         finish_cached_overlays(self, ctx)
-        self._draw_freeze_scrollbars(ctx)
         self._frame_cache_hits += 1
         return True
 
@@ -4073,57 +4070,6 @@ class TileCacheMasked:
             if not live:
                 Melty.bg_depth, Melty.bg_stack = _sv_depth, _sv_stack
                 style_manager.set_imgui_tint(*_sv_tint)
-
-    def draw_freeze_scrollbar(self, draw_state) -> None:
-        """Draw cached freeze-resize scrollbars after tile capture.
-
-        Live geometry, input subscriptions and the retained shadow mark are
-        refreshed on body-render and cache-hit frames alike.
-        """
-        if not getattr(draw_state, "freeze_resize", False):
-            return
-        from meltygui.core.core_render import draw_overlay_scrollbar
-        from meltygui.core.core_render import SCROLL_BAR_WIDTH_DEFAULT
-        from meltygui.core.core_render import SCROLL_BAR_BRIGHTNESS_DEFAULT
-        from meltygui.core.core_render import SCROLLBAR_SHADOW_GROUP
-        # Owner of the grab's retained depth mark on these views: shed the
-        # group after the early returns, so a scrollbar hidden this frame
-        # (content fits after a resize / edit, view closed) drops its
-        # silhouette; draw_overlay_scrollbar re-retains it while visible.
-        self.clear_shadows(draw_state, SCROLLBAR_SHADOW_GROUP)
-        if (not draw_state.scroll_visible or draw_state.closed
-                or draw_state.just_shadow or draw_state.height is None):
-            return
-        kwargs = getattr(draw_state, "_kwargs", None) or {}
-        bar_width = kwargs.get(
-            "scroll_bar_width",
-            getattr(draw_state, "scroll_bar_width", SCROLL_BAR_WIDTH_DEFAULT))
-        bar_brightness = kwargs.get(
-            "scroll_bar_brightness",
-            getattr(draw_state, "scroll_bar_brightness", SCROLL_BAR_BRIGHTNESS_DEFAULT))
-        # Same max_y the wrapper's scroll block computes; published for the
-        # editor's drag-auto-scroll clamp (draw_state._max_scroll_y).
-        max_scroll_y = max(0, draw_state.abs_content_height
-                           - draw_state.abs_clipped_height + 1)
-        draw_state._max_scroll_y = max_scroll_y
-        draw_overlay_scrollbar(draw_state, max_scroll_y,
-                               draw_state.height - draw_state.footer_height,
-                               bar_width=bar_width, bar_brightness=bar_brightness,
-                               overlay=True)
-
-    def _draw_freeze_scrollbars(self, ctx) -> None:
-        """Replay descendant overlays when an ancestor's body is cached."""
-        if ctx.drew_cached:
-            tile = self._tiles.get(ctx.key)
-            ctx.freeze_scrollbars = tile.freeze_scrollbars if tile is not None else ()
-            for child in ctx.freeze_scrollbars:
-                self.draw_freeze_scrollbar(child)
-        self.draw_freeze_scrollbar(ctx.draw_state)
-        if self._stack:
-            bars = ctx.freeze_scrollbars
-            if ctx.draw_state.freeze_resize:
-                bars += (ctx.draw_state,)
-            self._stack[-1].freeze_scrollbars += bars
 
     def _scrub_stale_content(self, t: Tile, draw_state) -> None:
         """freeze_resize tiles: drop preserved beyond-logical texels once the
@@ -4330,7 +4276,7 @@ class TileCacheMasked:
                 # draws edge to edge. (An earlier 20/5 px right/bottom trim
                 # left the baked gutter/outline on-drag.) The scrollbar is
                 # drawn over this image afterwards, in mark_end_offscreen
-                # (draw_freeze_scrollbar, deferred overlay pass). The clip
+                # (finish_cached_overlays, deferred overlay pass). The clip
                 # crops the image only, leaving earlier-era content intact.
                 draw_size = (getattr(t, "content_size", None) or t.size) if frozen else size
                 b = draw_state.abs_left + draw_size[0], draw_state.abs_top + draw_size[1]
@@ -4442,7 +4388,6 @@ class TileCacheMasked:
         # The deferred overlay is excluded from this and ancestor captures.
         from meltygui.core.rendering.overlay import finish_cached_overlays
         finish_cached_overlays(self, ctx)
-        self._draw_freeze_scrollbars(ctx)
 
         minx, miny = int(ctx.draw_state.abs_left), int(ctx.draw_state.abs_top)
 
@@ -4644,7 +4589,6 @@ class TileCacheMasked:
                 self._tiles[ctx.key] = t
 
             if t is not None:
-                t.freeze_scrollbars = ctx.freeze_scrollbars
                 t.overlay_views = ctx.overlay_views
                 self._scrub_stale_content(t, ctx.draw_state)
 
