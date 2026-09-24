@@ -134,3 +134,55 @@ def finish_overlay(draw_state, cache):
     draw_overlay(draw_state)
     if (draw_state._kwargs or {}).get('draw_overlay') is not None and cache.enabled and cache._stack:
         cache._stack[-1].overlay_views += (draw_state,)
+
+
+def place_overlay_view(draw_state, rect, clip):
+    """Place a cached child whose lightweight layout is owned by an overlay.
+
+    Use the same window-relative placement as normal rendering, without
+    invalidating frozen pixels. Geometry writes still refresh geometry caches.
+    """
+    from meltygui.core.rendering.view_identity import place_in_parent_window
+    x, y, width, height = rect
+    cursor = imgui.get_cursor_screen_pos()
+    silenced = Melty.silence_invalidate
+    Melty.silence_invalidate = True
+    try:
+        imgui.set_cursor_screen_pos((x, y))
+        place_in_parent_window(draw_state, parent_window=draw_state.parent_window)
+        draw_state.width, draw_state.height = width, height
+        draw_state.left, draw_state.top = x, y
+        draw_state.clip_rect = clip
+        parent = draw_state.parent_window
+        draw_state._clip_win_anchor = (parent.abs_left, parent.abs_top) if parent is not None else None
+    finally:
+        Melty.silence_invalidate = silenced
+        imgui.set_cursor_screen_pos(cursor)
+
+
+def paint_cached_view(draw_state, draw_list):
+    """Paint a child's resident pixels at its live bounds without recapturing.
+
+    An enclosing snapshot can contain empty space where the child's viewport
+    used to end. Use the child's own preserved extent when overlay layout
+    reveals that space again, rather than replaying the flattened parent there.
+    The cache retains ownership of the borrowed texture.
+    """
+    cache = Melty.cache
+    tile = cache._tiles.get(draw_state._tile_id) if cache is not None and cache.enabled else None
+    if tile is None or not tile.tex or tile.last_clean_frame < 0:
+        return False
+    from meltygui.core.cache.tile_cache import _tile_alloc
+    width, height = tile.content_size or tile.size
+    width, height = min(width, draw_state.width), min(height, draw_state.height)
+    if width <= 0 or height <= 0:
+        return False
+    alloc_width, alloc_height = _tile_alloc(tile)
+    left, top = draw_state.abs_left, draw_state.abs_top
+    draw_list.push_clip_rect(*draw_state.abs_clip_rect, True)
+    try:
+        draw_list.add_image(tile.tex, (left, top), (left + width, top + height),
+                            (0, 1), (width / alloc_width, 1 - height / alloc_height))
+    finally:
+        draw_list.pop_clip_rect()
+    return True

@@ -1,4 +1,6 @@
 """Dropdown view functions and supporting definitions."""
+from meltygui.core.files.path_icons import with_path_icons, cleanup_path_icon
+from meltygui.state.path_icon_state import PathIconState
 from meltygui.core.runtime.paths import debug_log_path
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.hdr_color import pack_color
@@ -47,11 +49,13 @@ def draw_drop_down_item(input_value, name="", unique=0, shadow=False, draw_state
 
 @render_func(use_cache=True, show_bg=False, selectable=False,
              tint=(0.083, 0.10, 0.144),
-             is_tree=False, show_name=True, with_header=draw_header)
+             is_tree=False, show_name=True, with_header=draw_header, on_cleanup=cleanup_path_icon)
 @window
+@with_path_icons
 def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_state: DropDownState, shadow=True,
                   text_align="left", open_upwards=None, menu_min_width=None, display_label=None,
-                  collection_source=None, trigger_text_color=None, trigger_caret=None, menu_title=None, **kwargs):
+                  collection_source=None, trigger_text_color=None, trigger_caret=None, menu_title=None,
+                  icon_state: PathIconState = None, **kwargs):
     """Root of a recursive dropdown. Renders a trigger button showing the current
     selection; clicking it opens the (click-o-open) root popover. Nested dict
     rows inside the popover open their own sub-menus on hover. Returns
@@ -178,6 +182,9 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     trigger_text_value = 1.023
     if _ttb and getattr(input_value, "tint", None) is None:
         trigger_text_value = 1.023 * (1.0 - min(max(float(_ttb), 0.0), 1.0))
+    trigger_path = kwargs.get("display_path")
+    if trigger_path:
+        drop_down_display_str = _dd_fit_label(str(current), max(4, _label_px - 43))
     trigger_left, trigger_top = imgui.get_cursor_screen_pos()
     # Draw-list trigger: the click is claimed through this dropdown's own
     # draw_state (no nested render_func). It fires on press, as the old button did.
@@ -191,12 +198,30 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         trigger_text_offset = trigger_w - label_width - TRIGGER_TEXT_INSET
     else:
         trigger_text_offset = None
-    clicked = flat_button(drop_down_display_str, draw_state, view_id=f"{name}_dd_trigger{unique}",
+    if trigger_path:
+        trigger_text_offset = TRIGGER_TEXT_INSET + 43
+    display_paths = kwargs.get("display_paths")
+    clicked = flat_button("" if display_paths else drop_down_display_str, draw_state, view_id=f"{name}_dd_trigger{unique}",
                           width=trigger_w, height=trigger_h,
                           alpha=1.0 if kwargs.get("show_button_bg", True) else 0.0,
                           shadow=shadow, text_value=trigger_text_value, text_pad=trigger_pad,
                           text_offset_x=trigger_text_offset, event="left_mouse_down",
                           text_color=trigger_text_color, **trigger_color)
+    if display_paths:
+        from meltygui.view.path_icon_view import path_label
+        label_x = trigger_left + (trigger_text_offset if trigger_text_offset is not None
+                                  else (trigger_w - label_width) / 2)
+        color = pack_color(*Tint.dd_text(requested_tint=draw_state.current_tint)[:3], 1)
+        path_label(imgui.get_window_draw_list(), drop_down_display_str, label_x,
+                   trigger_top + (trigger_h - imgui.get_font_size()) / 2, color, display_paths, icons=icon_state)
+    if trigger_path:
+        from meltygui.view.path_icon_view import path_icon
+        color = pack_color(*Tint.dd_text(requested_tint=draw_state.current_tint)[:3], 1)
+        imgui.get_window_draw_list().add_text(trigger_left + TRIGGER_TEXT_INSET,
+            trigger_top + (trigger_h - imgui.get_font_size()) / 2, color, caret)
+        path_icon(trigger_path, trigger_left + TRIGGER_TEXT_INSET + 20,
+                  trigger_top + (trigger_h - 18) / 2, 18, color, icons=icon_state)
+
 
     if clicked:
 
@@ -273,6 +298,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         row_tints=kwargs.get("row_tints"),
         row_actions=kwargs.get("row_actions"),
         row_previews=kwargs.get("row_previews"), preview_owner=draw_state,
+        row_paths=kwargs.get("row_paths"),
         menu_columns=kwargs.get("menu_columns"),
         text_toward_bg=kwargs.get("text_toward_bg", 0.0),
         root_state=drop_down_state, path_prefix=(), menu_title=menu_title, return_extras=True)
@@ -410,12 +436,15 @@ def fast_draw_dropdown(input_value=None, **kwargs):
 
 @render_func(use_cache=True, show_bg=True, shadow=True, selectable=False, temp=True,
              closable=True, popover=True, melty_window=False, auto_resize=True, with_header=None,
-             max_height=420, min_width=300, swoosh=False, min_height=33, keep_in_view=True)
+             max_height=420, min_width=300, swoosh=False, min_height=33, keep_in_view=True,
+             on_cleanup=cleanup_path_icon)
+@with_path_icons
 def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix=(), tint=None,
                  show_search=None, text_align="right", row_tags=None, row_tints=None,
                  row_suffixes=None, row_actions=None, text_toward_bg=0.0,
                  full_render=False, row_code=None, menu_title=None,
-                 row_previews=None, preview_owner=None, menu_columns=None, **kwargs):
+                 row_previews=None, preview_owner=None, menu_columns=None, row_paths=None,
+                 icon_state: PathIconState = None, **kwargs):
     """One level of the dropdown, drawn as its own temp popover window. Iterates
     the level's entries and renders each as a row (`_dd_menu_row`); a leaf click
     or a pick inside a nested sub-menu bubbles back up as (changed, value).
@@ -452,7 +481,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
 
     if menu_columns:
         return _draw_dd_columns(input_value, draw_state, root_state, menu_columns,
-                                tint, row_tints, row_previews, preview_owner)
+                                tint, row_tints, row_previews, preview_owner, row_paths, icon_state)
 
     if menu_title and not path_prefix:
         title_x, title_y = imgui.get_cursor_screen_pos()
@@ -545,7 +574,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
                       root_state=root_state, tint=tint, text_align=text_align, z_offset=0,
                       row_tags=row_tags, row_tints=row_tints, row_suffixes=row_suffixes,
                       cursor_path=cursor_path,
-                      open_path=open_path, full_render=full_render)
+                      open_path=open_path, full_render=full_render, row_paths=row_paths)
 
     # Manual row loop (the dd_collection full_render path is gone - its
     # per-row render_func tiles cost more than they saved; virtualization is
@@ -616,7 +645,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
                                   row_code=row_code,
                                   code_label_w=code_label_w,
                                   row_width=row_width, row_previews=row_previews,
-                                  preview_owner=preview_owner)
+                                  preview_owner=preview_owner, row_paths=row_paths, icon_state=icon_state)
             if picked is not UNSET_VALUE:
                 result = (True, picked)
     return result
@@ -742,7 +771,7 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
                                        width=popup_width, height=popup_height, auto_resize=False,
                                        show_add_delete=False,
                                        parent_window=draw_state, disable_scroll=False,
-                                       full_render=full_render, row_tints=row_tints,
+                                       full_render=full_render, row_tints=row_tints, row_paths=kwargs.get("row_paths"),
                                        root_state=root_state, path_prefix=row_path,
                                        return_extras=True)
         # Register the submenu window on the shared root state so the ROOT
@@ -941,7 +970,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                  row_suffixes=None, row_actions=None, left_pad=10,
                  text_toward_bg=0.0, row_code=None, code_label_w=None,
                  row_width=None, row_previews=None, preview_owner=None,
-                 selected=False, selection_gutter=False, tint_background=True):
+                 selected=False, selection_gutter=False, tint_background=True, row_paths=None, icon_state=None):
     """Render ONE leaf menu row inline with raw imgui — NO per-row render_func.
     Leaves are the bulk of a big menu, so skipping the dd_menu_row wrapper (its
     own draw_state / cache / BVH / hover machinery, tens of µs each) is the whole
@@ -1075,6 +1104,14 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
         color = tuple(min(1.0, c * 0.4 + 0.6) for c in color[:3])
     color = *(color[:3]), 1.0
 
+    icon_path = _dd_row_lookup(row_paths, value)
+    if icon_path and tint_background:
+        from meltygui.view.path_icon_view import path_icon
+        size = min(18.0, h - 2)
+        path_icon(icon_path, x + left_pad, y + (h - size) / 2, size, pack_color(*color), key=key, icons=icon_state)
+        left_pad += size + 5
+        imgui.set_cursor_screen_pos((x + left_pad, y + (h - line_h) / 2))
+
     tag = _dd_row_lookup(row_tags, value)
     code_row = _dd_row_lookup(row_code, value)
     if code_row is not None:
@@ -1159,7 +1196,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     else:
         if not tint_background:
             _draw_link_label(dl, str(label), x + left_pad, y + (h - line_h) * 0.5,
-                             row_tint, color)
+                             row_tint, color, icon_path=icon_path, icon_key=key, icon_state=icon_state)
             imgui.dummy(imgui.calc_text_size(str(label))[0], line_h)
         else:
             imgui.text_colored(str(label), *color)
@@ -1261,7 +1298,7 @@ def _dd_column_layout(columns, available_width):
 
 
 def _draw_dd_columns(collection, draw_state, root_state, columns, tint, row_tints,
-                     row_previews, preview_owner):
+                     row_previews, preview_owner, row_paths=None, icon_state=None):
     """Flat independent choice groups, sharing the normal dropdown interaction."""
     from meltygui.core.conversion.cache_tree import UNSET_VALUE
     left, top = imgui.get_cursor_screen_pos()
@@ -1284,7 +1321,7 @@ def _draw_dd_columns(collection, draw_state, root_state, columns, tint, row_tint
                                       tint=tint, row_tints=row_tints, row_width=cell,
                                       row_previews=row_previews, preview_owner=preview_owner,
                                       selected=value == column['selected'], selection_gutter=True,
-                                      tint_background=False)
+                                      tint_background=False, row_paths=row_paths, icon_state=icon_state)
                 if picked is not UNSET_VALUE:
                     result = (True, picked)
         finally:
@@ -1294,7 +1331,7 @@ def _draw_dd_columns(collection, draw_state, root_state, columns, tint, row_tint
     return result
 
 
-def _draw_link_label(draw_list, label, x, y, tint, base_color):
+def _draw_link_label(draw_list, label, x, y, tint, base_color, icon_path=None, icon_key=None, icon_state=None):
     """Colour the icon clearly, and keep the accompanying text nearly neutral."""
     if tint is None:
         icon_color = tuple(base_color[:3])
@@ -1313,7 +1350,13 @@ def _draw_link_label(draw_list, label, x, y, tint, base_color):
         if prefix:
             draw_list.add_text(x, y, pack_color(*text_color, 1), prefix)
             x += imgui.calc_text_size(prefix)[0]
-        draw_list.add_text(x, y, pack_color(*icon_color, 1), char)
+        if icon_path and char in (f"\uf07b", f"\uf07c"):
+            from meltygui.view.path_icon_view import path_icon
+            size = min(18.0, imgui.calc_text_size(char)[0])
+            path_icon(icon_path, x, y + (imgui.get_font_size() - size) / 2,
+                      size, pack_color(*icon_color, 1), key=icon_key, icons=icon_state)
+        else:
+            draw_list.add_text(x, y, pack_color(*icon_color, 1), char)
         x += imgui.calc_text_size(char)[0]
         start = index + 1
     if start < len(label):

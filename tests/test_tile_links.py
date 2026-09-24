@@ -659,3 +659,23 @@ def test_auto_label_previews_target_when_not_selected(layout):
         assert label == '\uf0d0 Auto → ' + source_label(target[0], endpoints, available)
         assert bindings_for(consumer) == before
         assert column['selected'] == binding
+
+
+def test_link_icons_follow_the_source_path_and_keep_binding_identity(layout, monkeypatch):
+    from meltygui.view import tile_view
+    endpoints = prepare_endpoints(layout)
+    consumer, left, right = [endpoints[t.id] for t in layout.children]
+    left.states['selection'].icon_path = '/projects/first'
+    right.states['selection'].icon_path = '/projects/second'
+    identity = next(candidates(consumer, 'source', endpoints))[0]
+    set_binding(consumer, 'source', identity)
+    calls = []
+    monkeypatch.setattr(tile_view, 'draw_dropdown',
+                        lambda *a, **kw: (calls.append(kw) or False, None))
+    tile_view.draw_tile_links(consumer, endpoints, 80, 28)
+    assert calls[-1]['row_paths'][('source', identity)] == '/projects/first'
+    assert calls[-1]['display_paths'][2] == '/projects/first'
+    left.states['selection'].icon_path = '/projects/renamed'
+    tile_view.draw_tile_links(consumer, endpoints, 80, 28)
+    assert calls[-1]['display_paths'][2] == '/projects/renamed'
+    assert bindings_for(consumer)['source'] == identity

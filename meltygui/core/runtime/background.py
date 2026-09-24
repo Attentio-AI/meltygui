@@ -28,6 +28,15 @@ class Background:
     _dict_key_times = {}    # dict key name -> [total_time_sec, count]
     _task_times = {}        # func_name -> [total_time_sec, count]
     did_shutdown = False
+
+    @classmethod
+    def submit_io(cls, function, *args):
+        """Submit uncached I/O to the bounded, application-owned worker pool.
+
+        The caller owns the future, cancellation and applying its result.
+        """
+        return cls._pool.submit(function, *args)
+
     @classmethod
     def _record_dict_key_time(cls, key: str, elapsed: float):
         # No lock here - called from simple_hash which may recurse deeply;

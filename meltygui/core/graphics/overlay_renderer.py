@@ -596,22 +596,35 @@ class SplitOverlayRenderer(WindowRenderer):
                 stencil_bits = f"query-failed({e})"
             non_empty = [(c, s, e) for (c, s, e) in ranges if e > s]
 
+        # Only remember state within this pass: filters/other renderers own it
+        # between passes. Stencil setup below can change the scissor box.
+        bound_texture = atlas_mode = None
         for channel_idx, idx_lo, idx_hi in ranges:
             if idx_hi <= idx_lo:
                 continue
             self._setup_channel_stencil(channel_idx, top_channel, window_channels,
                                         fb_height, fb_scale_x, fb_scale_y, ox, oy)
+            scissor_box = None
 
             for c_lo, c_hi, cmd in cmd_spans:
                 seg_lo = max(idx_lo, c_lo)
                 seg_hi = min(idx_hi, c_hi)
                 if seg_hi <= seg_lo:
                     continue
-                gl.glBindTexture(gl.GL_TEXTURE_2D, cmd.texture_id)
+                texture = cmd.texture_id
+                if texture != bound_texture:
+                    gl.glBindTexture(gl.GL_TEXTURE_2D, texture)
+                    bound_texture = texture
                 if font_tex >= 0:
-                    gl.glUniform1i(self._loc_atlas, 1 if int(cmd.texture_id) == font_tex else 0)
+                    mode = int(texture == font_tex)
+                    if mode != atlas_mode:
+                        gl.glUniform1i(self._loc_atlas, mode)
+                        atlas_mode = mode
                 x, y, z, w = cmd.clip_rect
-                gl.glScissor(int(x) + ox, int(fb_height - w) + oy, int(z - x), int(w - y))
+                box = (int(x) + ox, int(fb_height - w) + oy, int(z - x), int(w - y))
+                if box != scissor_box:
+                    gl.glScissor(*box)
+                    scissor_box = box
                 self._draw_style_elements(overlay_list, cmd.texture_id, seg_lo, seg_hi, gltype)
 
         if self.debug_overlay_mask:
@@ -936,6 +949,9 @@ class SplitOverlayRenderer(WindowRenderer):
         font_tex = self._bind_text_mode()
         gl.glBindVertexArray(self._vao_handle)
 
+        # Uploading the next list preserves texture, atlas mode and scissor.
+        # Start unknown on every invocation so external GL users stay isolated.
+        bound_texture = atlas_mode = scissor_box = None
         for commands in command_lists:
             idx_buffer_offset = 0
 
@@ -956,12 +972,20 @@ class SplitOverlayRenderer(WindowRenderer):
             )
 
             for command in commands.commands:
-                gl.glBindTexture(gl.GL_TEXTURE_2D, command.texture_id)
+                texture = command.texture_id
+                if texture != bound_texture:
+                    gl.glBindTexture(gl.GL_TEXTURE_2D, texture)
+                    bound_texture = texture
                 if font_tex >= 0:
-                    gl.glUniform1i(self._loc_atlas, 1 if int(command.texture_id) == font_tex else 0)
-
+                    mode = int(texture == font_tex)
+                    if mode != atlas_mode:
+                        gl.glUniform1i(self._loc_atlas, mode)
+                        atlas_mode = mode
                 x, y, z, w = command.clip_rect
-                gl.glScissor(int(x) + ox, int(fb_height - w) + oy, int(z - x), int(w - y))
+                box = (int(x) + ox, int(fb_height - w) + oy, int(z - x), int(w - y))
+                if box != scissor_box:
+                    gl.glScissor(*box)
+                    scissor_box = box
 
                 if imgui.INDEX_SIZE == 2:
                     gltype = gl.GL_UNSIGNED_SHORT

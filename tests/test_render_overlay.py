@@ -198,3 +198,47 @@ def test_draw_overlay_is_public_wrapper_option():
     from meltygui.core.rendering.fast_view import FAST_VIEW_WRAPPER_KWARGS
     assert 'draw_overlay' in render_func_kwarg_names()
     assert 'draw_overlay' in FAST_VIEW_WRAPPER_KWARGS
+
+
+def test_overlay_child_placement_preserves_cursor_and_refreshes_live_geometry(monkeypatch):
+    from meltygui.state.new_core_model import DrawState
+    parent, child = DrawState(), DrawState()
+    parent.window_pos = (10, 20)
+    parent.width, parent.height = 500, 400
+    child.parent_window = child._parent = parent
+    child.width, child.height = 100, 100
+    child.left_offset = child.top_offset = 0
+    child.window_pos = (0, 0)
+    monkeypatch.setattr(DrawState, '_cap_to_display', lambda self, pos, axis: pos)
+    monkeypatch.setattr(Melty, 'frame_count', 999)
+    monkeypatch.setattr(Melty, 'silence_invalidate', False)
+    cursor = [(7, 9)]
+    monkeypatch.setattr(overlay.imgui, 'get_cursor_screen_pos', lambda: cursor[0])
+    monkeypatch.setattr(overlay.imgui, 'set_cursor_screen_pos', lambda pos: cursor.__setitem__(0, pos))
+    _ = child.abs_left, child.abs_top
+    overlay.place_overlay_view(child, (40, 60, 200, 150), (20, 30, 210, 180))
+    assert (child.abs_left, child.abs_top, child.width, child.height) == (40, 60, 200, 150)
+    assert child.abs_clip_rect == (40, 60, 210, 180)
+    assert cursor[0] == (7, 9)
+    assert Melty.silence_invalidate is False
+
+
+def test_cached_child_overlay_uses_preserved_pixels_beyond_old_viewport(monkeypatch):
+    from unittest.mock import Mock
+    from meltygui.core.cache.tile_cache import Tile
+    ds = SimpleNamespace(_tile_id='text', width=260, height=180,
+                         abs_left=10, abs_top=20, abs_clip_rect=(10, 20, 270, 200))
+    tile = Tile(ds, 1, 2, None, None, (200, 100), alloc_size=(512, 256),
+                content_size=(300, 200), last_clean_frame=1)
+    cache = SimpleNamespace(enabled=True, _tiles={'text': tile})
+    monkeypatch.setattr(Melty, 'cache', cache)
+    dl = Mock()
+    assert overlay.paint_cached_view(ds, dl)
+    dl.add_image.assert_called_once_with(2, (10, 20), (270, 200),
+                                         (0, 1), (260 / 512, 1 - 180 / 256))
+    dl.push_clip_rect.assert_called_once_with(10, 20, 270, 200, True)
+    dl.pop_clip_rect.assert_called_once()
+    # Painting must never resize or overwrite the resident cache.
+    assert tile.size == (200, 100) and tile.content_size == (300, 200)
+    cache._tiles.clear()
+    assert not overlay.paint_cached_view(ds, dl)

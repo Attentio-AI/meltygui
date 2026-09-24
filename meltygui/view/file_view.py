@@ -1,4 +1,7 @@
 """Reusable file presentation; values and view state are supplied by callers."""
+from meltygui.view.path_icon_view import path_icon
+from meltygui.core.files.path_icons import with_path_icons, cleanup_path_icon
+from meltygui.state.path_icon_state import PathIconState
 from pathlib import Path
 from meltygui.core.runtime.paths import debug_log_path
 from meltygui.core.files.file_explorer_core import _trace_browser_size
@@ -398,29 +401,27 @@ class _CrumbTints:
 
 
 def _crumb_menu(directory, on_path, file_metadata, memo):
-    """One crumb's dropdown rows, {icon + name: path}: `directory`'s folders
+    """One crumb's dropdown rows, {name: path}, with separate path icons: `directory`'s folders
     then files in the file browser's order (`ordered_rows`), memoized in
     `memo` by the directory's mtime. Hidden entries stay out unless
     `on_path` (the entry the crumb strip continues through) is one."""
-    from meltygui.files.fast_file_explorer import row_icon
     from meltygui.model.file_metadata_model import ordered_rows
     from meltygui.model.file_model import _dir_mtime_ns
     from meltygui.model.file_model import list_directory
 
-    # [tint=(0.55, 0.72, 0.95)]
-    folder_icon = f"\uf07b"
-    # [tint=(0.55, 0.72, 0.95)]
-    file_icon = f"\uf15b"
     show_hidden = on_path is not None and on_path.name.startswith(".")
     key = (str(directory), _dir_mtime_ns(directory), show_hidden)
     if memo.get("key") != key:
         meta = file_metadata
         rows = ordered_rows(list_directory(directory, show_hidden), meta)
         memo["key"] = key
-        memo["rows"] = {
-            f"{row_icon(path, is_dir, meta.get(str(path)) if meta is not None else None, folder_icon, file_icon)}  {path.name}":
-                str(path)
-            for path, is_dir in rows}
+        from meltygui.model.folder_icon_model import PathIcon
+        memo["rows"] = {path.name: str(path) for path, is_dir in rows}
+        icons = memo.setdefault("icons", {})
+        icons.clear()
+        icons.update({str(path): PathIcon(str(path), is_dir,
+                      (meta.get(str(path)) or {}).get("icon") if meta is not None else None)
+                      for path, is_dir in rows})
     return memo["rows"]
 
 
@@ -539,7 +540,7 @@ def draw_breadcrumbs(input_value: str, draw_state, width=None, crumb_height=24.0
             display_label=parts[i], name=f"{name}_crumb_{i}", width=widths[i], height=crumb_h,
             trigger_height=crumb_h, show_header=False, shadow=False, show_button_bg=False,
             text_pad=inner, trigger_text_color=text_color, trigger_caret=("", ""),
-            row_tints=_CrumbTints(meta), menu_min_width=px(menu_min_width), return_extras=True)
+            row_tints=_CrumbTints(meta), row_paths=memos.setdefault(i, {}).setdefault("icons", {}), menu_min_width=px(menu_min_width), return_extras=True)
         crumb_ds = result[2] if len(result) > 2 else None
         state = (getattr(crumb_ds, "misc", None) or {}).get("drop_down_state") if crumb_ds is not None else None
         if state is not None:
@@ -559,7 +560,8 @@ def draw_breadcrumbs(input_value: str, draw_state, width=None, crumb_height=24.0
 
 
 @render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=False,
-             show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
+             show_add_delete=False, is_tree=False, show_bg=False, shadow=False, on_cleanup=cleanup_path_icon)
+@with_path_icons
 def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorerState, file_metadata=None,
                       left_mouse_down=False, left_mouse_double_clicked=False,
                       right_mouse_down=False,
@@ -572,6 +574,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
                       folder_bg_boost=-0.12, folder_bg_rounding=0.0, drag_rows=True, menu_target=None,
                       type_to_search=True, search_tint=(1.0, 0.82, 0.3), search_dim=0.45,
                       search_flash_frames=36, show_crumbs=True, show_hidden=None,
+                      icon_state: PathIconState = None,
                       **kwargs):
     """The path strip + rows of one directory (see the module docstring).
     `show_crumbs=False` leaves the strip out (a host drawing the crumbs in
@@ -885,7 +888,10 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
                                       pack_color(*row_bg.rgb(tint or default_tint, select_boost),
                                                  ghost_alpha),
                                       rounding=px(select_rounding))
-                ghost.add_text(drag.x + px(4), drag.y + text_y_pad, icon_col, icon)
+                path_icon(path, drag.x + px(4), drag.y + (row_h - px(18)) / 2,
+                          px(18), icon_col, is_dir=is_dir, fallback=icon,
+                          custom_icon=entry.get("icon") if isinstance(entry, dict) else None,
+                          draw_list=ghost, icons=icon_state)
                 ghost.add_text(drag.x + px(4) + glyph_w, drag.y + text_y_pad, name_col, path.name)
                 DragDrop.end_drag()
                 continue
@@ -904,7 +910,9 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
         elif row_hovered:
             draw_list.add_rect_filled(rows_x, ry0, rows_x + content_w, ry1, hover_wash,
                                       rounding=px(select_rounding))
-        draw_list.add_text(rows_x + text_x, ry0 + text_y_pad, icon_col, icon)
+        path_icon(path, rows_x + text_x, ry0 + (row_h - px(18)) / 2, px(18), icon_col,
+                  is_dir=is_dir, fallback=icon,
+                  custom_icon=entry.get("icon") if isinstance(entry, dict) else None, icons=icon_state)
         name_x = rows_x + text_x + glyph_w
         if spans:
             # The matched letters: a wash of the search tint over them.
@@ -970,11 +978,12 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
 
 
 @render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=True, use_cache=True, freeze_resize=True,
-             show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
+             show_add_delete=False, is_tree=False, show_bg=False, shadow=False, on_cleanup=cleanup_path_icon)
+@with_path_icons
 def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_clicked=False,
                    shortcut_state: ShortcutState = None, row_height=22.0,
                    show_tint_chips=True, chip_size=17.0, default_tint=(0.32, 0.42, 0.54, 1.0),
-                   show_projects=True, **kwargs):
+                   show_projects=True, icon_state: PathIconState = None, **kwargs):
     """The shortcuts column on its own: home, the XDG user directories and
     the root as draw-list rows, then a **Projects** section — every folder
     marked with meltygui.mark_project (the shared file-meta store's flag) —
@@ -1073,7 +1082,11 @@ def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_
                 ghost = drag.draw_list
                 ghost.add_rect_filled(drag.x, drag.y, drag.x + drag.w, drag.y + drag.h,
                                       row_bg(tint or default_tint, 0.22), rounding=px(4))
-                ghost.add_text(drag.x + px(4), drag.y + text_y_pad, icon_col, icon)
+                path_icon(path, drag.x + px(4), drag.y + (row_h - px(18)) / 2,
+                          px(18), icon_col, fallback=icon,
+                          custom_icon=(computer_icon if path == Path(os.sep) else
+                              (meta.get(key) or {}).get("icon") if meta is not None else None),
+                          key=f"{'shortcuts' if draggable else 'projects'}:{path}", draw_list=ghost, icons=icon_state)
                 ghost.add_text(drag.x + px(4) + px(glyph_width), drag.y + text_y_pad,
                                label_col, label)
                 DragDrop.end_drag()
@@ -1093,7 +1106,10 @@ def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_
                                           rounding=px(4))
             elif row_hovered:
                 draw_list.add_rect_filled(x, ry0, x + width, ry1, hover_wash, rounding=px(4))
-            draw_list.add_text(x + text_x, ry0 + text_y_pad, icon_col, icon)
+            path_icon(path, x + text_x, ry0 + (row_h - px(18)) / 2, px(18), icon_col,
+                      fallback=icon, custom_icon=(computer_icon if path == Path(os.sep) else
+                          (meta.get(key) or {}).get("icon") if meta is not None else None),
+                      key=f"{'shortcuts' if draggable else 'projects'}:{path}", icons=icon_state)
             draw_list.add_text(x + text_x + px(glyph_width), ry0 + text_y_pad, label_col, label)
             if (click is not None and click_left <= click[0] < x + width and ry0 <= click[1] < ry1
                     and path != directory):

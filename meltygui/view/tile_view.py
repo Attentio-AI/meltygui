@@ -41,6 +41,12 @@ def parameter_label(endpoint, parameter):
     return f"{parameter}: {required_type}"
 
 
+def source_icon_path(endpoint):
+    """An injected state may expose icon_path for its represented filesystem value."""
+    return next((state.icon_path for state in endpoint.states.values()
+                 if getattr(state, 'icon_path', None)), None)
+
+
 def source_display_name(endpoint):
     """The source's own label and its renderer icon, independent of identity."""
     decoration = renderer_decoration(endpoint.renderer)
@@ -130,8 +136,8 @@ def link_trigger_label(endpoint, endpoints):
 
 def draw_tile_links(endpoint, endpoints, width, height, resize_record=None):
     """One trigger opens independently selectable parameter columns."""
-    from meltygui.core.layout.tile_links import set_binding
-    columns, choices, previews, tints = [], {}, {}, {}
+    from meltygui.core.layout.tile_links import set_binding, AUTO, selected_candidate
+    columns, choices, previews, tints, paths = [], {}, {}, {}, {}
     for parameter in endpoint.parameters:
         column = tile_link_column(endpoint, parameter, endpoints)
         rows = []
@@ -143,18 +149,33 @@ def draw_tile_links(endpoint, endpoints, width, height, resize_record=None):
             if binding in column['previews']:
                 previews[value] = column['previews'][binding]
             tints[value] = column['tints'].get(binding)
+            identity = (selected_candidate(endpoint, parameter, endpoints, preview_auto=True)
+                        if binding == AUTO else None)
+            source_id = identity[0][0] if identity else (binding[0] if isinstance(binding, tuple) else None)
+            if source_id in endpoints:
+                path = source_icon_path(endpoints[source_id])
+                if path:
+                    paths[value] = path
         columns.append(dict(title=column['title'], subtitle=column['subtitle'],
                             rows=rows, selected=(parameter, column['selected'])))
     presentation = tuple((column['title'], column['subtitle'], column['selected'],
-                          tuple((key, label, tints[choices[key]]) for key, label in column['rows']))
+                          tuple((key, label, tints[choices[key]], paths.get(choices[key]))
+                                for key, label in column['rows']))
                          for column in columns)
     trigger_label = link_trigger_label(endpoint, endpoints)
+    trigger_paths = {}
+    for index, parameter in enumerate(endpoint.parameters):
+        candidate = selected_candidate(endpoint, parameter, endpoints)
+        if candidate:
+            path = source_icon_path(endpoints[candidate[0][0]])
+            if path:
+                trigger_paths[(index + 1) * 2] = path
     result = draw_dropdown(
         (presentation, trigger_label), collection=choices, name="Links", key=f"{endpoint.tile.id}:links",
         show_name=False, show_header=False, display_label=trigger_label,
         trigger_caret=("", ""), text_align="center", text_pad=3,
         menu_columns=columns, menu_revision=presentation, keep_open_on_select=True,
-        row_previews=previews, row_tints=tints,
+        row_previews=previews, row_tints=tints, row_paths=paths, display_paths=trigger_paths,
         width=width, height=height, return_extras=resize_record is not None)
     changed, selection = result[:2]
     if resize_record is not None and len(result) > 2:

@@ -5854,16 +5854,10 @@ def draw_text(input_value: str, height=None,
     # swoosh to the collapse (header) line instead of a linear-extrapolated
     # position inside it.
     ds._diff_d2b = _fold_d2b
-    # The text band clip (top inset, BOTTOM inset) relative to the pane
-    # box - insets are height-stable, so the ribbon pass can project the
-    # band onto the pane's LIVE height. Stashing the BOTTOM EDGE offset
-    # froze it at the stash-time height: a freeze_resize pane mid
-    # resize-drag serves its blit without re-running this body, and the
-    # ribbons clamped to the pre-drag bottom until release. (The pane
-    # corner itself is tracked live via ds._abs_left()/_abs_top() - see
-    # _pane_pos in open_files.py.)
-    ds._diff_clip_off = (rect_min_y - ds.abs_top,
-                         (ds.abs_top + (ds.height or 0)) - rect_max_y)
+    # Only local chrome belongs in the retained insets. Ancestor clipping
+    # changes while this body is frozen; the ribbon pass intersects the live
+    # pane clip instead of retaining the previous viewport's hidden area.
+    ds._diff_clip_off = (bar_height, 0.0)
 
     # Diff washes: in is_diff mode each line's leading marker (the +/- left over
     # from the unified diff, with the ---/+++/@@ headers already stripped by the

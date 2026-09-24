@@ -3908,6 +3908,7 @@ class TileCacheMasked:
         from meltygui.core.rendering.overlay import finish_cached_overlays
         ctx.drew_cached = True
         finish_cached_overlays(self, ctx)
+        self._draw_freeze_scrollbars(ctx)
         self._frame_cache_hits += 1
         return True
 
@@ -4439,9 +4440,9 @@ class TileCacheMasked:
         Melty.tile_id_stack.pop()
 
         # The deferred overlay is excluded from this and ancestor captures.
-        self._draw_freeze_scrollbars(ctx)
         from meltygui.core.rendering.overlay import finish_cached_overlays
         finish_cached_overlays(self, ctx)
+        self._draw_freeze_scrollbars(ctx)
 
         minx, miny = int(ctx.draw_state.abs_left), int(ctx.draw_state.abs_top)
 
