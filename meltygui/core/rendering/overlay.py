@@ -3,6 +3,8 @@
 Callbacks are plain functions accepting any subset of input_value, draw_state
 and draw_list as keyword arguments. Draw into the supplied foreground list;
 normal widgets/render_func calls belong in the body. Keep callbacks below 0.5ms.
+Optional draw_overlay_background callbacks place/paint cached child bodies before
+descendant overlays; draw_overlay paints the owning view's foreground afterward.
 """
 import inspect
 import time
@@ -32,24 +34,29 @@ class OverlayState(DictConversion):
 
 
 def draw_overlay(draw_state):
-    """Run once at the owning view's post-body pass, including tile replays.
+    """Paint the owning view's foreground after its descendants."""
+    _run_overlay(draw_state, 'draw_overlay', _STATE_KEY)
 
-    A synchronous callback cannot be interrupted at the deadline. Its first
-    overrun completes, but its geometry is discarded; subsequent frames show
-    the error without calling it.
-    Replacing or hotswapping the callback clears the failure automatically.
-    """
-    callback = (draw_state._kwargs or {}).get('draw_overlay')
+
+def draw_overlay_background(draw_state):
+    """Prepare live child bounds and backing pixels before descendant overlays."""
+    if (draw_state._kwargs or {}).get('draw_overlay_background') is not None:
+        _run_overlay(draw_state, 'draw_overlay_background', 'render_overlay_background')
+
+
+def _run_overlay(draw_state, option, state_key):
+    """Run a bounded callback, retrying failures when its definition changes."""
+    callback = (draw_state._kwargs or {}).get(option)
     if callback is None:
-        draw_state.misc.pop(_STATE_KEY, None)
+        draw_state.misc.pop(state_key, None)
         return
     if draw_state.closed or draw_state.just_shadow:
         return
-    state = draw_state.misc.get(_STATE_KEY)
+    state = draw_state.misc.get(state_key)
     if not isinstance(state, OverlayState):
         state = OverlayState()
-        draw_state.misc[_STATE_KEY] = state
-    draw_state.misc_used.add(_STATE_KEY)
+        draw_state.misc[state_key] = state
+    draw_state.misc_used.add(state_key)
     target = getattr(callback, '__func__', callback)
     owner = getattr(callback, '__self__', None)
     code = getattr(target, '__code__', None)
@@ -60,7 +67,7 @@ def draw_overlay(draw_state):
         state.error = None
         try:
             if not callable(callback) or getattr(callback, '__render_func__', False):
-                raise TypeError('draw_overlay must be a plain callable, not a render_func')
+                raise TypeError(f'{option} must be a plain callable, not a render_func')
             params = inspect.signature(callback).parameters
             available = {'input_value', 'draw_state', 'draw_list'}
             state.names = tuple(available if any(p.kind == p.VAR_KEYWORD for p in params.values())
@@ -118,21 +125,30 @@ def discard_geometry(draw_list, vertex_start):
 
 
 def finish_cached_overlays(cache, ctx):
-    """Replay descendants only when the cache skipped their wrapper calls."""
+    """Prepare parents first, then paint descendants and owning foregrounds."""
+    draw_overlay_background(ctx.draw_state)
     if ctx.drew_cached:
         tile = cache._tiles.get(ctx.key)
         ctx.overlay_views = tile.overlay_views if tile is not None else ()
+        # Recorded postorder during normal drawing. Reverse it for layout so
+        # each parent establishes live bounds before a descendant reads them.
+        for child in reversed(ctx.overlay_views):
+            draw_overlay_background(child)
         for child in ctx.overlay_views:
             draw_overlay(child)
     if cache._stack:
         cache._stack[-1].overlay_views += ctx.overlay_views
-    finish_overlay(ctx.draw_state, cache)
+    finish_overlay(ctx.draw_state, cache, background_done=True)
 
 
-def finish_overlay(draw_state, cache):
+def finish_overlay(draw_state, cache, *, background_done=False):
     """Uncached children still register for replay by a cached ancestor."""
+    if not background_done:
+        draw_overlay_background(draw_state)
     draw_overlay(draw_state)
-    if (draw_state._kwargs or {}).get('draw_overlay') is not None and cache.enabled and cache._stack:
+    options = draw_state._kwargs or {}
+    if (any(options.get(name) is not None for name in ('draw_overlay', 'draw_overlay_background'))
+            and cache.enabled and cache._stack):
         cache._stack[-1].overlay_views += (draw_state,)
 
 
@@ -160,12 +176,15 @@ def place_overlay_view(draw_state, rect, clip):
         imgui.set_cursor_screen_pos(cursor)
 
 
-def paint_cached_view(draw_state, draw_list):
+def paint_cached_view(draw_state):
     """Paint a child's resident pixels at its live bounds without recapturing.
 
     An enclosing snapshot can contain empty space where the child's viewport
     used to end. Use the child's own preserved extent when overlay layout
     reveals that space again, rather than replaying the flattened parent there.
+    Submit to the current window's main draw list, after its parent replay.
+    The foreground overlay is composited AFTER shadows; putting an unshaded
+    cache texture there erases the shadows on every cache-served frame.
     The cache retains ownership of the borrowed texture.
     """
     cache = Melty.cache
@@ -179,6 +198,7 @@ def paint_cached_view(draw_state, draw_list):
         return False
     alloc_width, alloc_height = _tile_alloc(tile)
     left, top = draw_state.abs_left, draw_state.abs_top
+    draw_list = imgui.get_window_draw_list()
     draw_list.push_clip_rect(*draw_state.abs_clip_rect, True)
     try:
         draw_list.add_image(tile.tex, (left, top), (left + width, top + height),

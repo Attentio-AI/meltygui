@@ -794,6 +794,8 @@ class _UnpicklerOverrides:
         path = canonical_name(old_path)
         if path != old_path and path.endswith("." + name):
             module = path[:-(len(name) + 1)]
+        elif path != old_path:
+            module, name = path.rsplit(".", 1)
         else:
             module = canonical_name(module)
         # Legacy-pickle recovery: a numpy scalar saved before the ng-conversion fix

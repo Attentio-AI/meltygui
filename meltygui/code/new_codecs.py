@@ -30,11 +30,13 @@ from meltygui.core.rendering.core_decoration import Core
 from meltygui.core.melty import Melty
 from meltygui.core.melty import FileWatch
 from meltygui.core.diagnostics.perf_trace import trace_rl as _ptrace_rl
-from meltygui.graphics.texture_manager import PIL_TO_GL_FORMAT
-from meltygui.graphics.texture_manager import PendingTexture
+from meltygui.model.texture_model import ImageTexture
+from OpenGL.GL import GL_RED, GL_RG, GL_RGB, GL_RGBA
 
-# No GL imports here: ImageCodec.load only DECODES (background thread); the GL
-# upload runs on the UI thread via PendingTexture.pending_upload.
+PIL_TO_GL_FORMAT = {"L": GL_RED, "LA": GL_RG, "RGB": GL_RGB, "RGBA": GL_RGBA}
+
+# ImageCodec decodes off-thread. ImageTexture uploads on integer conversion
+# in draw_texture, with the rendering context current.
 from PIL import Image
 import io
 import mimetypes
@@ -1132,12 +1134,11 @@ def _resolve_plain_file(input_value, draw_state, **kwargs):
 
 @register_codec(ext=(".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tga"))
 class ImageCodec(Codec):
-    """Image Path → PendingTexture. load() runs on code_file_io's background
-    thread, so it only DECODES (PIL, safe off-thread) and returns a
-    PendingTexture; core_render's wrapper calls pending_upload() on the GL
-    thread the first frame it renders, and draw_pending_texture (the type's
-    default renderer) draws the uploaded texture with zoom/pan. Read-only
-    (editable=False): view edits never dirty the host and save() refuses."""
+    """Decode image files off-thread into ImageTexture values.
+
+    draw_texture renders the value directly, uploading lazily on the GL thread.
+    Read-only: view edits never dirty the host and save() refuses.
+    """
 
     name = "Image"
     extension_badges = {
@@ -1145,8 +1146,7 @@ class ImageCodec(Codec):
         ".jpg": ("JPG", (0.88, 0.28, 0.31), "image"),
         ".jpeg": ("JPEG", (0.88, 0.28, 0.31), "image"),
     }
-    # PendingTexture has a default renderer (draw_pending_texture is
-    # register_default_for_type), so no draw_func: type routing finds it.
+    # ImageTexture routes directly to draw_texture; no wrapper view.
     editable = False
     icon = f""  # image; default for other image extensions
     extension_icons = {
@@ -1188,11 +1188,10 @@ class ImageCodec(Codec):
 
     @staticmethod
     def decode_bytes(raw, key):
-        """PIL-decode `raw` into a PendingTexture registered under `key` —
+        """PIL-decode `raw` into an ImageTexture named `key` —
         load()'s body, shared with the code editor's compare pane, which
         renders a git BLOB of the image (bytes that never exist on disk;
-        the caller keys those per (path, reference) so they never clobber
-        the live file's texture)."""
+        each decoded value owns its texture, independently of the live file)."""
         image = Image.open(io.BytesIO(raw))
         if image.mode == "P":
             image = image.convert("RGBA" if "transparency" in image.info else "RGB")
@@ -1203,14 +1202,9 @@ class ImageCodec(Codec):
         image = image.transpose(Image.FLIP_TOP_BOTTOM)
 
         width, height = image.size
-        pending = PendingTexture(name=key, tex_width=width, tex_height=height,
-                                 gl_format=PIL_TO_GL_FORMAT[image.mode],
-                                 data=image.tobytes())
-        # Registers with the manager (dedupes against an already-uploaded
-        # texture for this path); the GL upload itself happens on the render
-        # thread via the wrapper's pending_upload() hook.
-        Core.melty.texture_manager.put_pending(key, pending)
-        return pending
+        return ImageTexture(name=key, tex_width=width, tex_height=height,
+                            gl_format=PIL_TO_GL_FORMAT[image.mode],
+                            data=image.tobytes())
 
     @staticmethod
     def save(*args, **kwargs):

@@ -664,7 +664,7 @@ _CACHED_BACKGROUND = object()
 
 class RuntimeResource:
     """A Melty class attribute built on its first use and kept from then on.
-    The GL-side graphics modules (texture_manager, filter, shaders) stay out
+    The GL-side graphics modules (filter, shaders) stay out
     of the import graph until a frame needs them; meltygui's boot imports
     them on its import thread (core/runtime/app.py) so the first frame
     finds them loaded."""
@@ -679,11 +679,6 @@ class RuntimeResource:
         value = self.build()
         setattr(owner, self.name, value)
         return value
-
-
-def _build_texture_manager():
-    from meltygui.graphics.texture_manager import TextureManager
-    return TextureManager()
 
 
 def _build_filter():
@@ -1348,7 +1343,6 @@ class Melty:
     # polling glfw.get_key for missed releases.
     _keys_down = set()
 
-    texture_manager = RuntimeResource(_build_texture_manager)
     returned_values = {}
     pending_return_values = {}
 
@@ -2905,7 +2899,6 @@ class Melty:
         #     for e in evts:
         #         print(f"  {view_id}: {e.input_id}:{e.action}")
 
-        # cls.texture_manager.upload_pending()
 
         # # Check live attributes
         # for obj, attributes in cls.live_attributes.items():
@@ -5264,7 +5257,6 @@ class Melty:
         except Exception as e:
             print(f"[meltygui] fim shutdown failed: {e}")
         cls.filter.cleanup()
-        cls.texture_manager.clear()
         Background.shutdown()
         Monitor.shutdown()
         FileWatch.shutdown()

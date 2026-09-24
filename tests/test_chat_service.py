@@ -177,6 +177,53 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(mirror.pending, [])
         self.assertTrue(self.chat['running'])
 
+    def test_drain_reconciles_local_input_before_queued_snapshot(self):
+        mirror = self.mirror()
+        chat = dict.get(mirror, 'chat')
+        chat['messages']['local'] = user_message('keep my draft')
+        self.chat['messages']['remote'] = AssistantMessage(content={'text': 'reply'})
+        self.proxy.revision += 1
+        mirror.events.put(('snapshot', self.exchange()))
+        self.assertTrue(mirror.drain())
+        self.assertIn('local', chat['messages'])
+        self.assertIn('remote', chat['messages'])
+        self.assertEqual(len([edit for _, edit in mirror.pending if edit[0] == 'user']), 1)
+
+    def test_reconcile_retains_nested_edit_snapshots_without_resending(self):
+        mirror = self.mirror()
+        mirror.reconcile()  # Adopt the service's remote-id metadata first.
+        chat = dict.get(mirror, 'chat')
+        chat.metadata['nested'] = {'choices': ['first']}
+        chat['requests']['approval'] = {'answer': {'choices': ['first']}}
+        mirror.reconcile()
+        previous = mirror.baseline['chat']
+        pending = len(mirror.pending)
+        mirror.reconcile()
+        self.assertEqual(len(mirror.pending), pending)
+
+        chat.metadata['nested']['choices'].append('second')
+        chat['requests']['approval']['answer']['choices'].append('second')
+        self.assertEqual(previous['metadata']['nested']['choices'], ['first'])
+        self.assertEqual(previous['answers']['approval']['choices'], ['first'])
+        mirror.reconcile()
+        edits = [edit for _, edit in mirror.pending[pending:]]
+        self.assertEqual([edit[0] for edit in edits], ['metadata', 'answer'])
+        pending = len(mirror.pending)
+        mirror.reconcile()
+        self.assertEqual(len(mirror.pending), pending)
+
+    def test_reconcile_applies_direct_metadata_and_project_edits(self):
+        mirror = self.mirror()
+        chat = dict.get(mirror, 'chat')
+        mirror.reconcile()
+        chat.metadata['tint'] = (.2, .3, .4)
+        mirror.reconcile()
+        self.assertEqual(chat['__overrides__']['tint'], (.2, .3, .4))
+        chat['project'] = '/another/project'
+        mirror.reconcile()
+        self.assertIs(chat.metadata, mirror.metadata.conversation('test', '/another/project', 'chat'))
+        self.assertEqual(chat.metadata['tint'], (.2, .3, .4))
+
     def test_directory_switch_recreates_session_through_service(self):
         from types import SimpleNamespace
         from meltygui.chat.chat_interface import switch_new_chat_project

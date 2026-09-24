@@ -68,10 +68,19 @@ The callback may accept any subset of the keyword arguments `input_value`,
 `draw_state`, and `draw_list`. `input_value` is the current input supplied to
 the view; `draw_state` is its existing state. Draw primitives into the supplied
 `draw_list`, which is clipped and masked behind higher windows. Use
-`draw_state._abs_left()` / `_abs_top()` for live screen coordinates. Balance
+`draw_state.abs_left` / `abs_top` for cached live screen coordinates. Balance
 any draw-list pushes/pops inside the callback. Use `draw_state.on_action` for
 interactions, as with the built-in scrollbar. Keep ordinary controls and
 `render_func` calls in the body; the overlay itself must not be decorated.
+
+When a cached parent owns child layout, use `draw_overlay_background=` to
+place those children with `place_overlay_view` and, when needed, paint their
+resident body pixels with `paint_cached_view`. On replay, background callbacks
+run parent first, before descendant overlays. Foreground `draw_overlay`
+callbacks then run child first, leaving the parent's controls on top. Both
+callbacks accept the same arguments and obey the same budget. Keep expensive
+resource preparation in the body. Private injected state parameters (names
+beginning with `_`) stay local to their view and are excluded from tile links.
 
 Callbacks must be very lightweight: taking **more than 0.5 ms** disables that
 callback for the view. Exceptions and invalid callbacks also draw an error

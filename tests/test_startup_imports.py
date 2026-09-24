@@ -16,7 +16,7 @@ CODE_STACK = ('libcst', 'meltygui.code.libcst_conversion', 'meltygui.code.chain_
               'meltygui.view.code_view')
 # The GL side of the runtime: imported by the boot thread, never by a view.
 GL_MODULES = ('meltygui.core.cache.tile_cache', 'meltygui.core.windowing.surface',
-              'meltygui.core.graphics.gl_state', 'meltygui.graphics.texture_manager')
+              'meltygui.core.graphics.gl_state', 'meltygui.model.texture_model')
 
 
 def imported_after(*statements):

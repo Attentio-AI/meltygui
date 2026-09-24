@@ -37,12 +37,14 @@ def save_folder_settings():
         pass
 
 
-def folder_runs(entries, state, home=None, pane="all", collapse_small=False):
+def folder_runs(entries, state, home=None, pane="all", collapse_small=False, project_filter=None):
     """Preorder folders; retain direct chats on parents and scan only opened directories."""
-    home = str(home or Path.home())
+    home = str(project_filter or home or Path.home())
     rows, children, latest = {}, {}, {}
     roots = {home}
     def add(project):
+        if project_filter and (not project or not Path(project).is_relative_to(project_filter)):
+            return
         if not project:
             roots.add('')
             return

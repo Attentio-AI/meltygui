@@ -3,6 +3,18 @@ from meltygui.core.rendering.core_decoration import no_save
 from meltygui.core.conversion.dict_conversion import DictConversion
 
 
+@no_save('scrollbars', 'show_all', 'background', 'accounts_view', 'accounts_rect')
+class ChatNavigationState(DictConversion):
+    """Prepared overlay geometry belongs to one navigation view, not its chats."""
+    def __init__(self):
+        super().__init__()
+        self.scrollbars = []
+        self.show_all = None
+        self.background = (0, 0, 0)
+        self.accounts_view = None
+        self.accounts_rect = None
+
+
 @no_save("revision", "viewports", "text_layouts", "rename", "hovered_folder_action", "pending_smart_collapse")
 class ChatInterfaceState(DictConversion):
     def __init__(self):

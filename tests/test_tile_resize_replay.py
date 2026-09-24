@@ -69,7 +69,7 @@ def test_pixels_do_not_stretch_and_footer_tracks_bottom(monkeypatch, size):
     # Direct replay paints descendant and own overlays, then retains both
     # for a cached parent on the next frame.
     from meltygui.core.rendering import overlay
-    descendant = SimpleNamespace()
+    descendant = SimpleNamespace(_kwargs={})
     tex.overlay_views = (descendant,)
     parent = SimpleNamespace(key="parent", overlay_views=())
     cache._stack = [parent]

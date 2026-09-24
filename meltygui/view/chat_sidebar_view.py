@@ -34,20 +34,31 @@ def folder_label_color(tint):
         'value': 7.788, 'saturation': 1.559, 'max_value': 1.601})[:3]
 
 
-def show_all_control(pane, draw_state, state, x, y, width, height):
+def show_all_control(pane, draw_state, state, x, y, width, height, overlay_state=None):
     if pane != 'all':
         return False, 0
     label = 'Show all'
     control_width = _label_width(label) + Melty.px(28)
     tint = Toggles.Chat.navigation_tint
     left = x + width - control_width
-    changed = _button(draw_state, 'show-all-folders', '', left, y, control_width,
-                      tint, height=height, background=False, shadow=False, ui_scale=Melty.ui_scale)
+    if overlay_state is None:
+        changed = _button(draw_state, 'show-all-folders', '', left, y, control_width,
+                          tint, height=height, background=False, shadow=False, ui_scale=Melty.ui_scale)
+    else:
+        from meltygui.view.header_view import flat_button
+        changed = flat_button('', draw_state, 'show-all-folders', pos=(left, y),
+                              width=control_width, height=height, color=tint,
+                              alpha=0, shadow=False, layout=False, paint=False)
     settings = folder_settings()
     if changed:
         settings['show_all_folders'] = not settings['show_all_folders']
         state.revision += 1
         save_folder_settings()
+    if overlay_state is not None:
+        overlay_state.show_all = (y - draw_state.abs_top,
+                                  draw_state.abs_left + draw_state.width - x - width,
+                                  control_width, height, settings['show_all_folders'])
+        return changed, control_width
     draw_list = imgui.get_window_draw_list()
     box_left, box_top = left + Melty.px(4), y + (height - Melty.px(10)) / 2
     color = _color(tuple(c * 0.55 for c in _text_tint(tuple(tint))))
@@ -83,7 +94,7 @@ def draw_size_label(size, right, y, height, tint):
 
 
 def draw_chat_sidebar(sources, draw_state, state, width, height, cutoff=None, new_conversation=None, pane="all",
-                        file_metadata=None):
+                        file_metadata=None, scrollbar_overlays=None, project_filter=None):
     """Render the shared recursive chat tree with the shared chat row interactions."""
     from meltygui.chat.chat_proxy import ChatProxy
     if isinstance(sources, ChatProxy):
@@ -102,11 +113,12 @@ def draw_chat_sidebar(sources, draw_state, state, width, height, cutoff=None, ne
     gap, pad = Melty.px(2), Melty.px(3)
     memos = state.viewports.setdefault("sidebar-cards", {})
     # The cards lay out the same until a source's conversations, the window's
-    # state (a pick, a fold, a rename), the filter minute or the width change:
-    # keep them between frames (scrolling changes none).
-    signature = (tuple((account_id, getattr(chats, "revision", None), len(chats) if chats is not None else 0)
+    # state (a pick, a fold, a rename) or the filter minute changes. Titles
+    # stay on one line; width only changes clipping in the paint pass below.
+    # Keep the tree and card heights during divider drags as well as scrolling.
+    signature = (project_filter, tuple((account_id, getattr(chats, "revision", None), len(chats) if chats is not None else 0)
                        for account_id, chats, _, _ in sources),
-                 folder_default(state, pane), tuple(state.folder_expanded.items()), state.revision, int(cutoff // 60) if cutoff else None, row_width, Melty.ui_scale,
+                 folder_default(state, pane), tuple(state.folder_expanded.items()), state.revision, int(cutoff // 60) if cutoff else None, Melty.ui_scale,
                  tuple(state.sidebar_chat_limits.items()), new_conversation is not None, tuple(sorted(state.selected.items())), state.account, folder_settings()['show_all_folders'], tuple(folder_settings()['added_folders']), int(time.time() // 5))
     memo = memos.get(pane)
     if memo is not None and len(memo) == 6 and memo[0] == signature:
@@ -119,6 +131,8 @@ def draw_chat_sidebar(sources, draw_state, state, width, height, cutoff=None, ne
             selected_key = state.selected.get(account_id)
             source_tint = tuple(kind.tint) if kind is not None else (0.6, 0.6, 0.6)
             for key, chat in chats.items():
+                if project_filter and (not chat['project'] or not Path(chat['project']).is_relative_to(project_filter)):
+                    continue
                 # Terminal-title helper sessions stay in the backend, but do not
                 # take up space in either conversation list.
                 if ' '.join(str(chat['title']).casefold().split()).startswith('name a terminal window'):
@@ -132,7 +146,7 @@ def draw_chat_sidebar(sources, draw_state, state, width, height, cutoff=None, ne
         remaining = 0
         smart_collapse = state.pending_smart_collapse == pane
         if pane == 'all':
-            runs = folder_runs(entries, state, pane=pane, collapse_small=smart_collapse)
+            runs = folder_runs(entries, state, pane=pane, collapse_small=smart_collapse, project_filter=project_filter)
         else:
             # Recent chats are flat and globally ordered by activity.
             limit = state.sidebar_chat_limits.get(pane, 8)
@@ -191,7 +205,8 @@ def draw_chat_sidebar(sources, draw_state, state, width, height, cutoff=None, ne
     layout, content_height, more_text, more_height = memos[pane][2:]
     total = content_height + more_height
     with _viewport(draw_state, state, "sidebar:" + pane + ":" + ":".join(source[0] for source in sources),
-                   width, height, total) as (base_x, base_y, clip):
+                   width, height, total, scrollbar_overlays=scrollbar_overlays,
+                   stretch_scrollbar=pane == 'recent') as (base_x, base_y, clip):
         for (index, project, folder_key, label, heading_height, rows, children, card_height,
              painted, heading_tint, first_account, first_chats, depth) in cards:
             top, card_height, chat_top = layout[index]

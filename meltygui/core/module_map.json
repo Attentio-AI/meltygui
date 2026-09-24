@@ -609,7 +609,7 @@
   "shader_library.shader_manager.registry": "meltygui.graphics.registry",
   "shader_library.shader_manager.shaders": "meltygui.graphics.shaders",
   "shader_library.shader_manager.stub_generator": "meltygui.graphics.stub_generator",
-  "shader_library.shader_manager.texture_manager": "meltygui.graphics.texture_manager",
+  "shader_library.shader_manager.texture_manager.PendingTexture": "meltygui.model.texture_model.ImageTexture",
   "shader_library.shader_manager.texture_min_max": "meltygui.graphics.texture_min_max",
   "src.lsd.gl_gui.app": "meltygui.core.runtime.app",
   "src.lsd.gl_gui.app_session": "meltygui.core.runtime.app_session",
@@ -842,7 +842,6 @@
   "src.shader_library.shader_manager.registry": "meltygui.graphics.registry",
   "src.shader_library.shader_manager.shaders": "meltygui.graphics.shaders",
   "src.shader_library.shader_manager.stub_generator": "meltygui.graphics.stub_generator",
-  "src.shader_library.shader_manager.texture_manager": "meltygui.graphics.texture_manager",
   "src.shader_library.shader_manager.texture_min_max": "meltygui.graphics.texture_min_max",
   "meltygui.core.graphics.cuda_interop_core.runtime": "meltygui.core.graphics.cuda_context_core.runtime",
   "meltygui.core.graphics.cuda_interop_core._driver_library": "meltygui.core.graphics.cuda_context_core._driver_library",
@@ -902,5 +901,10 @@
   "meltygui.accounts.internet_accounts.AccountsPanelState": "meltygui.state.account_state.AccountsPanelState",
   "src.lsd.gl_gui.model.inline_dependency_state": "meltygui_pro.models.inline_dependency_state",
   "lsd.gl_gui.model.inline_dependency_state": "meltygui_pro.models.inline_dependency_state",
-  "meltygui.model.inline_dependency_state": "meltygui_pro.models.inline_dependency_state"
+  "meltygui.model.inline_dependency_state": "meltygui_pro.models.inline_dependency_state",
+  "meltygui.core.rendering.render_funcs.draw_pending_texture": "meltygui.core.rendering.render_funcs.draw_texture",
+  "meltygui.graphics.texture_manager.PendingTexture": "meltygui.model.texture_model.ImageTexture",
+  "meltygui.view.texture_view.draw_pending_texture": "meltygui.view.texture_view.draw_texture",
+  "src.shader_library.shader_manager.texture_manager.PendingTexture": "meltygui.model.texture_model.ImageTexture",
+  "__render_func__.draw_pending_texture": "__render_func__.draw_texture"
 }

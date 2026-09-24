@@ -38,7 +38,7 @@ FAST_VIEW_WRAPPER_KWARGS = (
     "convert", "with_wrapper", "with_footer", "with_header_end", "column", "drives", "pending", "auto_apply",
     "background", "width", "height", "fill_height", "selectable", "context_menu", "draw_state", "use_cache",
     "layer_unique", "_converter_mode", "bypass", "expanded_mode", "freeze_resize", "just_shadow", "changed",
-    "show_bg", "shadow", "horizontal", "initial", "window_pos", "draw_overlay")
+    "show_bg", "shadow", "horizontal", "initial", "window_pos", "draw_overlay", "draw_overlay_background")
 # Names a body's signature may ask for that the host supplies itself.
 _HOST_SUPPLIED = ("input_value", "draw_state", "style_manager", "unique", "name", "suffix", "depth")
 

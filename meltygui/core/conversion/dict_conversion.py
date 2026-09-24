@@ -1401,6 +1401,9 @@ class DictConversion(metaclass=FieldMeta):
         None if it can't be resolved)."""
         from meltygui.core.module_names import canonical_name
         name, module = ref[0], canonical_name(ref[1])
+        path = canonical_name(f"{module}.{name}")
+        if path != f"{module}.{name}":
+            module, name = path.rsplit(".", 1)
         if module == DictConversion.RENDER_FUNC_MODULE:
             # Registry handle - rely on RenderFuncs giving back a lazy handle
             # that resolves against the live @render_func registry at call time.

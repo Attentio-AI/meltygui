@@ -347,8 +347,8 @@ class InputHandler:
         self._down_origins: dict[str, set] = {}  # input_id -> set of view_ids hovered at down time
         self._blocker_views: set = set()
         # CLICKED events held back to disambiguate single vs double, but ONLY for
-        # inputs that have a double-click/double-drag subscriber hovered (so plain
-        # clicks elsewhere keep zero latency). input_id -> (deadline, event,
+        # inputs with a competing double-click/double-drag subscriber at the
+        # click target's priority or above (other clicks keep zero latency). input_id -> (deadline, event,
         # [(view_id, key), ...] targets resolved at defer time). Flushed when the
         # double-click window expires with no double; cancelled when a 2nd press
         # (is_double_press) or a DOUBLE_CLICKED for that input arrives.
@@ -592,12 +592,8 @@ class InputHandler:
             state.chord = False
             return
 
-        # UP carries the travel since its press (total_dx/dy), so a subscriber
-        # can tell a clean release from the end of a drag without waiting for
-        # CLICKED - which is held back for the double-click window whenever a
-        # double subscriber is hovered (the wrapper's corner double right-drag
-        # covers every window, so every right CLICKED waits 250 ms). The
-        # context menu opens with this event instead.
+        # Preserve press travel for release consumers. Click consumers use
+        # CLICKED so competing double gestures can be disambiguated.
         travel = (x - state.down_x, y - state.down_y) if was_down else (0.0, 0.0)
         self._pending.append(InputEvent(
             input_id, EventAction.UP, _view_id_to_tile_id.get(input_id, None), x, y,
@@ -956,8 +952,8 @@ class InputHandler:
                         state.down_time = 0.0
 
             # Single/double-click disambiguation. Only kicks in when a double
-            # subscriber for this input is hovered - otherwise clicks dispatch
-            # immediately (zero latency) as before.
+            # subscriber for this input competes at the click target's priority
+            # or above - otherwise clicks dispatch immediately.
             elif action == EventAction.CLICKED:
                 X = event.input_id
                 if X in doubled_this_frame:
@@ -980,11 +976,23 @@ class InputHandler:
                     # else fall through: emit this lone click once.
                 elif (key_index.get((X, EventAction.DOUBLE_CLICKED))
                         or key_index.get((X, EventAction.DOUBLE_DRAGGED))):
-                    # Hold this click until the window expires. Cancelled by a
-                    # double-DRAG activating (drag pass) or a double-click
-                    # completing (above); otherwise it flushes as a single click.
-                    pending_clicks[X] = (event.timestamp + DOUBLE_CLICK_WINDOW,
-                                         event, _click_targets(event))
+                    # Only double gestures at or above a click target compete
+                    # with it. Lower-priority background/window resize gestures
+                    # must not impose their double-click timeout on controls.
+                    double_priority = min(
+                        priority
+                        for double_action in (EventAction.DOUBLE_CLICKED, EventAction.DOUBLE_DRAGGED)
+                        for _, priority in key_index.get((X, double_action), ())
+                    )
+                    deferred = []
+                    for view, click_key in _click_targets(event):
+                        if double_priority <= current_hovered[view][0]:
+                            deferred.append((view, click_key))
+                        else:
+                            add_event(view, click_key, event)
+                    if deferred:
+                        pending_clicks[X] = (event.timestamp + DOUBLE_CLICK_WINDOW,
+                                             event, deferred)
                     continue
 
             for v in resolve(key, key_index):

@@ -22,7 +22,7 @@ from meltygui.code.new_codecs import codec_for_path
 from meltygui.code.new_codecs import ImageCodec
 from meltygui.code.new_codecs import BinaryFileCodec
 from meltygui.code.new_codecs import TextFileCodec
-from meltygui.graphics.texture_manager import PendingTexture
+from meltygui.model.texture_model import ImageTexture
 
 
 def test_extension_registry_is_normalized():
@@ -132,9 +132,9 @@ def test_image_codec_decodes_off_thread(tmp_path):
     Image.new("RGBA", (4, 2), (255, 0, 0, 255)).save(p)
     address = Address(p)
     pending = ImageCodec.load(address)
-    assert isinstance(pending, PendingTexture)
+    assert isinstance(pending, ImageTexture)
     assert (pending.tex_width, pending.tex_height) == (4, 2)
-    assert pending.texture_id is None          # upload deferred to GL thread
+    assert pending._states == {}          # upload deferred to GL thread
     assert len(pending.data) == 4 * 2 * 4      # RGBA bytes decoded
     assert ImageCodec.save(pending, p) is False  # read-only
 
@@ -204,7 +204,7 @@ def test_codec_view_keeps_render_host_capture():
     host = RenderHost(io_function=code_file_io, input_value=Path("/tmp/x.png"),
                       name="##test_codec_view_host", evictable=True)
     try:
-        pending = PendingTexture(name="x", tex_width=1, tex_height=1, gl_format=0, data=b"")
+        pending = ImageTexture(name="x", tex_width=1, tex_height=1, gl_format=0, data=b"")
         capture = host._internal_view_func   # bound once; each access binds anew
         assert _codec_view(ImageCodec, pending, capture) is capture
         assert _codec_view(TextFileCodec, "text", capture) is capture
@@ -223,8 +223,8 @@ def test_codec_view_routes_by_type():
     assert _codec_view(TextFileCodec, "source", text_view) is text_view
     assert _codec_view(BinaryFileCodec, "hexdump", text_view) is text_view
     # anything else → draw_any (is_default_for func); ImageCodec declares
-    # no view_func because PendingTexture already has a default renderer
-    pending = PendingTexture(name="x", tex_width=1, tex_height=1, gl_format=0, data=b"")
+    # no view_func because ImageTexture already has a default renderer
+    pending = ImageTexture(name="x", tex_width=1, tex_height=1, gl_format=0, data=b"")
     assert ImageCodec.view_func is None
     assert _codec_view(ImageCodec, pending, text_view) is draw_any
 

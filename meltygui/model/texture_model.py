@@ -88,6 +88,88 @@ class TextureId:
         return f'{type(self).__name__}(target={self.target:#x})'
 
 
+class ImageTexture(TextureId):
+    """Decoded pixels with lazy, context-owned GPU storage.
+
+    Construction is safe on a decode worker. Integer conversion uploads once
+    per GL context; GLState owns deletion when the value or context is released.
+    """
+    def __init__(self, name, tex_width, tex_height, gl_format, data,
+                 tint=(1.0, 1.0, 1.0)):
+        super().__init__(gl.GL_TEXTURE_2D)
+        self.name = name
+        self.tex_width = tex_width
+        self.tex_height = tex_height
+        self.gl_format = gl_format
+        self.data = data
+        self.tint = tint
+
+    def _upload(self, state):
+        def create():
+            previous = int(gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D))
+            texture = int(gl.glGenTextures(1))
+            internal = {gl.GL_RGBA: gl.GL_SRGB8_ALPHA8,
+                        gl.GL_RGB: gl.GL_SRGB8}.get(self.gl_format, self.gl_format)
+            try:
+                gl.glBindTexture(gl.GL_TEXTURE_2D, texture)
+                with tight_unpack():
+                    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, internal,
+                                    self.tex_width, self.tex_height, 0,
+                                    self.gl_format, gl.GL_UNSIGNED_BYTE, self.data)
+                gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+                gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+                gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
+                gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
+                return GLTexture(texture, gl.GL_TEXTURE_2D,
+                                 (self.tex_height, self.tex_width), internal)
+            except Exception:
+                gl.glDeleteTextures([texture])
+                raise
+            finally:
+                gl.glBindTexture(gl.GL_TEXTURE_2D, previous)
+        return state.get('image', create, lambda texture: gl.glDeleteTextures([texture.texture_id]))
+
+    def __getstate__(self):
+        return {key: value for key, value in self.__dict__.items() if key != '_states'}
+
+    def __setstate__(self, state):
+        # Saved image values contain pixels, never reusable GL names.
+        state = dict(state)
+        state.pop('texture_id', None)
+        state.pop('_states', None)
+        self.__dict__.update(state)
+        self.target = int(gl.GL_TEXTURE_2D)
+        self._states = {}
+
+
+def texture_filter_target(state, key, width, height, nearest=False):
+    """Own a view's filter output instead of borrowing Filter's shared cache.
+
+    Change precision here for all texture-view color passes. HDR values require
+    floating-point storage; sampler choice belongs to this output, not the input.
+    """
+    def create():
+        previous = int(gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D))
+        texture = int(gl.glGenTextures(1))
+        try:
+            gl.glBindTexture(gl.GL_TEXTURE_2D, texture)
+            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA16F, width, height, 0,
+                            gl.GL_RGBA, gl.GL_HALF_FLOAT, None)
+            mode = gl.GL_NEAREST if nearest else gl.GL_LINEAR
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, mode)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, mode)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
+            return GLTexture(texture, gl.GL_TEXTURE_2D, (height, width), gl.GL_RGBA16F)
+        except Exception:
+            gl.glDeleteTextures([texture])
+            raise
+        finally:
+            gl.glBindTexture(gl.GL_TEXTURE_2D, previous)
+    return state.get(key, create, lambda texture: gl.glDeleteTextures([texture.texture_id]),
+                     deps=(width, height, nearest)).texture_id
+
+
 def _upload_cuda_image(gl_state, out):
     """Transfer only the finished 2-D pixels; never the source tensor.
 

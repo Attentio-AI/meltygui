@@ -119,7 +119,6 @@ class _RenderFuncs:
     draw_none = _LazyRenderFunc("draw_none")
     draw_parameter = _LazyRenderFunc("draw_parameter")
     draw_pending = _LazyRenderFunc("draw_pending")
-    draw_pending_texture = _LazyRenderFunc("draw_pending_texture")
     draw_property = _LazyRenderFunc("draw_property")
     draw_search = _LazyRenderFunc("draw_search")
     draw_single = _LazyRenderFunc("draw_single")

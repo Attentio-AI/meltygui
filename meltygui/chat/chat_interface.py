@@ -165,7 +165,8 @@ from meltygui.view.chat_view import _scroll_position
 
 
 @contextmanager
-def _viewport(draw_state, state, key, width, height, content_height, follow=False):
+def _viewport(draw_state, state, key, width, height, content_height, follow=False,
+              scrollbar_overlays=None, stretch_scrollbar=False):
     """One clipped, independently scrolling region, owned by the window.
 
     Only its visible footprint advances layout; content offsets never move
@@ -190,10 +191,16 @@ def _viewport(draw_state, state, key, width, height, content_height, follow=Fals
         if drag is not None:
             offset = _scroll_position(view, content_height, height,
                                       drag_fraction=offset / maximum + drag.dy / travel)
+    if scrollbar_overlays is not None:
+        # Keep only prepared geometry; the overlay never lays out messages or
+        # handles input. The final pane can grow with the navigation's bottom.
+        scrollbar_overlays.append((y - draw_state.abs_top, height, content_height, offset,
+                                   draw_state.abs_left + draw_state.width - x - width,
+                                   draw_state.height if stretch_scrollbar else None))
     Melty.push_clip(rect)
     try:
         yield x, y - offset, Melty.get_clip_rect()
-        if maximum > 0 and travel > 0:
+        if scrollbar_overlays is None and maximum > 0 and travel > 0:
             thumb_y = y + travel * offset / maximum
             add_shadow((x + width - bar_width, thumb_y, bar_width, thumb_height),
                        offset=Toggles.Chat.shadow_offset, corner_radius=3)

@@ -36,13 +36,13 @@ def parameter_annotations(func):
 
 
 def state_parameters(func, annotations=None):
-    """Only state parameters, never the input value or the view's own geometry."""
+    """Shareable state dependencies; private parameters stay owned by their view."""
     if func is None:
         return {}
     annotations = parameter_annotations(func) if annotations is None else annotations
     params = inspect.signature(inspect.unwrap(func)).parameters
     return {name: annotation for name, annotation in annotations.items()
-            if name not in ('input_value', 'draw_state')
+            if name not in ('input_value', 'draw_state') and not name.startswith('_')
             and params[name].kind not in (inspect.Parameter.VAR_KEYWORD,
                                          inspect.Parameter.VAR_POSITIONAL)
             and (isinstance(annotation, DrawStateSource)

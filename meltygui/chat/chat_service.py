@@ -105,12 +105,18 @@ def connect_service():
     raise RuntimeError(f'Chat service did not start; see {base}.log')
 
 
-def editable(chat):
+def editable(chat, previous=None):
     """Only UI-owned edits cross back; streamed messages are never overwritten."""
-    return {'title': chat['title'], 'running': chat['running'],
+    answers = {k: r['answer'] for k, r in chat['requests'].items() if 'answer' in r}
+    # Keep detached values when they are equal. Nested edits still compare
+    # against a snapshot, but ordinary viewport input needs no deep copies.
+    metadata = (previous['metadata'] if previous is not None and chat.metadata == previous['metadata']
+                else copy.deepcopy(chat.metadata))
+    answers = (previous['answers'] if previous is not None and answers == previous['answers']
+               else copy.deepcopy(answers))
+    return {'title': chat['title'], 'running': chat['running'], 'project': chat['project'],
             'users': {k for k, m in chat['messages'].items() if m.get('role') == 'user'},
-            'answers': {k: copy.deepcopy(r['answer']) for k, r in chat['requests'].items() if 'answer' in r},
-            'metadata': copy.deepcopy(chat.metadata)}
+            'answers': answers, 'metadata': metadata}
 
 
 def chat_value(chat):
@@ -241,6 +247,8 @@ class PersistentChats(ChatProxy):
     def reconcile(self):
         if not self.connected:
             return
+        baseline = {}
+        metadata_changed = False
         for key in self.baseline.keys() - self.keys():
             self.enqueue(('delete', key, None))
         for key, chat in list(self.items()):
@@ -248,7 +256,12 @@ class PersistentChats(ChatProxy):
                 self[key] = chat
                 chat = dict.get(self, key)
             before = self.baseline.get(key)
-            now = editable(chat)
+            now = editable(chat, before)
+            metadata_changed |= (before is None or now['metadata'] != before['metadata']
+                                 or now['project'] != before.get('project'))
+            # This detached snapshot is also the next baseline. Taking it again
+            # doubles the history scan and metadata copies on every scroll frame.
+            baseline[key] = now
             if before is None:
                 self.enqueue(('create', key, chat_value(chat)))
                 before = {'title': now['title'], 'running': False, 'users': set(), 'answers': {}, 'metadata': {}}
@@ -264,11 +277,20 @@ class PersistentChats(ChatProxy):
             for request_id, answer in now['answers'].items():
                 if request_id not in before['answers'] or answer != before['answers'][request_id]:
                     self.enqueue(('answer', key, (request_id, answer)))
-        self.baseline = {key: editable(chat) for key, chat in self.items()}
-        self.metadata.collect(self.account_id, self)
-        self.metadata.apply(self.account_id, self)
+        self.baseline = baseline
+        # Match the base proxy's metadata boundary: scrolling does not change
+        # conversation order or tints. Direct dictionary edits still count.
+        if (metadata_changed or list(self) != self.applied_order or self.revision != self._applied_revision
+                or self._tints_changed()):
+            self.metadata.collect(self.account_id, self)
+            self.metadata.apply(self.account_id, self)
+            self._applied_revision = self.revision
 
     def drain(self):
+        # With no snapshot to replace values, the caller's normal reconcile
+        # boundary suffices. A later arrival remains queued for the next frame.
+        if self.events.empty():
+            return False
         # Capture edits made since the last frame before replacing any snapshots.
         self.reconcile()
         return super().drain()

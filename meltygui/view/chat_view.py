@@ -1,5 +1,5 @@
 """Chat view functions and supporting definitions."""
-from meltygui.view.chat_decoration_view import _text_tint
+from meltygui.view.chat_decoration_view import _color, _text_tint
 from meltygui.view.chat_decoration_view import _tint_style
 from bisect import bisect_right
 from functools import lru_cache
@@ -718,10 +718,61 @@ def draw_conversation_title(chat, draw_state, state, selected, x, y, width, heig
     return changed
 
 
-@render_func(tint=(0.35, 0.55, 0.75), auto_resize=False, use_cache=True,
+def draw_chat_navigation_overlay(draw_state, draw_list):
+    """Keep scroll thumbs and the right-aligned filter out of frozen pixels."""
+    from meltygui.core.styling.fonts import Font
+    state = draw_state.misc.get('chat_navigation_state')
+    if state is None:
+        return
+    top, right = draw_state.abs_top, draw_state.abs_left + draw_state.width
+    if state.accounts_view is not None:
+        from meltygui.core.rendering.overlay import place_overlay_view, paint_cached_view
+        x, y, right_gap, height = state.accounts_rect
+        place_overlay_view(state.accounts_view,
+                           (draw_state.abs_left + x, top + y,
+                            max(0, draw_state.width - x - right_gap),
+                            max(0, min(height, draw_state.height - y))), draw_state.abs_clip_rect)
+        if getattr(draw_state, '_blit_served_frame', None) == Melty.frame_count:
+            paint_cached_view(state.accounts_view)
+    bar_width, minimum_thumb = Melty.px(7), Melty.px(24)
+    color = _color(tuple(c * 0.55 for c in _text_tint(tuple(draw_state.current_tint))))
+    for relative_top, height, content_height, offset, right_gap, captured_height in state.scrollbars:
+        if captured_height is not None:
+            height += draw_state.height - captured_height
+        height = max(0, min(height, draw_state.height - relative_top))
+        maximum = max(0, content_height - height)
+        thumb = min(height, max(minimum_thumb, height * height / max(1, height, content_height)))
+        if maximum <= 0 or height <= thumb:
+            continue
+        y = top + relative_top + (height - thumb) * min(offset, maximum) / maximum
+        x = right - right_gap - bar_width
+        draw_list.add_rect_filled(x, y, x + bar_width, y + thumb, color, rounding=3)
+    if state.show_all is not None:
+        relative_top, right_gap, width, height, checked = state.show_all
+        x, y = right - right_gap - width, top + relative_top
+        draw_list.add_rect_filled(x, y, x + width, y + height, _color(state.background))
+        box_x, box_y, size = x + Melty.px(4), y + (height - Melty.px(10)) / 2, Melty.px(10)
+        draw_list.add_rect(box_x, box_y, box_x + size, box_y + size, color, rounding=Melty.px(2))
+        if checked:
+            inset = Melty.px(2)
+            draw_list.add_rect_filled(box_x + inset, box_y + inset, box_x + size - inset,
+                                      box_y + size - inset, color)
+        font = Melty.font_mgr.get(Font.FONTAWESOME_MONO_19) if Melty.font_mgr else None
+        if font is not None:
+            imgui.push_font(font)
+        try:
+            draw_list.add_text(x + Melty.px(20), y + max(0, (height - imgui.get_text_line_height()) / 2),
+                               color, 'Show all')
+        finally:
+            if font is not None:
+                imgui.pop_font()
+
+
+@render_func(tint=(0.35, 0.55, 0.75), auto_resize=False, use_cache=True, freeze_resize=True,
+             draw_overlay=draw_chat_navigation_overlay,
              disable_scroll=True, imgui_padding=False, show_header=False, show_bg=False)
 def draw_chat_navigation(input_value, draw_state=None, state: ChatInterfaceState = None,
-                         row_edges=None, new_conversation=None, file_metadata=None, **kwargs):
+                         row_edges=None, new_conversation=None, file_metadata=None, project_filter=None, **kwargs):
     """Conversation lists and Internet Accounts share a resizable left column."""
     from meltygui.chat.chat_interface import AGE_FILTERS
     from meltygui.view.chat_decoration_view import _button
@@ -735,6 +786,14 @@ def draw_chat_navigation(input_value, draw_state=None, state: ChatInterfaceState
     from meltygui.core.layout.column_core import RowLayout
     import meltygui.accounts.internet_accounts as internet_accounts
 
+    from meltygui.core.rendering.injected_state import owned_state
+    from meltygui.state.chat_state import ChatNavigationState
+    overlay_state = owned_state(draw_state, 'chat_navigation_state', ChatNavigationState)
+    overlay_state.scrollbars = []
+    overlay_state.show_all = None
+    overlay_state.accounts_view = None
+    overlay_state.accounts_rect = None
+    overlay_state.background = tuple(Melty.bg_color_stack[-1] if Melty.bg_color_stack else Melty.get_bg_color(-1))[:3]
     changed = False
     if not hasattr(state, "sections_expanded"):
         state.sections_expanded = {"recent": True, "all": True, "accounts": True}
@@ -744,7 +803,7 @@ def draw_chat_navigation(input_value, draw_state=None, state: ChatInterfaceState
     tint = Toggles.Chat.navigation_tint
     def section_heading(pane, x, y, width):
         control_changed, control_width = show_all_control(
-            pane, draw_state, state, x, y, width, heading_height)
+            pane, draw_state, state, x, y, width, heading_height, overlay_state=overlay_state)
         width = max(0, width - control_width)
         expanded = state.sections_expanded.get(pane, True)
         toggled = _caret(draw_state, "section:" + pane, x, y, Melty.px(18), heading_height, expanded, tint, ui_scale=Melty.ui_scale)
@@ -783,13 +842,17 @@ def draw_chat_navigation(input_value, draw_state=None, state: ChatInterfaceState
             if pane == "accounts":
                 imgui.set_cursor_screen_pos((x, y))
                 from meltygui.view.account_view import draw_internet_accounts
-                edited, _ = draw_internet_accounts(
+                edited, _, accounts_view = draw_internet_accounts(
                     internet_accounts.accounts, name="chat-internet-accounts",
                     width=width, height=max(0, height - heading_height),
                     show_header=False, show_name=False, show_bg=False, shadow=False,
                     # This embedded view borrows the chat view's accounts;
                     # collapsing it should not close their running backends.
-                    on_cleanup=None)
+                    on_cleanup=None, freeze_resize=True, return_extras=True)
+                overlay_state.accounts_view = accounts_view
+                overlay_state.accounts_rect = (x - draw_state.abs_left, y - draw_state.abs_top,
+                                               draw_state.abs_left + draw_state.width - x - width,
+                                               max(0, height - heading_height))
                 changed |= edited
                 continue
             if pane == "recent":
@@ -812,7 +875,8 @@ def draw_chat_navigation(input_value, draw_state=None, state: ChatInterfaceState
             edited, _ = draw_chat_sidebar(input_value, draw_state, state, width,
                 max(0, height - (y - top)),
                 cutoff=age_cutoff(getattr(state, "age_hours", 0) or 24) if pane == "recent" else None,
-                new_conversation=new_conversation, pane=pane, file_metadata=file_metadata)
+                new_conversation=new_conversation, pane=pane, file_metadata=file_metadata,
+                scrollbar_overlays=overlay_state.scrollbars, project_filter=project_filter)
             changed |= edited
     rows.finish()
     return changed, input_value
@@ -859,7 +923,7 @@ def draw_effort_slider(draw_state, key, value, levels, x, y, width, height, tint
 def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: ChatInterfaceState = None,
                         column_edges=None, new_project=None, default_project=None, file_metadata=None,
                         ctrl_shift_equal_down=False, ctrl_shift_minus_down=False, layout_frame=None,
-                        **kwargs):
+                        project_filter=None, **kwargs):
     """The chat window. A new conversation runs in `new_project` when given
     (an app started for one project), else in the selected conversation's
     project, else `default_project` (an app's cwd; the studio: its checkout).
@@ -1047,7 +1111,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
             state=state, new_conversation=start_conversation,
             context_menu=chat_context_menu_items(state, shown_sources),
             width=width, height=max(0, body_height - (y - top) - Melty.px(35)),
-            tint=Toggles.Chat.navigation_tint, file_metadata=file_metadata)
+            tint=Toggles.Chat.navigation_tint, file_metadata=file_metadata, project_filter=project_filter)
         changed |= edited
         y = top + body_height - Melty.px(30)
         # The New conversation button follows the list directly (a list taller

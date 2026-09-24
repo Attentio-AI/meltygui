@@ -5200,7 +5200,12 @@ class TileCacheMasked:
                 background_depth = 0.001
                 background_depth = 0
 
-                for p in local_pending_rev:
+                # mark_end_offscreen enqueues children before their parents.
+                # Compose masks in that order: a parent samples each child's
+                # mask_tex, including this frame's added/removed shadow marks.
+                # Reversing it bakes the previous child mask into the parent;
+                # fresh child stamps hide that until the parent is cache-served.
+                for p in local_pending:
                     x, y = p.pos
                     w, h = p.size
                     x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(x, y, w, h, dp_x, dp_y, s_x, s_y, fb_h)

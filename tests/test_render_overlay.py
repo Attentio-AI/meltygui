@@ -198,6 +198,46 @@ def test_draw_overlay_is_public_wrapper_option():
     from meltygui.core.rendering.fast_view import FAST_VIEW_WRAPPER_KWARGS
     assert 'draw_overlay' in render_func_kwarg_names()
     assert 'draw_overlay' in FAST_VIEW_WRAPPER_KWARGS
+    assert 'draw_overlay_background' in render_func_kwarg_names()
+    assert 'draw_overlay_background' in FAST_VIEW_WRAPPER_KWARGS
+
+
+def test_cached_layout_and_backing_run_parent_first_before_child_overlays(setup):
+    _, view = setup
+    order = []
+    child = view(lambda draw_state: order.append(('image', draw_state.width)))
+    parent = view(lambda: order.append('parent chrome'))
+    root = view(lambda: order.append('root chrome'))
+    root.width = 800
+    def root_background():
+        parent.width = root.width - 20
+        order.append('root backing')
+    def parent_background():
+        child.width = parent.width - 40
+        order.append('parent backing')
+    root._kwargs['draw_overlay_background'] = root_background
+    parent._kwargs['draw_overlay_background'] = parent_background
+    cache = SimpleNamespace(_tiles={'root': SimpleNamespace(overlay_views=(child, parent))},
+                            enabled=True, _stack=[])
+    ctx = SimpleNamespace(draw_state=root, key='root', drew_cached=True)
+    overlay.finish_cached_overlays(cache, ctx)
+    assert order == ['root backing', 'parent backing', ('image', 740), 'parent chrome', 'root chrome']
+    root.width = 400
+    order.clear()
+    overlay.finish_cached_overlays(cache, ctx)
+    assert order == ['root backing', 'parent backing', ('image', 340), 'parent chrome', 'root chrome']
+
+
+def test_background_only_view_registers_for_ancestor_replay(setup):
+    _, view = setup
+    ds = view(None)
+    background = Mock()
+    ds._kwargs['draw_overlay_background'] = background
+    ancestor = SimpleNamespace(overlay_views=())
+    cache = SimpleNamespace(enabled=True, _stack=[ancestor])
+    overlay.finish_overlay(ds, cache)
+    background.assert_called_once()
+    assert ancestor.overlay_views == (ds,)
 
 
 def test_overlay_child_placement_preserves_cursor_and_refreshes_live_geometry(monkeypatch):
@@ -223,7 +263,7 @@ def test_overlay_child_placement_preserves_cursor_and_refreshes_live_geometry(mo
     assert Melty.silence_invalidate is False
 
 
-def test_cached_child_overlay_uses_preserved_pixels_beyond_old_viewport(monkeypatch):
+def test_cached_child_replay_precedes_shadows_and_preserves_pixels_beyond_old_viewport(monkeypatch):
     from unittest.mock import Mock
     from meltygui.core.cache.tile_cache import Tile
     ds = SimpleNamespace(_tile_id='text', width=260, height=180,
@@ -233,12 +273,16 @@ def test_cached_child_overlay_uses_preserved_pixels_beyond_old_viewport(monkeypa
     cache = SimpleNamespace(enabled=True, _tiles={'text': tile})
     monkeypatch.setattr(Melty, 'cache', cache)
     dl = Mock()
-    assert overlay.paint_cached_view(ds, dl)
+    foreground = Mock()
+    monkeypatch.setattr(overlay.imgui, 'get_window_draw_list', lambda: dl)
+    monkeypatch.setattr(overlay.imgui, 'get_overlay_draw_list', lambda: foreground)
+    assert overlay.paint_cached_view(ds)
     dl.add_image.assert_called_once_with(2, (10, 20), (270, 200),
                                          (0, 1), (260 / 512, 1 - 180 / 256))
     dl.push_clip_rect.assert_called_once_with(10, 20, 270, 200, True)
     dl.pop_clip_rect.assert_called_once()
+    assert not foreground.mock_calls
     # Painting must never resize or overwrite the resident cache.
     assert tile.size == (200, 100) and tile.content_size == (300, 200)
     cache._tiles.clear()
-    assert not overlay.paint_cached_view(ds, dl)
+    assert not overlay.paint_cached_view(ds)

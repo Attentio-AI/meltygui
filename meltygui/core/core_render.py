@@ -4264,17 +4264,10 @@ def render_func(*args, **o_kwargs):
                 # draw_texture straight into its root window and wants its
                 # menu there (09-10).
                 if not is_root_view or menu_items is not None:
-                    # The menu opens on the right button's event, judged a click
-                    # by the travel the UP event covers - not on the double_clicked:
-                    # CLICKED is held for the double-click window (250 ms) whenever
-                    # a double subscriber is hovered, and the corner double
-                    # right-drag registers it on every window, so the menu
-                    # always came up a quarter second late (09-10).
-                    from meltygui.core.input.input_handler import CLICK_MAX_DISTANCE
-                    release = draw_state.on_action("right_mouse_up")
-                    right_click = (release is not None and draw_state._bounding_hovered
-                                   and (release.total_dx ** 2 + release.total_dy ** 2)
-                                   <= CLICK_MAX_DISTANCE ** 2)
+                    # CLICKED arbitrates competing double gestures in the input
+                    # handler; background resize subscriptions do not delay it.
+                    right_click = (draw_state.on_action("right_mouse_clicked") is not None
+                                   and draw_state._bounding_hovered)
                     open_inspector = False
                     if menu_items is not None:
                         picked = draw_context_menu_items(draw_state, menu_items, right_click, name, unique)
@@ -4608,13 +4601,6 @@ def render_func(*args, **o_kwargs):
                 ##### Register With event handler #########################
 
                 ##########################################################
-
-                if hasattr(input_value, 'pending_upload') and callable(getattr(input_value, 'pending_upload')):
-                    try:
-                        pending = input_value.pending_upload()
-                        # request_render()
-                    except Exception as e:
-                        print(f"Error checking pending upload: {e}")
 
                 ############# HANDLE SELECTION
                 top = draw_state.top
@@ -4964,7 +4950,9 @@ def render_func(*args, **o_kwargs):
                 # (BlitCache.draw_freeze_scrollbar).
                 Melty.cache.mark_end_offscreen()
 
-            if _has_imgui and not use_cache and kwargs.get("draw_overlay") is not None:
+            if (_has_imgui and not use_cache
+                    and (kwargs.get("draw_overlay") is not None
+                         or kwargs.get("draw_overlay_background") is not None)):
                 from meltygui.core.rendering.overlay import finish_overlay
                 finish_overlay(draw_state, Melty.cache)
 
