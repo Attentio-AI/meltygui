@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "meltygui"
-version = "0.1.1"
+version = "0.1.2"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 classifiers = ["Development Status :: 3 - Alpha", "Operating System :: POSIX :: Linux", "Operating System :: Microsoft :: Windows","Programming Language :: Python :: 3.11", "Programming Language :: Python :: 3.12", "Programming Language :: Python :: 3.13"]
@@ -12,15 +12,15 @@ description = "Immediate-mode Python UI, live inspection, HDR and tensor visuali
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    "meltygui-imgui[glfw]>=2.0.0.post1,<2.0.1", "glfw>=2.10", "PyOpenGL>=3.1.7", "PyOpenGL-accelerate>=3.1.7",
+    "meltygui-imgui[glfw]>=2.0.1,<2.0.2", "glfw>=2.10", "PyOpenGL>=3.1.7", "PyOpenGL-accelerate>=3.1.7",
     "numpy>=1.26", "libcst>=1.4", "jedi>=0.19", "Pygments>=2.18", "freetype-py>=2.4",
     "watchdog>=4", "pillow>=10", "rtree>=1.2", "packaging>=24", "tomlkit>=0.13",
     "httpx>=0.27", "anthropic>=0.40", "pyte>=0.8", "psutil>=6", "rich>=13",
-    "symspellpy>=6.7", "mcp>=1.0", "uvicorn>=0.30",
+    "symspellpy>=6.7", "mcp>=2.0", "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
-tensor = ["torch>=2.2", "meltygui-pycuda>=2026.1.post1,<2026.2; sys_platform == 'linux'"]
+tensor = ["torch>=2.2", "meltygui-pycuda>=2026.2,<2026.3; sys_platform == 'linux'"]
 # The Claude Code chat backend (meltygui.chat.claude_code); imported on the first conversation.
 claude = ["claude-agent-sdk>=0.2.152"]
 input = ["evdev>=1.7; sys_platform == 'linux'", "pynput>=1.7"]

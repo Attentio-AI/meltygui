@@ -1591,24 +1591,22 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         return
     from meltygui.core.runtime.toggles import Toggles
     live_store = kwargs.get("live_store")
+    if live_store is not None:
+        from meltygui.code.libcst_conversion import parse_def_name
+        def_line = getattr(live_store, "__def_line__", None)
+        matches = (def_line is not None
+                   and parse_def_name(node) == getattr(live_store, "__name__", None)
+                   and span.start_line + line_offset <= def_line <=
+                       getattr(span, "end_line", span.start_line) + line_offset)
+        if not matches:
+            if not getattr(live_store, "__live_fallback__", False):
+                return
+            # A session supplies one selected scope. Other scopes retain their
+            # existing live producer, without rendering the selected one twice.
+            live_store = None
     if live_store is None and not Toggles.TextEditor.enable_live_view:
         return
     if live_store is not None:
-        # PASSED-IN store (draw_text's live_store=, e.g. the stack trace
-        # window): no global resolution at all - the caller computed the
-        # values locally (live_view.frame_value_store), and this overlay
-        # reads only what it was handed. Act on exactly the def the store
-        # was built for: name match (rules out enclosing defs, whose spans
-        # also contain the target's lines) + the store's def line inside
-        # this node's span (rules out unrelated same-named defs).
-        from meltygui.code.libcst_conversion import parse_def_name
-        _def_line = getattr(live_store, "__def_line__", None)
-        if (_def_line is None
-                or parse_def_name(node) != getattr(live_store, "__name__", None)
-                or not (span.start_line + line_offset <= _def_line
-                        <= getattr(span, "end_line", span.start_line)
-                        + line_offset)):
-            return
         fn = live_store
     else:
         filename = (getattr(root, "file_path", None)

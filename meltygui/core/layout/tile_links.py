@@ -7,6 +7,13 @@ from meltygui.model.tile_model import Split
 from meltygui.state.view_reference import DrawStateSource, view_identifier
 
 
+class TileEndpoints(dict):
+    """Visible endpoints plus host-owned retired state for explicit links."""
+    def __init__(self):
+        super().__init__()
+        self.retained = {}
+
+
 @dataclass
 class TileEndpoint:
     tile: object
@@ -35,7 +42,7 @@ def prepare_endpoint(tile, path=()):
 
 def prepare_endpoints(tree):
     """Allocate all local state first, including sources later in draw order."""
-    result = {}
+    result = TileEndpoints()
 
     def visit(node, path=()):
         if isinstance(node, Split):
@@ -105,8 +112,26 @@ def selected_candidate(endpoint, parameter, endpoints, *, preview_auto=False):
             endpoint.tile._auto_link_sources = {**remembered, key: chosen[0]}
         return chosen
     if saved is not None:
-        return next((item for item in available if item[0] == tuple(saved)), None)
+        identity = tuple(saved)
+        match = next((item for item in available if item[0] == identity), None)
+        if match is not None:
+            return match
+        # Only an explicit link can reach a retired source. Auto remains a
+        # spatial choice among displayed tiles and never switches to history.
+        source = getattr(endpoints, 'retained', {}).get(identity[:2])
+        if source is not None and not isinstance(endpoint.parameters[parameter], DrawStateSource):
+            value = source.states.get(identity[2])
+            if isinstance(value, endpoint.parameters[parameter]):
+                return identity, value
     return None
+
+
+def endpoint_for_binding(endpoints, identity):
+    """Resolve display metadata for the same endpoint as an explicit state link."""
+    current = endpoints.get(identity[0])
+    if current is not None and view_identifier(current.renderer) == identity[1]:
+        return current
+    return getattr(endpoints, 'retained', {}).get(tuple(identity[:2]))
 
 
 def resolve_parameters(endpoint, endpoints):
@@ -137,13 +162,19 @@ def set_binding(endpoint, parameter, identity):
     endpoint.tile.links = links
 
 
-def retire_endpoints(previous, current):
+def retire_endpoints(previous, current, retained=None):
     """Stop watching inputs of removed views, even if saved draw states survive."""
     from meltygui.core.melty import Melty
     dependencies = getattr(Melty.cache, 'parameter_dependencies', None)
-    if dependencies is None:
-        return
     for identity, old in previous.items():
         new = current.get(identity)
         if new is None or new.draw_state is not old.draw_state:
-            dependencies.bind(old.draw_state, {})
+            if retained is not None:
+                retained[(old.tile.id, view_identifier(old.renderer))] = old
+                event = 'removed' if new is None else 'renderer_changed'
+                for state in old.states.values():
+                    callback = getattr(state, 'on_tile_layout_event', None)
+                    if callback is not None:
+                        callback(event)
+            if dependencies is not None:
+                dependencies.bind(old.draw_state, {})

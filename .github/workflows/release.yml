@@ -14,8 +14,17 @@ on:
         description: Pushed source commit confirmed by the release UI
         type: string
         default: ''
+      imgui_run_id:
+        description: Verified ImGui build to test before publishing (optional)
+        type: string
+        default: ''
+      pycuda_run_id:
+        description: Verified PyCUDA build to test before publishing (optional)
+        type: string
+        default: ''
 permissions:
   contents: read
+  actions: read
 jobs:
   verify:
     runs-on: ubuntu-22.04
@@ -42,11 +51,36 @@ jobs:
       - run: uv run --no-project --python 3.12 tools/release.py collect --core-only --require-license
       - name: Check package metadata
         run: uvx --from twine==7.0.0 twine check --strict dist/release/*.whl dist/release/*.tar.gz
-      - name: Install exactly as a user does, with the support wheels from PyPI
+      - uses: actions/download-artifact@v4
+        if: inputs.imgui_run_id != '' && !inputs.publish
+        with:
+          name: release
+          repository: Attentio-AI/meltygui-imgui
+          run-id: ${{ inputs.imgui_run_id }}
+          github-token: ${{ github.token }}
+          path: dist/support/imgui
+      - uses: actions/download-artifact@v4
+        if: inputs.pycuda_run_id != '' && !inputs.publish
+        with:
+          name: release
+          repository: Attentio-AI/meltygui-pycuda
+          run-id: ${{ inputs.pycuda_run_id }}
+          github-token: ${{ github.token }}
+          path: dist/support/pycuda
+      - name: Install the wheel with published or staged support wheels
         run: |
+          mkdir -p dist/support/imgui dist/support/pycuda
           for version in 3.11 3.12 3.13; do
             uv venv "$RUNNER_TEMP/meltygui-check-$version" --python "$version"
-            uv pip install --python "$RUNNER_TEMP/meltygui-check-$version/bin/python" --only-binary :all: dist/release/meltygui-*.whl pytest
+            support=()
+            for directory in dist/support/imgui dist/support/pycuda; do
+              if compgen -G "$directory/*.whl" >/dev/null; then
+                wheels=("$directory"/*-cp${version/./}-*.whl)
+                test -f "${wheels[0]}"
+                support+=("${wheels[@]}")
+              fi
+            done
+            uv pip install --python "$RUNNER_TEMP/meltygui-check-$version/bin/python" --only-binary :all: dist/release/meltygui-*.whl "${support[@]}" pytest
             "$RUNNER_TEMP/meltygui-check-$version/bin/python" -I -m pytest tests/test_package_contract.py tests/test_public_boundary.py tests/test_core_syntax.py -q
           done
       - uses: actions/upload-artifact@v4

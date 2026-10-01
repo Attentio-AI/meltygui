@@ -277,8 +277,9 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
     try:
         import asyncio
         import uvicorn
-        from mcp.server.fastmcp import FastMCP, Image
+        from mcp.server.mcpserver import MCPServer, Image
     except Exception as e:
+        _mcp_started = False
         print(f"[mcp] not starting — dependencies unavailable: {e}")
         return
 
@@ -288,7 +289,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
                   "mcp", "mcp.server", "sse_starlette"):
         logging.getLogger(_name).setLevel(logging.WARNING)
 
-    # FastMCP's constructor calls logging.basicConfig(level=INFO) with a rich
+    # The MCP server constructor may call logging.basicConfig(level=INFO) with a rich
     # handler on the ROOT logger, which then rendered every library INFO
     # record - httpx's `HTTP Request: GET http://... "HTTP/1.1 200 OK"` for each
     # Ollama probe / Anthropic call - as a wide rich line with file-link
@@ -297,7 +298,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
     # give httpx its own one-line handler (install_concise_http_logging).
     root_logger = logging.getLogger()
     root_handlers, root_level = list(root_logger.handlers), root_logger.level
-    mcp = FastMCP("meltygui", host=host, port=port)
+    mcp = MCPServer("meltygui")
     for handler in list(root_logger.handlers):
         if handler not in root_handlers:
             root_logger.removeHandler(handler)
@@ -567,7 +568,7 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            app = _make_gate(mcp.streamable_http_app())
+            app = _make_gate(mcp.streamable_http_app(host=host))
             # timeout_graceful_shutdown=0: if the server ever does stop, never
             # wait on connections (we drop them explicitly via notify_melty_shutdown).
             config = uvicorn.Config(app, host=host, port=port, log_level="warning",

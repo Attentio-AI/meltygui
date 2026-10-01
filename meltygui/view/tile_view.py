@@ -98,6 +98,10 @@ def tile_link_column(endpoint, parameter, endpoints):
         choices[label] = identity
     if selected is None and saved is not None and saved != AUTO:
         choices["Source unavailable"] = tuple(saved)
+    if selected is not None and selected[0] not in {item[0] for item in available}:
+        from meltygui.core.layout.tile_links import endpoint_for_binding
+        retained = endpoint_for_binding(endpoints, selected[0])
+        choices[f"{source_display_name(retained)} (retained)"] = selected[0]
     choices[fallback] = None
     normalized = tuple(saved) if isinstance(saved, (tuple, list)) else saved
     previews = {identity: endpoints[identity[0]].draw_state
@@ -119,12 +123,12 @@ def tile_link_column(endpoint, parameter, endpoints):
 
 def link_trigger_label(endpoint, endpoints):
     """One stable slot per parameter, showing the currently resolved source."""
-    from meltygui.core.layout.tile_links import bindings_for, selected_candidate
+    from meltygui.core.layout.tile_links import bindings_for, selected_candidate, endpoint_for_binding
     icons = [f"\uf0c1"]
     for parameter in endpoint.parameters:
         selected = selected_candidate(endpoint, parameter, endpoints)
         if selected is not None:
-            source = endpoints[selected[0][0]]
+            source = endpoint_for_binding(endpoints, selected[0])
             icon = renderer_decoration(source.renderer).get('icon') or f"\uf0c1"
         elif bindings_for(endpoint).get(parameter) is None:
             icon = f"\uf1c0"
@@ -136,7 +140,7 @@ def link_trigger_label(endpoint, endpoints):
 
 def draw_tile_links(endpoint, endpoints, width, height, resize_record=None):
     """One trigger opens independently selectable parameter columns."""
-    from meltygui.core.layout.tile_links import set_binding, AUTO, selected_candidate
+    from meltygui.core.layout.tile_links import set_binding, AUTO, selected_candidate, endpoint_for_binding
     columns, choices, previews, tints, paths = [], {}, {}, {}, {}
     for parameter in endpoint.parameters:
         column = tile_link_column(endpoint, parameter, endpoints)
@@ -167,7 +171,7 @@ def draw_tile_links(endpoint, endpoints, width, height, resize_record=None):
     for index, parameter in enumerate(endpoint.parameters):
         candidate = selected_candidate(endpoint, parameter, endpoints)
         if candidate:
-            path = source_icon_path(endpoints[candidate[0][0]])
+            path = source_icon_path(endpoint_for_binding(endpoints, candidate[0]))
             if path:
                 trigger_paths[(index + 1) * 2] = path
     result = draw_dropdown(
@@ -298,7 +302,8 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
         from meltygui.core.layout.tile_links import prepare_endpoint, retire_endpoints
         previous = {tile.id: endpoint} if endpoint is not None else {}
         endpoint = prepare_endpoint(tile, endpoint.path if endpoint is not None else tile_path)
-        retire_endpoints(previous, {tile.id: endpoint} if endpoint is not None else {})
+        retire_endpoints(previous, {tile.id: endpoint} if endpoint is not None else {},
+                         getattr(endpoints, "retained", None))
         if endpoint is None:
             endpoints.pop(tile.id, None)
         else:

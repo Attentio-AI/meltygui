@@ -679,3 +679,28 @@ def test_link_icons_follow_the_source_path_and_keep_binding_identity(layout, mon
     tile_view.draw_tile_links(consumer, endpoints, 80, 28)
     assert calls[-1]['display_paths'][2] == '/projects/renamed'
     assert bindings_for(consumer)['source'] == identity
+
+
+def test_explicit_state_link_survives_source_retirement(layout):
+    from meltygui.core.layout.tile_links import retire_endpoints
+    endpoints = prepare_endpoints(layout)
+    consumer = endpoints[layout.children[0].id]
+    identity, state = next(candidates(consumer, 'selection', endpoints))
+    set_binding(consumer, 'selection', identity)
+    events = []
+    state.on_tile_layout_event = events.append
+    source = layout.children.pop(1)
+    current = prepare_endpoints(layout)
+    retained = {}
+    retire_endpoints(endpoints, current, retained)
+    current.retained = retained
+    assert events == ['removed']
+    assert resolve_parameters(current[consumer.tile.id], current)['selection'] is state
+    retire_endpoints(current, current, retained)
+    assert events == ['removed']
+    assert all(item[0][0] != source.id for item in candidates(current[consumer.tile.id], 'selection', current))
+    from meltygui.view.tile_view import link_trigger_label, tile_link_column
+    assert link_trigger_label(current[consumer.tile.id], current)
+    column = tile_link_column(current[consumer.tile.id], 'selection', current)
+    assert any('retained' in name for name in column['choices'])
+

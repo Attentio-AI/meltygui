@@ -65,7 +65,7 @@ from meltygui.core.cache.invalidation_tracker import Note
 _NOTE = dict(name="draw_tiles", tint=(0.55, 0.85, 0.45))
 
 
-@no_save("gesture", "_link_endpoints", "_resize_tiles", "_resize_signature", "_resize_active")
+@no_save("gesture", "_link_endpoints", "_retained_endpoints", "_resize_tiles", "_resize_signature", "_resize_active")
 class TileManagerState(DictConversion):
     """Injected state of a tile-manager host (declare
     ``tile_state: TileManagerState = None`` on the render_func). ``gesture``
@@ -77,6 +77,7 @@ class TileManagerState(DictConversion):
         self.gesture = None
         self.content_top = {"y": 0.0}
         self._link_endpoints = {}
+        self._retained_endpoints = {}
         self._resize_tiles = {}
         self._resize_signature = ()
         self._resize_active = False
@@ -592,7 +593,12 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
     endpoints = tile_state._link_endpoints if resizing else prepare_endpoints(tree)
     if tile_state is not None:
         from meltygui.core.layout.tile_links import retire_endpoints
-        retire_endpoints(getattr(tile_state, '_link_endpoints', {}), endpoints)
+        retained = getattr(tile_state, '_retained_endpoints', None)
+        if retained is None:
+            tile_state._retained_endpoints = retained = {}
+        retire_endpoints(getattr(tile_state, '_link_endpoints', {}), endpoints, retained)
+        if hasattr(endpoints, 'retained'):
+            endpoints.retained = retained
         tile_state._link_endpoints = endpoints
         tile_state._resize_signature = signature
         tile_state._resize_active = resizing
