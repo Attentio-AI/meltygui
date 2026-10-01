@@ -6,6 +6,14 @@ on:
         description: Publish the verified artifacts to PyPI
         type: boolean
         default: false
+      expected_version:
+        description: Package version confirmed by the release UI
+        type: string
+        default: ''
+      expected_sha:
+        description: Pushed source commit confirmed by the release UI
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -13,10 +21,21 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.11.19'
           python-version: '3.12'
+      - name: Check confirmed release version
+        env:
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+        run: |
+          actual_version=$(uv run --no-project --python 3.12 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          if [ -n "$EXPECTED_VERSION" ] && [ "$EXPECTED_VERSION" != "$actual_version" ]; then
+            echo "Confirmed $EXPECTED_VERSION but source states $actual_version"
+            exit 1
+          fi
       - run: uv build --no-sources
       # meltygui-imgui and meltygui-pycuda publish from their own repositories.
       # The runner's own python is 3.10; the release tool needs tomllib (3.11+).

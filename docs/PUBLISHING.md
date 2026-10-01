@@ -43,6 +43,15 @@ entire `dist` tree. The latter also contains older experimental artifacts.
 `SHA256.json` records the intended uploads. Never reuse a published version for
 changed files; bump the relevant core or support-package version.
 
+### From Thermostat
+
+Use Deployments → **Raise version** when needed → **Review / commit / push** →
+**Verify build** → **Publish**. The review button opens the repository's Version
+Control card. The UI distinguishes failed, unverified and verified source;
+confirmations carry the displayed version and source commit. The workflow's
+optional `expected_version` and `expected_sha` inputs validate that version and
+pin checkout to the confirmed source. Manual GitHub runs may leave both blank.
+
 ## Acceptance after upload
 
 Use a new environment for each supported Python (3.11, 3.12, 3.13) with no local find-links or extra index:

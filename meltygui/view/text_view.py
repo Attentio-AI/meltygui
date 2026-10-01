@@ -1095,7 +1095,7 @@ def draw_text(input_value: str, height=None,
               roster_world=None, roster_table=None,
               fim="", fim_state: FimState = None,
               source_tools: SourceToolsState = None, source_context=None):
-    """`draw_breakpoints=False` hides/disables the breakpoint gutter column.
+    """`draw_breakpoints=False` hides/disables breakpoint markers over the line numbers.
     Markers use the file's metadata `breakpoints` mapping, keyed by the current
     whole-file code_dict/code_tree source-site keys. The codec supplies that
     mapping to keep cached panes synchronized; file_metadata is injected and
@@ -2796,12 +2796,10 @@ def draw_text(input_value: str, height=None,
                  else 0.0)
     gutter_w += _lv_btn_w
 
-    # Keep breakpoint clicks separate from live-value, number and fold controls.
-    # Change this width/radius to adjust the marker cell, not the number strip.
-    breakpoint_width = 15.0 if show_gutter and draw_breakpoints else 0.0
-    breakpoint_radius = 4.5
+    # Breakpoints share the number strip; adjust the radius for marker size.
+    breakpoint_width = gutter_w - _lv_btn_w if show_gutter and draw_breakpoints else 0.0
+    breakpoint_radius = min(8.0, line_px * 0.45)
     breakpoint_left = left + _lv_btn_w
-    gutter_w += breakpoint_width
     from meltygui.model.breakpoint_model import current_breakpoint_index
     from meltygui.model.breakpoint_model import file_breakpoints
     from meltygui.model.breakpoint_model import line_has_breakpoint
@@ -3467,7 +3465,7 @@ def draw_text(input_value: str, height=None,
     # gutter clicks still place the caret at line start.
     if (left_mouse_down and gutter_w
             and Toggles.TextEditor.usage_heat_gutter
-            and left + _lv_btn_w + breakpoint_width <= left_mouse_down.x < left + gutter_w
+            and left + _lv_btn_w <= left_mouse_down.x < left + gutter_w
             and not any(_br[0] <= left_mouse_down.x < _br[2]
                         and _br[1] <= left_mouse_down.y < _br[3]
                         for _br, _ in (getattr(ds, '_fold_badge_rects', None)
@@ -6940,7 +6938,7 @@ def draw_text(input_value: str, height=None,
             the arrow is its OWN button (left) that scrolls the error line
             into view (centered), next to the error button proper."""
             from meltygui.view.header_view import flat_button
-            _eb_x0 = left + _lv_btn_w + breakpoint_width + 2.0
+            _eb_x0 = left + _lv_btn_w + 2.0
             _eb_h = max(6.0, line_px - 4.0)
             _eb_save = imgui.get_cursor_screen_pos()
             if arrow is not None:
@@ -6996,7 +6994,7 @@ def draw_text(input_value: str, height=None,
             if _gv is None:
                 return False
             _gv_spec, _gv_tok, _gv_name, _gv_extra = _gv
-            _gv_x0 = left + _lv_btn_w + breakpoint_width + 2.0
+            _gv_x0 = left + _lv_btn_w + 2.0
             if x1 - _gv_x0 < 12.0:
                 return False
             _gv_save = imgui.get_cursor_screen_pos()
@@ -7045,12 +7043,6 @@ def draw_text(input_value: str, height=None,
             elif _gne is False:
                 continue
             num_str, nx = _gne
-            if breakpoint_index is not None and not changed:
-                breakpoint_line = (_fold_d2b[line_idx] if _fold_d2b is not None else line_idx) + 1
-                if line_has_breakpoint(breakpoint_index, breakpoints, breakpoint_line):
-                    draw_list.add_circle_filled(
-                        breakpoint_left + breakpoint_width * 0.5,
-                        ly + line_px * 0.5, breakpoint_radius, breakpoint_color, 16)
             # Usage heat box (see the aggregation pass above): a rounded wash
             # around the number, summed over every usage token on the line -
             # colored by the line's definition tint when it has one, so the
@@ -7108,13 +7100,13 @@ def draw_text(input_value: str, height=None,
                     # at the chip so clicking it still opens the usage box
                     # instead of toggling the fold.
                     _chip_l = ((nx - 3.0) + (left + gutter_w - 3.0)) * 0.5
-                    _gcx = max(_chip_l - 8.0, left + _lv_btn_w + breakpoint_width + 5.0)
-                    _gr = (left + _lv_btn_w + breakpoint_width, ly, _chip_l - 2.0, ly + line_px)
+                    _gcx = max(_chip_l - 8.0, left + _lv_btn_w + 5.0)
+                    _gr = (left + _lv_btn_w, ly, _chip_l - 2.0, ly + line_px)
                 else:
                     # No chip: right-align the arrow with the line numbers;
                     # a gutter widget takes the cell left of the arrow.
                     _gcx = left + gutter_w - 6.0 - char_w
-                    _gr = (left + _lv_btn_w + breakpoint_width, ly, left + gutter_w, ly + line_px)
+                    _gr = (left + _lv_btn_w, ly, left + gutter_w, ly + line_px)
                     if _draw_gutter_widget(line_idx, ly, _gcx - 8.0):
                         _gr = (_gcx - 6.0, ly, left + gutter_w, ly + line_px)
                 _ghov = (_gr[0] <= io.mouse_pos.x < _gr[2]
@@ -7162,6 +7154,13 @@ def draw_text(input_value: str, height=None,
                 if _preview_lines is not None and line_idx in _preview_lines:
                     _num_col = _fade_packed(_num_col, _preview_alpha)
                 draw_list.add_text(nx, ly, _num_col, num_str)
+            # Overlay the number itself, after its heat wash and glyphs.
+            if breakpoint_index is not None and not changed:
+                breakpoint_line = (_fold_d2b[line_idx] if _fold_d2b is not None else line_idx) + 1
+                if line_has_breakpoint(breakpoint_index, breakpoints, breakpoint_line):
+                    draw_list.add_circle_filled(
+                        nx + len(num_str) * char_w * 0.5,
+                        ly + line_px * 0.5, breakpoint_radius, breakpoint_color, 24)
             _mlist = _lv_marks.get(line_idx)
             if _mlist:
                 _open = any(getattr(m, "_lv_open", False) for m in _mlist)

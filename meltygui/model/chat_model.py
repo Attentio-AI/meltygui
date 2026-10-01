@@ -167,7 +167,7 @@ def chat_project(input_value):
     """The directory a chat view's new conversations start in, from the view's
     input value; None leaves it to the chat's own rules. A path gives its
     project root; any other model is the application's to read, through the
-    `chat_project` extension service (meltygui_pro: an editor's open files
+    `chat_project` extension service (an editor's open files
     give the selected tab's project)."""
     from meltygui.core.runtime import extensions
     if isinstance(input_value, (str, os.PathLike)):
