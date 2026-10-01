@@ -153,6 +153,7 @@ class ContextMenuWindowState(DictConversion):
         return True
 
 
+@no_save("_breakpoint_gesture")
 @exclude("restore_first_line", "restore_total_lines", "restore_text",
          "restore_gutter_digits", "restore_line_offset", "restore_fold_keys",
          "restore_gutter_rows", "restore_diff_collapsed", "restore_diff_rows",
@@ -169,6 +170,7 @@ class TextEditorState(DictConversion):
         self._completion_buffer = None
         self._completion_anchor = None
         self._signature_dismissed = None
+        self._breakpoint_gesture = False
         # {def_name: bool} - whether that function's parameter window is
         # visible. The def widget reads/writes this bool DIRECTLY each
         # render (visibility IS this bool); persisted, so a fresh session
@@ -2201,7 +2203,14 @@ class DrawState(DictConversion):
             return
         base = self._action_base_priority(z_pos=self.z_pos)
         left, top = self._abs_left(), self._abs_top()
+        stale_scrollbar = False
         for view_suffix, event_names, offset, relative_rect, cursor, cursor_gate in record[1]:
+            # Sessions predating overlay-only input can retain a scrollbar's
+            # old grab rectangle. The live overlay owns that subscription;
+            # never offer the stale hit target, even on the first replay.
+            if view_suffix == 'scrollbar_grab':
+                stale_scrollbar = True
+                continue
             view_id = self._tile_id if view_suffix is None else str(self._tile_id) + "_" + str(view_suffix)
             rect = None
             if relative_rect is not None:
@@ -2209,6 +2218,8 @@ class DrawState(DictConversion):
                         left + relative_rect[2], top + relative_rect[3])
             self._register_action(view_id, list(event_names), base + offset, rect, cursor,
                                   debug_priority=base + offset, cursor_gate=cursor_gate)
+        if stale_scrollbar:
+            record[1][:] = [action for action in record[1] if action[0] != 'scrollbar_grab']
 
     @property
     def priority(self):

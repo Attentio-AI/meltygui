@@ -74,3 +74,96 @@ def test_shadow_changes_survive_parent_cache_replay(gl_context, monkeypatch, reb
     finally:
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
         cache.cleanup()
+
+
+@pytest.mark.parametrize('rebuild_on_change', [False, True])
+def test_tile_toolbar_shadows_survive_independent_cache_hits(gl_context, monkeypatch, rebuild_on_change):
+    """A full-height toolbar body must not erase the picker/link sibling masks."""
+    from meltygui.model.tile_model import Tile
+    from meltygui.view import tile_view
+    from meltygui.core.layout import tile_links
+
+    cache = tile_cache.TileCacheMasked()
+    monkeypatch.setattr(Melty, 'cache', cache)
+    monkeypatch.setattr(Melty, 'paint_ordered_ds', [])
+    monkeypatch.setattr(Melty, 'default_framebuffer', lambda: 0)
+    monkeypatch.setattr(Toggles.Melty, 'mask_rebuild_on_change', rebuild_on_change)
+    monkeypatch.setattr(Toggles, 'glow', False)
+    monkeypatch.setattr(Melty, 'push_clip', lambda *a: None)
+    monkeypatch.setattr(Melty, 'pop_clip', lambda: None)
+    cursor = [(10, 10)]
+    monkeypatch.setattr(tile_view.imgui, 'get_cursor_screen_pos', lambda: cursor[0])
+    monkeypatch.setattr(tile_view.imgui, 'set_cursor_screen_pos', lambda pos: cursor.__setitem__(0, pos))
+    cache._get_draw_xform = lambda: (0, 0, 1, 1, 256, 128)
+    fresh_keys = set()
+    states = {}
+
+    def paint(key, width, height, depth, caster=False):
+        x, y = cursor[0]
+        ds = states.setdefault(key, SimpleNamespace(
+            closable=False, tile_mode=None, abs_left=x, abs_top=y,
+            width=width, height=height, size_change=False, shadow_margin=0,
+            clipped_by_rect=None, parent_window=None, closed=False,
+            _parent=None, freeze_resize=False, _is_nested=False))
+        cache.key_to_draw_state[key] = ds
+        cache._key_to_ctx[key] = True
+        rank = shadow_depth_at(depth, 1)
+        cache.mask_mark_rect(ds, 1, rank, x, y, width, height, key, 0)
+        if key in fresh_keys:
+            tile = cache._tiles.get(key)
+            if tile is None:
+                tile = cache._tiles[key] = tile_cache._ensure_tile(None, width, height, draw_state=ds)
+            cache._pending.append(tile_cache._Pending(ds, tile, (x, y), (width, height), 1, rank, key))
+            if caster:
+                cache._stack.append(SimpleNamespace(key=key))
+                cache.add_shadow((x + 4, y + 3, width - 8, height - 6),
+                                 offset=2, layer=1, depth=depth, clip=False)
+                cache._stack.pop()
+
+    def body(value, width, height, **kwargs):
+        paint('body', width, height, 1)
+        return False, value
+
+    body.__header_defaults__ = {'tile_toolbar': True}
+    tile = Tile(render_func=body)
+    endpoint = SimpleNamespace(parameters=('source',), draw_state=None)
+    monkeypatch.setattr(tile_links, 'resolve_parameters', lambda *a: {})
+
+    def picker(value, width, height, **kwargs):
+        paint('picker', width, height, 3, caster=True)
+        return False, value
+
+    def links(endpoint, endpoints, width, height, resize_record):
+        paint('links', width, height, 3, caster=True)
+        return False
+
+    monkeypatch.setattr(tile_view, 'draw_dropdown', picker)
+    monkeypatch.setattr(tile_view, 'draw_tile_links', links)
+    gl.glDisable(gl.GL_DEPTH_TEST)
+    gl.glDisable(gl.GL_STENCIL_TEST)
+    gl.glDisable(gl.GL_CULL_FACE)
+    cache.mask_begin_frame((256, 128))
+    cache._ensure_programs()
+    try:
+        def frame(fresh):
+            fresh_keys.clear()
+            fresh_keys.update(fresh)
+            cache.mask_begin_frame((256, 128))
+            cursor[0] = (10, 10)
+            tile_view.draw_tile_content(tile, 220, 100, endpoints={tile.id: endpoint}, use_cache=True)
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+            cache.finalize_captures((256, 128))
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, cache._full_mask_fbo)
+            return np.array(gl.glReadPixels(0, 0, 256, 128, gl.GL_RED, gl.GL_FLOAT)).reshape(128, 256)
+
+        fresh = frame({'body', 'picker', 'links'})
+        for rerender in [set(), {'body'}, {'picker'}, {'links'}, set()]:
+            np.testing.assert_allclose(frame(rerender), fresh, atol=1 / 65535, rtol=0)
+        # Both controls remain lifted above the body, not merely equally flat.
+        expected = shadow_depth_at(5, 1) / 65535.5
+        for key in ('picker', 'links'):
+            ds = states[key]
+            assert fresh[int(128 - ds.abs_top - 12), int(ds.abs_left + 12)] == pytest.approx(expected, abs=1 / 65535)
+    finally:
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        cache.cleanup()

@@ -56,7 +56,27 @@ draw_dep_manager(value, name="Dependencies", closable=True, as_window=True,
 `initial` wins over the decorator's. Pass `width=` / `height=` only to views laid
 out by their parent (a tile, a cell, a button), where the parent owns the size.
 
-## Live overlays on cached views
+## Live backgrounds and overlays on cached views
+
+Use `@render_func(draw_background=paint_backing)` for a lightweight live pass
+beneath a view's body. It receives the same arguments as `draw_overlay`, but
+its `draw_list` is the window's body list, before cached pixels and shadows.
+It runs on normal draws, cache hits, and frozen resize replay. A cached
+ancestor first places its children, then repaints their backgrounds and
+resident body pixels in parent-first order. `draw_background` replaces the
+wrapper's usual `show_bg` painting; callbacks normally return `None`, or may
+return `(False, bg_color)` to supply the background-color stack for children.
+
+`draw_text` uses the reusable `paint_view_background` callback, which honors
+`show_bg`, the view's tint/style and live bounds. Background drawing does not
+rerun the text layout. The current pixel cache still captures composited
+background and body pixels: this pass fills live bounds, including newly
+exposed space, but cannot recolor underneath an existing snapshot. Style edits
+use normal invalidation, and edits to a background callback invalidate its
+associated tiles. Use the foreground hook for uncaptured animated decoration.
+A descendant needs its own cached body for this independent replay; an
+uncached child flattened into a cached ancestor keeps that ancestor's pixels
+until the ancestor draws again, so its background cannot erase its text.
 
 Pass a plain callable as `@render_func(draw_overlay=draw_status)` or as a
 per-call `draw_overlay=` override. It runs after the body on each rendered
@@ -89,11 +109,21 @@ callbacks accept the same arguments and obey the same budget. Keep expensive
 resource preparation in the body. Private injected state parameters (names
 beginning with `_`) stay local to their view and are excluded from tile links.
 
-Callbacks must be very lightweight: taking **more than 0.5 ms** disables that
-callback for the view. Exceptions and invalid callbacks also draw an error
-instead. The first slow call must finish before it can be measured; its
-geometry is discarded, and subsequent frames skip it. Replacing the callback
-or hot-swapping its code retries it. Failure state is independent per view.
+Lightweight rows can reuse the view-selection appearance with
+`Melty.paint_selection(draw_state, draw_list, (x, y, width, height))` in their
+overlay. Pass live absolute bounds; the painter uses the owning view's tint
+and clip. This avoids a render wrapper per row and keeps selection out of the
+cached body. File listings and project trees share their row-overlay painter.
+
+Callbacks must be very lightweight: taking **more than 0.5 ms of render-thread
+CPU time** disables that callback for the view. The budget uses `time.thread_time()`
+so scheduler pauses and work on other threads cannot permanently disable a cheap
+overlay. This excludes waits and is not a wall-clock latency guarantee; blocking
+I/O and resource preparation still belong outside overlays. Exceptions and invalid
+callbacks also draw an error instead. The first slow call must finish before it
+can be measured; its geometry is discarded, and subsequent frames skip it.
+Replacing the callback or hot-swapping its code retries it. Failure state is
+independent per view.
 
 See [the runnable overlay example](../examples/render_overlay.py).
 

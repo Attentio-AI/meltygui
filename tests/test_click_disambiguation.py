@@ -95,3 +95,30 @@ def test_declared_double_drag_and_menu_on_same_view(pointer):
     handler.register_hovered('menu', ['double_right_mouse_drag'], priority=-3)
     assert 'menu' not in click(pointer)
     assert 'right_mouse' in handler._pending_clicks
+
+
+def test_deferred_click_retains_recipient_tile(pointer):
+    handler, clock, _ = pointer
+    frame(pointer, -3)
+    handler.register_hovered('menu', ['right_mouse_clicked'], tile_id='text-tile')
+    assert 'menu' not in click(pointer)
+    frame(pointer, -3)
+    handler.register_hovered('menu', ['right_mouse_clicked'], tile_id='text-tile')
+    clock[0] += DOUBLE_CLICK_WINDOW + .01
+    event = handler.process_frame()[0]['menu']['right_mouse_clicked']
+    assert event.tile_id == 'text-tile'
+
+
+def test_right_drag_does_not_deliver_context_click(pointer):
+    handler, _, position = pointer
+    frame(pointer, None)
+    handler.register_hovered('resize', ['right_mouse_drag'], priority=1)
+    handler.feed_down('right_mouse', *position)
+    handler.process_frame()
+    handler._pending.clear()
+    position[:] = [130, 120]
+    handler.feed_move(*position)
+    assert 'right_mouse_drag' in handler.process_frame()[0]['resize']
+    handler._pending.clear()
+    handler.feed_up('right_mouse', *position)
+    assert 'menu' not in handler.process_frame()[0]

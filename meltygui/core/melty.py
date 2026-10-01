@@ -2376,30 +2376,38 @@ class Melty:
         return False
 
     @classmethod
-    def add_background(cls, style, *, rect=None, corner_radius=0.0, draw_list=None):
+    def add_background(cls, style, *, rect=None, corner_radius=0.0, draw_list=None, draw_state=None):
         """Suggest a background in the current view's geometry and paint channel.
 
         Colours are deferred until draw_backgrounds. The image is only a
         compositing slot, preserving clipping, rounded edges and window order.
+        Explicit draw_state/draw_list retain ownership during live replay.
         """
         import OpenGL.GL as gl
         if not Toggles.dynamic_styles:
             return
         from meltygui.core.graphics.gl_state import GLState
         from meltygui.core.graphics.gl_state import gl_limits
-        if not cls.draw_state_stack and rect is None:
+        if draw_state is None and not cls.draw_state_stack and rect is None:
             return  # Outside a view there is no surface to paint.
-        draw_state = cls.draw_state_stack[-1] if cls.draw_state_stack else None
-        initializing = cls.dynamic_style_gl is None or not cls.backgrounds
+        explicit_owner = draw_state is not None
+        if draw_state is None:
+            draw_state = cls.draw_state_stack[-1] if cls.draw_state_stack else None
         if cls.dynamic_style_gl is None:
             cls.dynamic_style_gl = GLState()
         capacity = gl_limits()['max_2d']
         if len(cls.backgrounds) >= capacity:
             raise RuntimeError("Dynamic background palette exceeds GL texture capacity")
-        previous_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D) if initializing else None
-        palette = cls.dynamic_style_gl.fbo('background_palette', capacity, 1)
-        if initializing:
-            gl.glBindTexture(gl.GL_TEXTURE_2D, previous_texture)
+        palette = cls.dynamic_style_gl.peek('background_palette')
+        if palette is None or (palette.width, palette.height) != (capacity, 1):
+            # Empty per-frame paint queues do not mean the GPU palette is new.
+            # Only allocation can change the texture binding; warm overlay
+            # backgrounds submit geometry without a synchronous GL query.
+            previous_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
+            try:
+                palette = cls.dynamic_style_gl.fbo('background_palette', capacity, 1)
+            finally:
+                gl.glBindTexture(gl.GL_TEXTURE_2D, previous_texture)
         index = len(cls.backgrounds)
         cls.backgrounds.append((draw_state, style))
         if rect is not None:
@@ -2449,15 +2457,25 @@ class Melty:
         cls.background_shadow_offsets[id(draw_state)] = (offset, shadow_fn)
         # Bypass the @live hook: a per-frame stamp must not invalidate the tile.
         object.__setattr__(draw_state, '_dynamic_shadow', (offset, shadow_fn))
+        if explicit_owner:
+            from meltygui.core.cache.tile_marks import clear_shadows
+            clear_shadows(draw_state, 'live_background')
         if width <= 0 or height <= 0:
             cls.background_rects.append(None)
             return
         cls.background_rects.append(cls._background_rect(draw_state, left, top, width, height))
         if offset:
-            add_shadow((left, top, width, height), offset=offset,
-                       corner_radius=draw_state.corner_radius)
+            if explicit_owner:
+                depth, layer = draw_state.depth_and_layer
+                add_shadow((left, top, width, height), offset=offset,
+                           corner_radius=draw_state.corner_radius,
+                           draw_state=draw_state, group='live_background',
+                           depth=depth, layer=layer, clip=draw_state.abs_clip_rect)
+            else:
+                add_shadow((left, top, width, height), offset=offset,
+                           corner_radius=draw_state.corner_radius)
         uv = ((index + 0.5) / capacity, 0.5)
-        imgui.get_window_draw_list().add_image_rounded(
+        (draw_list if draw_list is not None else imgui.get_window_draw_list()).add_image_rounded(
             palette.texture_id, (left, top), (left + width, top + height),
             uv, uv, 0xffffffff, draw_state.corner_radius)
 
@@ -2542,6 +2560,21 @@ class Melty:
         gl.glBindTexture(gl.GL_TEXTURE_2D, previous_texture)
         cls.style_context_root = root
         cls.background_gen += 1
+
+    @classmethod
+    def invalidate_event_targets(cls):
+        """Wake cached consumers of delivered input before the render pass."""
+        if (not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
+                and not imgui.is_mouse_down(2) and not cls.on_scroll
+                and not cls.space_mouse_drag):
+            # A hover notification can precede a click on the same view.
+            # Wake every delivered device-event target, not just the first
+            # event, so cached ancestors run the nested consumer this frame.
+            event_tiles = {event.tile_id for evts in cls.events.values()
+                           for event in evts.values()
+                           if event.action is not None and event.tile_id is not None}
+            for tile_id in event_tiles:
+                Melty.cache.invalidate_up(tile_id, max_depth=10, force=True)
 
     @classmethod
     def begin_frame(cls):
@@ -2918,14 +2951,7 @@ class Melty:
         cls.layers.clear()
         for _ in range(cls.nested_layer_max):
             cls.layers.append([])
-        for view_id, evts in cls.events.items():
-            first_event = list(evts.values())[0]
-            if first_event.tile_id != "hovered":
-                if (first_event.tile_id is not None and not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
-                        and not imgui.is_mouse_down(2) and not cls.on_scroll
-                        and not cls.space_mouse_drag):
-                        print(first_event)
-                        Melty.cache.invalidate_up(first_event.tile_id, max_depth=10, force=True)
+        cls.invalidate_event_targets()
 
         Melty.all_uniques = set()
 
@@ -3192,6 +3218,33 @@ class Melty:
         if m == dt:
             return px, y0
         return px, y1
+
+    @classmethod
+    def paint_selection(cls, draw_state, draw_list, rect=None):
+        """Paint shared selection styling in the owner's current overlay channel.
+
+        ``rect`` is an absolute (x, y, width, height) for a lightweight row;
+        omitting it selects the whole view at its live bounds.
+        """
+        if rect is None:
+            rect = (draw_state.abs_left, draw_state.abs_top,
+                    draw_state.width, draw_state.height)
+        x, y, width, height = rect
+        if width is None or height is None or width <= 0 or height <= 0:
+            return
+        rgb = cls._highlight_rgb(draw_state.current_tint)
+        rounding = getattr(draw_state, 'corner_radius', 6)
+        draw_list.push_clip_rect(*draw_state.abs_clip_rect, True)
+        try:
+            if height <= 30:
+                draw_list.add_rect_filled(x, y, x + width, y + height,
+                                          pack_color(*rgb, Tint.select_bg_alpha),
+                                          rounding=rounding)
+            draw_list.add_rect(x, y, x + width, y + height,
+                               pack_color(*rgb, Tint.select_outline_alpha),
+                               rounding=rounding, thickness=Tint.select_outline_thickness)
+        finally:
+            draw_list.pop_clip_rect()
 
     @staticmethod
     def _highlight_rgb(tint=None):
@@ -4624,33 +4677,13 @@ class Melty:
             if selected_ds.width is None or selected_ds.height is None:
                 continue
 
-            draw_fill = True
-            if selected_ds.height > 30:
-                draw_fill = False
-
             # Draw the selection rect to the selected view's own overlay
             # channel (same as the nested-view highlight and swoosh) so a
             # higher-layer window stencil-masks it, rather than the rect
             # floating on top of everything on the global top channel.
             overlay.channels_set_current(cls.overlay_channel_for(selected_ds))
 
-            # Color from the view's storable tint, brightened the same way as
-            # the highlight boxes (current_tint may be None -> falls back to
-            # the live tint inside _highlight_rgb).
-            select_rgb = cls._highlight_rgb(selected_ds.current_tint)
-            bg_col = pack_color(*select_rgb, Tint.select_bg_alpha)
-            outline_col = pack_color(*select_rgb, Tint.select_outline_alpha)
-            rounding = getattr(selected_ds, 'corner_radius', 6)
-
-            clip_rect = selected_ds.abs_clip_rect
-            overlay.push_clip_rect(clip_rect[0], clip_rect[1], clip_rect[2], clip_rect[3], True)
-            x0, y0 = selected_ds.abs_left, selected_ds.abs_top
-            x1, y1 = x0 + selected_ds.width, y0 + selected_ds.height
-            if draw_fill:
-                overlay.add_rect_filled(x0, y0, x1, y1, bg_col, rounding=rounding)
-            overlay.add_rect(x0, y0, x1, y1, outline_col, rounding=rounding,
-                             thickness=Tint.select_outline_thickness)
-            overlay.pop_clip_rect()
+            cls.paint_selection(selected_ds, overlay)
 
         # Restore the global top channel for any later overlay draws.
         if cls._overlay_channels_active:

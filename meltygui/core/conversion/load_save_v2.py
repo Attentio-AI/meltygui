@@ -486,30 +486,53 @@ _collect = None
 _copy_plan_cache = weakref.WeakKeyDictionary()
 
 
+def _shared_default(value):
+    """Values safe to borrow from a constructor template without aliasing state."""
+    if isinstance(value, (type(None), bool, int, float, complex, str, bytes, Enum,
+                          type, types.FunctionType, types.BuiltinFunctionType)):
+        return True
+    if isinstance(value, (tuple, frozenset)):
+        return all(_shared_default(item) for item in value)
+    return False
+
+
 def _copy_plan(cls, default):
-    plan = _copy_plan_cache.get(cls)
-    if plan is None:
-        plain, containers, selfrefs = [], [], []
-        for k, v in default.__dict__.items():
-            if k in ("id", "hash") or isinstance(v, types.MethodType):
-                continue                         # set explicitly or @live-injection
-            if v is default:
-                selfrefs.append(k)
-            elif isinstance(v, (dict, list, set)):
-                containers.append(k)
-            else:
-                plain.append(k)
+    cached = _copy_plan_cache.get(cls)
+    if cached is not None and cached[0] is default and cached[1] is _copy_plan.__code__:
+        return cached[2]
+    plan = None
+    plain, containers, selfrefs = [], [], []
+    for k, v in default.__dict__.items():
+        if k in ("id", "hash") or isinstance(v, types.MethodType):
+            continue                         # set explicitly or @live-injection
+        if v is default:
+            selfrefs.append(k)
+        elif isinstance(v, (dict, list, set)):
+            items = (*v.keys(), *v.values()) if isinstance(v, dict) else v
+            if not all(_shared_default(item) for item in items):
+                plan = False
+                break
+            containers.append(k)
+        elif _shared_default(v):
+            plain.append(k)
+        else:
+            # Resource owners (e.g. FolderIcons), nested state and locks
+            # must be constructed for each restored view, never borrowed
+            # from the cached template or blindly deep-copied.
+            plan = False
+            break
+    if plan is not False:
         plan = (tuple(plain), tuple(containers), tuple(selfrefs))
-        try:
-            _copy_plan_cache[cls] = plan
-        except TypeError:
-            pass
+    try:
+        _copy_plan_cache[cls] = (default, _copy_plan.__code__, plan)
+    except TypeError:
+        pass
     return plan
 
 
 def _reconstruct(cls):
-    """Reconstruct by COPYING the cached default instance's __dict__ — NOT by
-    re-running __init__ per object. The default already ran the full
+    """Copy simple defaults; construct fresh instances for resource-owning classes.
+    The cached default already ran the full
     __init__/__post_init__/FieldMeta chain once, so it carries every attribute
     (incl. underscore attrs set only in __init__, e.g. _snapshot_visible). Copying
     it skips ~270 @live-wrapped setattrs PER object (DrawState.__init__ alone fired
@@ -518,9 +541,10 @@ def _reconstruct(cls):
     Uses a cached per-class plan (no per-attribute isinstance), rebinds self-loops
     (DrawState._parent = self) to this instance, gives each instance fresh mutable
     containers via .copy() (defaultdict-safe), and a unique id (overlaid if saved).
-    Falls back to full cls() if no default is available."""
+    Uses full cls() for defaults owning resources or nested mutable state."""
     default = _default_for(cls)
-    if default is None:
+    plan = _copy_plan(cls, default) if default is not None else False
+    if plan is False:
         try:
             obj = cls()
         except Exception:
@@ -532,7 +556,7 @@ def _reconstruct(cls):
     obj = cls.__new__(cls)
     d = obj.__dict__
     dd = default.__dict__
-    plain, containers, selfrefs = _copy_plan(cls, default)
+    plain, containers, selfrefs = plan
     for k in plain:
         d[k] = dd[k]
     for k in containers:

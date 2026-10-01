@@ -1,13 +1,15 @@
-"""Uncached, window-masked render-function overlays.
+"""Live render-function backgrounds and window-masked foreground overlays.
 
 Callbacks are plain functions accepting any subset of input_value, draw_state
-and draw_list as keyword arguments. Draw into the supplied foreground list;
-normal widgets/render_func calls belong in the body. Keep callbacks below 0.5ms.
+and draw_list as keyword arguments. Backgrounds use the supplied body list;
+overlays use the foreground list, outside pixel captures. In both cases,
+normal widgets/render_func calls belong in the body. Keep callbacks below 0.5ms CPU.
 Optional draw_overlay_background callbacks place/paint cached child bodies before
 descendant overlays; draw_overlay paints the owning view's foreground afterward.
 """
 import inspect
 import time
+from contextlib import contextmanager
 
 import meltygui_imgui as imgui
 
@@ -17,7 +19,8 @@ from meltygui.core.rendering.core_decoration import no_save
 from meltygui.core.runtime.toggles import Tint
 from meltygui.hdr_color import pack_color
 
-# Change the shared budget here, rather than giving individual views exemptions.
+# Render-thread CPU time attributes work to the callback, excluding pauses
+# imposed by the scheduler or other threads. No individual view exemptions.
 OVERLAY_BUDGET_SECONDS = 0.0005
 _STATE_KEY = 'render_overlay'
 
@@ -33,9 +36,56 @@ class OverlayState(DictConversion):
         self.error = None
 
 
+@contextmanager
+def _live_actions(draw_state):
+    """Overlay input is reissued live, never retained with frozen body input."""
+    record = getattr(draw_state, '_body_actions', None)
+    object.__setattr__(draw_state, '_body_actions', None)
+    try:
+        yield
+    finally:
+        object.__setattr__(draw_state, '_body_actions', record)
+
+
 def draw_overlay(draw_state):
     """Paint the owning view's foreground after its descendants."""
     _run_overlay(draw_state, 'draw_overlay', _STATE_KEY)
+
+
+def draw_background(draw_state, *, replay=False):
+    """Paint live backing on the body list, beneath this view's resident pixels."""
+    if ((draw_state._kwargs or {}).get('draw_background') is None
+            or draw_state.closed or draw_state.just_shadow):
+        return
+    # An uncached descendant only exists inside its ancestor's opaque image.
+    # Painting over that image without a separate resident body would erase
+    # its text. It draws normally next time its ancestor's body runs.
+    if replay and _resident_tile(draw_state) is None:
+        return
+    result = _run_overlay(draw_state, 'draw_background', 'render_background', foreground=False)
+    if replay:
+        paint_cached_view(draw_state)
+    return result
+
+
+def paint_view_background(draw_state, draw_list):
+    """The wrapper's standard background, reusable as a draw_background callback."""
+    from meltygui.core.runtime.toggles import Toggles
+    options = draw_state._kwargs or {}
+    if not options.get('show_bg', False) or draw_state.width <= 5 or draw_state.height <= 5:
+        from meltygui.core.cache.tile_marks import clear_shadows
+        clear_shadows(draw_state, 'live_background')
+        return
+    if Toggles.dynamic_styles:
+        Melty.add_background(options.get('style', options.get('tint')),
+                             draw_state=draw_state, draw_list=draw_list)
+        return
+    from meltygui.core.cache.tile_marks import clear_shadows
+    clear_shadows(draw_state, 'live_background')
+    return Melty.cache.draw_freeze_bg(
+        draw_state, draw_state.abs_left, draw_state.abs_top,
+        draw_state.width, draw_state.height, live=False, draw_list=draw_list,
+        outline=options.get('bg_outline', True) and not draw_state.freeze_resize)
 
 
 def draw_overlay_background(draw_state):
@@ -44,7 +94,7 @@ def draw_overlay_background(draw_state):
         _run_overlay(draw_state, 'draw_overlay_background', 'render_overlay_background')
 
 
-def _run_overlay(draw_state, option, state_key):
+def _run_overlay(draw_state, option, state_key, *, foreground=True):
     """Run a bounded callback, retrying failures when its definition changes."""
     callback = (draw_state._kwargs or {}).get(option)
     if callback is None:
@@ -76,29 +126,36 @@ def _run_overlay(draw_state, option, state_key):
         except (TypeError, ValueError) as error:
             state.error = str(error)
 
-    draw_list = imgui.get_overlay_draw_list()
+    draw_list = imgui.get_overlay_draw_list() if foreground else imgui.get_window_draw_list()
     clip = draw_state.abs_clip_rect
-    if Melty._overlay_channels_active:
+    if foreground and Melty._overlay_channels_active:
         draw_list.channels_set_current(Melty.overlay_channel_for(draw_state))
     if clip is not None:
         draw_list.push_clip_rect(*clip, True)
+    result = None
     try:
         if state.error is None:
             values = {'input_value': draw_state._raw_input_value,
                       'draw_state': draw_state, 'draw_list': draw_list}
             arguments = {name: values[name] for name in state.names}
             vertex_start = draw_list.vtx_buffer_size
-            started = time.perf_counter()
-            try:
-                callback(**arguments)
-            except Exception as error:
-                state.error = f'{type(error).__name__}: {error}'
-            elapsed = time.perf_counter() - started
+            with _live_actions(draw_state):
+                started = time.thread_time()
+                try:
+                    result = callback(**arguments)
+                    if not foreground and result is not None:
+                        if (not isinstance(result, tuple) or len(result) != 2
+                                or not isinstance(result[1], (tuple, list))
+                                or len(result[1]) not in (3, 4)):
+                            raise TypeError('draw_background must return None or (False, bg_color)')
+                except Exception as error:
+                    state.error = f'{type(error).__name__}: {error}'
+                elapsed = time.thread_time() - started
             if state.error is None and elapsed > OVERLAY_BUDGET_SECONDS:
-                state.error = f'{elapsed * 1000:.3f} ms exceeds 0.5 ms budget'
+                state.error = f'{option}: {elapsed * 1000:.3f} ms CPU exceeds 0.5 ms CPU budget'
             if state.error is not None:
                 discard_geometry(draw_list, vertex_start)
-        if state.error is not None:
+        if state.error is not None and foreground:
             color = pack_color(*Tint.dd_text(draw_state.current_tint), 1.0)
             draw_list.add_text(draw_state._abs_left() + 4,
                                draw_state._abs_top() + draw_state.header_height + 4,
@@ -106,8 +163,26 @@ def _run_overlay(draw_state, option, state_key):
     finally:
         if clip is not None:
             draw_list.pop_clip_rect()
-        if Melty._overlay_channels_active:
+        if foreground and Melty._overlay_channels_active:
             draw_list.channels_set_current(Melty.max_layer - 1)
+    if state.error is not None and not foreground:
+        # An error painted below an opaque cached body would be invisible.
+        error_list = imgui.get_overlay_draw_list()
+        if Melty._overlay_channels_active:
+            error_list.channels_set_current(Melty.overlay_channel_for(draw_state))
+        if clip is not None:
+            error_list.push_clip_rect(*clip, True)
+        try:
+            color = pack_color(*Tint.dd_text(draw_state.current_tint), 1.0)
+            error_list.add_text(draw_state.abs_left + 4,
+                                draw_state.abs_top + draw_state.header_height + 4,
+                                color, f'Background disabled: {state.error}')
+        finally:
+            if clip is not None:
+                error_list.pop_clip_rect()
+            if Melty._overlay_channels_active:
+                error_list.channels_set_current(Melty.max_layer - 1)
+    return result if state.error is None else None
 
 
 def discard_geometry(draw_list, vertex_start):
@@ -130,7 +205,7 @@ def draw_scrollbar(draw_state):
         clear_shadows, draw_overlay_scrollbar, SCROLLBAR_SHADOW_GROUP,
         SCROLL_BAR_WIDTH_DEFAULT, SCROLL_BAR_BRIGHTNESS_DEFAULT)
     if not getattr(draw_state, 'scroll_visible', False):
-        # Lightweight non-scroll views have no retained scrollbar group.
+        clear_shadows(draw_state, SCROLLBAR_SHADOW_GROUP)
         return
     if draw_state.closed or draw_state.just_shadow or draw_state.height is None:
         clear_shadows(draw_state, SCROLLBAR_SHADOW_GROUP)
@@ -138,21 +213,31 @@ def draw_scrollbar(draw_state):
     options = draw_state._kwargs or {}
     max_scroll_y = max(0, draw_state.abs_content_height - draw_state.abs_clipped_height + 1)
     draw_state._max_scroll_y = max_scroll_y
-    draw_overlay_scrollbar(
-        draw_state, max_scroll_y, draw_state.height - draw_state.footer_height,
-        bar_width=options.get('scroll_bar_width', SCROLL_BAR_WIDTH_DEFAULT),
-        bar_brightness=options.get('scroll_bar_brightness', SCROLL_BAR_BRIGHTNESS_DEFAULT))
+    with _live_actions(draw_state):
+        draw_overlay_scrollbar(
+            draw_state, max_scroll_y, draw_state.height - draw_state.footer_height,
+            bar_width=options.get('scroll_bar_width', SCROLL_BAR_WIDTH_DEFAULT),
+            bar_brightness=options.get('scroll_bar_brightness', SCROLL_BAR_BRIGHTNESS_DEFAULT))
 
 
 def finish_cached_overlays(cache, ctx):
     """Prepare parents first, then paint descendants and owning foregrounds."""
-    draw_overlay_background(ctx.draw_state)
     if ctx.drew_cached:
         tile = cache._tiles.get(ctx.key)
         ctx.overlay_views = tile.overlay_views if tile is not None else ()
+        # An ancestor's snapshot serves these descendants too. Their wrappers
+        # did not run, so stamp cache service before any callback can decide
+        # whether to restore a child's resident pixels at its new bounds.
+        # Keep last_seen unchanged: no descendant body/input path was visited.
+        object.__setattr__(ctx.draw_state, '_blit_served_frame', Melty.frame_count)
+        for child in ctx.overlay_views:
+            object.__setattr__(child, '_blit_served_frame', Melty.frame_count)
+    draw_overlay_background(ctx.draw_state)
+    if ctx.drew_cached:
         # Recorded postorder during normal drawing. Reverse it for layout so
         # each parent establishes live bounds before a descendant reads them.
         for child in reversed(ctx.overlay_views):
+            draw_background(child, replay=True)
             draw_overlay_background(child)
         for child in ctx.overlay_views:
             draw_overlay(child)
@@ -170,7 +255,8 @@ def finish_overlay(draw_state, cache, *, background_done=False):
     draw_scrollbar(draw_state)
     options = draw_state._kwargs or {}
     if ((getattr(draw_state, 'scroll_visible', False)
-         or any(options.get(name) is not None for name in ('draw_overlay', 'draw_overlay_background')))
+         or any(options.get(name) is not None for name in
+                ('draw_background', 'draw_overlay', 'draw_overlay_background')))
             and cache.enabled and cache._stack):
         cache._stack[-1].overlay_views += (draw_state,)
 
@@ -199,6 +285,12 @@ def place_overlay_view(draw_state, rect, clip):
         imgui.set_cursor_screen_pos(cursor)
 
 
+def _resident_tile(draw_state):
+    cache = Melty.cache
+    tile = cache._tiles.get(draw_state._tile_id) if cache is not None and cache.enabled else None
+    return tile if tile is not None and tile.tex and tile.last_clean_frame >= 0 else None
+
+
 def paint_cached_view(draw_state):
     """Paint a child's resident pixels at its live bounds without recapturing.
 
@@ -210,12 +302,15 @@ def paint_cached_view(draw_state):
     cache texture there erases the shadows on every cache-served frame.
     The cache retains ownership of the borrowed texture.
     """
-    cache = Melty.cache
-    tile = cache._tiles.get(draw_state._tile_id) if cache is not None and cache.enabled else None
-    if tile is None or not tile.tex or tile.last_clean_frame < 0:
+    tile = _resident_tile(draw_state)
+    if tile is None:
         return False
     from meltygui.core.cache.tile_cache import _tile_alloc
-    width, height = tile.content_size or tile.size
+    # Definition changes retire the preserved outer bands. Sampling only the
+    # logical image is safe until normal cache reuse clears those bands; GL
+    # resource housekeeping must not run inside a timed overlay callback.
+    width, height = (tile.size if getattr(tile, 'content_stale', False)
+                     else tile.content_size or tile.size)
     width, height = min(width, draw_state.width), min(height, draw_state.height)
     if width <= 0 or height <= 0:
         return False

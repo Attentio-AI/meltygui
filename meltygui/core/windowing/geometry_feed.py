@@ -512,11 +512,13 @@ def surface_rect(title):
     return (w["x"], w["y"], w["width"], w["height"]) if w else None
 
 
-def place_window(title, rect, *, resize=True):
+def place_window(title, rect, *, resize=True, initial=False):
     """Move AND resize our window titled ``title`` to ``rect`` (absolute
     logical px, top-left anchored) in one request — app.py's child
     surfaces following their parent. With resize=False only move: the
-    surface's edge solver owns its size. Hyprland only; True on "ok"."""
+    surface's edge solver owns its size. Initial child placement uses the
+    patched compositor's nonanimated buffer-commit path; the caller must
+    request a frame after success. Hyprland only; True on "ok"."""
     if backend() != "hyprland":
         return False
     w = _window_by_title(title)
@@ -531,6 +533,15 @@ def place_window(title, rect, *, resize=True):
                   f'if not w then error("no window {selector}") end; '
                   f'{size_request}'
                   f'hl.dispatch(hl.dsp.window.move({{x = {x}, y = {y}, window = "{selector}"}}))')
+        if initial and not resize and hypr_honors_geometry():
+            script = (f'local w = hl.get_window("{selector}"); '
+                      f'if not w then error("no window {selector}") end; '
+                      'if hl.dsp.window.resize_on_commit and not w.xwayland '
+                      'and w.floating and not w.group and w.fullscreen == 0 then '
+                      'local p = w.at; '
+                      f'hl.dispatch(hl.dsp.window.resize_on_commit({{width = {width}, height = {height}, '
+                      f'dx = {x} - p.x, dy = {y} - p.y, window = "{selector}"}})) '
+                      'else ' + script + ' end')
         return _hypr_eval(script, "place_window")
     ok = not resize or _hypr_run(f"dispatch resizewindowpixel exact {width} {height},{selector}", "resizewindowpixel")
     return _hypr_run(f"dispatch movewindowpixel exact {x} {y},{selector}", "movewindowpixel") and ok

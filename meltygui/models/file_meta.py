@@ -103,6 +103,7 @@ class FileMeta(dict):
     # never store it; read it through is_project() or project_roots().
     project = False
     environment = None  # Project venv folder override; None means auto-detect.
+    breakpoints = None  # Deterministic source-site tuple keys -> breakpoint options.
 
     # The pre-09-02 class default; stored values of it are dropped at load
     # (folder_files._init_file_meta) so the files read as unpainted.
@@ -254,7 +255,8 @@ class FileMetaProxy(dict):
         self.generation = 0         # bumped on every local edit and every save (memo key)
         self._timer = None
         self._poller = None
-        self.listeners = []         # callables run(reading thread) after an external reload
+        self._repaint_queued = False
+        self.listeners = []         # callables after edits/reloads repaint their consumers
         self.load()
         atexit.register(self.flush)
 
@@ -391,6 +393,21 @@ class FileMetaProxy(dict):
             self._timer.daemon = True
             self._timer.start()
         self._ensure_poller()
+
+        # Local edits need the same cache notification as external reloads.
+        # Coalesce a batch of field edits and invalidate on the render thread,
+        # not on a metadata writer/poller thread or on every rendered frame.
+        with self._lock:
+            if getattr(self, "_repaint_queued", False):
+                return
+            self._repaint_queued = True
+        from meltygui.core.melty import Melty
+        Melty.post_to_render(self._repaint_local)
+
+    def _repaint_local(self):
+        with self._lock:
+            self._repaint_queued = False
+        self._repaint()
 
     def _save_timer(self):
         with self._lock:

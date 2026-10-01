@@ -85,15 +85,17 @@ def test_selection_stores_callable_and_propagates_editor_changes(monkeypatch):
     assert changed
     assert result is tile
     assert tile.render_func is editor
-    assert tile.input_value == "original edited"
-    # The editor drew inside a clip of its tile (above the 28 px picker).
-    assert clips == [(10, 20, 310, 192), None]
+    # The footer is painted after the body; a new selection draws next frame.
+    assert tile.input_value == "original"
+    assert clips == []
     monkeypatch.setattr(tile_view, "draw_dropdown", lambda *a, **kw: (True, None))
     changed, result = inspect.unwrap(tile_view.draw_tile_content)(
         tile, 300, 200, (editor,))
     assert changed and result is tile
     assert tile.render_func is None
     assert tile.input_value == "original edited"
+    # The previous editor drew inside its clip before the footer unselected it.
+    assert clips == [(10, 20, 310, 192), None]
 
 
 @pytest.mark.parametrize("height", [28, 200])

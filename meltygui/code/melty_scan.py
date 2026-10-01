@@ -26,6 +26,7 @@ from __future__ import annotations
 import ast
 import bisect
 import codecs
+import re
 import io
 import keyword
 import tokenize
@@ -508,11 +509,207 @@ class Seq:
         return f"Seq(#{self.id} {self.kind} owner={self.owner!r} keys={[it.key for it in self.items]})"
 
 
+class SourceSite:
+    """A deterministic statement/header candidate, not a verified bytecode stop.
+
+    Lines are 1-based, columns are 0-based characters, and the end is exclusive.
+    Compound sites cover their header only: a blank body line cannot accidentally
+    select the enclosing function. Keys use source order for repeated bindings,
+    including module/class bindings hidden by the editable dictionary.
+    """
+    __slots__ = ("path", "kind", "start_line", "start_column", "end_line", "end_column")
+
+    def __init__(self, path, kind, start, end):
+        self.path = path
+        self.kind = kind
+        self.start_line, self.start_column = start
+        self.end_line, self.end_column = end
+
+
+class SourceSiteIndex:
+    """CST-free statement keys plus an O(1 + matches) physical-line index.
+
+    Built from scanner nodes before runtime value materialization. Neither
+    imported objects, edit history, nor file identity can affect the keys.
+    Repeated occurrences intentionally use the existing #/## conventions.
+    """
+    def __init__(self, text, tree, metadata):
+        self.sites = {}
+        self._lines = {}
+        self._src = _Src(text)
+        self._metadata = metadata
+        self._significant_lines = metadata["significant_lines"]
+        self._body(tree.body, ())
+        del self._src
+        del self._significant_lines
+        del self._metadata
+
+    def splice_region(self, region, first_line, end_line, line_delta):
+        """Update an independently keyed regional parse without retokenizing.
+
+        Returns False if root occurrence/branch keys need global reconciliation.
+        The common same-line-count edit touches only the affected line buckets.
+        Like reparse_incremental, this consumes the old index.
+        """
+        old = {site.path: site for line in range(first_line, end_line)
+               for site in self._lines.get(line, ())}
+        old_roots = {path[0] for path in old}
+        new_roots = {path[0] for path in region.sites}
+        if old_roots != new_roots or any('#' in str(key) for key in old_roots):
+            return False
+        if any(site.start_line < first_line or site.end_line >= end_line
+               for site in old.values()):
+            return False
+        for path in old:
+            del self.sites[path]
+        for line in range(first_line, end_line):
+            self._lines.pop(line, None)
+        if line_delta:
+            # Shift each shared site once, then move bucket keys. No token work.
+            for site in self.sites.values():
+                if site.start_line >= end_line:
+                    site.start_line += line_delta
+                    site.end_line += line_delta
+            self._lines = {(line + line_delta if line >= end_line else line): sites
+                           for line, sites in self._lines.items()}
+        shifted = {}
+        for path, site in region.sites.items():
+            shifted[path] = SourceSite(path, site.kind,
+                                      (site.start_line + first_line - 1, site.start_column),
+                                      (site.end_line + first_line - 1, site.end_column))
+        self.sites.update(shifted)
+        for line, sites in region._lines.items():
+            self._lines[line + first_line - 1] = [shifted[site.path] for site in sites]
+        return True
+
+    def at_line(self, line, column=None):
+        sites = self._lines.get(line, ())
+        if column is None:
+            return tuple(sites)
+        return tuple(site for site in sites
+                     if (line != site.start_line or column >= site.start_column)
+                     and (line != site.end_line or column < site.end_column))
+
+    def _add(self, path, kind, start, end):
+        if path in self.sites:
+            raise ValueError(f"duplicate source-site key: {path!r}")
+        site = SourceSite(path, kind, start, end)
+        self.sites[path] = site
+        for line in range(start[0], end[0] + 1):
+            if line == end[0] and end[1] == 0:
+                continue
+            # Token coverage distinguishes comments/blanks from identical
+            # text inside a multiline string.
+            if line not in self._significant_lines:
+                continue
+            self._lines.setdefault(line, []).append(site)
+        return site
+
+    def _text(self, node):
+        a, b = self._src.node_span(node)
+        return self._src.text[a:b]
+
+    def _body(self, stmts, path, block_state=None):
+        seen = {}
+        if block_state is None:
+            block_state = ({"if": 0, "elif": 0, "else": 0}, {})
+        cond, blocks = block_state
+
+        def occurrence(base):
+            n = seen.get(base, 0)
+            seen[base] = n + 1
+            return base if not n else f"{base}#{n}"
+
+        def branch(key, kind, body, header, state=None):
+            bp = path + (key,)
+            if header:
+                self._add(bp, kind, *header)
+            self._body(body, bp, state)
+
+        for node in stmts:
+            kind = _k(node)
+            prefix = self._src.text[self._src.node_span(node)[0]:self._src.node_span(node)[0] + 32].lstrip()
+            match = re.match(r"[A-Za-z_]\w*", prefix)
+            first = match[0] if match else "statement"
+            keyword = first.rstrip(':')
+            node_metadata = self._metadata.get(node, {})
+            branch_headers = node_metadata.get("branches", {})
+            header_end = node_metadata.get("header_end")
+            start = (node.lineno, node.col_offset)
+            end = header_end or (node.end_lineno, node.end_col_offset)
+            if kind == "If":
+                keyword = "elif" if keyword == "elif" else "if"
+                key = f"{keyword}##{cond[keyword]}"
+                cond[keyword] += 1
+            elif kind in ("For", "AsyncFor"):
+                key = occ_key(f"for {self._text(node.target)} in {self._text(node.iter)}", blocks)
+            elif kind in ("Try", "TryStar"):
+                key = occ_key("try", blocks)
+            elif kind in _DEF_KINDS:
+                key = occurrence(node.name)
+            else:
+                name = _assign_target_name(node)
+                call = _stmt_call(node, True)
+                if name is not None:
+                    key = occurrence(name)
+                elif call is not None:
+                    key = occurrence(f"{_call_func_name(call) or 'call'}()")
+                else:
+                    # These categories have no editable key yet. Reserved
+                    # punctuation avoids collisions with Python identifiers.
+                    base = keyword if keyword in ("return", "raise", "assert", "import", "from", "pass", "break", "continue", "del", "global", "nonlocal", "yield", "while", "with", "match", "case", "async", "await") else "statement"
+                    key = occurrence(f"##{base}")
+            child_path = path + (key,)
+            self._add(child_path, kind, start, end)
+            decorator_seen = {}
+            for decorator in getattr(node, "decorator_list", ()):
+                name = (_call_func_name(decorator) if _k(decorator) == "Call" else None) or self._text(decorator)
+                occurrence_number = decorator_seen.get(name, 0)
+                decorator_seen[name] = occurrence_number + 1
+                decorator_key = name if not occurrence_number else f"{name}#{occurrence_number}"
+                self._add(child_path + ("decorators", decorator_key), "decorator",
+                          (decorator.lineno, decorator.col_offset),
+                          (decorator.end_lineno, decorator.end_col_offset))
+            body = getattr(node, "body", ())
+            if body:
+                body_path = child_path + ("locals",) if kind in ("FunctionDef", "AsyncFunctionDef") else child_path
+                self._body(body, body_path, block_state if kind == "If" else None)
+            orelse = node_metadata.get("orelse", getattr(node, "orelse", ()))
+            if orelse:
+                if kind == "If" and len(orelse) == 1 and _k(orelse[0]) == "If" and "else" not in branch_headers:
+                    # elif is a sibling branch in the existing dictionary.
+                    self._body(orelse, path, block_state)
+                else:
+                    if kind == "If":
+                        ekey = f"else##{cond['else']}"
+                        cond['else'] += 1
+                    elif kind in ("Try", "TryStar"):
+                        ekey = occ_key("try else", blocks)
+                    else:
+                        ekey = f"{key} else"
+                    branch(ekey, "else", orelse, branch_headers.get("else"), block_state if kind == "If" else None)
+            for handler in getattr(node, "handlers", ()):
+                header = "except*" if kind == "TryStar" else "except"
+                if handler.type is not None:
+                    header += " " + self._text(handler.type)
+                if handler.name is not None:
+                    header += " as " + handler.name
+                hkey = occ_key(header, blocks)
+                branch(hkey, "except", handler.body,
+                       ((handler.lineno, handler.col_offset), self._metadata[handler]["header_end"]))
+            final = getattr(node, "finalbody", ())
+            if final:
+                branch(occ_key("finally", blocks), "finally", final, branch_headers.get("finally"))
+
+
 class Origin:
     """The residual: the parsed text plus the flat site tables."""
 
     def __init__(self, text):
         self.text = text
+        # Exact caller snapshot, rebound after worker/cache transport. Consumers
+        # can reject stale positions by identity without comparing file text.
+        self.source_input = text
         self.src = _Src(text)
         self.items: dict[tuple, Item] = {}
         self.seqs: dict[int, Seq] = {}
@@ -528,6 +725,29 @@ class Origin:
         self.file_path = None
         self.line_offset = 0
         self._next_seq_id = 0
+
+    @property
+    def source_sites(self):
+        return self.source_site_index.sites
+
+    @property
+    def source_site_index(self):
+        # Identity comparison is an O(1) staleness check, including hotswapped
+        # Origins created before this field existed. Never compare file text.
+        if getattr(self, "_site_text", None) is not self.text:
+            metadata = {}
+            tree, _, _ = scan(self.text, site_metadata=metadata)
+            self._site_index = SourceSiteIndex(self.text, tree, metadata)
+            self._site_text = self.text
+        return self._site_index
+
+    def sites_at_line(self, line, column=None):
+        """Candidates at a 1-based line relative to ``text``, optional char column.
+
+        ``line_offset`` is file presentation metadata; callers querying a file
+        line in a parsed fragment must subtract it. No executable-line snapping.
+        """
+        return self.source_site_index.at_line(line, column)
 
     def top_extents(self):
         return [(b.offset, b.offset + rel_end, key) for b, rel_end, key in self.top_stmts]
@@ -958,9 +1178,15 @@ def _match(toks, i):
 
 
 class _Parser:
-    def __init__(self, toks):
+    def __init__(self, toks, site_metadata=None):
         self.toks = toks
         self.i = 0
+        self.site_metadata = {} if site_metadata is None else site_metadata
+
+    def _site(self, node):
+        # Transient parse-owned annotations. Existing node slot layouts remain
+        # unchanged so hot-patched methods also work on the live node classes.
+        return vars(self).setdefault("site_metadata", {}).setdefault(node, {})
 
     def peek(self):
         return self.toks[self.i]
@@ -1067,10 +1293,13 @@ class _Parser:
         node = Opaque(body)
         last = self._last_tok(body) or toks[-1]
         node._pos(toks[0], last)
+        self._site(node)["header_end"] = toks[colon].end
         # while/for-else on an opaque loop: consume the else block too.
         if toks[0].string == "while" and self.peek().type == _NAME and self.peek().string == "else":
             etoks = self.logical_line()
             ebody = self.body_after(etoks, self.header_colon(etoks, 0))
+            self._site(node)["orelse"] = ebody
+            self._site(node).setdefault("branches", {})["else"] = (etoks[0].start, etoks[self.header_colon(etoks, 0)].end)
             last = self._last_tok(ebody) or etoks[-1]
             node.end_lineno, node.end_col_offset = last.end
         return node
@@ -1097,6 +1326,7 @@ class _Parser:
         body = self.body_after(toks, colon)
         node = (AsyncFunctionDef if is_async else FunctionDef)(name_tok.string, args, body, [], returns)
         node._pos(start, self._last_tok(body) or toks[colon])
+        self._site(node)["header_end"] = toks[colon].end
         return node
 
     def classdef(self, toks):
@@ -1117,6 +1347,7 @@ class _Parser:
         body = self.body_after(toks, colon)
         node = ClassDef(name_tok.string, bases, keywords, body, [])
         node._pos(start, self._last_tok(body) or toks[colon])
+        self._site(node)["header_end"] = toks[colon].end
         return node
 
     def if_stmt(self, toks):
@@ -1126,6 +1357,7 @@ class _Parser:
         body = self.body_after(toks, colon)
         node = If(test, body, [])
         node._pos(start, self._last_tok(body) or toks[colon])
+        self._site(node)["header_end"] = toks[colon].end
         nxt = self.peek()
         if nxt.type == _NAME and nxt.string == "elif":
             etoks = self.logical_line()
@@ -1135,6 +1367,7 @@ class _Parser:
         elif nxt.type == _NAME and nxt.string == "else":
             etoks = self.logical_line()
             node.orelse = self.body_after(etoks, self.header_colon(etoks, 0))
+            self._site(node).setdefault("branches", {})["else"] = (etoks[0].start, etoks[self.header_colon(etoks, 0)].end)
             last = self._last_tok(node.orelse) or etoks[-1]
             node.end_lineno, node.end_col_offset = last.end
         return node
@@ -1152,10 +1385,12 @@ class _Parser:
         body = self.body_after(toks, colon)
         node = (AsyncFor if is_async else For)(target, it, body, [])
         node._pos(start, self._last_tok(body) or toks[colon])
+        self._site(node)["header_end"] = toks[colon].end
         nxt = self.peek()
         if nxt.type == _NAME and nxt.string == "else":
             etoks = self.logical_line()
             node.orelse = self.body_after(etoks, self.header_colon(etoks, 0))
+            self._site(node).setdefault("branches", {})["else"] = (etoks[0].start, etoks[self.header_colon(etoks, 0)].end)
             last = self._last_tok(node.orelse) or etoks[-1]
             node.end_lineno, node.end_col_offset = last.end
         return node
@@ -1164,6 +1399,7 @@ class _Parser:
         start = toks[0]
         body = self.body_after(toks, self.header_colon(toks, 0))
         handlers, orelse, finalbody = [], [], []
+        branch_headers = {}
         star = False
         last = self._last_tok(body) or toks[-1]
         while True:
@@ -1188,16 +1424,21 @@ class _Parser:
                 hbody = self.body_after(htoks, colon)
                 h = ExceptHandler(typ, name, hbody)
                 h._pos(htoks[0], self._last_tok(hbody) or htoks[colon])
+                self._site(h)["header_end"] = htoks[colon].end
                 handlers.append(h)
                 last = self._last_tok(hbody) or htoks[colon]
             elif htoks[0].string == "else":
                 orelse = self.body_after(htoks, colon)
+                branch_headers["else"] = (htoks[0].start, htoks[colon].end)
                 last = self._last_tok(orelse) or htoks[colon]
             else:
                 finalbody = self.body_after(htoks, colon)
+                branch_headers["finally"] = (htoks[0].start, htoks[colon].end)
                 last = self._last_tok(finalbody) or htoks[colon]
         node = (TryStar if star else Try)(body, handlers, orelse, finalbody)
         node._pos(start, last)
+        self._site(node)["header_end"] = toks[self.header_colon(toks, 0)].end
+        self._site(node)["branches"] = branch_headers
         return node
 
     def params(self, toks):
@@ -1672,12 +1913,16 @@ def iter_imports(node):
         stack.extend(reversed(children))
 
 
-def scan(text):
+def scan(text, *, site_metadata=None):
     """text → (Module, standalone comments, trailing comments). Raises
     SyntaxError (a ScanError) for what the tokenizer / block structure can't
-    take; anything else parses — validation against `ast` is the caller's."""
+    take; anything else parses — validation against `ast` is the caller's.
+    Optional ``site_metadata`` receives transient parse-owned annotations for
+    SourceSiteIndex. It never changes the returned nodes or persisted keys.
+    """
     standalone, trailing = {}, {}
     sig = []
+    significant_lines = set()
     try:
         for t in tokenize.generate_tokens(io.StringIO(text).readline):
             tt = t.type
@@ -1691,6 +1936,8 @@ def scan(text):
                 continue
             else:
                 sig.append(t)
+                if tt not in (_INDENT, _DEDENT, _NEWLINE, _ENDMARKER):
+                    significant_lines.update(range(t.start[0], t.end[0] + (t.end[1] != 0)))
     except tokenize.TokenError as e:
         raise _token_scan_error(text, e) from None
     except (IndentationError, SyntaxError) as e:
@@ -1698,7 +1945,8 @@ def scan(text):
     if not sig or sig[-1].type != _ENDMARKER:
         sig.append(_EndTok(text.count("\n") + 2, 0))
         sig[-1].type = _ENDMARKER
-    p = _Parser(sig)
+    p = _Parser(sig, site_metadata)
+    p.site_metadata["significant_lines"] = significant_lines
     body = p.block()
     return Module(body), standalone, trailing
 
@@ -2653,15 +2901,19 @@ class Extractor:
 def extract(text, *, frontend, types, file_path=None, line_offset=0, module_header=True):
     """(gp, origin) for `text` through one front end: "scan" (the tokenizer
     parser) or "ast" (Python's parser, the oracle)."""
+    site_metadata = {}
     if frontend == "ast":
         tree = ast.parse(text)
         comments = scan_comments(text)
     else:
-        tree, standalone, trailing = scan(text)
+        tree, standalone, trailing = scan(text, site_metadata=site_metadata)
         comments = (standalone, trailing)
     origin = Origin(text)
     origin.file_path = file_path
     origin.line_offset = line_offset
+    site_tree = tree if frontend != "ast" else scan(text, site_metadata=site_metadata)[0]
+    origin._site_index = SourceSiteIndex(text, site_tree, site_metadata)
+    origin._site_text = text
     gp = Extractor(origin, types, comments, module_header=module_header).module(tree)
     return gp, origin
 

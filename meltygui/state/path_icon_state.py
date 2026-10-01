@@ -12,3 +12,12 @@ class PathIconState(DictConversion):
         self.watches = {}
         self.requested = set()
         self.watch_owner = None
+
+    def ensure_owned_resources(self):
+        """Detach the shared template cache left by older session loaders, live."""
+        default = type(self).__dict__.get('default_instance')
+        if default is not None and self is not default and self.folders is default.folders:
+            self.folders = FolderIcons()
+            self.requested.clear()
+            if self.watch_owner is not None:
+                self.watch_owner.folders = self.folders

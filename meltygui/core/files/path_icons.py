@@ -62,6 +62,7 @@ def with_path_icons(func):
         if state is None:
             state = owned_state(draw_state, 'icon_state', PathIconState)
             kwargs['icon_state'] = state
+        state.ensure_owned_resources()
         if not hasattr(state, 'requested'):
             state.requested = set()
         state.folders.consume(state.folders.requested)

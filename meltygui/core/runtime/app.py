@@ -871,7 +871,12 @@ def _present_children(parent):
         if child.last_sent_rect is None or target[:2] != child.last_sent_rect[:2]:
             if crect is not None and tuple(crect[:2]) == target[:2]:
                 child.last_sent_rect = target       # already there
-            elif geometry_feed.place_window(child.title, target, resize=False):
+            elif geometry_feed.place_window(child.title, target, resize=False,
+                                            initial=child.last_sent_rect is None):
+                # Initial placement is applied with the next buffer commit,
+                # even if this child would otherwise have no reason to draw.
+                if child.last_sent_rect is None:
+                    child.request_frame()
                 _debug(f'place {child.title!r} at {target} (parent {prect[:2]} + {pos})')
                 child.last_sent_rect = target
                 child.await_ack = True

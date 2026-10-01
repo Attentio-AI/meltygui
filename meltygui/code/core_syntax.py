@@ -242,6 +242,7 @@ def parse_to_dict(text, *, file_path=None, line_offset=0, frontend=None) -> Gene
                               file_path=file_path, line_offset=line_offset)
     origin.file_path = file_path
     origin.line_offset = line_offset
+    origin.source_input = text
     gp.file_path = file_path
     gp.line_offset = line_offset
     gp[ORIGIN_KEY] = origin
@@ -1148,6 +1149,7 @@ def reparse_incremental(gp, new_text) -> GeneralParse:
         return reparse_reusing(gp, new_text)
     old_text = origin.text
     if new_text == old_text:
+        origin.source_input = new_text
         return gp
 
     # ── 1. the changed char range (memcmp-style prefix / suffix), snapped to lines ──
@@ -1297,7 +1299,20 @@ def reparse_incremental(gp, new_text) -> GeneralParse:
     for it in rbody.items:
         it.seq = body.id
     origin.top_stmts = origin.top_stmts[:i0] + rorigin.top_stmts + origin.top_stmts[i1 + 1:]
+    # Source-site keys in isolated root scopes can be updated from the region.
+    # Global occurrence changes require a full scan; build it here, never on
+    # the next gutter/lookup request.
+    site_index = origin.source_site_index
+    end_line, end_column = origin.src.linecol(re_)
+    if end_column:
+        end_line += 1
+    sites_spliced = site_index.splice_region(rorigin.source_site_index, first_line, end_line, dl)
     origin.text = new_text
+    origin.source_input = new_text
+    if sites_spliced:
+        origin._site_text = new_text
+    else:
+        origin.source_site_index
     origin.src = _Src.spliced(origin.src, new_text, rs, re_, delta, rorigin.src)
 
     # ── 6. spans: nothing to renumber - they hang off the Base cells shifted above ──

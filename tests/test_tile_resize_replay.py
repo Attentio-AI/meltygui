@@ -70,7 +70,7 @@ def test_pixels_do_not_stretch_and_footer_tracks_bottom(monkeypatch, size):
     from meltygui.core.rendering import overlay
     descendant = SimpleNamespace(_kwargs={})
     tex.overlay_views = (descendant,)
-    parent = SimpleNamespace(key="parent", overlay_views=())
+    parent = SimpleNamespace(key="parent", overlay_views=(), input_views=())
     cache._stack = [parent]
     ds._kwargs = {"draw_overlay": lambda: None}
     painted = []

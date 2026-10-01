@@ -4,7 +4,7 @@ from meltygui.core.conversion.dict_conversion import DictConversion
 from pathlib import Path
 
 
-@no_save("_listing", "_last_dir", "_watched", "_search", "_search_for")
+@no_save("_recent_files", "_listing", "_last_dir", "_watched", "_search", "_search_for", "_row_overlay")
 class FileExplorerState(DictConversion):
     """The listing's injected state (`explorer_state: FileExplorerState`).
     Persists the selection, the scroll position per directory visited
@@ -16,11 +16,13 @@ class FileExplorerState(DictConversion):
         self.selected = None        # str path of the single-clicked row
         self.scroll_by_dir = {}     # str dir -> scroll y
         self.show_hidden = False    # dotfiles
+        self._recent_files = None   # async snapshot, owned by the listing
         self._listing = None        # (dir, mtime_ns, show_hidden, rows) memo
         self._last_dir = None       # the dir of the last run: navigation detection
         self._watched = None        # the dir the view's FileWatch emitter is on
         self._search = ""           # the type-to-search query
         self._search_for = None
+        self._row_overlay = None
 
 
 class ShortcutState(DictConversion):

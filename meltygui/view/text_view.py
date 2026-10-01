@@ -10,6 +10,7 @@ from meltygui.core.core_render import render_func
 from meltygui.core.rendering.core_decoration import Core
 from meltygui.core.rendering.window_decoration import window
 from meltygui.core.rendering.render_funcs import RenderFuncs
+from meltygui.core.rendering.overlay import paint_view_background
 from meltygui.state.new_core_model import DropDownState
 from meltygui.state.new_core_model import TextEditorState
 from meltygui.core.runtime.toggles import Tint
@@ -1063,7 +1064,8 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
 @render_func(is_default_for='CodeLine', show_bg=True, use_cache=True, disable_scroll=False, with_header=draw_header,
              shadow=False, max_bg_depth=0, max_bg_value=0.05,
              show_name=False, with_footer=draw_footer, determines_height=False, saturation=1.7,
-             selectable=False, searchable=True, bg_offset=-0.6, show_add_delete=False)
+             selectable=False, searchable=True, bg_offset=-0.6, show_add_delete=False,
+             draw_background=paint_view_background)
 @window
 def draw_text(input_value: str, height=None,
               left_mouse_down=False,
@@ -1084,7 +1086,8 @@ def draw_text(input_value: str, height=None,
               manual_search=False, fold_ranges=None, scope_collapse=True,
               default_collapsed_lines=None,
               diff_fold_ranges=None, expand_diff=None,
-              gutter_indent=False,
+              gutter_indent=False, draw_breakpoints=True,
+              file_metadata=None, file_key=None, breakpoints=None,
               scroll_bar_width=8.0, scroll_bar_brightness=5.9,
               autocomplete=True, unique=0,
               show_widgets=True, show_root_backgrounds=True,
@@ -1092,7 +1095,13 @@ def draw_text(input_value: str, height=None,
               roster_world=None, roster_table=None,
               fim="", fim_state: FimState = None,
               source_tools: SourceToolsState = None, source_context=None):
-    """`show_widgets=False` hides every inline token widget (run/eye buttons,
+    """`draw_breakpoints=False` hides/disables the breakpoint gutter column.
+    Markers use the file's metadata `breakpoints` mapping, keyed by the current
+    whole-file code_dict/code_tree source-site keys. The codec supplies that
+    mapping to keep cached panes synchronized; file_metadata is injected and
+    file_key (or jump_to.path) identifies its owner. No line numbers are stored.
+    Missing/stale source indexes disable toggling until the parse arrives.
+    `show_widgets=False` hides every inline token widget (run/eye buttons,
     number drags, bool switches, icon pickers -- the token_views layer).
     `highlight_token_matches=False` turns off the caret-rest same-token wash
     for this editor (embeds like global-search rows: the wash, drawn under
@@ -2066,6 +2075,11 @@ def draw_text(input_value: str, height=None,
                     return (_dstarts[_i + 1] - 1 if _i + 1 < len(_dstarts)
                             else len(_disp))
             ds.text_cursor_pos = _full_to_disp(_cp_full)
+            # Reflow preserves the logical caret; it is not a cursor move.
+            # Search owns the landing scroll when it opens/restores folds.
+            # Letting caret-follow see this display-offset change would
+            # immediately scroll back to the old caret after that landing.
+            ds.text_prev_cursor_pos = ds.text_cursor_pos
             if _fold_sel_full is not None:
                 # Selection-toped fold: the selection rides along so the
                 # next press can act on the same span again.
@@ -2782,6 +2796,25 @@ def draw_text(input_value: str, height=None,
                  else 0.0)
     gutter_w += _lv_btn_w
 
+    # Keep breakpoint clicks separate from live-value, number and fold controls.
+    # Change this width/radius to adjust the marker cell, not the number strip.
+    breakpoint_width = 15.0 if show_gutter and draw_breakpoints else 0.0
+    breakpoint_radius = 4.5
+    breakpoint_left = left + _lv_btn_w
+    gutter_w += breakpoint_width
+    from meltygui.model.breakpoint_model import current_breakpoint_index
+    from meltygui.model.breakpoint_model import file_breakpoints
+    from meltygui.model.breakpoint_model import line_has_breakpoint
+    from meltygui.model.breakpoint_model import toggle_line_breakpoint
+    breakpoint_tree = code_dict if isinstance(code_dict, dict) else code_tree
+    breakpoint_path = (file_key or getattr(jump_to, "path", None)
+                       or getattr(breakpoint_tree, "file_path", None))
+    breakpoint_index = (current_breakpoint_index(breakpoint_tree, _fold_full)
+                        if breakpoint_width and breakpoint_path is not None else None)
+    # Read the authoritative file entry; replacing its mapping also changes the
+    # codec-injected `breakpoints` argument of every cached pane for this file.
+    breakpoints = file_breakpoints(file_metadata, breakpoint_path)
+
     # Breathing room between the number strip and the code: folded into the
     # text inset (origin_x → rect_min_x below) only - the strip itself keeps
     # gutter_w, so the numbers stay snug in their column and the margin
@@ -3386,6 +3419,22 @@ def draw_text(input_value: str, height=None,
     # the press must not place the caret in the text under the floating bar
     # (the old @render_func button's own draw_state used to claim it).
     if left_mouse_down:
+        text_editor_state._breakpoint_gesture = False
+    if (left_mouse_down and breakpoint_width
+            and breakpoint_left <= left_mouse_down.x < breakpoint_left + breakpoint_width
+            and max(clip_rect_snapshot[1] + bar_height, origin_y) <= left_mouse_down.y < clip_rect_snapshot[3]):
+        breakpoint_row = int((left_mouse_down.y - origin_y) // line_px)
+        if (0 <= breakpoint_row < len(_line_starts(text))
+                and (line_numbers is None or
+                     (breakpoint_row < len(line_numbers) and line_numbers[breakpoint_row] is not None))):
+            breakpoint_line = (_fold_d2b[breakpoint_row]
+                               if _fold_d2b is not None else breakpoint_row) + 1
+            if breakpoint_index is not None:
+                toggle_line_breakpoint(file_metadata, breakpoint_path, breakpoint_index, breakpoint_line)
+                breakpoints = file_breakpoints(file_metadata, breakpoint_path)
+            text_editor_state._breakpoint_gesture = True
+            left_mouse_down = None
+    if left_mouse_down:
         _jb = getattr(ds, "_jump_btn_rect", None)
         if (_jb is not None
                 and _jb[0] <= left_mouse_down.x < _jb[2]
@@ -3418,7 +3467,7 @@ def draw_text(input_value: str, height=None,
     # gutter clicks still place the caret at line start.
     if (left_mouse_down and gutter_w
             and Toggles.TextEditor.usage_heat_gutter
-            and left + _lv_btn_w <= left_mouse_down.x < left + gutter_w
+            and left + _lv_btn_w + breakpoint_width <= left_mouse_down.x < left + gutter_w
             and not any(_br[0] <= left_mouse_down.x < _br[2]
                         and _br[1] <= left_mouse_down.y < _br[3]
                         for _br, _ in (getattr(ds, '_fold_badge_rects', None)
@@ -3497,7 +3546,8 @@ def draw_text(input_value: str, height=None,
     # Gestures that started inside a plain token widget never extend a text
     # selection - the drag drives the widget's value adjustment (see the press
     # handler above). Cleared on release in the token-view loop below.
-    if left_mouse_drag and getattr(ds, '_plain_tv_gesture', False):
+    if left_mouse_drag and (getattr(ds, '_plain_tv_gesture', False)
+                            or getattr(text_editor_state, '_breakpoint_gesture', False)):
         left_mouse_drag = None
     if left_mouse_drag:
         mx = left_mouse_drag.x if left_mouse_drag else io.mouse_pos.x
@@ -6890,7 +6940,7 @@ def draw_text(input_value: str, height=None,
             the arrow is its OWN button (left) that scrolls the error line
             into view (centered), next to the error button proper."""
             from meltygui.view.header_view import flat_button
-            _eb_x0 = left + _lv_btn_w + 2.0
+            _eb_x0 = left + _lv_btn_w + breakpoint_width + 2.0
             _eb_h = max(6.0, line_px - 4.0)
             _eb_save = imgui.get_cursor_screen_pos()
             if arrow is not None:
@@ -6946,7 +6996,7 @@ def draw_text(input_value: str, height=None,
             if _gv is None:
                 return False
             _gv_spec, _gv_tok, _gv_name, _gv_extra = _gv
-            _gv_x0 = left + _lv_btn_w + 2.0
+            _gv_x0 = left + _lv_btn_w + breakpoint_width + 2.0
             if x1 - _gv_x0 < 12.0:
                 return False
             _gv_save = imgui.get_cursor_screen_pos()
@@ -6974,6 +7024,7 @@ def draw_text(input_value: str, height=None,
             ds._gutter_num_memo = _gn_memo
         _gn = _gn_memo[1]
         _gn_base = left + gutter_w - 6.0
+        breakpoint_color = pack_color(0.95, 0.20, 0.25, 1.0)  # Conventional red stop marker.
         for line_idx in range(_gl0, _gl1):
             ly = origin_y + line_idx * line_px
             if ly + line_px < gutter_top or ly > rect_max_y:
@@ -6994,6 +7045,12 @@ def draw_text(input_value: str, height=None,
             elif _gne is False:
                 continue
             num_str, nx = _gne
+            if breakpoint_index is not None and not changed:
+                breakpoint_line = (_fold_d2b[line_idx] if _fold_d2b is not None else line_idx) + 1
+                if line_has_breakpoint(breakpoint_index, breakpoints, breakpoint_line):
+                    draw_list.add_circle_filled(
+                        breakpoint_left + breakpoint_width * 0.5,
+                        ly + line_px * 0.5, breakpoint_radius, breakpoint_color, 16)
             # Usage heat box (see the aggregation pass above): a rounded wash
             # around the number, summed over every usage token on the line -
             # colored by the line's definition tint when it has one, so the
@@ -7051,13 +7108,13 @@ def draw_text(input_value: str, height=None,
                     # at the chip so clicking it still opens the usage box
                     # instead of toggling the fold.
                     _chip_l = ((nx - 3.0) + (left + gutter_w - 3.0)) * 0.5
-                    _gcx = max(_chip_l - 8.0, left + _lv_btn_w + 5.0)
-                    _gr = (left + _lv_btn_w, ly, _chip_l - 2.0, ly + line_px)
+                    _gcx = max(_chip_l - 8.0, left + _lv_btn_w + breakpoint_width + 5.0)
+                    _gr = (left + _lv_btn_w + breakpoint_width, ly, _chip_l - 2.0, ly + line_px)
                 else:
                     # No chip: right-align the arrow with the line numbers;
                     # a gutter widget takes the cell left of the arrow.
                     _gcx = left + gutter_w - 6.0 - char_w
-                    _gr = (left + _lv_btn_w, ly, left + gutter_w, ly + line_px)
+                    _gr = (left + _lv_btn_w + breakpoint_width, ly, left + gutter_w, ly + line_px)
                     if _draw_gutter_widget(line_idx, ly, _gcx - 8.0):
                         _gr = (_gcx - 6.0, ly, left + gutter_w, ly + line_px)
                 _ghov = (_gr[0] <= io.mouse_pos.x < _gr[2]

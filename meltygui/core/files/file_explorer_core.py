@@ -102,3 +102,48 @@ def _trace_browser_size(stage, draw_state, **details):
         pass
 
 
+
+
+def with_recent_files(func):
+    """Own the recent snapshot alongside the listing's existing injected state."""
+    from functools import wraps
+    @wraps(func)
+    def draw(*args, **kwargs):
+        from meltygui.model.file_location_model import FileLocation, RecentFiles
+        from meltygui.core.runtime.background import Background
+        state = kwargs['explorer_state']
+        location = FileLocation(str(kwargs.get('input_value', args[0] if args else '')))
+        recent = state._recent_files
+        if location.is_recent:
+            if recent is None:
+                recent = state._recent_files = RecentFiles()
+            recent.consume()
+        elif recent is not None:
+            recent.close()
+            state._recent_files = recent = None
+        try:
+            return func(*args, **kwargs)
+        finally:
+            if recent is not None:
+                owner = kwargs['draw_state']
+                recent.dispatch(lambda: Melty.post_to_render(owner.invalidate), Background.submit_io)
+    return draw
+
+
+def cleanup_file_listing(draw_state):
+    from meltygui.core.files.path_icons import cleanup_path_icon
+    cleanup_path_icon(draw_state)
+    state = draw_state.misc.get('explorer_state')
+    if state is None:
+        return
+    if state._recent_files is not None:
+        state._recent_files.close()
+        state._recent_files = None
+    previous = state._watched
+    holders = _WATCHERS.get(previous)
+    if holders is not None:
+        holders.discard(draw_state)
+        if not holders:
+            del _WATCHERS[previous]
+            FileWatch.unwatch_dir(previous)
+    state._watched = None

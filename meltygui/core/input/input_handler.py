@@ -6,7 +6,7 @@ Device-agnostic actions auto-parsed from subscription names.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Optional
 import time
 
@@ -799,6 +799,13 @@ class InputHandler:
             event_name = cache.get(key)
             if event_name is None:
                 return
+            # Device edges have no view yet. Each delivery owns its target
+            # tile, including deferred clicks and pass-through subscribers;
+            # begin_frame uses it to wake cached ancestors before rendering.
+            # Synthetic hover notifications retain their non-invalidating
+            # sentinel; they are not device edges (action is None).
+            if event.action is not None and event.tile_id != tile_id:
+                event = replace(event, tile_id=tile_id)
             vdict = result.get(view_id)
             if vdict is None:
                 vdict = {}

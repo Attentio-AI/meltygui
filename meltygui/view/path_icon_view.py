@@ -20,6 +20,7 @@ def draw_path_icon(input_value: str, draw_state, icon_state: PathIconState = Non
                    size=18.0, color=None, fallback=None, is_dir=True,
                    custom_icon=None, alpha=1.0, paint=True):
     """Desktop artwork takes the same slot as a glyph; explicit metadata wins."""
+    icon_state.ensure_owned_resources()
     path = Path(input_value).expanduser()
     folders = {path} if is_dir and not custom_icon else set()
     icon_state.folders.consume(folders)

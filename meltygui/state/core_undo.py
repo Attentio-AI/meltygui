@@ -341,9 +341,6 @@ class WindowMoveChange(Change):
             Core.melty.cache.invalidate_up(wds._tile_id, force=True, max_depth=4)
         request_render()
 
-
-
-
 @window(view_func=RenderFuncs.draw_undo_manager, live=True)
 class UndoManager:
     # draw_state -> ordered list of Changes recorded for that node. Safe to key
@@ -1071,5 +1068,4 @@ def handle_undo(changed, old_value, new_value, draw_state):
     if not is_origin or _never_origin(draw_state):
         return
     UndoManager.record(draw_state, old_value, new_value)
-
 

@@ -230,42 +230,14 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
         if tint is not None:
             row_tints[renderer] = tint
     left, top = imgui.get_cursor_screen_pos()
-    imgui.set_cursor_screen_pos((left, top + content_height))
-    result = draw_dropdown(
-        tile.render_func, collection=choices, name="Editor type", key=tile.id,
-        show_name=False, width=min(picker_width, width), height=picker_height,
-        show_header=False, row_tints=row_tints,
-        display_label="Empty" if tile.render_func is None else renderer_label(tile.render_func),
-        return_extras=resize_record is not None,
-    )
-    selected, renderer = result[:2]
-    if resize_record is not None and len(result) > 2:
-        resize_record.controls.append(result[2])
-    if selected:
-        tile.render_func = renderer
-
-    changed = selected
-    if selected and endpoints is not None:
-        from meltygui.core.layout.tile_links import prepare_endpoint, retire_endpoints
-        previous = {tile.id: endpoint} if endpoint is not None else {}
-        endpoint = prepare_endpoint(tile, endpoint.path if endpoint is not None else tile_path)
-        retire_endpoints(previous, {tile.id: endpoint} if endpoint is not None else {})
-        if endpoint is None:
-            endpoints.pop(tile.id, None)
-        else:
-            endpoints[tile.id] = endpoint
+    changed = False
     toolbar_left = min(picker_width + 4.0, width)
     injected = {}
     if endpoint is not None:
         from meltygui.core.layout.tile_links import resolve_parameters
-        # A renderer change gets its new footer layout on the next frame.
-        if not selected:
-            for slot_left, slot_top, slot_width in link_slots:
-                imgui.set_cursor_screen_pos((left + slot_left, top + content_height + slot_top))
-                changed |= draw_tile_links(endpoint, endpoints, slot_width, picker_height, resize_record)
-            if link_slots:
-                last_left, _last_top, last_width = link_slots[-1]
-                toolbar_left = min(width, last_left + last_width + 4.0)
+        if link_slots:
+            last_left, _last_top, last_width = link_slots[-1]
+            toolbar_left = min(width, last_left + last_width + 4.0)
         injected = resolve_parameters(endpoint, endpoints)
         injected['draw_state'] = endpoint.draw_state
     if tile.render_func is not None:
@@ -303,5 +275,37 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
                     for source in (endpoint.draw_state, *endpoint.states.values()):
                         dependencies.invalidate(Melty.cache, source)
         changed |= content_changed
+    # A toolbar renderer spans the footer too. Paint the tile controls last
+    # so its cached mask cannot flatten their shadows. Fresh control bodies
+    # emit standalone shadow marks, which otherwise hide the overlap until
+    # those controls are cache-served (e.g. when Tasks loses hover).
+    imgui.set_cursor_screen_pos((left, top + content_height))
+    result = draw_dropdown(
+        tile.render_func, collection=choices, name="Editor type", key=tile.id,
+        show_name=False, width=min(picker_width, width), height=picker_height,
+        show_header=False, row_tints=row_tints,
+        display_label="Empty" if tile.render_func is None else renderer_label(tile.render_func),
+        return_extras=resize_record is not None,
+    )
+    selected, renderer = result[:2]
+    if resize_record is not None and len(result) > 2:
+        resize_record.controls.append(result[2])
+    if selected:
+        tile.render_func = renderer
+
+    changed |= selected
+    if selected and endpoints is not None:
+        from meltygui.core.layout.tile_links import prepare_endpoint, retire_endpoints
+        previous = {tile.id: endpoint} if endpoint is not None else {}
+        endpoint = prepare_endpoint(tile, endpoint.path if endpoint is not None else tile_path)
+        retire_endpoints(previous, {tile.id: endpoint} if endpoint is not None else {})
+        if endpoint is None:
+            endpoints.pop(tile.id, None)
+        else:
+            endpoints[tile.id] = endpoint
+    if endpoint is not None and not selected:
+        for slot_left, slot_top, slot_width in link_slots:
+            imgui.set_cursor_screen_pos((left + slot_left, top + content_height + slot_top))
+            changed |= draw_tile_links(endpoint, endpoints, slot_width, picker_height, resize_record)
     imgui.set_cursor_screen_pos((left, top + height))
     return changed, tile

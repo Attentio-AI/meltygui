@@ -182,9 +182,15 @@ class Tile:
     # instead of misaligned stale pixels.
     content_scroll: Optional[Tuple[int, int]] = None
     content_bg: bool = False
+    # Function edits invalidate preserved pixels as well as the current view.
+    # Mark on invalidation; clear the bands only when the render thread reuses
+    # this tile, since hotswap notifications need not own a GL context.
+    content_stale: bool = False
     # Descendant foregrounds (including scrollbars) are outside tile pixels.
     # Replay this retained set when the body is skipped; lifetime follows the tile.
     overlay_views: tuple = ()
+    # Input owners painted into this snapshot, including uncached descendants.
+    input_views: tuple = ()
 
 
 @dataclass
@@ -203,6 +209,7 @@ class _Ctx:
     started: float = 0.0
     child_ms: float = 0.0
     overlay_views: tuple = ()
+    input_views: tuple = ()
 
 
 @dataclass
@@ -1643,6 +1650,9 @@ class TileCacheMasked:
         for fn in (getattr(draw_state, "_wrapper", None), getattr(draw_state, "_view_func", None)):
             for fid in self._func_ids(fn):
                 self.func_id_to_keys.setdefault(fid, set()).add(rkey)
+        # Background pixels are also captured. Editing their painter must
+        # refresh the resident body as well as the live uncovered area.
+        self.register_func_key((getattr(draw_state, '_kwargs', None) or {}).get('draw_background'), rkey)
 
     def register_func_key(self, func, key) -> None:
         """Associate an extra render function with an existing view key. Used for
@@ -1664,6 +1674,7 @@ class TileCacheMasked:
         """Invalidate every view drawn by the given @render_func, e.g.
         invalidate_by_func(draw_text) rerenders all text views."""
         for k in self._keys_for_func(func):
+            self._invalidate_func_content(k)
             self.invalidate(k, frame_delta=frame_delta, note=note)
         if other_windows:
             self._invalidate_other_windows("invalidate_by_func", lambda cache: cache._keys_for_func(func),
@@ -1672,10 +1683,27 @@ class TileCacheMasked:
     def invalidate_up_by_func(self, func, max_depth=4, force=False, frame_delta=0, note=None, other_windows=True):
         """Like invalidate_by_func, but also cascades up to parents/children."""
         for k in self._keys_for_func(func):
+            self._invalidate_func_content(k, max_depth=max_depth)
             self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta, note=note)
         if other_windows:
             self._invalidate_other_windows("invalidate_up_by_func", lambda cache: cache._keys_for_func(func),
                                            func, max_depth=max_depth, force=force, frame_delta=frame_delta, note=note)
+
+    def _invalidate_func_content(self, key, max_depth=0):
+        """Retire earlier-size pixels affected by a changed render definition.
+
+        Ordinary layout/input invalidation keeps resize history. A function
+        edit can remove chrome from that history, and repainting the current
+        smaller viewport cannot replace pixels beyond it. Flattened ancestor
+        images and the requested descendant cascade carry the same old code.
+        """
+        keys = set(self.get_parent_keys(key))
+        if max_depth:
+            keys.update(child for _, child, _ in self.get_child_keys(key, max_depth=max_depth).values())
+        for affected in keys:
+            tile = self._tiles.get(affected)
+            if tile is not None and tile.content_size is not None:
+                tile.content_stale = True
 
     # def apply_invalid(self):
     # for t in self.pending_invalid:
@@ -3853,6 +3881,8 @@ class TileCacheMasked:
         x, y, width, height = rect
         key = draw_state._tile_id
         tile = self._tiles[key]
+        if getattr(tile, 'content_stale', False):
+            self._scrub_stale_content(tile, draw_state)
         imgui.set_cursor_screen_pos((x, y))
         # Match the render wrapper's geometry bookkeeping: retain geometry
         # version updates without invalidating frozen pixels on every move.
@@ -3879,7 +3909,11 @@ class TileCacheMasked:
 
         if Melty.channels_split:
             dl.channels_set_current(Melty.get_channel(draw_state.depth))
-        self.draw_freeze_bg(draw_state, x, y, width, height, live=False)
+        from meltygui.core.rendering.overlay import draw_background
+        if (draw_state._kwargs or {}).get('draw_background') is not None:
+            draw_background(draw_state)
+        else:
+            self.draw_freeze_bg(draw_state, x, y, width, height, live=False)
         alloc_w, alloc_h = _tile_alloc(tile)
         resident_w, resident_h = tile.content_size or tile.size
         footer = min(footer_height, tile.size[1], height)
@@ -3906,6 +3940,7 @@ class TileCacheMasked:
         from meltygui.core.rendering.overlay import finish_cached_overlays
         ctx.drew_cached = True
         finish_cached_overlays(self, ctx)
+        self.finish_cached_input(ctx)
         self._frame_cache_hits += 1
         return True
 
@@ -3918,6 +3953,8 @@ class TileCacheMasked:
             draw_state.top = draw_state.abs_top
 
         t = self._tiles.get(rkey)
+        if t is not None and getattr(t, 'content_stale', False):
+            self._scrub_stale_content(t, draw_state)
         size = (draw_state.width, draw_state.height)
         layer = draw_state.z_pos
 
@@ -3986,6 +4023,8 @@ class TileCacheMasked:
                 )
 
         if use_image:
+            from meltygui.core.rendering.overlay import draw_background
+            draw_background(draw_state)
             a = draw_state.abs_left, draw_state.abs_top
             b = draw_state.abs_left + size[0], draw_state.abs_top + size[1]
             # Top-anchored logical subrect of the (possibly bucket-padded)
@@ -4005,8 +4044,10 @@ class TileCacheMasked:
         draw_state.last_seen = Melty.frame_count
 
     def draw_freeze_bg(self, draw_state, left, top, width, height, live: bool,
-                       rounding=None):
-        """Single owner of background rendering for freeze_resize views — the
+                       rounding=None, draw_list=None, outline=False):
+        """Standard background recipe for frozen tiles and live background hooks.
+
+        For freeze_resize views the
         wrapper's show_bg block delegates here instead of calling draw_bg
         itself, so live and frozen frames share one code path and can never
         drift apart in color or geometry.
@@ -4049,12 +4090,12 @@ class TileCacheMasked:
             if fb.get("style_tint") is not None:
                 style_manager.set_imgui_tint(*fb["style_tint"])
         try:
-            # outline=False: freeze views render no outline at all - the baked
+            # Default outline=False: freeze views render no outline - the baked
             # outline in the tile is what floats as a stamped ghost during
             # drags, and clipping it out proved fragile (AA feather, corner
             # arcs). No outline drawn -> none captured -> nothing to clip.
             return draw_bg(bypass=True, left=left, top=top,
-                           width=width, height=height, outline=False,
+                           width=width, height=height, outline=outline,
                            rounding=(rounding if rounding is not None
                                      else getattr(draw_state, "corner_radius", 6)),
                            bg_offset=fb.get("bg_offset", 0),
@@ -4065,7 +4106,7 @@ class TileCacheMasked:
                            opacity=1.0, saturation=fb.get("saturation", 1.0),
                            pressed=False,
                            style_manager=style_manager,
-                           nested_bg=fb.get("nested_bg", False))
+                           nested_bg=fb.get("nested_bg", False), draw_list=draw_list)
         finally:
             if not live:
                 Melty.bg_depth, Melty.bg_stack = _sv_depth, _sv_stack
@@ -4073,8 +4114,9 @@ class TileCacheMasked:
 
     def _scrub_stale_content(self, t: Tile, draw_state) -> None:
         """freeze_resize tiles: drop preserved beyond-logical texels once the
-        view scrolls away from the position they were captured at. They are
-        cleared to transparent; the frozen blit paints the real background
+        view scrolls away from the position they were captured at, or their
+        render definition changes. They are cleared to transparent; the
+        frozen blit paints the real background
         live (draw_bg) under the stale image, so the cleared bands read as
         the view's exact bg — rounding, outline, saturation included.
         One-shot per capture era — content_bg suppresses re-clears until a
@@ -4082,20 +4124,23 @@ class TileCacheMasked:
         tracked; a descendant's inner scroll can still leave stale pixels in
         the bands (acceptable for a mid-drag preview)."""
         cs = getattr(t, "content_size", None)
+        definition_changed = getattr(t, 'content_stale', False)
         if cs is None or getattr(t, "content_bg", False):
+            t.content_stale = False
             return
         w, h = snap_int(t.size[0]), snap_int(t.size[1])
         cw, ch = snap_int(cs[0]), snap_int(cs[1])
         if cw <= w and ch <= h:
+            t.content_stale = False
             return
         so = getattr(draw_state, "scroll_offset", None) or (0, 0)
         so = (snap_int(so[0]), snap_int(so[1]))
         anchor = getattr(t, "content_scroll", None)
-        if anchor is None:
+        if anchor is None and not definition_changed:
             # Pre-field tile (hotswap) or first sighting: anchor here.
             t.content_scroll = so
             return
-        if anchor == so:
+        if anchor == so and not definition_changed:
             return
 
         aw, ah = _tile_alloc(t)
@@ -4118,6 +4163,7 @@ class TileCacheMasked:
             st.restore()
         t.content_scroll = so
         t.content_bg = True
+        t.content_stale = False
 
     def mark_start_offscreen(self, draw_state) -> bool:
 
@@ -4208,6 +4254,8 @@ class TileCacheMasked:
 
         if size is not None and self.enabled and draw_state.frame_count >= 2 and not self._oversized(size):
             t = self._tiles.get(rkey)
+            if t is not None and getattr(t, 'content_stale', False):
+                self._scrub_stale_content(t, draw_state)
             use_image = (t and has_area
                          and (t.size == (size[0], size[1]))
                          and (not self._is_dirty(t))
@@ -4287,12 +4335,15 @@ class TileCacheMasked:
                 uv_b = (draw_size[0] / taw, 1.0 - draw_size[1] / tah)
 
                 dl = imgui.get_window_draw_list()
+                from meltygui.core.rendering.overlay import draw_background
+                draw_background(draw_state)
                 if frozen:
                     # Paint the background live over the full live rect
                     # (under the frozen image) - outline-less for freeze
                     # views, so nothing baked in the tile interferes with it.
-                    self.draw_freeze_bg(draw_state, a[0], a[1],
-                                        size[0], size[1], live=False)
+                    if (draw_state._kwargs or {}).get('draw_background') is None:
+                        self.draw_freeze_bg(draw_state, a[0], a[1],
+                                            size[0], size[1], live=False)
                     # Whole resident content in one image, cropped to the
                     # live rect by the clip - same draw as the cache-hit
                     # path, but at the (possibly larger) content size.
@@ -4365,6 +4416,27 @@ class TileCacheMasked:
 
         return True
 
+    def retain_input_view(self, draw_state):
+        """Remember live body subscriptions in the enclosing tile snapshot."""
+        if self.enabled and self._stack:
+            self._stack[-1].input_views += (draw_state,)
+
+    def finish_cached_input(self, ctx):
+        """Keep descendants subscribed when an ancestor supplies their pixels.
+
+        Retain the actual capture's views, not the draw-state child registry:
+        that registry also contains old tabs and conditionally hidden views.
+        The owning wrapper already replays its own body actions.
+        """
+        if ctx.drew_cached:
+            tile = self._tiles.get(ctx.key)
+            ctx.input_views = tile.input_views if tile is not None else ()
+            for child in ctx.input_views:
+                child.replay_body_actions()
+        if self._stack:
+            self._stack[-1].input_views += ctx.input_views
+        self.retain_input_view(ctx.draw_state)
+
     def mark_end_offscreen(self, draw_state=None) -> None:
         if not self.enabled:
             return
@@ -4388,6 +4460,7 @@ class TileCacheMasked:
         # The deferred overlay is excluded from this and ancestor captures.
         from meltygui.core.rendering.overlay import finish_cached_overlays
         finish_cached_overlays(self, ctx)
+        self.finish_cached_input(ctx)
 
         minx, miny = int(ctx.draw_state.abs_left), int(ctx.draw_state.abs_top)
 
@@ -4511,6 +4584,8 @@ class TileCacheMasked:
                 self._discard_tile(ctx.key)
                 return
             t = self._tiles.get(ctx.key)
+            if t is not None and getattr(t, 'content_stale', False):
+                self._scrub_stale_content(t, ctx.draw_state)
             if self._dummy_vao is None:
                 vao = gl.glGenVertexArrays(1)
                 if isinstance(vao, (list, tuple)):
@@ -4590,6 +4665,7 @@ class TileCacheMasked:
 
             if t is not None:
                 t.overlay_views = ctx.overlay_views
+                t.input_views = ctx.input_views
                 self._scrub_stale_content(t, ctx.draw_state)
 
             if self._is_dirty(t) and (ctx.key not in self._enq_copy_keys):

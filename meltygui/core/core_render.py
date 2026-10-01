@@ -2835,8 +2835,8 @@ def render_func(*args, **o_kwargs):
             # below, so a bg-less view's corner_radius=0 never reached the
             # blit and its square content got clipped round.
             draw_state.corner_radius = kwargs.get("corner_radius", 5.0)
-            if draw_state.freeze_resize:
-                # Blit owns all bg rendering for freeze_resize views
+            if draw_state.freeze_resize or kwargs.get('draw_background') is not None:
+                # Keep a background recipe for frozen and explicit live passes
                 # (Melty.cache.draw_freeze_bg, called from the show_bg block
                 # below on live frames and by the frozen blit mid-drag) -
                 # stamp the recipe it draws with. update(), not overwrite: the
@@ -3062,9 +3062,8 @@ def render_func(*args, **o_kwargs):
                               and (not draw_state.auto_resize
                                    or kwargs.get("max_height", None) is not None))
                 # freeze_resize views give up nothing: their content runs to
-                # the right edge and the bar is drawn over it by
-                # blit_offscreen (finish_overlay, after the
-                # tile image on each frame).
+                # the right edge. The shared overlay epilogue paints the bar
+                # over that content after the tile image on each frame.
                 if can_scroll and not draw_state.freeze_resize:
                     _sb_reserve = (kwargs.get("scroll_bar_width", SCROLL_BAR_WIDTH_DEFAULT)
                                    + SCROLLBAR_MARGIN)
@@ -3395,7 +3394,7 @@ def render_func(*args, **o_kwargs):
                 # register_hovered above, for body-level subs.
                 draw_state.replay_body_actions()
                 draw_state.replay_surface_requests()
-                if Toggles.dynamic_styles:
+                if Toggles.dynamic_styles and kwargs.get('draw_background') is None:
                     Melty.add_cached_background(draw_state)
             if _render_body:
                 # An uncached closable window still owns its region of the
@@ -4059,6 +4058,18 @@ def render_func(*args, **o_kwargs):
                                           pack_color(0.5, 0.0, 0.0, 1.0),
                                           f"{converted_icon_text}")
 
+                background_callback = kwargs.get('draw_background')
+                background_result = None
+                if background_callback is not None:
+                    draw_state._frozen_bg_kwargs.update({
+                        'depth': Melty.shadow_depth,
+                        'bg_depth': Melty.bg_depth,
+                        'bg_stack': copy(Melty.bg_stack),
+                        'style_tint': style_manager.get_tint(),
+                    })
+                    from meltygui.core.rendering.overlay import draw_background
+                    background_result = draw_background(draw_state)
+
                 if show_bg:
                     if Melty.channels_split:
                         offscreen_depth = Melty.get_channel()
@@ -4079,7 +4090,9 @@ def render_func(*args, **o_kwargs):
                     bg_color = (0, 0, 0, 0)
                     if draw_state.width > 5 and draw_state.height > 5:
                         nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
-                        if Toggles.dynamic_styles:
+                        if background_callback is not None:
+                            bg_return = background_result
+                        elif Toggles.dynamic_styles:
                             Melty.add_background(_dynamic_style)
                             bg_return = None
                         elif getattr(draw_state, "freeze_resize", False):
@@ -4125,7 +4138,7 @@ def render_func(*args, **o_kwargs):
                     draw_list.channels_set_current(
                         max(0, min(offscreen_depth + passed_z_offset + ds_z_offset, Melty.max_depth - 1)))
 
-                if kwargs.get("selectable", True):
+                if kwargs.get("selectable", False):
                     left_mouse_down_press = draw_state.on_action("left_mouse_held", "press", priority_delta=2)
                     draw_state.pressed = True if left_mouse_down_press else False
                     # click = draw_state.on_action("left_mouse_click", priority_delta=2)
@@ -4914,6 +4927,7 @@ def render_func(*args, **o_kwargs):
             if _has_imgui and not use_cache:
                 from meltygui.core.rendering.overlay import finish_overlay
                 finish_overlay(draw_state, Melty.cache)
+                Melty.cache.retain_input_view(draw_state)
 
             if _has_imgui:
                 if closable:
@@ -5468,8 +5482,6 @@ def render_func(*args, **o_kwargs):
             needs_scroll = False
 
         draw_state.scroll_visible = needs_scroll
-        if not needs_scroll:
-            clear_shadows(draw_state, SCROLLBAR_SHADOW_GROUP)
         # Only zero the offset when the content GENUINELY fits - never while the
         # content height is still unmeasured (invalid_content_height). On the
         # first frame(s) after a view loads from a saved state, its children
@@ -6005,7 +6017,7 @@ def render_func_kwarg_names():
         import textwrap
         targets = {"kwargs", "o_kwargs", "header_defaults"}
         # Consumed by the shared overlay epilogue rather than this wrapper.
-        names = {"draw_overlay", "draw_overlay_background", "scroll_bar_brightness"}
+        names = {"draw_background", "draw_overlay", "draw_overlay_background", "scroll_bar_brightness"}
         try:
             tree = ast.parse(textwrap.dedent(inspect.getsource(render_func)))
         except (OSError, TypeError, SyntaxError):

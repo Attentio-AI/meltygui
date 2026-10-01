@@ -1,10 +1,12 @@
 """Reusable file presentation; values and view state are supplied by callers."""
 from meltygui.view.path_icon_view import path_icon
+from meltygui.view.header_view import flat_button
 from meltygui.core.files.path_icons import with_path_icons, cleanup_path_icon
 from meltygui.state.path_icon_state import PathIconState
 from pathlib import Path
 from meltygui.core.runtime.paths import debug_log_path
-from meltygui.core.files.file_explorer_core import _trace_browser_size
+from meltygui.core.files.file_explorer_core import _trace_browser_size, with_recent_files, cleanup_file_listing
+from meltygui.model.file_location_model import FileLocation, RECENT_URI
 from meltygui.core.rendering.modes import Modes
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.render_funcs import RenderFuncs
@@ -559,18 +561,54 @@ def draw_breadcrumbs(input_value: str, draw_state, width=None, crumb_height=24.0
     return False, input_value
 
 
+def paint_file_rows_overlay(draw_state, draw_list, layout):
+    """Paint transient row feedback at live bounds, outside listing captures."""
+    if layout is None or layout['row_count'] == 0:
+        return
+    scroll_x, scroll_y = draw_state.scroll_offset
+    left = draw_state.abs_left + layout['left_offset'] - scroll_x
+    top = draw_state.abs_top + layout['top_offset'] - scroll_y
+    width = max(0, draw_state.width - layout['width_reserve'])
+    row_height = layout['row_height']
+    if width <= 0 or row_height <= 0:
+        return
+    selected = layout['selected_index']
+    draw_list.push_clip_rect(*draw_state.abs_clip_rect, True)
+    try:
+        if draw_state._bounding_hovered and not Melty.on_drag:
+            mouse_x, mouse_y = imgui.get_mouse_pos()
+            hovered = int((mouse_y - top) // row_height)
+            if left <= mouse_x < left + width and 0 <= hovered < layout['row_count']:
+                row_top = top + hovered * row_height
+                draw_list.add_rect_filled(left, row_top, left + width, row_top + row_height,
+                                          pack_color(1.0, 1.0, 1.0, layout['hover_alpha']),
+                                          rounding=layout['rounding'])
+        if selected is not None and 0 <= selected < layout['row_count']:
+            Melty.paint_selection(draw_state, draw_list,
+                                  (left, top + selected * row_height, width, row_height))
+    finally:
+        draw_list.pop_clip_rect()
+
+
+def draw_file_listing_overlay(draw_state, draw_list):
+    state = draw_state.misc.get('explorer_state')
+    if state is not None:
+        paint_file_rows_overlay(draw_state, draw_list, state._row_overlay)
+
+
 @render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=False,
-             show_add_delete=False, is_tree=False, show_bg=False, shadow=False, on_cleanup=cleanup_path_icon)
+             show_add_delete=False, is_tree=False, show_bg=False, shadow=False,
+             on_cleanup=cleanup_file_listing, draw_overlay=draw_file_listing_overlay)
 @with_path_icons
+@with_recent_files
 def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorerState, file_metadata=None,
                       left_mouse_down=False, left_mouse_double_clicked=False,
-                      right_mouse_down=False,
+                      right_mouse_clicked=False,
                       ctrl_up_key_pressed=False, up_key_pressed=False, down_key_pressed=False,
                       enter_key_pressed=False, escape_key_pressed=False,
                       row_height=20.0, left_pad=6.0, glyph_width=18.0, crumb_height=24.0,
                       show_tint_chips=True, chip_size=17.0, default_tint=(0.32, 0.42, 0.54, 1.0),
-                      select_boost=0.22, plain_select_boost=0.06, select_shadow=2.0,
-                      select_rounding=3.0, chip_mix=0.55, hover_boost=0.06, hover_alpha=0.05, text_mix=0.5, icon_mix=0.9,
+                      select_rounding=3.0, chip_mix=0.55, hover_alpha=0.05, text_mix=0.5, icon_mix=0.9,
                       folder_bg_boost=-0.12, folder_bg_rounding=0.0, drag_rows=True, menu_target=None,
                       type_to_search=True, search_tint=(1.0, 0.82, 0.3), search_dim=0.45,
                       search_flash_frames=36, show_crumbs=True, show_hidden=None,
@@ -582,13 +620,9 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     Returns ``(True, path)`` on navigation / a file double-click, else
     ``(False, input_value)``. `show_tint_chips` puts the tint chip / brush
     before each row's icon; `default_tint` is what the brush stamps. The
-    selected row is its own tint brightened by `select_boost` (an unpainted
-    row: `default_tint` by the smaller `plain_select_boost`, so it stays
-    close to the background), lifted off the list by an add_shadow of
-    `select_shadow` depth (0 disables it). `chip_mix` pulls the tint chip's
-    colour toward its row background (0 = the raw tint). Hover is the same
-    tint brightened by `hover_boost` on the selected row; any other hovered
-    row gets only a faint white wash of `hover_alpha`. A painted
+    selected row uses Melty's shared selection overlay. Hover gets a faint
+    white wash of `hover_alpha`, also outside the cached body. `chip_mix`
+    pulls the tint chip's colour toward its row background (0 = raw tint). A painted
     row wears its tint on its text (mixed `text_mix` toward the tint) and
     its icon (`icon_mix`, stronger), not as a row background. `type_to_search`
     is the keyboard search of the module docstring: `search_tint` colours
@@ -614,7 +648,6 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     from meltygui.core.files.file_explorer_core import watch_directory
     from meltygui.models.file_meta import FileMeta
     from meltygui.core.windowing.glfw_utils import request_render
-    from meltygui.core.cache.tile_marks import add_shadow
     from meltygui.core.cache.tile_marks import clear_glows
     from meltygui.core.input.drag_drop_core import DragDrop
 
@@ -630,12 +663,9 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     search_wash = pack_color(search_tint[0], search_tint[1], search_tint[2], 0.30)
     search_col = pack_color(search_tint[0], search_tint[1], search_tint[2], 1.0)
     no_match_col = pack_color(0.95, 0.55, 0.5, 1.0)
-    hover_wash = pack_color(1.0, 1.0, 1.0, hover_alpha)
-
     state = explorer_state
-    # The selected row's add_shadow is RETAINED under this draw_state until
-    # the caller opens its group again: a selection that vanishes (the file
-    # trashed, Esc, a new directory) would otherwise keep its shadow.
+    state._row_overlay = None
+    # Release retained selection shadows from earlier captures after hotswap.
     clear_glows(draw_state)
     px = Melty.px
     row_h, pad, glyph_w, crumb_h = px(row_height), px(left_pad), px(glyph_width), px(crumb_height)
@@ -643,8 +673,11 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     # The tint control leads the row; icon & name shift right past it.
     chip_x = 0.0
     text_x = pad + (chip + px(6) if show_tint_chips else 0.0)
-    directory = Path(input_value if input_value else Path.home()).expanduser()
-    dir_key = str(directory)
+    location = FileLocation(str(input_value or Path.home()))
+    directory = location.directory
+    dir_key = location.key
+    if location.is_recent:
+        drag_rows = False
     draw_list = imgui.get_window_draw_list()
     content_w = draw_state.content_width or (draw_state.width or 240)
     mouse_x, mouse_y = imgui.get_mouse_pos()
@@ -653,8 +686,8 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
              if (left_mouse_down and hasattr(left_mouse_down, "x")) else None)
     double_click = ((left_mouse_double_clicked.x, left_mouse_double_clicked.y)
                     if (left_mouse_double_clicked and hasattr(left_mouse_double_clicked, "x")) else None)
-    right_press = ((right_mouse_down.x, right_mouse_down.y)
-                   if (right_mouse_down and hasattr(right_mouse_down, "x")) else None)
+    right_click = ((right_mouse_clicked.x, right_mouse_clicked.y)
+                   if (right_mouse_clicked and hasattr(right_mouse_clicked, "x")) else None)
     meta = file_metadata
     row_bg = row_tint_bg()
 
@@ -672,20 +705,29 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
         state._search, state._search_for = "", None
         draw_state.scroll_offset = (0.0, state.scroll_by_dir.get(dir_key, 0.0))
         draw_state.invalidate()
-    watch_directory(draw_state, state, dir_key)
+    watch_directory(draw_state, state, str(location.watch_directory))
 
     # ── listing, memoized by the directory's mtime (renames / new files bump it) ──
-    mtime = _dir_mtime_ns(directory)
-    listing = state._listing
-    if show_hidden is not None:
-        state.show_hidden = show_hidden
-    if listing is None or listing[:3] != (dir_key, mtime, state.show_hidden):
-        listing = state._listing = (dir_key, mtime, state.show_hidden,
-                                    list_directory(directory, state.show_hidden))
-    rows = ordered_rows(listing[3], meta)
+    if location.is_recent:
+        rows = state._recent_files.rows
+        if state._recent_files.error:
+            imgui.text_wrapped(state._recent_files.error)
+        elif not rows:
+            imgui.text_unformatted('No recent files' if state._recent_files.loaded else 'Loading recent files…')
+    else:
+        mtime = _dir_mtime_ns(directory)
+        listing = state._listing
+        if show_hidden is not None:
+            state.show_hidden = show_hidden
+        if listing is None or listing[:3] != (dir_key, mtime, state.show_hidden):
+            listing = state._listing = (dir_key, mtime, state.show_hidden,
+                                        list_directory(directory, state.show_hidden))
+        rows = ordered_rows(listing[3], meta)
 
     # ── the path strip: every segment a crumb; click = jump there ──
-    if show_crumbs:
+    if show_crumbs and location.is_recent:
+        imgui.text_unformatted('Recents')
+    if show_crumbs and directory is not None:
         target = paint_breadcrumbs(draw_state, directory, click=click,
                                    crumb_height=crumb_height, left_pad=left_pad,
                                    file_metadata=file_metadata,
@@ -792,24 +834,24 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
         state.selected = str(rows[hit][0])
         selected_index = hit
         request_render()
-    # A right-press selects the row under it (the chip column included): the
-    # wrapper opens the context menu on the release, on that row.
-    hit = row_at(right_press, chips=True)
+    # Select only after a completed right-click, never on the press that
+    # may become a window/tile drag. The menu targets this row on release.
+    hit = row_at(right_click, chips=True)
     if hit is not None:
         state.selected = str(rows[hit][0])
         selected_index = hit
         draw_state.invalidate()
         request_render()
-    elif right_press is not None and state.selected is not None:
+    elif right_click is not None and state.selected is not None:
         # Empty space: the menu acts on the dir, not a stale selection.
         state.selected = None
         selected_index = None
         draw_state.invalidate()
         request_render()
     if menu_target is not None:
-        menu_target["path"] = state.selected if selected_index is not None else dir_key
-    if ctrl_up_key_pressed and directory.parent != directory:
-        return navigate(directory.parent)
+        menu_target["path"] = state.selected if selected_index is not None else (dir_key if directory is not None else None)
+    if ctrl_up_key_pressed and location.parent is not None:
+        return navigate(location.parent)
     if enter_key_pressed and selected_index is not None:
         return navigate(rows[selected_index][0])
     if escape_key_pressed and state.selected is not None:
@@ -844,9 +886,16 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
         request_render()
     dimmed = bool(query and hits)
 
+    state._row_overlay = {
+        'left_offset': rows_x - draw_state.abs_left + draw_state.scroll_offset[0],
+        'top_offset': rows_top, 'width_reserve': draw_state.width - content_w,
+        'row_height': row_h, 'row_count': len(rows), 'selected_index': selected_index,
+        'hover_alpha': hover_alpha, 'rounding': px(select_rounding),
+    }
+
     # ── rows: viewport-culled, straight to the draw list ──
     text_y_pad = (row_h - imgui.get_font_size()) * 0.5
-    ghost_alpha = 0.9
+    ghost_alpha, ghost_tint_boost = 0.9, 0.22  # Floating dragged-row appearance.
     drag_keys = []          # the visible rows' paths, in on_drag call order
     first_visible = None    # index into `rows` of drag_keys[0]
     for i, (path, is_dir) in enumerate(rows):
@@ -885,7 +934,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
             if drag:
                 ghost = drag.draw_list
                 ghost.add_rect_filled(drag.x, drag.y, drag.x + drag.w, drag.y + drag.h,
-                                      pack_color(*row_bg.rgb(tint or default_tint, select_boost),
+                                      pack_color(*row_bg.rgb(tint or default_tint, ghost_tint_boost),
                                                  ghost_alpha),
                                       rounding=px(select_rounding))
                 path_icon(path, drag.x + px(4), drag.y + (row_h - px(18)) / 2,
@@ -896,20 +945,6 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
                 DragDrop.end_drag()
                 continue
         row_hovered = hover_ok and rows_x <= mouse_x <= rows_x + content_w and ry0 <= mouse_y < ry1
-        # Selection / hover are brighter steps of the row's own tint
-        # (the default tint when unpainted); they stack.
-        boost = (select_boost if tint else plain_select_boost) if i == selected_index else 0.0
-        if i == selected_index and select_shadow:
-            add_shadow((rows_x, ry0, content_w, row_h), offset=select_shadow,
-                       corner_radius=px(select_rounding), clip=clip, draw_state=draw_state)
-        if boost:
-            draw_list.add_rect_filled(rows_x, ry0, rows_x + content_w, ry1,
-                                      row_bg(tint or default_tint,
-                                             boost + (hover_boost if row_hovered else 0.0)),
-                                      rounding=px(select_rounding))
-        elif row_hovered:
-            draw_list.add_rect_filled(rows_x, ry0, rows_x + content_w, ry1, hover_wash,
-                                      rounding=px(select_rounding))
         path_icon(path, rows_x + text_x, ry0 + (row_h - px(18)) / 2, px(18), icon_col,
                   is_dir=is_dir, fallback=icon,
                   custom_icon=entry.get("icon") if isinstance(entry, dict) else None, icons=icon_state)
@@ -926,7 +961,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
         if show_tint_chips:
             swatch = None
             if tint:
-                swatch = chip_swatch(tint, row_bg.rgb(tint, boost), chip_mix)
+                swatch = chip_swatch(tint, row_bg.rgb(tint, 0.0), chip_mix)
             tint_control(draw_state, key, tint, chip_x, ry0 + (row_h - chip) * 0.5, chip,
                          ry0 + text_y_pad, row_hovered, default_tint, swatch=swatch,
                          setter=lambda value, path=key: set_row_tint(meta, path, value),
@@ -983,7 +1018,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
 def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_clicked=False,
                    shortcut_state: ShortcutState = None, row_height=22.0,
                    show_tint_chips=True, chip_size=17.0, default_tint=(0.32, 0.42, 0.54, 1.0),
-                   show_projects=True, icon_state: PathIconState = None, **kwargs):
+                   show_projects=True, show_recents=False, icon_state: PathIconState = None, **kwargs):
     """The shortcuts column on its own: home, the XDG user directories and
     the root as draw-list rows, then a **Projects** section — every folder
     marked with meltygui.mark_project (the shared file-meta store's flag) —
@@ -1031,7 +1066,7 @@ def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_
 
     px = Melty.px
     clear_glows(draw_state)      # the current row's retained shadow
-    directory = Path(input_value).expanduser() if input_value else None
+    directory = FileLocation(str(input_value)).directory if input_value else None
     draw_list = imgui.get_window_draw_list()
     mouse_x, mouse_y = imgui.get_mouse_pos()
     hover_ok = draw_state._bounding_hovered
@@ -1142,7 +1177,15 @@ def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_
     picked = None
     total_h = row_h
     if shortcut_state.shortcuts_expanded:
-        picked = draw_rows(shortcuts, y + total_h, draggable=True)
+        if show_recents:
+            imgui.set_cursor_screen_pos((x, y + total_h))
+            if flat_button('\uf017  Recents', draw_state, view_id='recent-shortcut',
+                           width=width, height=row_h, shadow=False,
+                           alpha=0.12 if input_value == RECENT_URI else 0,
+                           text_offset_x=px(left_pad), event='left_mouse_clicked'):
+                picked = RECENT_URI
+            total_h += row_h
+        picked = draw_rows(shortcuts, y + total_h, draggable=True) or picked
         total_h += len(shortcuts) * row_h
     if show_projects:
         head_y = y + total_h + section_gap
@@ -1172,7 +1215,7 @@ def draw_fast_file_explorer(input_value: str, draw_state, file_metadata=None, co
                             show_tint_chips=True, chip_size=17.0, default_tint=(0.32, 0.42, 0.54, 1.0),
                             context_menu=None, drag_rows=True, folder_bg_boost=-0.12,
                             folder_bg_rounding=0.0, type_to_search=True, show_crumbs=True,
-                            layout_out=None, show_hidden=None, **kwargs):
+                            layout_out=None, show_hidden=None, show_recents=True, **kwargs):
     """A ColumnLayout with two cells: `draw_shortcuts` (a click navigates)
     and `draw_file_listing`, sharing one draggable edge
     (`column_edges`, persisted by auto-state). Returns what the listing
@@ -1220,7 +1263,8 @@ def draw_fast_file_explorer(input_value: str, draw_state, file_metadata=None, co
 
     px = Melty.px
     clear_glows(draw_state)      # The current shortcut's retained shadow (see the listing)
-    directory = Path(input_value if input_value else Path.home()).expanduser()
+    location = FileLocation(str(input_value or Path.home()))
+    directory = location.directory
     draw_list = imgui.get_window_draw_list()
     mouse_x, mouse_y = imgui.get_mouse_pos()
     hover_ok = draw_state._bounding_hovered
@@ -1233,10 +1277,10 @@ def draw_fast_file_explorer(input_value: str, draw_state, file_metadata=None, co
     # The listing writes what the right-click landed on here each run; the
     # menu item callables (built here, run by the wrapper's items menu with no
     # label) read it when picked.
-    menu_target = {"path": str(directory)}
+    menu_target = {"path": str(directory) if directory is not None else None}
     menu_items = None
     if context_menu:
-        menu_items = {label: (lambda _action=action: _action(menu_target["path"]))
+        menu_items = {label: (lambda _action=action: _action(menu_target["path"]) if menu_target["path"] is not None else None)
                       for label, action in context_menu.items()}
 
     # The band: from the flow cursor to the bottom of the view.
@@ -1251,15 +1295,15 @@ def draw_fast_file_explorer(input_value: str, draw_state, file_metadata=None, co
     picked = None
     with columns.cell(0, height=body_height) as width:
         changed_s, picked_s = draw_shortcuts(
-            str(directory), name="shortcuts", file_metadata=file_metadata, width=width, height=body_height,
+            location.key, name="shortcuts", file_metadata=file_metadata, width=width, height=body_height,
             row_height=shortcut_row_height, show_tint_chips=show_tint_chips,
             chip_size=chip_size, default_tint=default_tint, disable_scroll=True,
-            left_mouse_clicked=left_mouse_clicked)
-        picked = Path(picked_s) if changed_s else None
+            left_mouse_clicked=left_mouse_clicked, show_recents=show_recents)
+        picked = picked_s if changed_s else None
     with columns.cell(1, height=body_height) as width:
         if layout_out is not None:
             layout_out["listing_left"] = imgui.get_cursor_screen_pos()[0]
-        changed, value = draw_file_listing(str(directory), name="listing", file_metadata=file_metadata, width=width,
+        changed, value = draw_file_listing(location.key, name="listing", file_metadata=file_metadata, width=width,
                                            height=body_height, disable_scroll=False,
                                            context_menu=menu_items, menu_target=menu_target,
                                            drag_rows=drag_rows, folder_bg_boost=folder_bg_boost,
@@ -1276,9 +1320,9 @@ def draw_fast_file_explorer(input_value: str, draw_state, file_metadata=None, co
     if picked is not None:
         request_render()
         return True, str(picked)
-    if ctrl_up_key_pressed and directory.parent != directory:
+    if ctrl_up_key_pressed and location.parent is not None:
         request_render()
-        return True, str(directory.parent)
+        return True, location.parent
     return False, input_value
 
 
@@ -1308,7 +1352,7 @@ def draw_file_selector(input_value: str | None = None, draw_state=None,
     from meltygui.view.control_view import draw_button
     from meltygui.view.file_view import draw_fast_file_explorer
 
-    if selector_state.directory is None:
+    if selector_state.directory is None or (choose_folder and selector_state.directory == RECENT_URI):
         directory = Path(input_value or Path.home()).expanduser().resolve()
         selector_state.directory = str(directory if directory.is_dir() else directory.parent)
     # ``browse``: a directory to show - a path, or ``(path, token)`` where
@@ -1332,7 +1376,7 @@ def draw_file_selector(input_value: str | None = None, draw_state=None,
         file_metadata=file_metadata,
         height=max(120, bottom - top - 35),
         folder_bg_boost=-0.23, folder_bg_rounding=10.0, context_menu=context_menu,
-        show_hidden=show_hidden)
+        show_hidden=show_hidden, show_recents=not choose_folder)
     # The explorer's flow cursor includes the full listing height, even
     # when that listing is clipped/scrolling. Anchor the reserved footer
     # to the selector's viewport so resizing cannot push it off-window.
@@ -1350,6 +1394,9 @@ def draw_file_selector(input_value: str | None = None, draw_state=None,
         draw_state.closed = True
         return False, None
     if changed:
+        if picked == RECENT_URI and not choose_folder:
+            selector_state.directory = picked
+            return False, None
         path = Path(picked).expanduser().resolve()
         if path.is_dir():
             selector_state.directory = str(path)

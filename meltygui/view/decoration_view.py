@@ -267,7 +267,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
             outline=True, bg_color=None, opacity=0.0,
             style_manager=None, tint=None, outline_tint=None, selected=False,
             hovered=False, pressed=False, nested_bg=False, saturation=1.0, max_bg_depth=None,
-            max_bg_value=None, **kwargs):
+            max_bg_value=None, draw_list=None, **kwargs):
     # -- Constants ---------------------------------
     from meltygui.core.cache.tile_marks import snap_int
     from meltygui.core.rendering.render_dispatch import _DRAW_BG_COLOUR_MEMO
@@ -407,7 +407,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
         packed_outline = pack_color(*outline_color[:3], 1.0)
         if outline_tint is not None:
             packed_outline = pack_color(*outline_tint[:3], 1.0)
-        imgui.get_window_draw_list().add_rect(
+        (draw_list if draw_list is not None else imgui.get_window_draw_list()).add_rect(
             *outline_rect, col=packed_outline, rounding=corner_radius, thickness=stroke_width,
         )
 
@@ -434,6 +434,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
         packed_fill = pack_color(*tinted[:3], opacity)
 
     if opacity > 0.0:
-        imgui.get_window_draw_list().add_rect_filled(*fill_rect, col=packed_fill, rounding=corner_radius)
+        (draw_list if draw_list is not None else imgui.get_window_draw_list()).add_rect_filled(
+            *fill_rect, col=packed_fill, rounding=corner_radius)
 
     return False, bg_color

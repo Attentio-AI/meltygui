@@ -76,7 +76,7 @@ def test_cached_ancestor_replays_texture_overlay_at_current_bounds(monkeypatch):
     ctx = SimpleNamespace(drew_cached=True, key='parent', draw_state=parent)
     monkeypatch.setattr(imgui, 'get_overlay_draw_list', lambda: dl)
     monkeypatch.setattr(Melty, '_overlay_channels_active', False)
-    monkeypatch.setattr(overlay, 'time', SimpleNamespace(perf_counter=lambda: 0))
+    monkeypatch.setattr(overlay, 'time', SimpleNamespace(thread_time=lambda: 0))
     overlay.finish_cached_overlays(cache, ctx)
     ds.width = 800
     overlay.finish_cached_overlays(cache, ctx)

@@ -906,5 +906,13 @@
   "meltygui.graphics.texture_manager.PendingTexture": "meltygui.model.texture_model.ImageTexture",
   "meltygui.view.texture_view.draw_pending_texture": "meltygui.view.texture_view.draw_texture",
   "src.shader_library.shader_manager.texture_manager.PendingTexture": "meltygui.model.texture_model.ImageTexture",
-  "__render_func__.draw_pending_texture": "__render_func__.draw_texture"
+  "__render_func__.draw_pending_texture": "__render_func__.draw_texture",
+  "src.lsd.gl_gui.view.playground.fast_file_explorer.FileExplorerState": "meltygui.state.file_state.FileExplorerState",
+  "src.lsd.gl_gui.view.playground.fast_file_explorer.ShortcutState": "meltygui.state.file_state.ShortcutState",
+  "lsd.gl_gui.view.playground.fast_file_explorer.FileExplorerState": "meltygui.state.file_state.FileExplorerState",
+  "lsd.gl_gui.view.playground.fast_file_explorer.ShortcutState": "meltygui.state.file_state.ShortcutState",
+  "meltygui.files.explorer.FileExplorerState": "meltygui.state.file_state.FileExplorerState",
+  "meltygui.files.explorer.ShortcutState": "meltygui.state.file_state.ShortcutState",
+  "meltygui.files.fast_file_explorer.FileExplorerState": "meltygui.state.file_state.FileExplorerState",
+  "meltygui.files.fast_file_explorer.ShortcutState": "meltygui.state.file_state.ShortcutState"
 }

@@ -1049,6 +1049,19 @@ def _safe_newline_delta(last_good, cur):
     return a == b
 
 
+def _bind_parse_source(routed, source):
+    """Record the exact source snapshot after trusted parse/cache transport.
+
+    Worker strings and cached parses have different Python identities. Binding
+    here lets position consumers reject stale results with a pointer check.
+    Repaired/failed parses must not be bound to the unrepaired editor source.
+    """
+    for value in (routed or {}).values():
+        origin = value.get("__origin__") if isinstance(value, dict) else None
+        if origin is not None:
+            origin.source_input = source
+
+
 def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
                   lint_span=False, _last_good_src=None, _last_good_routed=None,
                   **extra):
@@ -1092,6 +1105,7 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
     if _cacheable and _out_name:
         _gp = chain_parse_cache_get(_disk_span, _disk_mtime)
         if _gp is not None:
+            _bind_parse_source({_out_name: _gp}, input_value)
             notify(f"cst cache hit: {Path(_disk_span[0]).name}"
                    f" [{_disk_span[1]}:{_disk_span[2]}]",
                    tag="cst_cache", tint=(0.4, 0.9, 0.4))
@@ -1144,6 +1158,7 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
             and isinstance(input_value, str)
             and _last_good_src is not None and _last_good_src == input_value):
         notify("chain_in: identical echo — reparse skipped", tag="chain_in")
+        _bind_parse_source(_last_good_routed, input_value)
         return {"routed": {}, "error": None, "lint": [], "imports": {},
                 "safe_skip": True, "lint_deferred": False,
                 "_src_gen": _src_gen, "src_good": None}
@@ -1263,6 +1278,8 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
                        if Toggles.TextEditor.enable_import_scan else {})
         except Exception:
             imports = {}
+    if not parse_failed:
+        _bind_parse_source(routed, input_value)
     # Store the finished parse for the next boot: pristine disk input (see the
     # provenance gate above) + a clean parse/compile only, so a cache hit can
     # skip the expensive pass. One dumps (~50ms for a large span) on this

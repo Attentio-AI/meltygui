@@ -15,7 +15,7 @@ def setup(monkeypatch):
     monkeypatch.setattr(Melty, '_overlay_channels_active', True)
     monkeypatch.setattr(Melty, 'overlay_channel_for', lambda ds: 7)
     monkeypatch.setattr(overlay.Tint, 'dd_text', lambda tint: (1, 1, 1))
-    monkeypatch.setattr(overlay, 'time', SimpleNamespace(perf_counter=lambda: 0))
+    monkeypatch.setattr(overlay, 'time', SimpleNamespace(thread_time=lambda: 0))
     def view(callback):
         return SimpleNamespace(_kwargs={'draw_overlay': callback}, closed=False,
                                just_shadow=False, misc={}, misc_used=set(),
@@ -41,22 +41,22 @@ def test_live_inputs_and_restored_routing(setup):
     assert draw_list.channels_set_current.call_args.args == (Melty.max_layer - 1,)
 
 
-def test_slow_callback_disabled_per_view_and_hotswap_retries(setup, monkeypatch):
+def test_expensive_cpu_callback_disabled_per_view_and_hotswap_retries(setup, monkeypatch):
     draw_list, view = setup
     calls = []
     def callback():
         calls.append(1)
     ds = view(callback)
     clock = iter([0, .0006])
-    monkeypatch.setattr(overlay.time, 'perf_counter', lambda: next(clock))
+    monkeypatch.setattr(overlay.time, 'thread_time', lambda: next(clock))
     overlay.draw_overlay(ds)
     overlay.draw_overlay(ds)
     assert calls == [1]
-    assert '0.5 ms' in draw_list.add_text.call_args.args[-1]
+    assert 'draw_overlay: 0.600 ms CPU exceeds 0.5 ms CPU budget' in draw_list.add_text.call_args.args[-1]
     def replacement():
         calls.append(2)
     callback.__code__ = replacement.__code__
-    monkeypatch.setattr(overlay, 'time', SimpleNamespace(perf_counter=lambda: 0))
+    monkeypatch.setattr(overlay, 'time', SimpleNamespace(thread_time=lambda: 0))
     overlay.draw_overlay(ds)
     assert ds.misc['render_overlay'].error is None
     other = view(callback)
@@ -69,9 +69,28 @@ def test_budget_boundary(setup, monkeypatch, elapsed, disabled):
     _, view = setup
     ds = view(lambda: None)
     clock = iter([0, elapsed])
-    monkeypatch.setattr(overlay.time, 'perf_counter', lambda: next(clock))
+    monkeypatch.setattr(overlay.time, 'thread_time', lambda: next(clock))
     overlay.draw_overlay(ds)
     assert (ds.misc['render_overlay'].error is not None) is disabled
+
+
+def test_scheduler_pause_does_not_disable_a_cheap_callback(setup, monkeypatch):
+    _, view = setup
+    clock = {'cpu': 0.0, 'wall': 0.0}
+    monkeypatch.setattr(overlay, 'time', SimpleNamespace(
+        thread_time=lambda: clock['cpu'], perf_counter=lambda: clock['wall']))
+    calls = []
+    def callback():
+        calls.append(True)
+        # A scheduler pause advances wall time, while this callback does only
+        # 0.1 ms of actual work on the render thread each time it runs.
+        clock['cpu'] += 0.0001
+        clock['wall'] += 0.020
+    ds = view(callback)
+    overlay.draw_overlay(ds)
+    overlay.draw_overlay(ds)
+    assert calls == [True, True]
+    assert ds.misc['render_overlay'].error is None
 
 
 def test_exception_draws_error_and_restores_clip(setup):
@@ -83,6 +102,34 @@ def test_exception_draws_error_and_restores_clip(setup):
     overlay.draw_overlay(ds)
     assert 'ValueError: broken overlay' in draw_list.add_text.call_args.args[-1]
     assert draw_list.pop_clip_rect.call_count == 2
+
+
+@pytest.mark.parametrize('option', ['draw_overlay', 'draw_overlay_background'])
+@pytest.mark.parametrize('raises', [False, True])
+def test_overlay_input_is_live_and_body_recording_restored_after_errors(setup, monkeypatch, option, raises):
+    from meltygui.state.new_core_model import DrawState
+    ds = DrawState()
+    ds.width = ds.height = 100
+    ds.header_height = 0
+    ds._tile_id = 'view'
+    record = (Melty.frame_count, [('body_button', ('left_mouse_down',), 0, None, None, None)])
+    ds._body_actions = record
+    register = Mock()
+    monkeypatch.setattr(Melty, 'inside_clip', lambda **kwargs: True)
+    monkeypatch.setattr(DrawState, '_register_action', register)
+    monkeypatch.setattr(DrawState, 'get_action', lambda *args, **kwargs: None)
+    def callback(draw_state):
+        draw_state.on_action('left_mouse_down', view_id='live_overlay', rect=(1, 2, 3, 4))
+        if raises:
+            raise ValueError('after subscribing')
+    ds._kwargs = {option: callback}
+    getattr(overlay, option)(ds)
+    register.assert_called_once()
+    assert register.call_args.args[0] == 'view_live_overlay'
+    assert ds._body_actions is record
+    assert [action[0] for action in record[1]] == ['body_button']
+    state_key = 'render_overlay' if option == 'draw_overlay' else 'render_overlay_background'
+    assert (ds.misc[state_key].error is not None) is raises
 
 
 @pytest.mark.parametrize('kind', ['decorated', 'not_callable', 'wrong_signature'])
@@ -202,14 +249,19 @@ def test_draw_overlay_is_public_wrapper_option():
     assert 'draw_overlay_background' in FAST_VIEW_WRAPPER_KWARGS
 
 
-def test_cached_layout_and_backing_run_parent_first_before_child_overlays(setup):
+def test_cached_layout_and_backing_run_parent_first_before_child_overlays(setup, monkeypatch):
     _, view = setup
     order = []
     child = view(lambda draw_state: order.append(('image', draw_state.width)))
     parent = view(lambda: order.append('parent chrome'))
     root = view(lambda: order.append('root chrome'))
+    monkeypatch.setattr(Melty, 'frame_count', 44)
+    for descendant in (root, parent, child):
+        descendant._blit_served_frame = 42
+        descendant.last_seen = 43
     root.width = 800
     def root_background():
+        assert all(descendant._blit_served_frame == 44 for descendant in (root, parent, child))
         parent.width = root.width - 20
         order.append('root backing')
     def parent_background():
@@ -226,6 +278,66 @@ def test_cached_layout_and_backing_run_parent_first_before_child_overlays(setup)
     order.clear()
     overlay.finish_cached_overlays(cache, ctx)
     assert order == ['root backing', 'parent backing', ('image', 340), 'parent chrome', 'root chrome']
+    assert all(descendant.last_seen == 43 for descendant in (root, parent, child))
+
+
+def test_fresh_body_does_not_claim_descendant_pixels_were_preserved(setup, monkeypatch):
+    from meltygui.core.cache.tile_cache import TileCacheMasked
+    _, view = setup
+    child, parent = view(None), view(None)
+    child._parent = parent
+    parent._parent = None
+    child.last_seen = 40
+    parent.last_seen = 41
+    cache = TileCacheMasked()
+    cache._tiles['parent'] = SimpleNamespace(overlay_views=(child,))
+    monkeypatch.setattr(Melty, 'frame_count', 41)
+    ctx = SimpleNamespace(draw_state=parent, key='parent', drew_cached=True)
+    overlay.finish_cached_overlays(cache, ctx)
+    assert cache._pixels_preserved(child)
+    assert child.last_seen == 40
+
+    # On the next frame a fresh parent body drops the old branch. Replaying
+    # only the parent's own overlay must not keep that child's shadows alive.
+    monkeypatch.setattr(Melty, 'frame_count', 42)
+    parent.last_seen = 42
+    ctx.drew_cached, ctx.overlay_views = False, ()
+    overlay.finish_cached_overlays(cache, ctx)
+    assert parent._blit_served_frame == child._blit_served_frame == 41
+    assert not cache._pixels_preserved(child)
+
+
+def test_cached_ancestor_restores_descendant_pixels_after_shrink_and_grow(setup, monkeypatch):
+    from meltygui.core.cache.tile_cache import Tile
+    _, view = setup
+    root, editor = view(None), view(None)
+    pane = SimpleNamespace(_tile_id='text', width=160, height=80,
+                           abs_left=10, abs_top=20, abs_clip_rect=(10, 20, 170, 300))
+    # The shrunk editor snapshot has an empty strip below its old pane. The
+    # pane's own texture still holds the text from the earlier tall viewport.
+    text = Tile(pane, 1, 2, None, None, (160, 80), alloc_size=(256, 512),
+                content_size=(160, 260), last_clean_frame=1)
+    editor._blit_served_frame = 40
+    editor.last_seen = 40
+    def background(draw_state):
+        if draw_state._blit_served_frame == Melty.frame_count:
+            overlay.paint_cached_view(pane)
+    editor._kwargs['draw_overlay_background'] = background
+    cache = SimpleNamespace(_tiles={'root': SimpleNamespace(overlay_views=(editor,)),
+                                    'text': text}, enabled=True, _stack=[])
+    monkeypatch.setattr(Melty, 'cache', cache)
+    main_list = Mock()
+    monkeypatch.setattr(overlay.imgui, 'get_window_draw_list', lambda: main_list)
+    ctx = SimpleNamespace(draw_state=root, key='root', drew_cached=True)
+    for frame, height in ((41, 80), (42, 260)):
+        monkeypatch.setattr(Melty, 'frame_count', frame)
+        pane.height = height
+        overlay.finish_cached_overlays(cache, ctx)
+    assert main_list.add_image.call_count == 2
+    main_list.add_image.assert_called_with(2, (10, 20), (170, 280),
+                                           (0, 1), (160 / 256, 1 - 260 / 512))
+    assert editor.last_seen == 40
+    assert text.size == (160, 80)
 
 
 def test_background_only_view_registers_for_ancestor_replay(setup):
@@ -263,26 +375,32 @@ def test_overlay_child_placement_preserves_cursor_and_refreshes_live_geometry(mo
     assert Melty.silence_invalidate is False
 
 
-def test_cached_child_replay_precedes_shadows_and_preserves_pixels_beyond_old_viewport(monkeypatch):
+@pytest.mark.parametrize('changed_definition', [False, True])
+def test_cached_child_replay_precedes_shadows_and_preserves_pixels_beyond_old_viewport(monkeypatch, changed_definition):
     from unittest.mock import Mock
     from meltygui.core.cache.tile_cache import Tile
     ds = SimpleNamespace(_tile_id='text', width=260, height=180,
                          abs_left=10, abs_top=20, abs_clip_rect=(10, 20, 270, 200))
     tile = Tile(ds, 1, 2, None, None, (200, 100), alloc_size=(512, 256),
-                content_size=(300, 200), last_clean_frame=1)
-    cache = SimpleNamespace(enabled=True, _tiles={'text': tile})
+                content_size=(300, 200), last_clean_frame=1,
+                content_stale=changed_definition)
+    cache = SimpleNamespace(enabled=True, _tiles={'text': tile},
+                            _scrub_stale_content=Mock(side_effect=AssertionError('overlay must not do GL cleanup')))
     monkeypatch.setattr(Melty, 'cache', cache)
     dl = Mock()
     foreground = Mock()
     monkeypatch.setattr(overlay.imgui, 'get_window_draw_list', lambda: dl)
     monkeypatch.setattr(overlay.imgui, 'get_overlay_draw_list', lambda: foreground)
     assert overlay.paint_cached_view(ds)
-    dl.add_image.assert_called_once_with(2, (10, 20), (270, 200),
-                                         (0, 1), (260 / 512, 1 - 180 / 256))
+    cache._scrub_stale_content.assert_not_called()
+    width, height = (200, 100) if changed_definition else (260, 180)
+    dl.add_image.assert_called_once_with(2, (10, 20), (10 + width, 20 + height),
+                                         (0, 1), (width / 512, 1 - height / 256))
     dl.push_clip_rect.assert_called_once_with(10, 20, 270, 200, True)
     dl.pop_clip_rect.assert_called_once()
     assert not foreground.mock_calls
     # Painting must never resize or overwrite the resident cache.
     assert tile.size == (200, 100) and tile.content_size == (300, 200)
+    assert tile.content_stale is changed_definition
     cache._tiles.clear()
     assert not overlay.paint_cached_view(ds)
