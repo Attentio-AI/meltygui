@@ -27,12 +27,13 @@ from meltygui.core.graphics.tensor_core import source_identity
 from meltygui.core.windowing.glfw_utils import print_stack_trace
 from meltygui.model.texture_model import _cached_volume_texture, _upload_cuda_image
 from meltygui.state.voxel_state import VoxelState
+from meltygui.model.cuda_buffer_model import CudaBuffer
 from meltygui.view.texture_view import image_blit_pass
 from meltygui.view.tensor_view import _describe_tensor, _view_size, _draw_image_notice
 from meltygui.view.tensor_view import _draw_tensor_meta, _draw_voxel_error, _draw_slice_sliders, _tick_values
 
 
-@render_func(is_default_for=("GLTexture",
+@render_func(is_default_for=(CudaBuffer, "GLTexture",
                              # 3-D+ tensors by shape; 1-D/2-D route to
                              # draw_line_graph. The bare "Tensor" name stays
                              # as the fallback for 0-D / anything unmatched
@@ -328,16 +329,16 @@ def _draw_voxels(input_value: object = None, gl_state: GLState = None, selectabl
         source_shape = tuple(getattr(src, "source_shape", src.shape))
     else:
         try:
-            import torch
-        except ImportError:
-            _draw_voxel_error(draw_state, "Voxel rendering of arrays and tensors requires torch:\n"
-                                          "pip install meltygui[tensor]")
-            gl_state.drop("volume"); gl_state.drop("volume_cuda")
-            return False, input_value
-        try:
-            t = src if isinstance(src, torch.Tensor) else torch.from_numpy(np.asarray(src))
-        except (TypeError, ValueError, RuntimeError) as e:
-            _draw_voxel_error(draw_state, f"{type(src).__name__} is not tensor-shaped:\n{e}")
+            if isinstance(src, CudaBuffer):
+                if backend == 'opengl':
+                    raise ValueError('Shared CUDA buffers require the CUDA renderer; the tensor was not copied')
+                t = src.resolve()
+            else:
+                import torch
+                t = src if isinstance(src, torch.Tensor) else torch.from_numpy(np.asarray(src))
+        except (ImportError, TypeError, ValueError, RuntimeError) as e:
+            _draw_voxel_error(draw_state, str(e) if isinstance(src, CudaBuffer)
+                              else f"{type(src).__name__} is not tensor-shaped:\n{e}")
             gl_state.drop("volume"); gl_state.drop("volume_cuda")
             return False, None
         # ── preflight: slicing + upload can fail on BAD DATA (odd dtypes,
@@ -1790,13 +1791,13 @@ def _cuda_render(gl_state, cv, width, height, voxel_state: VoxelState, lut="jet"
     a pinned host buffer carries the image over, and `cuda_image`
     is the GL texture it lands in (all re-made only when size/device/LUT
     change)."""
-    import torch
+    from meltygui.model.cuda_buffer_model import empty_image_buffer, parameter_buffer
     from meltygui.view import voxel_cuda_view
     dev = cv.view.device
     W, H = int(width), int(height)
     try:
         out = gl_state.get("cuda_out",
-                           lambda: torch.empty(H, W, 4, dtype=torch.float16, device=dev),
+                           lambda: empty_image_buffer((H, W, 4), 'float16', dev),
                            deps=(W, H, str(dev)))
         if lut_texture is None:
             from meltygui.model.lut_model import LutTexture, make_luts, lut_values
@@ -1807,7 +1808,7 @@ def _cuda_render(gl_state, cv, width, height, voxel_state: VoxelState, lut="jet"
         # a value changes (deps = the values themselves)
         shade_list = list(shade) if shade is not None else voxel_cuda_view.shade_params()
         shade_t = gl_state.get("cuda_shade",
-                               lambda: torch.tensor(shade_list, dtype=torch.float32, device=dev),
+                               lambda: parameter_buffer(shade_list, dev),
                                deps=(tuple(shade_list), str(dev)))
         # Shading mip: baked once per volume version (one full volume read),
         # then every shading tap reads the few-MB dense copy instead of the

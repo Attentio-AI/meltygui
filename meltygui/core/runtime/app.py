@@ -562,7 +562,10 @@ def _hook_main_return():
             fr.f_trace = None
             _state['hooked'] = False
             if not state['failed']:
-                run()
+                # The implicit loop starts inside a trace callback. Python
+                # otherwise suppresses sys.monitoring for its entire lifetime,
+                # including breakpoints in the app's render callbacks.
+                sys.call_tracing(run, ())
         return local
 
     _state['tracer'] = lambda fr, event, arg: None

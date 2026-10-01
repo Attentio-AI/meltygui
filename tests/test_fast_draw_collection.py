@@ -120,3 +120,22 @@ def test_wrapper_only_requests_go_to_the_wrapper(melty):
     from meltygui.view.collection_view import draw_collection
     _, _, draw_state = _frames(melty, _nested(1), use_cache=True)
     assert draw_state._wrapper is draw_collection
+
+
+def test_readonly_bindings_keep_identity_and_do_not_draw_numeric_editors(melty, monkeypatch):
+    from types import MappingProxyType
+    from meltygui.view import control_view
+    attempts = []
+    def unexpected_edit(*args, **kwargs):
+        attempts.append(args)
+        raise AssertionError('read-only binding exposed a numeric editor')
+    monkeypatch.setattr(control_view.imgui, 'drag_int', unexpected_edit)
+    monkeypatch.setattr(control_view.imgui, 'drag_float', unexpected_edit)
+    values = {'count': 3, 'ratio': 1.25, 'nested': [2]}
+    bindings = MappingProxyType(values)
+    changed, result, state = _frames(melty, bindings)
+    assert not changed and result is bindings
+    assert attempts == []
+    assert values == {'count': 3, 'ratio': 1.25, 'nested': [2]}
+    # Renderer selection still receives the original nested object.
+    assert result['nested'] is values['nested']

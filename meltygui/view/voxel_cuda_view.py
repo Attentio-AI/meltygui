@@ -668,15 +668,15 @@ def march(view, out, lut, *, display_shape, nf=(-1, -1, 0), norm=(0.0, 1.0, 0),
     pass it whenever shade enables the plane or shading; without it the
     shading taps fall back to the strided source, correct but ~100× the
     loads on big tensors)."""
-    import torch
+    from meltygui.model.cuda_buffer_model import parameter_buffer
     assert view.dim() == 3 and out.dim() == 3 and out.shape[2] == 4
-    if out.dtype != torch.float16:
+    if str(out.dtype).removeprefix('torch.') != 'float16':
         raise ValueError("cuda_march: out must be a float16 (H, W, 4) tensor")
     dev = view.device.index or 0
     if (out.device.index or 0) != dev or (lut.device.index or 0) != dev:
         raise ValueError("cuda_march: view/out/lut must share a device")
     if shade is None:
-        shade = torch.tensor(shade_params(), dtype=torch.float32, device=view.device)
+        shade = parameter_buffer(shade_params(), view.device)
     elif (shade.device.index or 0) != dev or shade.numel() < SHADE_N:
         raise ValueError("cuda_march: shade must be a float32[SHADE_N] tensor on the view's device")
     H, W = int(out.shape[0]), int(out.shape[1])
@@ -756,7 +756,7 @@ def build_floor_map(view, *, display_shape, volume_scale, nf=(-1, -1, 0),
     unless `size` (an (fw, fh) tuple or one int for both) overrides it.
     The extents ride back on the tensor as `fmap.extent`. Same device as
     `view`."""
-    import torch
+    from meltygui.model.cuda_buffer_model import CudaBuffer, empty_image_buffer
     nz, ny, nx = (int(x) for x in display_shape)
     dev = view.device.index or 0
     if size is None:
@@ -765,7 +765,11 @@ def build_floor_map(view, *, display_shape, volume_scale, nf=(-1, -1, 0),
         fw = fh = size
     else:
         fw, fh = (int(v) for v in size)
-    fmap = torch.empty(fh, fw, 2, dtype=torch.float16, device=view.device)
+    if isinstance(view, CudaBuffer):
+        fmap = empty_image_buffer((fh, fw, 2), 'float16', view.device)
+    else:
+        import torch
+        fmap = torch.empty(fh, fw, 2, dtype=torch.float16, device=view.device)
     snz, sny, snx = (int(x) for x in view.shape)
     sz, sy, sx = (int(x) for x in view.stride())
     chop, along, chunk = nf
@@ -800,11 +804,15 @@ def build_mip(view, *, display_shape, nf=(-1, -1, 0), norm=(0.0, 1.0, 0),
     darker than the data). Bakes THROUGH the transfer, so cache it keyed
     on those params too. One full tensor read; a few MB, L2-resident.
     Same device as `view`."""
-    import torch
+    from meltygui.model.cuda_buffer_model import CudaBuffer, empty_image_buffer
     nz, ny, nx = (int(x) for x in display_shape)
     mz, my, mx = min(cap, nz), min(cap, ny), min(cap, nx)
     dev = view.device.index or 0
-    mip = torch.empty(mz, my, mx, 2, dtype=torch.float16, device=view.device)
+    if isinstance(view, CudaBuffer):
+        mip = empty_image_buffer((mz, my, mx, 2), 'float16', view.device)
+    else:
+        import torch
+        mip = torch.empty(mz, my, mx, 2, dtype=torch.float16, device=view.device)
     snz, sny, snx = (int(x) for x in view.shape)
     sz, sy, sx = (int(x) for x in view.stride())
     chop, along, chunk = nf

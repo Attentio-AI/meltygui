@@ -12,14 +12,18 @@ from meltygui.core.melty import Melty
 def setup(monkeypatch):
     draw_list = Mock(vtx_buffer_size=0)
     monkeypatch.setattr(overlay.imgui, 'get_overlay_draw_list', lambda: draw_list)
+    monkeypatch.setattr(overlay.imgui, 'get_window_draw_list', lambda: draw_list)
+    monkeypatch.setattr(overlay.imgui, 'calc_text_size', lambda text: (60, 12))
     monkeypatch.setattr(Melty, '_overlay_channels_active', True)
     monkeypatch.setattr(Melty, 'overlay_channel_for', lambda ds: 7)
     monkeypatch.setattr(overlay.Tint, 'dd_text', lambda tint: (1, 1, 1))
-    monkeypatch.setattr(overlay, 'time', SimpleNamespace(thread_time=lambda: 0))
+    monkeypatch.setattr(overlay, 'time', SimpleNamespace(thread_time=lambda: 0, monotonic=lambda: 0,
+                                                                   strftime=lambda fmt: '01:08:00'))
     def view(callback):
         return SimpleNamespace(_kwargs={'draw_overlay': callback}, closed=False,
                                just_shadow=False, misc={}, misc_used=set(),
                                _raw_input_value={'count': 1}, abs_clip_rect=(10, 20, 90, 100),
+                               abs_left=10, abs_top=20, width=80, height=80,
                                _abs_left=lambda: 10, _abs_top=lambda: 20,
                                header_height=5, current_tint=(0, 0, 0))
     return draw_list, view
@@ -41,37 +45,54 @@ def test_live_inputs_and_restored_routing(setup):
     assert draw_list.channels_set_current.call_args.args == (Melty.max_layer - 1,)
 
 
-def test_expensive_cpu_callback_disabled_per_view_and_hotswap_retries(setup, monkeypatch):
+@pytest.mark.parametrize('option,state_key', [
+    ('draw_overlay', 'render_overlay'),
+    ('draw_overlay_background', 'render_overlay_background'),
+    ('draw_background', 'render_background'),
+])
+def test_expensive_callback_keeps_rendering_with_red_warning(setup, monkeypatch, option, state_key):
     draw_list, view = setup
-    calls = []
-    def callback():
-        calls.append(1)
+    discard = Mock()
+    monkeypatch.setattr(overlay, 'discard_geometry', discard)
+    callback = Mock(return_value=None)
     ds = view(callback)
-    clock = iter([0, .0006])
+    ds._kwargs = {option: callback}
+    clock = iter([0, .0006, 0, .0006, 0, .0001])
     monkeypatch.setattr(overlay.time, 'thread_time', lambda: next(clock))
-    overlay.draw_overlay(ds)
-    overlay.draw_overlay(ds)
-    assert calls == [1]
-    assert 'draw_overlay: 0.600 ms CPU exceeds 0.5 ms CPU budget' in draw_list.add_text.call_args.args[-1]
-    def replacement():
-        calls.append(2)
-    callback.__code__ = replacement.__code__
-    monkeypatch.setattr(overlay, 'time', SimpleNamespace(thread_time=lambda: 0))
-    overlay.draw_overlay(ds)
-    assert ds.misc['render_overlay'].error is None
-    other = view(callback)
-    overlay.draw_overlay(other)
-    assert other.misc['render_overlay'] is not ds.misc['render_overlay']
+    for _ in range(2):
+        getattr(overlay, option)(ds)
+        assert ds.misc[state_key].error is None
+        assert draw_list.add_text.call_args.args == (
+            26, 84, overlay.pack_color(1.0, 0.0, 0.0, 1.0),
+            f'[01:08:00] {option}: 0.600 ms CPU exceeds 0.5 ms CPU budget')
+    draw_list.add_text.reset_mock()
+    monkeypatch.setattr(overlay.time, 'monotonic', lambda: 5.0)
+    getattr(overlay, option)(ds)
+    assert callback.call_count == 3
+    draw_list.add_text.assert_not_called()
+    discard.assert_not_called()
 
 
-@pytest.mark.parametrize('elapsed,disabled', [(0.0005, False), (0.000501, True)])
-def test_budget_boundary(setup, monkeypatch, elapsed, disabled):
-    _, view = setup
+@pytest.mark.parametrize('elapsed,warned', [(0.0005, False), (0.000501, True)])
+def test_budget_boundary(setup, monkeypatch, elapsed, warned):
+    draw_list, view = setup
     ds = view(lambda: None)
     clock = iter([0, elapsed])
     monkeypatch.setattr(overlay.time, 'thread_time', lambda: next(clock))
     overlay.draw_overlay(ds)
-    assert (ds.misc['render_overlay'].error is not None) is disabled
+    assert ds.misc['render_overlay'].error is None
+    assert draw_list.add_text.called is warned
+
+
+def test_old_budget_failure_recovers_without_changing_callback(setup):
+    _, view = setup
+    callback = Mock()
+    ds = view(callback)
+    overlay.draw_overlay(ds)
+    ds.misc['render_overlay'].error = 'draw_overlay: 0.600 ms CPU exceeds 0.5 ms CPU budget'
+    overlay.draw_overlay(ds)
+    assert callback.call_count == 2
+    assert ds.misc['render_overlay'].error is None
 
 
 def test_scheduler_pause_does_not_disable_a_cheap_callback(setup, monkeypatch):
@@ -404,3 +425,24 @@ def test_cached_child_replay_precedes_shadows_and_preserves_pixels_beyond_old_vi
     assert tile.content_stale is changed_definition
     cache._tiles.clear()
     assert not overlay.paint_cached_view(ds)
+
+
+def test_budget_warning_fades_and_new_overrun_resets_age(setup, monkeypatch):
+    draw_list, view = setup
+    ds = view(lambda: None)
+    clock = iter([0, .0006, 0, .0001, 0, .0006, 0, .0001])
+    monkeypatch.setattr(overlay.time, 'thread_time', lambda: next(clock))
+    overlay.draw_overlay(ds)
+    monkeypatch.setattr(overlay.time, 'monotonic', lambda: 2.5)
+    overlay.draw_overlay(ds)
+    assert draw_list.add_text.call_args.args[2] == overlay.pack_color(1, 0, 0, .5)
+    assert draw_list.add_text.call_args.args[-1].startswith('[01:08:00]')
+    monkeypatch.setattr(overlay.time, 'strftime', lambda fmt: '01:08:03')
+    overlay.draw_overlay(ds)
+    assert draw_list.add_text.call_args.args[2] == overlay.pack_color(1, 0, 0, 1)
+    assert draw_list.add_text.call_args.args[-1].startswith('[01:08:03]')
+    monkeypatch.setattr(overlay.time, 'monotonic', lambda: 7.5)
+    draw_list.add_text.reset_mock()
+    overlay.draw_overlay(ds)
+    draw_list.add_text.assert_not_called()
+    assert ds.misc['render_overlay'].budget_warning is None

@@ -2812,12 +2812,12 @@ def draw_text(input_value: str, height=None,
     if source_inspection is not None:
         live_store = source_inspection.live_store
         if code_dict is None and code_tree is None:
-            code_tree = getattr(source_inspection, "code_tree", None)
+            code_tree = source_inspection.source.code_tree
             breakpoint_tree = code_tree
     breakpoint_index = (current_breakpoint_index(breakpoint_tree, _fold_full)
                         if breakpoint_width and breakpoint_path is not None else None)
     if breakpoint_index is None and source_inspection is not None:
-        breakpoint_index = getattr(source_inspection, "source_index", None)
+        breakpoint_index = source_inspection.source.index
     # Read the authoritative file entry; replacing its mapping also changes the
     # codec-injected `breakpoints` argument of every cached pane for this file.
     breakpoints = file_breakpoints(file_metadata, breakpoint_path)
@@ -3439,9 +3439,6 @@ def draw_text(input_value: str, height=None,
             if breakpoint_index is not None:
                 toggle_line_breakpoint(file_metadata, breakpoint_path, breakpoint_index, breakpoint_line)
                 breakpoints = file_breakpoints(file_metadata, breakpoint_path)
-                if debugger_state is not None:
-                    debugger_state.set_breakpoints(breakpoint_path, _fold_full,
-                                                   breakpoint_index, breakpoints)
             text_editor_state._breakpoint_gesture = True
             left_mouse_down = None
     if left_mouse_down:
@@ -7166,8 +7163,10 @@ def draw_text(input_value: str, height=None,
                 if _preview_lines is not None and line_idx in _preview_lines:
                     _num_col = _fade_packed(_num_col, _preview_alpha)
                 draw_list.add_text(nx, ly, _num_col, num_str)
-            if (source_inspection is not None and debugger_state.paused
-                    and not changed and source_inspection.line ==
+            execution_site = (source_inspection.source.index.sites.get(source_inspection.execution_key)
+                              if source_inspection is not None else None)
+            if (execution_site is not None
+                    and not changed and execution_site.start_line ==
                     ((_fold_d2b[line_idx] if _fold_d2b is not None else line_idx) + 1)):
                 draw_list.add_rect_filled(left, ly, left + gutter_w, ly + line_px,
                                           pack_color(1.0, 0.70, 0.16, 0.28))

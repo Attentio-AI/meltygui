@@ -325,10 +325,11 @@ class LutTexture(TextureId):
 
     def cuda(self, device):
         """The same palette on the tensor's device, refreshed when colours change."""
-        import torch
+        from meltygui.model.cuda_buffer_model import parameter_buffer
+        import numpy as np
         return self._state().get(
             ('cuda_lut', str(device)),
-            lambda: torch.tensor(self.colors, dtype=torch.float32, device=device).reshape(-1, 3),
+            lambda: parameter_buffer(np.asarray(self.colors, dtype=np.float32).reshape(-1, 3), device),
             deps=tuple(self.colors))
 
 

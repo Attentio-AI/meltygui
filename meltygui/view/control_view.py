@@ -170,7 +170,7 @@ def draw_bool(
               draw_state, left_mouse_clicked=None, max_width=359,
               max_height=100, min_height=20, header_same_line=True,
               selectable=False, left_mouse_drag=None, left_mouse_held=False, align_header=True,
-              left_mouse_down=False):
+              left_mouse_down=False, editable=True):
     
     # Use meltygui #[ comments liberally. Constants in the func should always have tints
     # As a generally rule, local constants are preferable to constants referenced elsewhere.
@@ -271,7 +271,7 @@ def draw_bool(
     
     # Melty click events are preferable to imgui ones. left_mouse_down, left_mouse_clicked, left_mouse_drag etc 
     # Are injected automatically when those arguments are present in a @render_func signature.
-    if box_hovered and imgui.is_mouse_clicked(0):
+    if editable and box_hovered and left_mouse_clicked:
         return True, not input_value
     else:
         return False, input_value
@@ -449,7 +449,10 @@ def draw_float(input_value: float,
                max_height=100, min_height=20,
                min_value=-98.703,
                max_value=99.264,
-               speed=0.0042):
+               speed=0.0042, editable=True):
+    if not editable:
+        imgui.text(str(input_value))
+        return False, input_value
     begin_number_field(draw_state, wrap, min_width)
     changed, value = imgui.drag_float("", input_value,
                                       format='%.3f',
@@ -513,7 +516,10 @@ def draw_button(input_value="", draw_state=None, label="", tint=(1.0, 1.0, 1.0, 
              is_tree=False, with_header=draw_header, align_header=True, temp=True)
 def draw_int(input_value: int, draw_state=None, max_height=100, min_height=20,
              min_width=80, wrap=False, min_value=-1000.0,
-             max_value=1000.0, speed=0.1, unique=0):
+             max_value=1000.0, speed=0.1, unique=0, editable=True):
+    if not editable:
+        imgui.text(str(input_value))
+        return False, input_value
     max_int = 2147483647
     if input_value < max_int:
         begin_number_field(draw_state, wrap, min_width)

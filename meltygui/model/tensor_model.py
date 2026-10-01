@@ -150,6 +150,9 @@ def _display_view_dtype(t):
     """Keep supported CUDA dtypes/layouts intact; reject implicit conversions.
     CPU reference paths can still materialize sparse/complex/quantized inputs.
     bf16/ints/bool/f64 decode in the CUDA kernel without an f32 copy."""
+    from meltygui.model.cuda_buffer_model import CudaBuffer
+    if isinstance(t, CudaBuffer):
+        return t
     import torch
     if t.is_cuda and (t.is_quantized or t.layout != torch.strided or t.is_complex()):
         raise ValueError("Direct CUDA rendering requires a dense real-valued tensor; "
@@ -172,7 +175,12 @@ def _slice_core(t, dim_names, x_dim, y_dim, z_dim, slices, mean_dims, sort_dim,
     contiguous() — `materialize` decides the dtype pre-pass), plus the
     mapping, source shape and the resolved neural-flow axes (positions in
     the (z, y, x) volume, None = off)."""
-    import torch
+    from meltygui.model.cuda_buffer_model import CudaBuffer
+    if isinstance(t, CudaBuffer):
+        if materialize or mean_dims or int(sort_dim) >= 0:
+            raise ValueError('Transform this shared buffer in its owning interpreter before rendering it; the tensor was not copied')
+    else:
+        import torch
     t = (to_display_dtype if materialize else _display_view_dtype)(t.detach())
     if t.numel() == 0:
         raise ValueError(f"empty tensor (shape {tuple(t.shape)}) — nothing to display")
@@ -299,6 +307,9 @@ def slice_volume_view(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
             vol.shape, _AXIS_POS[chop], _AXIS_POS[along], int(nf_chunk), pad=nf_pad)
     norm = (0.0, 1.0, 0)
     if normalize:
+        from meltygui.model.cuda_buffer_model import CudaBuffer
+        if isinstance(vol, CudaBuffer):
+            raise ValueError('Normalize this shared buffer in its owning interpreter before rendering it; the tensor was not copied')
         lo, hi = float(vol.min()), float(vol.max())
         norm = (lo, max(abs(hi), abs(lo)), 2) if lo < 0 else (lo, hi, 1)
     return CudaVolumeView(vol, display_shape, nf, norm, mapping, shape)

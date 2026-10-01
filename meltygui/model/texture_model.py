@@ -177,7 +177,7 @@ def _upload_cuda_image(gl_state, out):
     buffer and becomes a texture inside the display GPU's VRAM
     (cuda_texture_model.image_to_texture). Without it (a display GPU CUDA
     cannot reach) a pinned host buffer carries it, as before."""
-    import torch
+    from meltygui.model.cuda_buffer_model import CudaBuffer
     H, W = int(out.shape[0]), int(out.shape[1])
     if Toggles.Voxels.cuda_image_interop:
         from meltygui.model.cuda_texture_model import image_to_texture
@@ -186,12 +186,21 @@ def _upload_cuda_image(gl_state, out):
             gl_state.drop("cuda_image"); gl_state.drop("cuda_host")
             return img
     gl_state.drop("cuda_image_interop")
-    host = gl_state.get("cuda_host",
-                        lambda: torch.empty(H, W, 4, dtype=torch.float16).pin_memory(),
-                        deps=(W, H))
-    # D2H on torch's (legacy default) stream orders after the kernel on
-    # the same device's null stream — no explicit synchronize.
-    host.copy_(out)
+    if isinstance(out, CudaBuffer):
+        import numpy as np
+        import meltygui_pycuda.driver as cuda
+        from meltygui.core.graphics.cuda_context_core import using_device
+        host = gl_state.get('cuda_host', lambda: cuda.pagelocked_empty((H, W, 4), np.float16),
+                            deps=(W, H, 'driver'))
+        with using_device(out.device.index):
+            cuda.memcpy_dtoh(host, out.data_ptr())
+        pixels = host
+    else:
+        import torch
+        host = gl_state.get('cuda_host', lambda: torch.empty(H, W, 4, dtype=torch.float16).pin_memory(),
+                            deps=(W, H, 'torch'))
+        host.copy_(out)
+        pixels = host.numpy()
 
     def create():
         tex_id = _scalar_int(gl.glGenTextures(1))
@@ -215,7 +224,7 @@ def _upload_cuda_image(gl_state, out):
     gl.glBindTexture(gl.GL_TEXTURE_2D, img.texture_id)
     with tight_unpack():
         gl.glTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, W, H, gl.GL_RGBA,
-                           gl.GL_HALF_FLOAT, host.numpy())
+                           gl.GL_HALF_FLOAT, pixels)
     gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
     return img
 

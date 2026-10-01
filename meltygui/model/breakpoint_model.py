@@ -22,7 +22,10 @@ def current_breakpoint_index(tree, source):
     origin = tree.get("__origin__")
     if origin is None or origin.line_offset:
         return None
-    if getattr(origin, "source_input", origin.text) is not source:
+    from meltygui.model.source_snapshot_model import same_source_version
+    original = getattr(origin, "source_input", origin.text)
+    if original is not source and (not origin.file_path or
+            not same_source_version(origin.file_path, original, source)):
         return None
     if getattr(origin, "_site_text", None) is not origin.text:
         return None

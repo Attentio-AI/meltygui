@@ -26,6 +26,30 @@ def imported_after(*statements):
     return set(result.stdout.split())
 
 
+def test_implicit_app_loop_preserves_debugger_monitoring():
+    result = subprocess.run([sys.executable, '-c', '''
+import sys
+from meltygui.core.runtime import app
+hits = []
+def render():
+    value = 1
+    return value
+app.run = render
+sys.monitoring.use_tool_id(5, 'test-app-breakpoints')
+sys.monitoring.register_callback(5, sys.monitoring.events.LINE,
+                                lambda code, line: hits.append(line))
+sys.monitoring.set_local_events(5, render.__code__, sys.monitoring.events.LINE)
+try:
+    exec("from meltygui.core.runtime.app import _hook_main_return\\n_hook_main_return()\\n",
+         {'__name__': '__main__'})
+    assert len(hits) == 2, hits
+    assert sys.gettrace() is None
+finally:
+    sys.monitoring.free_tool_id(5)
+'''], capture_output=True, text=True, close_fds=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_package_and_render_graph_stay_light():
     loaded = imported_after('import meltygui',
                             'from meltygui.core.core_render import render_func',

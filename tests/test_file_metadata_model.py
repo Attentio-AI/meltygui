@@ -117,3 +117,128 @@ def test_metadata_injection_respects_explicit_dictionary(gl_context, monkeypatch
             end_frame()
     assert len(seen) == 3
     assert seen[0] is shared and seen[1] is supplied and seen[2] is shared
+
+
+@pytest.fixture
+def metadata_notifications(monkeypatch):
+    from meltygui.core.melty import Melty
+    queued = []
+    monkeypatch.setattr(Melty, 'post_to_render', queued.append)
+
+    def deliver():
+        while queued:
+            queued.pop(0)()
+
+    return queued, deliver
+
+
+def test_path_observers_coalesce_local_edits_and_unsubscribe(stores, metadata_notifications):
+    store, _ = stores
+    queued, deliver = metadata_notifications
+    calls, general = [], []
+    first = lambda: calls.append(('first', store.get('/a')))
+    second = lambda: calls.append(('second', store.get('/a')))
+    other = lambda: calls.append(('other', store.get('/b')))
+    store.listeners.append(lambda: general.append(True))
+    store.subscribe('/a', first)
+    store.subscribe('/a', first)
+    store.subscribe('/a', second)
+    store.subscribe('/b', other)
+    store['/a'] = {'breakpoints': {('site',): {'enabled': True}}}
+    store['/a']['breakpoints'][('site',)]['enabled'] = False
+    store.touch('/a')  # Raw nested edits use the persistence notification contract.
+    assert len(queued) == 1 and not calls
+    deliver()
+    assert [name for name, _ in calls] == ['first', 'second']
+    assert not calls[0][1]['breakpoints'][('site',)]['enabled']
+    assert general == [True]
+    calls.clear()
+    store['/a'] = {'icon': 'replacement'}
+    store.unsubscribe('/a', first)
+    deliver()
+    assert calls == [('second', store['/a'])]
+    calls.clear()
+    del store['/a']
+    deliver()
+    assert calls == [('second', None)]
+    calls.clear()
+    store['/b'] = {'icon': 'b'}
+    deliver()
+    assert calls == [('other', store['/b'])]
+    calls.clear()
+    store.clear()
+    deliver()
+    assert sorted(calls) == [('other', None), ('second', None)]
+    store.unsubscribe('/a', second)
+    store.unsubscribe('/b', other)
+    assert not store._path_listeners
+
+
+def test_path_observers_receive_external_merge_without_reader(stores, metadata_notifications):
+    writer, reader = stores
+    _, deliver = metadata_notifications
+    writer['/a'] = {'icon': 'before'}
+    writer['/b'] = {'icon': 'unchanged'}
+    writer.flush()
+    reader.load()
+    deliver()
+    seen, other = [], []
+    reader.subscribe('/a', lambda: seen.append(reader.get('/a')))
+    reader.subscribe('/b', lambda: other.append(True))
+    writer['/a']['icon'] = 'after'
+    writer.flush()
+    # The poller marks a reload and queues delivery even with no view reading.
+    reader._pending = True
+    reader._queue_repaint()
+    deliver()
+    assert len(seen) == 1 and seen[0]['icon'] == 'after'
+    assert not other
+    seen.clear()
+    del writer['/a']
+    writer.flush()
+    reader.load()
+    assert not seen
+    deliver()
+    assert seen == [None] and not other
+
+
+@pytest.mark.parametrize('entrypoint', ['subscribe', 'unsubscribe', 'touch', 'load', 'delivery'])
+def test_path_observers_migrate_live_store_without_resetting_state(
+        stores, metadata_notifications, entrypoint):
+    store, writer = stores
+    _, deliver = metadata_notifications
+    store['/local'] = {'icon': 'pending'}
+    timer, dirty, listeners = store._timer, store._dirty, store.listeners
+    general, seen = [], []
+    listeners.append(lambda: general.append(True))
+    callback = lambda: seen.append(store.get('/local'))
+    del store._path_listeners
+    del store._changed_paths
+
+    if entrypoint == 'subscribe':
+        store.subscribe('/local', callback)
+    elif entrypoint == 'unsubscribe':
+        store.unsubscribe('/local', callback)
+    elif entrypoint == 'touch':
+        store.touch('/other')
+    elif entrypoint == 'load':
+        writer['/external'] = {'icon': 'external'}
+        writer.flush()
+        store.load()
+    else:
+        deliver()  # A callback queued before hotswap executes the new definition.
+
+    assert store._dirty is dirty and '/local' in dirty
+    assert store.listeners is listeners
+    assert store['/local']['icon'] == 'pending'
+    if entrypoint != 'touch':
+        assert store._timer is timer
+    store.subscribe('/local', callback)
+    deliver()
+    general.clear()
+    seen.clear()
+    store['/local']['icon'] = 'after'
+    deliver()
+    assert general == [True]
+    assert len(seen) == 1 and seen[0]['icon'] == 'after'
+    store.unsubscribe('/local', callback)

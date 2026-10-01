@@ -45,6 +45,18 @@ changed files; bump the relevant core or support-package version.
 
 ### From Thermostat
 
+The top **Deployment checklist** has **Prepare deployment** and **Deploy**. Preparation synchronizes
+all three package versions and MeltyGUI's native requirements, optionally commits/pushes the release
+edits, verifies native builds, and runs MeltyGUI's installation tests with support wheels.
+Existing changes must first be reviewed and pushed. Deploy rechecks the tested source commits and
+publishes ImGui, PyCUDA, then MeltyGUI, waiting for each native release to reach PyPI.
+The `imgui_run_id` and `pycuda_run_id` workflow inputs identify successful native builds. During
+verification, their public source commits are checked out and rebuilt into staged wheels; this needs
+no credential for cross-repository artifact downloads. Already published native releases and all
+publication runs install support wheels from PyPI. GPU execution still needs separate hardware validation.
+
+Individual controls remain available:
+
 Use Deployments → **Raise version** when needed → **Review / commit / push** →
 **Verify build** → **Publish**. The review button opens the repository's Version
 Control card. The UI distinguishes failed, unverified and verified source;

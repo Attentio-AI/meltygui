@@ -3,7 +3,7 @@
 Callbacks are plain functions accepting any subset of input_value, draw_state
 and draw_list as keyword arguments. Backgrounds use the supplied body list;
 overlays use the foreground list, outside pixel captures. In both cases,
-normal widgets/render_func calls belong in the body. Keep callbacks below 0.5ms CPU.
+normal widgets/render_func calls belong in the body. Callbacks over 0.5ms CPU keep rendering with a red budget warning.
 Optional draw_overlay_background callbacks place/paint cached child bodies before
 descendant overlays; draw_overlay paints the owning view's foreground afterward.
 """
@@ -22,10 +22,12 @@ from meltygui.hdr_color import pack_color
 # Render-thread CPU time attributes work to the callback, excluding pauses
 # imposed by the scheduler or other threads. No individual view exemptions.
 OVERLAY_BUDGET_SECONDS = 0.0005
+# Linear fade duration after the most recent budget overrun.
+OVERLAY_WARNING_FADE_SECONDS = 5.0
 _STATE_KEY = 'render_overlay'
 
 
-@no_save('callback', 'owner', 'code', 'names', 'error')
+@no_save('callback', 'owner', 'code', 'names', 'error', 'budget_warning', 'budget_warning_at')
 class OverlayState(DictConversion):
     def __init__(self):
         super().__init__()
@@ -34,6 +36,8 @@ class OverlayState(DictConversion):
         self.code = None
         self.names = ()
         self.error = None
+        self.budget_warning = None
+        self.budget_warning_at = 0.0
 
 
 @contextmanager
@@ -95,7 +99,7 @@ def draw_overlay_background(draw_state):
 
 
 def _run_overlay(draw_state, option, state_key, *, foreground=True):
-    """Run a bounded callback, retrying failures when its definition changes."""
+    """Run a timed callback, retrying failures when its definition changes."""
     callback = (draw_state._kwargs or {}).get(option)
     if callback is None:
         draw_state.misc.pop(state_key, None)
@@ -126,6 +130,10 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
         except (TypeError, ValueError) as error:
             state.error = str(error)
 
+    # Recover views disabled by the old budget policy during live updates.
+    if state.error and state.error.startswith(f'{option}: ') and state.error.endswith('ms CPU budget'):
+        state.error = None
+    budget_warning = None
     draw_list = imgui.get_overlay_draw_list() if foreground else imgui.get_window_draw_list()
     clip = draw_state.abs_clip_rect
     if foreground and Melty._overlay_channels_active:
@@ -152,7 +160,9 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
                     state.error = f'{type(error).__name__}: {error}'
                 elapsed = time.thread_time() - started
             if state.error is None and elapsed > OVERLAY_BUDGET_SECONDS:
-                state.error = f'{option}: {elapsed * 1000:.3f} ms CPU exceeds 0.5 ms CPU budget'
+                state.budget_warning_at = time.monotonic()
+                stamp = time.strftime('%H:%M:%S')
+                state.budget_warning = f'[{stamp}] {option}: {elapsed * 1000:.3f} ms CPU exceeds 0.5 ms CPU budget'
             if state.error is not None:
                 discard_geometry(draw_list, vertex_start)
         if state.error is not None and foreground:
@@ -165,7 +175,18 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
             draw_list.pop_clip_rect()
         if foreground and Melty._overlay_channels_active:
             draw_list.channels_set_current(Melty.max_layer - 1)
-    if state.error is not None and not foreground:
+    # getattr also supports existing instances retained across a live update.
+    warning_alpha = 0.0
+    if state.error is None and getattr(state, 'budget_warning', None):
+        age = max(0.0, time.monotonic() - state.budget_warning_at)
+        warning_alpha = max(0.0, 1.0 - age / OVERLAY_WARNING_FADE_SECONDS)
+        if warning_alpha > 0:
+            budget_warning = state.budget_warning
+            from meltygui.core.windowing.glfw_utils import request_render
+            request_render(for_frames=2)
+        else:
+            state.budget_warning = None
+    if budget_warning is not None or (state.error is not None and not foreground):
         # An error painted below an opaque cached body would be invisible.
         error_list = imgui.get_overlay_draw_list()
         if Melty._overlay_channels_active:
@@ -173,10 +194,16 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
         if clip is not None:
             error_list.push_clip_rect(*clip, True)
         try:
-            color = pack_color(*Tint.dd_text(draw_state.current_tint), 1.0)
-            error_list.add_text(draw_state.abs_left + 4,
-                                draw_state.abs_top + draw_state.header_height + 4,
-                                color, f'Background disabled: {state.error}')
+            if budget_warning is not None:
+                text_width, text_height = imgui.calc_text_size(budget_warning)
+                error_list.add_text(draw_state.abs_left + draw_state.width - text_width - 4,
+                                    draw_state.abs_top + draw_state.height - text_height - 4,
+                                    pack_color(1.0, 0.0, 0.0, warning_alpha), budget_warning)
+            else:
+                color = pack_color(*Tint.dd_text(draw_state.current_tint), 1.0)
+                error_list.add_text(draw_state.abs_left + 4,
+                                    draw_state.abs_top + draw_state.header_height + 4,
+                                    color, f'Background disabled: {state.error}')
         finally:
             if clip is not None:
                 error_list.pop_clip_rect()

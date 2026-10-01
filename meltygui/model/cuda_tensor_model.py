@@ -30,7 +30,7 @@ __device__ __forceinline__ float load_at(const unsigned char* __restrict__ d,
 
 
 def dtype_code(t):
-    code = DTYPE_CODES.get(str(t.dtype))
+    code = DTYPE_CODES.get('torch.' + str(t.dtype).removeprefix('torch.'))
     if code is None:
         raise ValueError(f"unsupported CUDA tensor dtype {t.dtype}")
     return code

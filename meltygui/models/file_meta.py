@@ -13,11 +13,11 @@ live. The file I/O is the proxy's job and stays off the render thread:
   Empty entries are not written (the studio's folder scan setdefault()s
   thousands of them; they cost nothing in memory and re-create on demand).
 * Other processes' writes: a poller thread stats the file every
-  `POLL_S`; a new (mtime, size) marks a pending reload, which the NEXT read
-  applies on the reading thread (never a swap under a reader's iteration),
+  `POLL_S`; a new (mtime, size) marks a pending reload, which the next read or queued render delivery
+  applies (never a poller swap under a reader's iteration),
   keeping entries this process edited since its last save (`_dirty`) and
   then repainting: `Melty.cache.invalidate_all()` + request_render. The
-  poller also requests a render so an idle app wakes to read.
+  poller queues render delivery so observers also update without a reader.
 * The root save no longer carries the entries (FileMetaCollection is
   `@no_save("file_meta")`); a root loaded from an older save migrates the
   entries it still holds into the store on its on_load, once — the store
@@ -257,6 +257,8 @@ class FileMetaProxy(dict):
         self._poller = None
         self._repaint_queued = False
         self.listeners = []         # callables after edits/reloads repaint their consumers
+        self._path_listeners = {}
+        self._changed_paths = set()
         self.load()
         atexit.register(self.flush)
 
@@ -304,6 +306,7 @@ class FileMetaProxy(dict):
         ones). Returns True when anything changed. Runs on the caller's
         thread — the reading thread, by design (see _sync)."""
         with self._lock:
+            self._ensure_observers()
             sig = self._stat_sig()
             fresh = self._read_file() if sig is not None else {}
             self._disk_sig = sig
@@ -330,7 +333,50 @@ class FileMetaProxy(dict):
             dict.clear(self)
             dict.update(self, merged)
             self.generation += 1
-            return True
+            self._changed_paths.update(
+                path for path in before.keys() | after.keys()
+                if path not in before or path not in after or before[path] != after[path]
+            )
+        self._queue_repaint()
+        return True
+
+    def _ensure_observers(self):
+        """Add observer fields to a store retained across a definition hotswap.
+
+        Called with _lock held. Existing persistence, listeners and queued work
+        belong to the live instance and must not be reset during migration.
+        """
+        if "_path_listeners" not in self.__dict__:
+            self._path_listeners = {}
+        if "_changed_paths" not in self.__dict__:
+            self._changed_paths = set(self._dirty)
+            if self._dirty_all:
+                self._changed_paths.update(self._path_listeners)
+
+    def subscribe(self, path, callback):
+        """Observe one path with callback() on the render thread after changes.
+
+        Registration is idempotent and does not call back immediately. Callers
+        read the authoritative entry and unsubscribe when their owner closes.
+        Raw nested-dict edits require touch(path), just like persistence.
+        """
+        with self._lock:
+            self._ensure_observers()
+            listeners = self._path_listeners.setdefault(str(path), [])
+            if callback not in listeners:
+                listeners.append(callback)
+        self._ensure_poller()
+
+    def unsubscribe(self, path, callback):
+        """Remove a subscription, including any not-yet-delivered notification."""
+        with self._lock:
+            self._ensure_observers()
+            key = str(path)
+            listeners = self._path_listeners.get(key)
+            if listeners is not None and callback in listeners:
+                listeners.remove(callback)
+                if not listeners:
+                    del self._path_listeners[key]
 
     def _adopt(self, entry, key):
         if isinstance(entry, FileMeta):
@@ -382,11 +428,14 @@ class FileMetaProxy(dict):
         """Mark the store (or one entry) edited here and arm the debounced
         save. FileMeta entries call this through their change hooks."""
         with self._lock:
+            self._ensure_observers()
             self.generation += 1
             if path is None:
                 self._dirty_all = True
+                self._changed_paths.update(self._path_listeners)
             else:
                 self._dirty.add(str(path))
+                self._changed_paths.add(str(path))
             if self._timer is not None:
                 self._timer.cancel()
             self._timer = threading.Timer(SAVE_DELAY_S, self._save_timer)
@@ -394,6 +443,9 @@ class FileMetaProxy(dict):
             self._timer.start()
         self._ensure_poller()
 
+        self._queue_repaint()
+
+    def _queue_repaint(self):
         # Local edits need the same cache notification as external reloads.
         # Coalesce a batch of field edits and invalidate on the render thread,
         # not on a metadata writer/poller thread or on every rendered frame.
@@ -405,9 +457,27 @@ class FileMetaProxy(dict):
         Melty.post_to_render(self._repaint_local)
 
     def _repaint_local(self):
+        # A subscriber need not render/read this store for external edits to
+        # reach it. Merge on render delivery before notifying any observers.
+        with self._lock:
+            self._ensure_observers()
+            pending = self._pending
+        if pending:
+            self.load()
         with self._lock:
             self._repaint_queued = False
+            paths, self._changed_paths = self._changed_paths, set()
+            callbacks = [(path, callback) for path in paths
+                         for callback in self._path_listeners.get(path, ())]
         self._repaint()
+        for path, callback in callbacks:
+            with self._lock:
+                active = callback in self._path_listeners.get(path, ())
+            if active:
+                try:
+                    callback()
+                except Exception:
+                    pass
 
     def _save_timer(self):
         with self._lock:
@@ -431,7 +501,7 @@ class FileMetaProxy(dict):
         # entries - on the reading thread: flag it, wake a frame, retry.
         with self._lock:
             self._pending = True
-        _request_render()
+        self._queue_repaint()
         with self._lock:
             if self._timer is None:
                 self._timer = threading.Timer(POLL_S, self._save_timer)
@@ -457,11 +527,11 @@ class FileMetaProxy(dict):
                 if changed:
                     self._pending = True
             if changed:
-                _request_render()
+                self._queue_repaint()
 
     def _sync(self):
-        if self._pending and self.load():
-            self._repaint()
+        if self._pending:
+            self.load()
 
     def _repaint(self):
         try:

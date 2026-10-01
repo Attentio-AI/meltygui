@@ -270,7 +270,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                     on_collapse=False, search_text="", return_item=False, close_triggers_delete=False,
                     on_expand=False, show_add_delete=False, show_add_types=None, item_spacing_y=3, show_system=False,
                     included=None, horizontal=False, show_indices=False, excluded=None, annotation=None,
-                    drop_tail_height=None, immediate_dnd=False, **kwargs):
+                    drop_tail_height=None, immediate_dnd=False, editable=True, **kwargs):
     """
     Universal collection renderer
     immediate_dnd=True is how fast_draw_collection hosts this body: rows are
@@ -307,6 +307,9 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
 
     if child_kwargs is None:
         child_kwargs = {}
+    if not editable:
+        child_kwargs = {**child_kwargs, 'editable': False}
+        show_add_delete = close_triggers_delete = immediate_dnd = False
 
     # A RenderHost rendered DIRECTLY (draw_collection(host) - the settings
     # column of draw_space_mouse, the modifies playground) is this view's
@@ -696,6 +699,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                 result = Core.melty.to_apply(out_val)
                 item_changed, out_val = False, None
 
+            if not editable:
+                item_changed = False
             if set_attr is not None and item_changed:
                 try:
                     set_attr(input_value, key, out_val)
@@ -1495,17 +1500,11 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
 @render_func(is_default_for=(types.MappingProxyType), shadow=False, show_bg=False, show_add_delete=False,
              with_header=draw_header)
 def draw_mapping_proxy(input_value):
-    # To list first, then back to mapping proxy
-    try:
-        dict_values = dict(input_value)
-        changed, new_dict = draw_collection(dict_values, show_bg=False, indent_size=0, show_header=False,
-                                            show_add_delete=False)
-        if changed:
-            return True, types.MappingProxyType(new_dict)
+    """A read-only binding map keeps its identity and referenced values."""
+    draw_collection(input_value, show_bg=False, indent_size=0, show_header=False,
+                    show_add_delete=False, editable=False)
+    return False, input_value
 
-    except Exception as e:
-        imgui.text(f"Error converting MappingProxyType to dict: {e}")
-        return False, input_value
 
     return changed, input_value
 
