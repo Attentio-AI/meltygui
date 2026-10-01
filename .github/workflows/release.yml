@@ -31,7 +31,7 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ inputs.expected_version }}
         run: |
-          actual_version=$(uv run --no-project --python 3.12 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          actual_version=$(uv run --no-project --python 3.12 python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
           if [ -n "$EXPECTED_VERSION" ] && [ "$EXPECTED_VERSION" != "$actual_version" ]; then
             echo "Confirmed $EXPECTED_VERSION but source states $actual_version"
             exit 1
