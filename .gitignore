@@ -6,5 +6,5 @@ dist/
 build/
 *.egg-info/
 .melty/
-
+.DS_Store
 .idea/
