@@ -60,16 +60,24 @@ APP = textwrap.dedent('''\
 
     def queue_edit():
         from meltygui.model.code_dict_model import CodeDict, Codebase
+        from meltygui.core.melty import FileWatch
         import cds_pkg.settings as settings
+        FileWatch.watch_dir(str(root))
+        FileWatch.start()
+        assert FileWatch.observer.is_alive()
         CodeDict(settings.Settings, write_to=Codebase)["speed"] = 2.25
 
     meltygui.after_first_frame(queue_edit)
     meltygui.run()
+    from meltygui.core.melty import FileWatch
+    assert not FileWatch.observer.is_alive()
+    assert not FileWatch.observer.emitters
     print('exit ok')
 ''')
 
 
-@pytest.mark.skipif(not (os.environ.get('WAYLAND_DISPLAY') or os.environ.get('DISPLAY')),
+@pytest.mark.skipif(sys.platform != 'darwin' and not (
+                    os.environ.get('WAYLAND_DISPLAY') or os.environ.get('DISPLAY')),
                     reason='needs a display: drives a real window through app.run')
 def test_run_exits_through_the_flush_with_a_queued_edit(tmp_path):
     """The whole exit path: a window, a first frame, an edit queued from
@@ -87,7 +95,7 @@ def test_run_exits_through_the_flush_with_a_queued_edit(tmp_path):
                XDG_CACHE_HOME=str(tmp_path / 'cache'), XDG_STATE_HOME=str(tmp_path / 'state'),
                XDG_CONFIG_HOME=str(tmp_path / 'config'))
     result = subprocess.run([sys.executable, str(script), str(tmp_path)], env=env,
-                            capture_output=True, text=True, timeout=120)
+                            close_fds=False, capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stderr
     assert 'exit ok' in result.stdout
     text = (package / 'settings.py').read_text()

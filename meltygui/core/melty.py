@@ -613,10 +613,19 @@ class FileWatch:
         return cls._self_write_text.get(resolved)
 
     @classmethod
-    def shutdown(cls):
+    def stop(cls):
+        """Join native file callbacks before the Python runtime goes away.
+
+        Standalone apps own their save policy and need this resource cleanup
+        without importing the code stack or flushing edits from a failed frame.
+        """
+        cls.observer.stop()
         if cls.observer.is_alive():
-            cls.observer.stop()
             cls.observer.join()
+
+    @classmethod
+    def shutdown(cls):
+        cls.stop()
         from meltygui.code.libcst_conversion import shutdown_jedi_pool
         from meltygui.code.libcst_conversion import shutdown_symbol_index_daemon
         shutdown_jedi_pool()

@@ -754,6 +754,10 @@ def run():
     finally:
         _debug(f'{frames} frames rendered')
         input_recording_core.stop_on_exit()
+        # Standalone apps do not run Melty.cleanup. Cocoa's file watcher
+        # must stop before interpreter teardown, even after a failed frame.
+        from meltygui.core.melty import FileWatch
+        FileWatch.stop()
         if not _state['failed']:
             _flush_pending_saves()
             _save_session()
