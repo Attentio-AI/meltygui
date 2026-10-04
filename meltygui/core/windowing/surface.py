@@ -162,9 +162,7 @@ class Surface:
 
         glfw.default_window_hints()
         glfw.window_hint(glfw.VISIBLE, True)
-        glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 4)
-        glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
-        glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+        glfw_utils.apply_opengl_context_hints()
         glfw.window_hint(glfw.TRANSPARENT_FRAMEBUFFER, transparent)
         glfw.window_hint(glfw.ALPHA_BITS, 8 if transparent else 0)
         glfw.window_hint(glfw.DECORATED, glfw.FALSE if self.chrome else glfw.TRUE)
@@ -215,6 +213,7 @@ class Surface:
         # (the owner's is), so select ours before touching its io.
         imgui.set_current_context(self.ctx)
         imgui.get_io().ini_file_name = None
+        imgui.get_io().font_global_scale = owner_io.font_global_scale
         # The renderer uploads the atlas in its constructor, BEFORE it stamps
         # display_size: the FreeType hinting pass (fonts.hint_atlas) frames on
         # the current context and dies on the (-1, -1) default.
@@ -343,9 +342,14 @@ class Surface:
         hook(glfw.set_window_focus_callback, self._on_focus)
         hook(glfw.set_framebuffer_size_callback, self._on_framebuffer_size)
         hook(glfw.set_window_close_callback, lambda *_: request_render())
-        # Damage (an uncomposited X11 expose): a clean surface is not redrawn
-        # otherwise. The native Wayland backend has no such event.
-        hook(glfw.set_window_refresh_callback, lambda *_: request_render())
+        # Cocoa delivers refreshes inside its modal live-resize loop. Waiting
+        # for poll_events to return would stretch the last presented buffer.
+        hook(glfw.set_window_refresh_callback, self._on_refresh)
+
+    def _on_refresh(self):
+        request_render()
+        from meltygui.core.runtime.app import refresh_surface
+        refresh_surface(self)
 
     def _on_focus(self, focused):
         request_render()
@@ -445,10 +449,12 @@ class Surface:
         # edits deferred while a picker/slider held the pointer here too.
         from meltygui.core.rendering.parameter_core import flush_deferred_writes
         flush_deferred_writes()
+        # Collision bounds belong to the surface, including when the OS
+        # supplies its title bar and cannot accept collision-driven moves.
+        os_frame.begin_frame()
         if self.chrome:
-            os_frame.begin_frame()
             titlebar.poll_os_window_drag()
-            os_frame.solve()
+        os_frame.solve()
         imgui.set_cursor_screen_pos((0, 0))
         imgui.set_item_allow_overlap()
         draw_list = imgui.get_window_draw_list()
@@ -466,7 +472,7 @@ class Surface:
         imgui.set_cursor_screen_pos((0, top))
         # The root fills the OS MODEL's size (os_frame.content_size): equal
         # to the display except while our own resize is still landing.
-        fill_w, fill_h = os_frame.content_size((disp_w, disp_h)) if self.chrome else (disp_w, disp_h)
+        fill_w, fill_h = os_frame.content_size((disp_w, disp_h))
         Melty.root_fill = (float(fill_w), float(fill_h) - top, float(top))   # (w, h below the chrome, top y)
         Melty.root_fill_used = False
         # The body runs INSIDE the ground, as the studio's windows run inside
@@ -489,8 +495,7 @@ class Surface:
         Melty.end_frame()
         if self.request is not None:
             Melty.finish_surface_root(self.request, self)
-        if self.chrome:
-            os_frame.flush()
+        os_frame.flush()
         Melty.window_stack.pop()
         draw_list.channels_merge()
         Melty.channels_split = False

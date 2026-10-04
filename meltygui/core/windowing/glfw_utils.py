@@ -31,6 +31,19 @@ UI_SCALE_MIN = 0.5
 UI_SCALE_MAX = 3.0
 
 
+def apply_opengl_context_hints():
+    """Use the same core context for the owner and every shared window.
+
+    Apple's OpenGL driver stops at 4.1 and requires a forward-compatible
+    core profile. Other backends retain 4.3 for the compute-based tools.
+    """
+    glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 4)
+    glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1 if sys.platform == 'darwin' else 3)
+    glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+    if sys.platform == 'darwin':
+        glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, True)
+
+
 def clamp_ui_scale(value) -> float:
     """Sanitize a candidate ui scale: a float within
     [UI_SCALE_MIN, UI_SCALE_MAX] passes through; anything crazy — out of

@@ -172,7 +172,8 @@ def test_native_frame_is_available_to_chrome_and_collision_flush(backend, monkey
     monkeypatch.setattr(titlebar, 'window_inset', lambda: 0)
     monkeypatch.setattr(os_frame, '_book_pin_rebases', lambda: None)
     state = dict(os_frame._STATE)
-    state.update(mode='walls', edges={'x': [{'x': 0.}, {'x': 850.}], 'y': [{'y': 0.}, {'y': 600.}]},
+    state.update(mode='feed', edges={'x': [{'x': 0.}, {'x': 850.}], 'y': [{'y': 0.}, {'y': 600.}]},
+                 expected=[0., 0.],
                  size_requests={'x': [], 'y': []}, size_observed=[800., 600.],
                  size_expected=[800., 600.], size_request_frame=[0, 0])
     monkeypatch.setattr(os_frame, '_STATE', state)

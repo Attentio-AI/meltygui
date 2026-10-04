@@ -59,7 +59,7 @@ class Studio:
         return (tuple(self.pos), self.area, self.mode,
                 (self.pos[0] + self.feed_size[0], self.pos[1] + self.feed_size[1]), getattr(self, "window_id", 1))
 
-    def request(self, window, w, h, offset=None):
+    def request(self, window, w, h, offset=None, collision=False):
         self.requests.append((w, h, tuple(offset) if offset else None))
         if getattr(self, "size_lag", 0):
             # the compositor answers `size_lag` frames later: sizes queue up
@@ -250,6 +250,7 @@ def test_only_the_hand_moves_the_os_window(studio):
 
 def test_os_window_right_drag_grows_then_flips_at_the_screen(studio):
     # no root windows: the OS window's own drag solves against the screen alone
+    studio.frame()                                   # observe native adjustment support first
     os_frame.queue_drag("x", 1, 300)
     assert studio.frame() == (3300, 1500)
     assert os_x() == (400.0, 3700.0) and studio.requests[-1] == (3300, 1500, None)
@@ -1580,6 +1581,7 @@ def test_idle_release_forgets_os_sticky_snapshot(studio, monkeypatch, axis):
 
 def test_background_release_applies_only_its_remaining_motion(studio, monkeypatch):
     from types import SimpleNamespace
+    studio.frame()
     handler = SimpleNamespace(is_down=lambda button: False)
     monkeypatch.setattr(Melty, 'event_handler', handler)
     monkeypatch.setattr(Melty, 'events', {tb._RESIZE_ID: {

@@ -238,6 +238,35 @@ def backend_supported():
     return sys.platform.startswith("linux")
 
 
+def can_adjust_window_edges(window):
+    """Can collision pushes control this native frame's position AND size?
+
+    Reading a position or starting a compositor-owned interactive resize is
+    insufficient. Only the implemented X11 and Wayland control paths opt in;
+    Cocoa and unknown backends keep the observed content bounds fixed.
+    """
+    if window is None or not sys.platform.startswith("linux"):
+        return False
+    try:
+        if not glfw.get_window_attrib(window, glfw.RESIZABLE) or _fullscreen(window):
+            return False
+        if not _on_wayland():
+            return (glfw.get_platform() == glfw.PLATFORM_X11
+                    and not bool(glfw.get_window_attrib(window, glfw.MAXIMIZED)))
+        import meltygui.core.windowing.geometry_feed as geometry_feed
+        geometry_feed.ensure_started()
+        frame = geometry_feed._current_frame()
+        if (not geometry_feed._STATE['available'] or not frame
+                or frame.get('maximized') or frame.get('fullscreen')):
+            return False
+        backend = geometry_feed.backend()
+        if backend == 'hyprland':
+            return bool(frame.get('floating') and frame.get('address'))
+        return backend == 'gnome' and wayland_move.offset_available()
+    except Exception:
+        return False
+
+
 def titlebar_enabled():
     """X11: Toggles.Melty.enhanced_titlebar (it replaces the WM frame, an
     opt-in). Wayland: whenever the native frame is up — GLFW's fallback frame
@@ -1022,7 +1051,8 @@ def draw_titlebar(window):
     # (the drag events themselves are consumed by poll_os_window_drag at
     # the frame's START - before the root windows solve - so the OS edge
     # moves in the same frame the hand did)
-    if _rdrag is not None:
+    from meltygui.core.windowing import os_frame
+    if _rdrag is not None and os_frame.available():
         mouse_cursor.request(_EDGE_CURSOR[_SIZE_TOPLEFT if _rdrag["top_left"] else _SIZE_BOTTOMRIGHT])
 
     # The buttons themselves are painted earlier in the frame, in the main
@@ -1356,7 +1386,7 @@ _pending_surface_wait = globals().get("_pending_surface_wait") or 0
 PENDING_SURFACE_WAIT_FRAMES = 300
 
 
-def request_surface_size(window, width, height, offset=None, fit=False):
+def request_surface_size(window, width, height, offset=None, fit=False, collision=False):
     """Queue an app-side resize (the right-drag) for the top of the NEXT
     frame (apply_pending_surface_size, before process_inputs). Applied
     mid-frame it committed a new buffer size and geometry with content laid
@@ -1369,11 +1399,15 @@ def request_surface_size(window, width, height, offset=None, fit=False):
     the CONTENT inside the work area at the new size — the compositor
     centred the window at its INITIAL size and the box grows anchored at
     its top-left, so a restored studio ran off the bottom and right of
-    the screen (and the OS-edge walls then hold it there, 09-09)."""
+    the screen (and the OS-edge walls then hold it there, 09-09).
+    ``collision`` marks a solver request, cancelled if native adjustment
+    becomes unavailable before it is applied. Explicit sizes still work."""
     global _pending_surface_size, _pending_surface_offset, _pending_surface_fit
+    from meltygui.core.windowing import os_frame
     _pending_surface_size = (int(width), int(height))
     _pending_surface_offset = tuple(int(v) for v in offset) if offset else None
     _pending_surface_fit = bool(fit)
+    os_frame._STATE['pending_surface_collision'] = bool(collision)
 
 
 def fit_offset(rect, size, area, inset):
@@ -1400,6 +1434,17 @@ def apply_pending_surface_size(window):
     import meltygui.core.windowing.wayland_move as wayland_move
     import meltygui.core.windowing.os_frame as os_frame
     wayland_move.clear_surface_offset()          # last frame's offset is spent
+    collision = os_frame._STATE.get('pending_surface_collision', False)
+    if not can_adjust_window_edges(window):
+        # Discard speculative compensation BEFORE it moves any child. A
+        # readable but uncontrollable frame must never rebase local content.
+        os_frame._set_mode('walls')
+        if collision:
+            _pending_surface_size = _pending_surface_offset = None
+            _pending_surface_fit = False
+            _pending_surface_wait = 0
+            _frame_surface_offset = None
+            os_frame._STATE['pending_surface_collision'] = False
     # The roots' passes re-base with the OS near edge's motion lands HERE,
     # with the move it compensates (os_frame: the solve booked it).
     os_frame.apply_rebase()
@@ -1440,6 +1485,7 @@ def apply_pending_surface_size(window):
     _pending_surface_fit = False
     _pending_surface_size = None
     _pending_surface_offset = None
+    os_frame._STATE['pending_surface_collision'] = False
     from meltygui.core.runtime.toggles import Toggles
     if Toggles.Melty.push_os_window_edges_trace:
         try:

@@ -59,7 +59,10 @@ class ProgramCompiler:
         try:
             vertex_shader = shaders.compileShader(vertex_src, GL.GL_VERTEX_SHADER)
             fragment_shader = shaders.compileShader(fragment_src, GL.GL_FRAGMENT_SHADER)
-            program_id = shaders.compileProgram(vertex_shader, fragment_shader)
+            # Validation examines the current VAO/texture bindings, which the
+            # executor installs only when drawing. Apple's driver correctly
+            # rejects that incomplete state here; compile/link checks still run.
+            program_id = shaders.compileProgram(vertex_shader, fragment_shader, validate=False)
         except shaders.ShaderCompilationError as e:
             raise ShaderCompilationError(f"Failed to compile shader '{shader.name}': {e}")
         
@@ -92,8 +95,11 @@ class ProgramCompiler:
         parts = [GLSL_VERSION]
         
         # Add input declarations
-        for name, gl_type in shader_type.vertex_in.items():
-            parts.append(f"in {gl_type.value} {name};")
+        # FilterExecutor supplies position at 0 and texcoord at 1. Linkers
+        # may assign different locations unless the source pins that layout
+        # (Apple otherwise feeds UVs to position, drawing only one quarter).
+        for location, (name, gl_type) in enumerate(shader_type.vertex_in.items()):
+            parts.append(f"layout(location = {location}) in {gl_type.value} {name};")
         
         # Add output declarations (varyings)
         for name, gl_type in shader_type.vertex_out.items():

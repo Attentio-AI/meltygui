@@ -21,7 +21,7 @@ assert 'meltygui.core.graphics.graph_core' not in sys.modules
 
 
 def test_cuda_errors_belong_to_each_view_and_clear_on_recovery(monkeypatch):
-    import torch
+    from meltygui.model import cuda_buffer_model
     from meltygui.view import voxel_view
     from meltygui.view import voxel_cuda_view as cuda_march
 
@@ -35,12 +35,15 @@ def test_cuda_errors_belong_to_each_view_and_clear_on_recovery(monkeypatch):
 
     resources = Resources()
     first, second = VoxelState(), VoxelState()
-    volume = SimpleNamespace(view=torch.zeros(2, 3, 4), shape=(2, 3, 4),
+    volume = SimpleNamespace(view=SimpleNamespace(device='cuda:0'), shape=(2, 3, 4),
                              nf=None, norm=None, _vol_key=1)
     texture = SimpleNamespace(cuda=lambda device: object())
     camera = dict(threshold=0.3, density=0.7, brightness=1.0, contrast=1.0,
                   centered=False, volume_scale=(1.0, 1.0, 1.0))
     image = object()
+    # Error ownership is independent of an installed CUDA driver or hardware.
+    monkeypatch.setattr(cuda_buffer_model, 'empty_image_buffer', lambda *args: object())
+    monkeypatch.setattr(cuda_buffer_model, 'parameter_buffer', lambda *args: object())
     monkeypatch.setattr(voxel_view, 'print_stack_trace', lambda: None)
     monkeypatch.setattr(voxel_view, '_upload_cuda_image', lambda *args: image)
     monkeypatch.setattr(cuda_march, 'build_mip', lambda *args, **kwargs: object())

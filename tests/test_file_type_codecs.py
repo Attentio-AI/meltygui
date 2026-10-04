@@ -162,8 +162,9 @@ def test_code_buttons_only_for_python(tmp_path):
     assert TypeCodec.show_code_buttons(Address(py))   # live-Python codecs keep them
 
 
-def test_writable_gate_outside_project():
-    home = Path.home()
+def test_writable_gate_outside_project(tmp_path):
+    home = tmp_path
+    (home / "test_folder").mkdir()
     assert is_writable_file(home / "test_folder" / "notes.txt")
     assert not is_editable_source(home / "test_folder" / "notes.txt")  # code buttons more strict
     assert not is_writable_file(home / "venv" / "site-packages" / "x.py")
@@ -267,5 +268,4 @@ def test_asset_extensions_are_the_non_text_codecs():
     exts = asset_extensions()
     assert ".png" in exts and ".jpg" in exts
     assert ".py" not in exts and ".md" not in exts     # TextFileCodec's
-
 

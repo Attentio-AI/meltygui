@@ -11,14 +11,16 @@ from meltygui.core.runtime.toggles import Toggles, shadow_depth_at
 
 
 @pytest.mark.parametrize('rebuild_on_change', [False, True])
-def test_shadow_changes_survive_parent_cache_replay(gl_context, monkeypatch, rebuild_on_change):
+@pytest.mark.parametrize('scale', [1, 2])
+def test_shadow_changes_survive_parent_cache_replay(gl_context, monkeypatch, rebuild_on_change, scale):
     cache = tile_cache.TileCacheMasked()
     monkeypatch.setattr(Melty, 'cache', cache)
     monkeypatch.setattr(Melty, 'paint_ordered_ds', [])
     monkeypatch.setattr(Melty, 'default_framebuffer', lambda: 0)
     monkeypatch.setattr(Toggles.Melty, 'mask_rebuild_on_change', rebuild_on_change)
     monkeypatch.setattr(Toggles, 'glow', False)
-    cache._get_draw_xform = lambda: (0, 0, 1, 1, 128, 128)
+    pixels = 128 * scale
+    cache._get_draw_xform = lambda: (0, 0, scale, scale, pixels, pixels)
     parent = SimpleNamespace(closable=True, tile_mode=None, abs_left=10, abs_top=10,
                              width=100, height=100, size_change=False, shadow_margin=0,
                              clipped_by_rect=None, parent_window=None, closed=False,
@@ -34,14 +36,15 @@ def test_shadow_changes_survive_parent_cache_replay(gl_context, monkeypatch, reb
     gl.glDisable(gl.GL_DEPTH_TEST)
     gl.glDisable(gl.GL_STENCIL_TEST)
     gl.glDisable(gl.GL_CULL_FACE)
-    cache.mask_begin_frame((128, 128))
+    cache.mask_begin_frame((pixels, pixels), (scale, scale))
     cache._ensure_programs()
     try:
         for key, ds in [('parent', parent), ('child', child)]:
-            cache._tiles[key] = tile_cache._ensure_tile(None, ds.width, ds.height, draw_state=ds)
+            cache._tiles[key] = tile_cache._ensure_tile(None, ds.width, ds.height, draw_state=ds,
+                                                        pixel_scale=(scale, scale))
 
         def frame(fresh, shadow):
-            cache.mask_begin_frame((128, 128))
+            cache.mask_begin_frame((pixels, pixels), (scale, scale))
             # Real end-of-view capture order is child then parent. Cached parent
             # replay emits only the parent's rect; its mask carries the subtree.
             views = [('child', child, 2), ('parent', parent, 1)] if fresh else [('parent', parent, 1)]
@@ -58,18 +61,23 @@ def test_shadow_changes_survive_parent_cache_replay(gl_context, monkeypatch, reb
                 cache.add_shadow((40, 40, 20, 20), offset=2, layer=1, depth=2, clip=False)
                 cache._stack.pop()
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
-            cache.finalize_captures((128, 128))
+            cache.finalize_captures((pixels, pixels))
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, cache._full_mask_fbo)
-            return np.array(gl.glReadPixels(0, 0, 128, 128, gl.GL_RED, gl.GL_FLOAT)).reshape(128, 128)
+            return np.array(gl.glReadPixels(0, 0, pixels, pixels, gl.GL_RED, gl.GL_FLOAT)).reshape(pixels, pixels)
 
         for shadow in [True, False, True]:
             fresh = frame(True, shadow)
             cached = frame(False, shadow)
             # Probe the surface as well as the caster: stale receiving depth
             # also changes shadow intensity even when the caster survives.
-            assert fresh[90, 35] == pytest.approx(shadow_depth_at(2, 1) / 65535.5, abs=1 / 65535)
+            assert fresh[90 * scale, 35 * scale] == pytest.approx(shadow_depth_at(2, 1) / 65535.5, abs=1 / 65535)
             expected = shadow_depth_at(4 if shadow else 2, 1) / 65535.5
-            assert fresh[80, 50] == pytest.approx(expected, abs=1 / 65535)
+            assert fresh[80 * scale, 50 * scale] == pytest.approx(expected, abs=1 / 65535)
+            # The child's rounded corner reveals its parent's depth at both
+            # backing scales; an unscaled radius would cover it on Retina.
+            corner = 30 * scale + int(.75 * scale)
+            assert fresh[pixels - 1 - corner, corner] == pytest.approx(
+                shadow_depth_at(1, 1) / 65535.5, abs=1 / 65535)
             np.testing.assert_allclose(cached, fresh, atol=1 / 65535, rtol=0)
     finally:
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)

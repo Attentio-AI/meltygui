@@ -396,6 +396,7 @@ def _capture_tile(name):
     import OpenGL.GL as gl
     from PIL import Image
     from meltygui.core.melty import Melty
+    from meltygui.core.cache.tile_cache import _tile_pixel_size
 
     mw = _find_window(name)
     if mw is None:
@@ -409,7 +410,7 @@ def _capture_tile(name):
     tile = tiles.get(tile_id)
     if tile is None:
         return None
-    w, h = tile.size
+    w, h = _tile_pixel_size(tile)
     if not w or not h or tile.fbo in (None, -1):
         return None
 
@@ -418,7 +419,7 @@ def _capture_tile(name):
     gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
     # Content is top-anchored in a possibly bottom-padded texture: the logical
     # w x h pixels live in the texture rows [alloc_h - h, alloc_h), not at y=0.
-    alloc_h = (getattr(tile, "alloc_size", None) or tile.size)[1]
+    alloc_h = _tile_pixel_size(tile, allocated=True)[1]
     # Tiles hold LINEAR scRGB (fp16, hdr_color.py): read floats and sRGB-encode
     # for the PNG the way the presentation pass does for the screen.
     data = gl.glReadPixels(0, int(alloc_h) - int(h), int(w), int(h), gl.GL_RGBA, gl.GL_FLOAT)

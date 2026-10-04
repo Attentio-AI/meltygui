@@ -10,7 +10,7 @@ Parent-relative nested positions must be accounted for when applying results;
 driving-edge phases below are an implementation strategy, not product rules.
 Hand-drag replay restores displaced geometry when the gesture reverses.
 
-Geometry/position availability determines whether the native frame can move.
+An available adjustment path AND geometry determine whether the native frame can move.
 The GLFW and Wayland adapters must honor those capabilities. See
 ``docs/WINDOW_COLLISION_COLUMNS.md`` for the authoritative behavior contract.
 """
@@ -79,6 +79,7 @@ _STATE.setdefault("learned", {"x": [None, None], "y": [None, None]})
 _STATE.setdefault("learned_area", None)
 _STATE.setdefault("pin_rebases", {})
 _STATE.setdefault("move_requests", {"x": [], "y": []})
+_STATE.setdefault("pending_surface_collision", False)
 
 
 def _trace(msg):
@@ -111,6 +112,7 @@ def reset(reason="studio start"):
     _STATE["unapplied_far"] = [0.0, 0.0]
     _STATE["pin_rebases"] = {}
     _STATE["move_requests"] = {"x": [], "y": []}
+    _STATE["pending_surface_collision"] = False
     _STATE["window_id"] = None
     _STATE["feed_far"] = [None, None]
     _STATE["generation"] += 1
@@ -125,7 +127,7 @@ def _enabled():
 
 def mode():
     """"feed" (Wayland, the extension's position), "x11" (glfw's position)
-    or "walls" (no position: the OS edges are immovable)."""
+    or "walls" (no reliable native adjustment: the OS edges are immovable)."""
     return _STATE["mode"]
 
 
@@ -173,11 +175,13 @@ def _observe():
     """((x, y), (work_x, work_y, work_w, work_h), mode, (far_x, far_y),
     window_id) of the content rect on screen — the far edges from the
     SAME source as the position (the feed's own width / height; glfw's on
-    X11) — or None when no position is known."""
+    X11) — or None without both geometry and a native adjustment path."""
     import meltygui.core.windowing.titlebar as titlebar
+    window = titlebar._studio_window()
+    if not titlebar.can_adjust_window_edges(window):
+        return None
     if titlebar._on_wayland():
         import meltygui.core.windowing.geometry_feed as geometry_feed
-        geometry_feed.ensure_started()      # a hotswap, not a restart (or a backend switch): start it here
         # the Hyprland backend reports the SURFACE: shrink by the shadow
         # inset to the content (a no-op on the GNOME feed's geometry rect)
         rect, area = geometry_feed.frame_rect(inset=titlebar.window_inset()), geometry_feed.resize_workarea()
@@ -186,9 +190,6 @@ def _observe():
         frame = geometry_feed._current_frame() or {}     # the ACTIVE surface's window (extension.py)
         return ((float(rect[0]), float(rect[1])), tuple(float(v) for v in area), "feed",
                 (float(rect[0] + rect[2]), float(rect[1] + rect[3])), frame.get("id"))
-    window = titlebar._studio_window()
-    if window is None:
-        return None
     try:
         x, y = glfw.get_window_pos(window)
         w, h = glfw.get_window_size(window)
@@ -503,6 +504,11 @@ def _rebase(ds, axis, delta):
 def _set_mode(new_mode):
     if _STATE["mode"] != new_mode:
         _STATE["mode"] = new_mode
+        if new_mode == "walls":
+            # The old coordinate space and requests no longer describe
+            # geometry we can apply. Never replay their pending rebases.
+            reset("native adjustments unavailable")
+            return
         _STATE["generation"] += 1          # every root forgets where it saw the OS edges
         _STATE["gestures"] = {}
         _STATE["expected"] = [None, None]
@@ -555,7 +561,8 @@ def begin_frame():
         for axis, i in _AXIS.items():
             near, far = _STATE["edges"][axis]
             near[axis], far[axis] = 0.0, size[i]
-            _STATE["os_seen"][i] = (0.0, size[i])
+            if _STATE["os_seen"][i] is None:
+                _STATE["os_seen"][i] = (0.0, size[i])
         return
     (pos, area, new_mode, feed_far, window_id) = observed
     _set_mode(new_mode)
@@ -824,7 +831,7 @@ def queue_drag(axis, index, inc):
     """A cursor-driven drag of the OS window's own frame edge (``index`` 0
     = near / left / top, 1 = far) by ``inc`` px — the background right-drag
     (titlebar). Solved by the first root pass of the frame, else by flush."""
-    if inc:
+    if inc and available():
         _STATE["pending"][axis].append((int(index), float(inc)))
 
 
@@ -1525,7 +1532,7 @@ def flush():
     in one commit). Returns the requested content size or None."""
     import meltygui.core.windowing.titlebar as titlebar
     from meltygui.core.melty import Melty
-    if not _enabled():
+    if not _enabled() or not available():
         return None
     window = titlebar._studio_window()
     display = Melty.display_size
@@ -1577,9 +1584,10 @@ def flush():
                 glfw.set_window_pos(window, x + offset[0], y + offset[1])
             except Exception:
                 pass
-        titlebar.request_surface_size(window, *surface)
+        titlebar.request_surface_size(window, *surface, collision=True)
     else:
-        titlebar.request_surface_size(window, *surface, offset=tuple(offset) if any(offset) else None)
+        titlebar.request_surface_size(window, *surface, offset=tuple(offset) if any(offset) else None,
+                                      collision=True)
     _trace(f"flush: content {size} offset {offset} → surface {surface}")
     return tuple(size)
 

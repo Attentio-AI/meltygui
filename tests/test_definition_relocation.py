@@ -162,9 +162,8 @@ def consumer_view(input_value: str, state: FeatureState = None):
                      (c.cell_contents for c in consumer.consumer_view.__closure__)))
     assert dict(cells['_default_plan'])['state'] is state_type
     helper = cells['_auto_state_params']
-    helper_cells = dict(zip(helper.__code__.co_freevars,
-                            (c.cell_contents for c in helper.__closure__)))
-    assert helper_cells['name_to_param_type']['state'] is state_type
+    helper_plan = inspect.getclosurevars(helper).nonlocals['_default_plan']
+    assert dict(helper_plan)['state'] is state_type
 
 
 def test_relocated_definition_runtime_error_rolls_back(load_modules):

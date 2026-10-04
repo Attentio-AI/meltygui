@@ -159,6 +159,10 @@ def detect_auto_scale(window=None) -> float:
     by which video mode contains the window's center; falls back to the
     primary monitor when the window is None or sits off every monitor
     (mid-drag between screens). 1.0 on any glfw failure."""
+    # Cocoa window geometry is already in the user's chosen logical points.
+    # Retina backing resolution controls raster quality, not layout size.
+    if sys.platform == 'darwin':
+        return 1.0
     try:
         import meltygui.core.windowing.window_api as glfw
         target = None
@@ -233,10 +237,10 @@ def _expand_ranges(ranges: Tuple[int, ...]):
 class FontManager:
     # no external change
     """Owns the imgui font atlas: one handle per Font enum entry, all baked
-    at `scale` x their authored pixel size.
+    at `scale` x their authored point size and `pixel_scale` texels per point.
 
     The scale is baked into the RASTERIZED size rather than applied as a
-    draw-time multiplier (io.font_global_scale) so glyphs stay sharp — a
+    draw-time UI zoom so glyphs stay sharp — a
     scaled atlas is resampled text, which is exactly the soft/aliased look
     the whole-interface zoom had. The cost is that changing the scale means
     re-rasterizing every font (see `rebuild`), so it happens only when the
@@ -247,9 +251,13 @@ class FontManager:
     # can make imgui's atlas build fail outright.
     MIN_SIZE = 4.0
 
-    def __init__(self, io, scale: float = 1.0):
+    # Existing managers pick up the backing density between frames on hotswap.
+    pixel_scale = 1.0
+
+    def __init__(self, io, scale: float = 1.0, pixel_scale: float = 1.0):
         self.io = io
         self.scale = float(scale)
+        self.pixel_scale = float(pixel_scale)
         self._handles: dict = {}
         # imgui keeps a POINTER to each font's glyph ranges until the atlas is
         # built, and a GlyphRanges frees its array when collected: the bake
@@ -269,7 +277,7 @@ class FontManager:
         # the per-frame get() of a steady style allocates nothing.
         self._variant_memo = {}
 
-    def rebuild(self, scale: float, impl=None) -> bool:
+    def rebuild(self, scale: float, impl=None, *, pixel_scale=None) -> bool:
         """Re-bake every LOADED font at `scale` and hand the new atlas to the
         renderer. No-op (False) when the scale is unchanged.
 
@@ -279,9 +287,11 @@ class FontManager:
         cached one (Melty.large_font, LSDStudio.fa_font) have to re-`get` it.
         """
         scale = float(scale)
-        if scale == self.scale and self._handles:
+        pixel_scale = self.pixel_scale if pixel_scale is None else float(pixel_scale)
+        if scale == self.scale and pixel_scale == self.pixel_scale and self._handles:
             return False
         self.scale = scale
+        self.pixel_scale = pixel_scale
         self._loaded |= self._pending
         self._pending.clear()
         self._bake(self._loaded)
@@ -355,6 +365,10 @@ class FontManager:
         self._variant_last_used = {f: t for f, t in self._variant_last_used.items() if f in include}
         self._handles.clear()
         self.io.fonts.clear()
+        # Rasterize at physical resolution, then express glyph geometry in
+        # window points. This cancels the framebuffer scale, never upscales
+        # a low-resolution atlas. Every Surface applies the same reciprocal.
+        self.io.font_global_scale = 1.0 / self.pixel_scale
         self._glyph_ranges.clear()
         variants = sorted((f for f in include if isinstance(f, FontSpec)),
                           key=lambda f: (f.path, f.size, f.weight))
@@ -364,19 +378,19 @@ class FontManager:
             if font not in include:
                 continue
             spec = font if isinstance(font, FontSpec) else font.value
-            size = max(self.MIN_SIZE, spec.size * self.scale)
+            size = max(self.MIN_SIZE, spec.size * self.scale) * self.pixel_scale
             if spec.merge:
                 merge_cfg = dict(
                     merge_mode=True,
-                    glyph_extra_spacing_x=spec.extra_spacing * self.scale,
-                    glyph_extra_spacing_y=spec.extra_spacing * self.scale,
+                    glyph_extra_spacing_x=spec.extra_spacing * self.scale * self.pixel_scale,
+                    glyph_extra_spacing_y=spec.extra_spacing * self.scale * self.pixel_scale,
                 )
                 # Merged icon fonts cover wide ranges, so they dominate the
                 # atlas - spread them out as the scale grows. Untouched at
                 # scale <= 1 because the authored atlas is unchanged: imgui's
                 # own defaults are (h=3, v=1), and spelling them out is
                 # what keeps v from silently becoming 3 here.
-                if self.scale > 1.0:
+                if self.scale * self.pixel_scale > 1.0:
                     merge_cfg["oversample_h"] = self._oversample(spec)
                     merge_cfg["oversample_v"] = 1
                 cfg = imgui.FontConfig(**merge_cfg)
@@ -521,10 +535,13 @@ class FontManager:
         relative to the add_text pen, texel rect in the atlas. Codepoints
         that emit no quad (spaces) are absent; imgui's fallback glyph shows
         up as repeated rects, deduped by the caller."""
-        io = self.io
-        saved = (io.display_size, io.delta_time)
+        # Probe the active context (a Surface can share the owner's atlas).
+        # Hinting needs physical glyph metrics even when the UI uses points.
+        io = imgui.get_io()
+        saved = (io.display_size, io.delta_time, io.font_global_scale)
         io.display_size = (4096.0, 4096.0)
         io.delta_time = 1.0 / 60.0
+        io.font_global_scale = 1.0
         out = {}
         try:
             imgui.new_frame()
@@ -556,7 +573,7 @@ class FontManager:
                            int(round(v0[2] * tex_w)), int(round(v0[3] * tex_h)),
                            int(round(v2[2] * tex_w)), int(round(v2[3] * tex_h)))
         finally:
-            io.display_size, io.delta_time = saved
+            io.display_size, io.delta_time, io.font_global_scale = saved
         return out
 
     def hint_atlas(self, width: int, height: int, pixels: bytes):
@@ -583,7 +600,7 @@ class FontManager:
             handle = self._handles.get(font)
             if spec.merge or not spec.hint or handle is None:
                 continue
-            size = max(self.MIN_SIZE, spec.size * self.scale)
+            size = max(self.MIN_SIZE, spec.size * self.scale) * self.pixel_scale
             if size > HINT_MAX_SIZE:
                 continue
             cps = _expand_ranges(spec.glyph_ranges or _UI_RANGE)

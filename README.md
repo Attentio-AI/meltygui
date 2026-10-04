@@ -13,11 +13,13 @@ MeltyGUI is capable of rendering tensors exceeding 64GB in size. The primary cha
 MeltyGUI is not yet published to PyPI. For now, install from a checkout using
 [the setup guide](docs/DEVELOPMENT.md#setup).
 
-The current setup targets Linux x86-64 with Python 3.11, 3.12 or 3.13 and a
-working OpenGL 4.3 context. CUDA tensor rendering also requires PyTorch, an
+Linux x86-64 uses Python 3.11, 3.12 or 3.13 and OpenGL 4.3. The UI and editor
+also run on Apple Silicon macOS with Python 3.12, OpenGL 4.1 and Retina
+rendering. CUDA tensor rendering requires PyTorch, an
 NVIDIA GPU, a CUDA toolkit, and MeltyGUI's GL-enabled CUDA binding. The native
 bindings install as prebuilt wheels on those targets; elsewhere installers
 compile them, see [when no wheel matches](docs/SUPPORT_WHEELS.md#when-no-wheel-matches).
+CUDA rendering is unavailable on macOS.
 
 ## Visualize a tensor
 

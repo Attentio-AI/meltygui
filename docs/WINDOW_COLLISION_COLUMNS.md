@@ -99,6 +99,31 @@ Parity has real limits. Some OS environments do not let the app position native 
 
 When a backend cannot move a native frame, honor the geometry/control capabilities it actually exposes. Do not pretend an OS move succeeded by changing internal coordinates alone. Backend restrictions should be documented as restrictions, not generalized into different Melty interaction rules.
 
+### Fallback without native edge adjustment
+
+The native content rectangle is an immovable boundary when the current
+window lacks a supported position-and-size adjustment path. Knowing its
+screen position alone does not enable collision-driven native movement.
+Columns, rows and Melty windows retain their local min/max constraints and
+sticky reversal inside those bounds. Background drags cannot change the
+native model or queue speculative native resizes. Resizing with the OS's own
+controls still updates the bounds and runs the containment/layout solves.
+Run this collision lifecycle for every native surface, including windows with
+OS decorations: drawing a custom title bar is not a prerequisite for bounds.
+
+If adjustment support disappears, discard pending collision requests and
+their unapplied child-position compensation before drawing. Keep explicit
+application size requests separate. Returning support starts fresh native
+gesture bookkeeping rather than replaying a previous coordinate space.
+This fallback does not change declared size limits or introduce a new packing
+policy for an already impossible set of constraints.
+
+The current implementation opts in Linux X11 resizable, nonmaximized windows;
+Wayland needs its geometry feed plus either GNOME's available surface-offset
+path or Hyprland's controllable floating window. Fullscreen, maximized,
+unsupported and unobservable windows use fixed bounds. macOS uses this
+fallback until its native edge-adjustment integration is implemented.
+
 Native decoration constraints also count. On Hyprland with Hyprview's
 `keep_on_screen` policy, the compositor clamps the decorated frame while its
 geometry feed reports the content rectangle. `geometry_feed.resize_workarea()`
@@ -282,6 +307,7 @@ These scenarios define useful verification coverage; this documentation pass did
 | Resize into each display edge | Boundary collision and correctly ordered active-view opposite-edge behavior. |
 | Reverse after pushes, pulls and display contact | Affected geometry restores within the gesture without accumulating motion. |
 | Same scenarios with GLFW and Wayland | Equivalent behavior where capabilities allow; explicit backend limits otherwise. |
+| Unsupported native adjustment, including loss during a drag | Fixed observed native bounds; local divider constraints/reversal still work; no speculative resize, position drift or stale child compensation. |
 | Body below native chrome | Investigate against actual geometry and the unresolved inset issue; do not invent a new rule from a dirty diff. |
 
 ## Evidence and precedence

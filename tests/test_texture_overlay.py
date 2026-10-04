@@ -15,6 +15,30 @@ from meltygui.state.texture_state import TextureViewState
 from meltygui.view.texture_view import draw_texture, draw_texture_overlay
 
 
+def test_filter_copies_every_pixel_in_the_target(gl_context):
+    """Implicit vertex locations on Apple's linker used to fill one quadrant."""
+    from meltygui.graphics.filter import Filter
+    from meltygui.model.texture_model import ImageTexture
+    yy, xx = np.indices((12, 16))
+    # Channel endpoints avoid ImageTexture's sRGB decode affecting the test.
+    pixels = np.stack((xx % 2 * 255, yy % 2 * 255, (xx // 2 + yy // 2) % 2 * 255,
+                       np.full_like(xx, 255)), axis=-1).astype('uint8')
+    texture = ImageTexture('filter coverage', 16, 12, gl.GL_RGBA, pixels.tobytes())
+    filters = Filter()
+    try:
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+        gl.glDisable(gl.GL_BLEND)
+        result = filters.passthrough(texture.texture_id)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, result)
+        actual = np.frombuffer(gl.glGetTexImage(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE), dtype=np.uint8).reshape(12, 16, 4)
+        np.testing.assert_array_equal(actual, pixels)
+    finally:
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        filters.cleanup()
+        texture.release()
+        GLState.flush_deletes()
+
+
 def test_prepared_outputs_cannot_be_linked_between_tiles():
     from meltygui.core.rendering.injected_state import state_parameters
     parameters = state_parameters(draw_texture)

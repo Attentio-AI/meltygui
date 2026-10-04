@@ -1,5 +1,6 @@
 """The standalone runner is inert on import and owns only its UI lifetime."""
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -56,7 +57,9 @@ def test_runner_owns_cleanup_and_project_context(monkeypatch, tmp_path, fails):
 def test_instance_socket_is_released(monkeypatch, tmp_path):
     shown = []
     monkeypatch.setattr(app, "show_window", lambda: shown.append(True))
-    path = tmp_path / "instance.sock"
+    # macOS's default temporary directory can exceed sockaddr_un's path limit.
+    monkeypatch.chdir(tmp_path)
+    path = Path("instance.sock")
     close = app.serve_instance(path)
     try:
         assert app.hand_over_to_running_instance(path)

@@ -7,15 +7,24 @@ remaining migration work and deliberate deferrals.
 
 ## Setup
 
-Supported targets are Linux x86-64 with CPython 3.11, 3.12 or 3.13 and a working
-OpenGL 4.3 context. MeltyGUI itself is not on PyPI yet, so install it from a
-checkout; its native support packages (`meltygui-imgui`, `meltygui-pycuda`) come
-from PyPI as prebuilt wheels:
+Linux x86-64 uses CPython 3.11, 3.12 or 3.13 and OpenGL 4.3. macOS on Apple
+Silicon is tested with CPython 3.12 and Apple's OpenGL 4.1 core context,
+including Retina font atlases and cached tiles. CUDA rendering requires an
+NVIDIA system and is unavailable on macOS.
+
+MeltyGUI itself is not on PyPI yet, so install it from a checkout. Native
+support packages come from PyPI; `meltygui-imgui` builds from source on macOS
+when no matching wheel is available, using Xcode Command Line Tools:
 
 ```sh
 uv venv --python 3.12
 uv pip install --python .venv/bin/python -e . --group dev
 ```
+
+On macOS, install `uv` with `brew install uv` if needed. Install Xcode Command
+Line Tools with `xcode-select --install` if they are not already available.
+The first native ImGui build can take a few minutes. No local `dist/release`
+directory is required.
 
 To use MeltyGUI from another project, add the checkout as a path dependency:
 
@@ -64,6 +73,13 @@ python3 tools/torch_matrix.py --window-smoke   # also opens the README example: 
 
 Run apps with the environment's Python. The native Wayland and GLFW backends
 share the same render functions.
+
+macOS native resizing redraws through GLFW's window-refresh callback while
+Cocoa holds the event loop. The app only permits those frames during its OS
+event dispatch, restores the interrupted window's graphics contexts, and
+defers recursive refreshes and native window creation/destruction to the loop.
+When checking this path, drag the actual window border: programmatic size
+changes alone do not exercise Cocoa's live-resize loop.
 
 ```sh
 .venv/bin/pytest

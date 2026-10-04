@@ -92,6 +92,7 @@ def batches(stamps):
 class MaskBatch:
     def __init__(self):
         self.program = self.vao = self.vbo = None
+        self.flat_texture = None
         self.source = None
         self.multi_bind = False
         self.fb_location = self.textures_location = None
@@ -103,6 +104,9 @@ class MaskBatch:
             gl.glDeleteBuffers(1, [self.vbo])
         if self.vao is not None:
             gl.glDeleteVertexArrays(1, [self.vao])
+        if getattr(self, 'flat_texture', None) is not None:
+            gl.glDeleteTextures([self.flat_texture])
+        self.flat_texture = None
         self.program = self.vao = self.vbo = None
         self.source = None
 
@@ -155,10 +159,18 @@ class MaskBatch:
                 gl.glBufferData(gl.GL_ARRAY_BUFFER, len(data), data, gl.GL_STREAM_DRAW)
             first_instance = 0
             for textures, data, count in packed:
-                # Populate unused slots with a valid source, avoiding feedback
-                # from a texture attached to the current framebuffer. Zero is
-                # bound to GL_TEXTURE_2D explicitly (bulk zero unbinds ALL targets).
-                bank = textures + [textures[0]] * (TEXTURES_PER_BATCH - len(textures)) if textures else [0] * TEXTURES_PER_BATCH
+                # Apple requires complete samplers even for the flat branch.
+                # Own a tiny source for that case; never sample the destination.
+                if not textures and self.flat_texture is None:
+                    self.flat_texture = int(gl.glGenTextures(1))
+                    gl.glActiveTexture(gl.GL_TEXTURE0)
+                    gl.glBindTexture(gl.GL_TEXTURE_2D, self.flat_texture)
+                    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
+                    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
+                    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, 1, 1, 0,
+                                    gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, bytes(4))
+                bank = (textures + [textures[0]] * (TEXTURES_PER_BATCH - len(textures))
+                        if textures else [self.flat_texture] * TEXTURES_PER_BATCH)
                 if self.multi_bind and textures:
                     gl.glBindTextures(0, TEXTURES_PER_BATCH, bank)
                 else:

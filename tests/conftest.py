@@ -36,6 +36,7 @@ def _ensure_gl_context():
 
     import glfw
     from meltygui_imgui.integrations.glfw import GlfwRenderer
+    from meltygui.core.windowing.glfw_utils import apply_opengl_context_hints
 
     # End any existing headless frame
     try:
@@ -47,8 +48,7 @@ def _ensure_gl_context():
         raise RuntimeError("Failed to init GLFW")
 
     glfw.window_hint(glfw.VISIBLE, False)
-    glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
-    glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
+    apply_opengl_context_hints()
     _window = glfw.create_window(800, 600, "test", None, None)
     glfw.make_context_current(_window)
 

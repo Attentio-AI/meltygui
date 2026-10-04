@@ -829,7 +829,8 @@ class SplitOverlayRenderer(WindowRenderer):
             from OpenGL.GL import shaders
             return shaders.compileProgram(
                 shaders.compileShader(self._STYLE_CONTEXT_VERT, gl.GL_VERTEX_SHADER),
-                shaders.compileShader(self._STYLE_CONTEXT_FRAG, gl.GL_FRAGMENT_SHADER))
+                shaders.compileShader(self._STYLE_CONTEXT_FRAG, gl.GL_FRAGMENT_SHADER),
+                validate=False)  # The VAO is constructed below, after linking.
         program = self._style_gl.get('style_context_program', build_program, gl.glDeleteProgram)
 
         def build_vao():
@@ -880,7 +881,10 @@ class SplitOverlayRenderer(WindowRenderer):
         """Texture unit 1 = StyleContext for the whole command render."""
         gl.glActiveTexture(gl.GL_TEXTURE1)
         previous = int(gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D))
-        gl.glBindTexture(gl.GL_TEXTURE_2D, int(texture_id))
+        # Even an unused sampler must name a complete texture on Apple's
+        # driver. The atlas is already resident; DynamicStyles=0 prevents
+        # sampling it as a background when no context texture is needed.
+        gl.glBindTexture(gl.GL_TEXTURE_2D, int(texture_id or self.io.fonts.texture_id))
         gl.glActiveTexture(gl.GL_TEXTURE0)
         return previous
 

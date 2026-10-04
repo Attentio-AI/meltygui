@@ -130,6 +130,19 @@ def _tile_alloc(t) -> Tuple[int, int]:
     return getattr(t, "alloc_size", None) or t.size
 
 
+def _pixel_rect(rect, scale):
+    """Window-point bounds to integer texel bounds, including fractional DPI."""
+    x, y, w, h = rect
+    sx, sy = scale
+    left, bottom = snap_int(x * sx), snap_int(y * sy)
+    return left, bottom, snap_int((x + w) * sx) - left, snap_int((y + h) * sy) - bottom
+
+
+def _tile_pixel_size(tile, *, allocated=False):
+    size = _tile_alloc(tile) if allocated else tile.size
+    return _pixel_rect((0, 0, *size), tile.pixel_scale)[2:]
+
+
 def _tile_uv_rect(t) -> Tuple[float, float, float, float]:
     """uUVRect (xy scale, zw offset) mapping a 0..1 dest-rect UV onto the
     top-anchored logical subrect of a bucket-padded tile texture."""
@@ -150,7 +163,8 @@ class Tile:
     mask_tex: int  # Cached subtree mask for this tile
     rbo: Optional[int]
     size: Tuple[int, int]  # LOGICAL view size; the texture may be larger (alloc_size)
-    alloc_size: Optional[Tuple[int, int]] = None  # bucketed texture dims, None = same as size
+    alloc_size: Optional[Tuple[int, int]] = None  # bucketed window-point dims, None = same as size
+    pixel_scale: Tuple[float, float] = (1.0, 1.0)  # physical texels per window point
     dirty: bool = True
     last_clean_frame: int = -1
     last_invalidated_frame: int = 3
@@ -364,7 +378,8 @@ def _clear_mask_regions(mask_tex: int, rects) -> None:
         gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
 
-def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, draw_state=None, tile_id=None) -> \
+def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, draw_state=None, tile_id=None,
+                 pixel_scale=(1.0, 1.0)) -> \
         Optional[Tile]:
     # Layout occasionally hands us fractional or negative dims (e.g. a
     # midline is 0.333... width). glTexImage2D coerces those to int and lands on
@@ -374,7 +389,8 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
     h = int(h) if h and h > 0 else 0
     if w <= 0 or h <= 0:
         return None
-    if existing and existing.size == (w, h):
+    same_scale = existing is not None and existing.pixel_scale == pixel_scale
+    if same_scale and existing.size == (w, h):
         return existing
 
     aw = _bucket(w)
@@ -390,7 +406,7 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         aw = max(aw, snap_int(eaw))
         ah = max(ah, snap_int(eah))
 
-    if existing and _tile_alloc(existing) == (aw, ah):
+    if same_scale and _tile_alloc(existing) == (aw, ah):
         # Same bucket: update the logical size in place - no GL realloc, no
         # crop-blit (top-anchored content keeps the screen-top-left corner on
         # the same texels). Returning the SAME object is the caller's signal
@@ -424,6 +440,7 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
                 # one) would leave stale G/B/A inside the new logical rect.
                 gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
                 gl.glClearColor(0, 0, 0, 0.0)
+                bands = [_pixel_rect(rect, pixel_scale) for rect in bands]
                 for x, y, cw, ch in bands:
                     gl.glScissor(int(x), int(y), int(cw), int(ch))
                     gl.glClear(gl.GL_COLOR_BUFFER_BIT)
@@ -480,7 +497,8 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
     except Exception:
         pass
     try:
-        new_tex = _create_color_tex(aw, ah)
+        pixel_aw, pixel_ah = _pixel_rect((0, 0, aw, ah), pixel_scale)[2:]
+        new_tex = _create_color_tex(pixel_aw, pixel_ah)
     except Exception as e:
         existing_size = existing.size if existing else None
         reset = "\033[0m"
@@ -490,13 +508,13 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
               f"\nCurrent size {existing_size}\n{'=' * 10}{reset}")
         return None
 
-    new_mask_tex = _create_mask_tex(aw, ah)
+    new_mask_tex = _create_mask_tex(pixel_aw, pixel_ah)
     # No depth-stencil renderbuffer: tiles are only ever written by the PASS 3
     # copy shader and the crop-blit, neither of which depth/stencil-tests, and
     # the D24S8 attachment was 4 B/px of VRAM plus the slowest part of the
     # create/destroy/delete cycle. Tile.rbo stays None; the guarded delete
     # sites will free RBOs on tiles created before this change.
-    new_fbo, new_rbo = _create_fbo_with_tex(new_tex, False, aw, ah)
+    new_fbo, new_rbo = _create_fbo_with_tex(new_tex, False, pixel_aw, pixel_ah)
 
     if existing:
         st = _GLState()
@@ -533,13 +551,15 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
                 cw = max(0, min(ow, w))
                 ch = max(0, min(oh, h))
             if cw > 0 and ch > 0:
+                src_x, src_y, src_w, src_h = _pixel_rect((0, old_ah - ch, cw, ch), existing.pixel_scale)
+                dst_x, dst_y, dst_w, dst_h = _pixel_rect((0, ah - ch, cw, ch), pixel_scale)
                 gl.glBlitFramebuffer(
-                    0, snap_int(old_ah) - ch, cw, snap_int(old_ah),  # src (old FBO, top-left in screen)
-                    0, ah - ch, cw, ah,  # dst (new FBO, same screen corner)
+                    src_x, src_y, src_x + src_w, src_y + src_h,
+                    dst_x, dst_y, dst_x + dst_w, dst_y + dst_h,
                     gl.GL_COLOR_BUFFER_BIT,
                     gl.GL_NEAREST,  # No scaling -> NEAREST is exact and cheap
                 )
-            _clear_mask_regions(new_mask_tex, [(0, 0, aw, ah)])
+            _clear_mask_regions(new_mask_tex, [(0, 0, pixel_aw, pixel_ah)])
         finally:
             st.restore()
 
@@ -562,12 +582,12 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
                 gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
                 gl.glClearColor(0, 0, 0, 0.0)
                 gl.glClear(gl.GL_COLOR_BUFFER_BIT)
-                _clear_mask_regions(new_mask_tex, [(0, 0, aw, ah)])
+                _clear_mask_regions(new_mask_tex, [(0, 0, pixel_aw, pixel_ah)])
             finally:
                 st.restore()
 
     t = Tile(draw_state=draw_state, fbo=new_fbo, tex=new_tex, mask_tex=new_mask_tex, rbo=new_rbo, size=(w, h),
-             alloc_size=(aw, ah), dirty=True)
+             alloc_size=(aw, ah), pixel_scale=pixel_scale, dirty=True)
     # Seed filled_bbox to what the crop-copy above covered (in tile-local
     # top-left coords). On a shrink it's the whole tile -> tile reads are fully
     # covered and the scroll-invalidate gate stops early; on a grow it's
@@ -1194,6 +1214,9 @@ void main() { oColor = uColor; }
 # Main class
 # ==============================
 class TileCacheMasked:
+    # Existing live caches acquire per-window backing scale on their next
+    # frame after a hotswap; unscaled caches retain their previous behavior.
+    _pixel_scale = (1.0, 1.0)
     def __init__(self):
         self.initial_value = {}
         self.did_deviate = {}
@@ -1260,6 +1283,7 @@ class TileCacheMasked:
         self.all_keys = set()
 
         self._fb_size: Tuple[int, int] = (0, 0)
+        self._pixel_scale = (1.0, 1.0)
         # Allocated dims of the four co-sized internal surfaces (_mask,
         # _sub_mask, _full_sub_mask, snapshot). For monitor only, grow-only.
         # _fb_size stays the LOGICAL framebuffer size everywhere.
@@ -1537,10 +1561,10 @@ class TileCacheMasked:
         fl, ft, fr, fb = t.filled_bbox
         return fl > vl + 0.5 or ft > vt + 0.5 or fr < vr - 0.5 or fb < vb - 0.5
 
-    @staticmethod
-    def _oversized(size: Optional[Tuple[int, int]]) -> bool:
+    def _oversized(self, size: Optional[Tuple[int, int]]) -> bool:
         """True if a view this size is too large to back with an offscreen tile."""
-        return size is not None and (size[0] > MAX_TILE_DIM or size[1] > MAX_TILE_DIM)
+        return size is not None and (size[0] * self._pixel_scale[0] > MAX_TILE_DIM
+                                     or size[1] * self._pixel_scale[1] > MAX_TILE_DIM)
 
     def _discard_tile(self, key: str) -> None:
         """Drop a tile and free its GL resources (e.g. a view grew too large to cache)."""
@@ -2245,8 +2269,13 @@ class TileCacheMasked:
                     key = self.key_to_parent_key.get(key)
         self._resize_input_keys = keys
 
-    def mask_begin_frame(self, framebuffer_size: Tuple[int, int]) -> None:
+    def mask_begin_frame(self, framebuffer_size: Tuple[int, int], pixel_scale=None) -> None:
         fb_w, fb_h = map(int, framebuffer_size)
+        if pixel_scale is not None and tuple(pixel_scale) != getattr(self, '_pixel_scale', (1.0, 1.0)):
+            self._pixel_scale = tuple(pixel_scale)
+            # A move between displays changes the backing resolution once.
+            # Wake cached ancestors as well as leaves so every tile recaptures.
+            self.invalidate_all(other_windows=False)
         self._note_frame_stats()
         self._refresh_resize_input_keys()
         self._frame_id += 1
@@ -3186,7 +3215,7 @@ class TileCacheMasked:
                     (ix0, iy0, ix1 - ix0, iy1 - iy0),
                     (d_and_l[0] * rank_scale, d_and_l[1] * rank_scale,
                      d_and_l[2] * rank_scale, d_and_l[3] * rank_scale,
-                     cr if cr > 0 else 0.0, margin))
+                     max(0.0, cr) * s_x, margin * s_x))
             _, ix0, iy0, ix1, iy1, own_clip, _owner, inset, rect4, tail6 = base
             if ix1 <= ix0 or iy1 <= iy0:
                 continue
@@ -3222,8 +3251,9 @@ class TileCacheMasked:
             gl.glUseProgram(self._prog_shadow_batch)
             _win_tex = getattr(self, "_win_mask_tex", None)
             gl.glActiveTexture(gl.GL_TEXTURE1)
-            gl.glBindTexture(gl.GL_TEXTURE_2D,
-                             _win_tex if (win_gate and _win_tex) else 0)
+            # WinZ=1 disables occlusion for tile bakes. The sampler still
+            # needs a complete texture on Apple even when that branch is off.
+            gl.glBindTexture(gl.GL_TEXTURE_2D, _win_tex or 0)
             gl.glActiveTexture(gl.GL_TEXTURE0)
             gl.glUniform1i(self._loc_sb_uWinMask, 1)
             gl.glUniform2f(self._loc_sb_uFBSize,
@@ -3313,8 +3343,7 @@ class TileCacheMasked:
         gl.glUseProgram(self._prog_shadow_grad)
         _win_tex = getattr(self, "_win_mask_tex", None)
         gl.glActiveTexture(gl.GL_TEXTURE1)
-        gl.glBindTexture(gl.GL_TEXTURE_2D,
-                         _win_tex if (win_gate and _win_tex) else 0)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, _win_tex or 0)
         gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glUniform1i(self._loc_sg_uWinMask, 1)
         _fbw, _fbh = self._fb_size
@@ -3431,8 +3460,8 @@ class TileCacheMasked:
                            float(d_and_l[2]) / 65535.5,
                            float(d_and_l[3]) / 65535.5)
             gl.glUniform2f(self._loc_sg_uRectSize, float(iw), float(ih))
-            gl.glUniform1f(self._loc_sg_uCornerRadius, max(0.0, cr))
-            gl.glUniform1f(self._loc_sg_uMargin, margin)
+            gl.glUniform1f(self._loc_sg_uCornerRadius, max(0.0, cr) * s_x)
+            gl.glUniform1f(self._loc_sg_uMargin, margin * s_x)
             gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
         gl.glDisable(gl.GL_SCISSOR_TEST)
         gl.glBlendEquation(gl.GL_FUNC_ADD)
@@ -3505,7 +3534,7 @@ class TileCacheMasked:
             gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
             gl.glUniform1f(self._loc_maskr_uCornerRadius,
                            max(0.0, float(getattr(wds, "corner_radius", 6.0)
-                                          or 0.0)))
+                                          or 0.0)) * s_x)
             gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
         gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
 
@@ -3726,10 +3755,10 @@ class TileCacheMasked:
         right texels, and fb_h is the REAL height for the y flip."""
         dd = imgui.get_draw_data()
         dp_x, dp_y = dd.display_pos
-        s_x, s_y = 1, 1
+        s_x, s_y = imgui.get_io().display_fb_scale
         ox, oy = getattr(Melty, "frame_origin", None) or (0, 0)
-        dp_x -= int(ox)
-        dp_y -= int(oy)
+        dp_x -= int(ox) / s_x
+        dp_y -= int(oy) / s_y
         real = getattr(Melty, "framebuffer_size", None)
         if real:
             fb_w, fb_h = snap_int(real[0]), snap_int(real[1])
@@ -3841,7 +3870,8 @@ class TileCacheMasked:
         if key in getattr(self, '_resize_input_keys', ()):
             return False
         tile = self._tiles.get(key)
-        if tile is None or not tile.tex or tile.last_clean_frame < 0:
+        if (tile is None or not tile.tex or tile.last_clean_frame < 0
+                or tile.pixel_scale != self._pixel_scale):
             return False
         if key in self._frozen_served:
             return True
@@ -4149,6 +4179,7 @@ class TileCacheMasked:
             bands.append((0, ah - ch, cw, ch - h))
         if cw > w:  # right band: screen cols [w, cw), full content height
             bands.append((w, ah - ch, cw - w, ch))
+        bands = [_pixel_rect(rect, t.pixel_scale) for rect in bands]
         st = _GLState()
         try:
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, t.fbo)
@@ -4257,6 +4288,7 @@ class TileCacheMasked:
             if t is not None and getattr(t, 'content_stale', False):
                 self._scrub_stale_content(t, draw_state)
             use_image = (t and has_area
+                         and t.pixel_scale == self._pixel_scale
                          and (t.size == (size[0], size[1]))
                          and (not self._is_dirty(t))
                          and (not draw_state.size_change))
@@ -4276,6 +4308,7 @@ class TileCacheMasked:
             dragging = Melty.resize_gesture_live()
             frozen = False
             if (draw_state.freeze_resize and t is not None and has_area and dragging
+                    and t.pixel_scale == self._pixel_scale
                     and rkey not in getattr(self, '_resize_input_keys', ())
                     and (t.size != (size[0], size[1])
                          or Melty.resize_press_frame == Melty.frame_count
@@ -4600,7 +4633,8 @@ class TileCacheMasked:
                     and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2)
                     and not Melty.space_mouse_drag):
                 old_t = t
-                t = _ensure_tile(t, ctx.size[0], ctx.size[1], frame_id=self._frame_id, draw_state=ctx.draw_state)
+                t = _ensure_tile(t, ctx.size[0], ctx.size[1], frame_id=self._frame_id,
+                                 draw_state=ctx.draw_state, pixel_scale=self._pixel_scale)
 
                 if t is not None and t is old_t:
                     # Within-bucket logical resize: the tile was updated in
@@ -4854,8 +4888,8 @@ class TileCacheMasked:
             gl.glUseProgram(self._prog_mask_rounded)
             gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
             gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
-            gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius)
-            gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
+            gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius * s_x)
+            gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin * s_x)
 
         else:
             gl.glUseProgram(self._prog_mask)
@@ -4920,15 +4954,15 @@ class TileCacheMasked:
             gl.glBindTexture(gl.GL_TEXTURE_2D, t.mask_tex)
             gl.glUniform1i(self._loc_texr_uTex, 0)
             gl.glUniform2f(self._loc_texr_uRectSize, float(iw), float(ih))
-            gl.glUniform1f(self._loc_texr_uCornerRadius, r.corner_radius)
-            gl.glUniform1f(self._loc_texr_uMargin, shadow_margin)
+            gl.glUniform1f(self._loc_texr_uCornerRadius, r.corner_radius * s_x)
+            gl.glUniform1f(self._loc_texr_uMargin, shadow_margin * s_x)
 
         else:
             gl.glUseProgram(self._prog_mask_rounded)
             gl.glUniform1f(self._loc_maskr_uRankNorm, float(r.layer) * INV_65535)
             gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
-            gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius)
-            gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
+            gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius * s_x)
+            gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin * s_x)
 
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
@@ -5122,8 +5156,8 @@ class TileCacheMasked:
                             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, p.tile.fbo)
                             # Write into the top-anchored logical subrect of the
                             # (possibly bucket-padded) texture.
-                            t_lw, t_lh = snap_int(p.tile.size[0]), snap_int(p.tile.size[1])
-                            t_ah = snap_int(_tile_alloc(p.tile)[1])
+                            t_lw, t_lh = _tile_pixel_size(p.tile)
+                            t_ah = _tile_pixel_size(p.tile, allocated=True)[1]
                             gl.glViewport(0, t_ah - t_lh, t_lw, t_lh)
 
                             # Pre-tint: multiplicative blending drifts stale pixels toward blue
@@ -5341,8 +5375,8 @@ class TileCacheMasked:
                                 iw,
                                 ih,
                                 offset,
-                                r.corner_radius,
-                                r.draw_state.shadow_margin if r.draw_state is not None else 0.0,
+                                r.corner_radius * s_x,
+                                r.draw_state.shadow_margin * s_x if r.draw_state is not None else 0.0,
                                 uv_rect=_tile_uv_rect(t_child),
                             )
                         else:
@@ -5357,9 +5391,9 @@ class TileCacheMasked:
                                 gl.glUseProgram(self._prog_mask_rounded)
                                 gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
                                 gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
-                                gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius)
+                                gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius * s_x)
                                 shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
-                                gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
+                                gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin * s_x)
 
                             else:
                                 gl.glUseProgram(self._prog_mask)
@@ -5402,8 +5436,8 @@ class TileCacheMasked:
 
                         # Dst is the top-anchored logical subrect of the (possibly
                         # bucket-ized) mask texture, mirroring PASS 3's viewport.
-                        m_lw, m_lh = int(p.tile.size[0]), int(p.tile.size[1])
-                        m_ah = int(_tile_alloc(p.tile)[1])
+                        m_lw, m_lh = _tile_pixel_size(p.tile)
+                        m_ah = _tile_pixel_size(p.tile, allocated=True)[1]
                         gl.glBlitFramebuffer(
                             int(x0),
                             int(y0),
@@ -5488,13 +5522,13 @@ class TileCacheMasked:
 
                         mask_stamps.append((t.mask_tex, (ix0, iy0, iw, ih),
                                             (clip_ix0, clip_iy0, clip_iw, clip_ih),
-                                            _tile_uv_rect(t), offset, r.corner_radius, shadow_margin))
+                                            _tile_uv_rect(t), offset, r.corner_radius * s_x, shadow_margin * s_x))
                     else:
                         clip = (clip_ix0, clip_iy0, clip_iw, clip_ih)
                         shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
                         mask_stamps.append((None, clip, clip, (1, 1, 0, 0),
                                             float(depth_and_layer) / 65535.5,
-                                            r.corner_radius, shadow_margin))
+                                            r.corner_radius * s_x, shadow_margin * s_x))
 
                 if getattr(self, "_mask_batch", None) is None:
                     from meltygui.core.cache.mask_batch import MaskBatch

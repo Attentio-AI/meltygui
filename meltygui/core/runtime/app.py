@@ -141,7 +141,7 @@ def boot(app_id=None):
     # without xdg-decoration), which also means the compositor's frame.
     if backend == 'glfw' and os.environ.get('MELTY_LIBDECOR'):
         sys._lsd_wayland_libdecor_disabled = False
-    from meltygui.core.windowing.glfw_utils import apply_wayland_frame_hint
+    from meltygui.core.windowing.glfw_utils import apply_wayland_frame_hint, apply_opengl_context_hints
     apply_wayland_frame_hint()
     if not glfw.init():
         raise SystemExit('glfw.init failed')
@@ -149,9 +149,7 @@ def boot(app_id=None):
     if backend == 'glfw':
         warm_start.remember_glfw_library(cache)
     glfw.window_hint(glfw.VISIBLE, False)
-    glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 4)
-    glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
-    glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+    apply_opengl_context_hints()
     owner = glfw.create_window(1, 1, 'meltygui owner', None, None)
     if not owner:
         raise SystemExit('glfw.create_window (owner) failed')
@@ -232,7 +230,10 @@ def _init_melty():
     imgui.get_io().ini_file_name = None
     imgui.get_io().display_size = (1.0, 1.0)     # the atlas hinting pass frames on it
     Melty.glfw_window = owner
-    Melty.font_mgr = FontManager(imgui.get_io(), Melty.resolve_ui_scale())
+    window_size, framebuffer_size = glfw.get_window_size(owner), glfw.get_framebuffer_size(owner)
+    pixel_scale = max(1.0, *(pixels / max(1, points)
+                              for pixels, points in zip(framebuffer_size, window_size)))
+    Melty.font_mgr = FontManager(imgui.get_io(), Melty.resolve_ui_scale(), pixel_scale=pixel_scale)
     Melty.font_mgr.prewarm()
     warm_start.cache_hinted_atlas(Melty.font_mgr, _state['cache'])
     mark('fonts loaded')
@@ -596,6 +597,65 @@ def _unhook_main_return():
     _state['hooked'] = False
 
 
+def _process_events(timeout=None):
+    """Dispatch OS events at a point where a refresh may safely draw.
+
+    Cocoa can stay inside this call for a whole native resize gesture.
+    Window creation, pending geometry writes and rendering are outside it.
+    """
+    import meltygui.core.windowing.window_api as glfw
+    _state['processing_events'] = True
+    try:
+        if timeout is None:
+            glfw.poll_events()
+        else:
+            glfw.wait_events_timeout(timeout)
+    finally:
+        _state['processing_events'] = False
+    # Exceptions cannot cross GLFW's ctypes callback boundary. Raise them
+    # back in the app loop, whose finally skips saving a failed session.
+    error = _state.pop('refresh_error', None)
+    if error is not None:
+        raise error
+
+
+def refresh_surface(surface):
+    """Present fresh content while Cocoa owns the native resize event loop.
+
+    Only draw between ordinary frames, on the render thread. A refresh
+    emitted by a resize or swap during this frame stays queued. Creation,
+    destruction and event polling remain in the outer loop.
+    """
+    if (sys.platform != 'darwin' or not _state.get('processing_events')
+            or _state.get('refreshing') or _state['failed']
+            or surface.closed or surface.frames == 0):
+        return
+    import meltygui.core.windowing.window_api as glfw
+    import meltygui_imgui as imgui
+    from meltygui.core.melty import Melty
+    from meltygui.core.windowing import glfw_utils
+    if threading.get_ident() != glfw_utils._render_thread_id:
+        return
+    previous_gl, previous_imgui = glfw.get_current_context(), imgui.get_current_context()
+    _state['refreshing'] = True
+    try:
+        if surface.wants_frame():
+            Melty.app_tick += 1
+            surface.frame()
+            # Mark children against THIS tick before the outer loop advances
+            # again. Their actual native-window teardown stays outside GLFW.
+            _close_stale_children()
+    except Exception as error:
+        _state['failed'] = True
+        _state['refresh_error'] = error
+    finally:
+        # The Surface callback wrapper restores per-window Python state;
+        # rendering also switched GL/ImGui, which ordinary input never does.
+        glfw.make_context_current(previous_gl)
+        imgui.set_current_context(previous_imgui)
+        _state['refreshing'] = False
+
+
 def run():
     """Open every registered window and run until the last one closes."""
     if _state['ran']:
@@ -635,7 +695,7 @@ def run():
     glfw_utils.request_render()
     try:
         while Surface.all:
-            glfw.poll_events()
+            _process_events()
             _open_requested_children()
             # A frame only on a request (request_render: the input layer's
             # callbacks, Surface's focus/resize/close hooks, animations via
@@ -690,7 +750,7 @@ def run():
             # requests nothing: poll while any exist. The idle wait is
             # bounded so a signal (Ctrl+C) gets a turn: Python runs its
             # handler between bytecodes, never inside a blocked OS call.
-            glfw.wait_events_timeout(1 / 60 if any(s.children for s in Surface.all) else 1.0)
+            _process_events(1 / 60 if any(s.children for s in Surface.all) else 1.0)
     finally:
         _debug(f'{frames} frames rendered')
         input_recording_core.stop_on_exit()

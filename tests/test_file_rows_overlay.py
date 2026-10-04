@@ -86,9 +86,11 @@ def test_gpu_selection_leaves_no_body_pixels_after_resize_and_scroll(gl_context,
         gl.glClearColor(0, 0, 0, 1)
         gl.glClear(gl.GL_COLOR_BUFFER_BIT)
         renderer.render(imgui.get_draw_data())
-        framebuffer_height = int(imgui.get_io().display_size.y * imgui.get_io().display_fb_scale.y)
+        io = imgui.get_io()
+        scale_x, scale_y = io.display_fb_scale
+        framebuffer_height = int(io.display_size.y * scale_y)
         def pixel(x, y):
-            return np.asarray(gl.glReadPixels(x, framebuffer_height - y, 1, 1,
+            return np.asarray(gl.glReadPixels(int(x * scale_x), framebuffer_height - int(y * scale_y), 1, 1,
                                               gl.GL_RGBA, gl.GL_FLOAT)).reshape(4)[:3]
         return pixel
 

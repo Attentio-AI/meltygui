@@ -2300,8 +2300,13 @@ class Melty:
 
         if cls.font_mgr is None:
             return
-        if cls.font_mgr.scale != cls.ui_scale:
-            if not cls.font_mgr.rebuild(cls.ui_scale, impl):
+        io = imgui.get_io()
+        # Surfaces share one atlas. Keep the highest backing density seen so
+        # windows on different displays cannot continually rebuild each other.
+        pixel_scale = max(cls.font_mgr.pixel_scale, *io.display_fb_scale)
+        io.font_global_scale = 1.0 / pixel_scale
+        if cls.font_mgr.scale != cls.ui_scale or cls.font_mgr.pixel_scale != pixel_scale:
+            if not cls.font_mgr.rebuild(cls.ui_scale, impl, pixel_scale=pixel_scale):
                 return
         # Lazy fonts: bake whatever last-frame's get()s queued (fonts
         # are seeded minimally at boot - see FontManager.prewarm). Same
@@ -2965,7 +2970,7 @@ class Melty:
         cls.display_size = (fb_w, fb_h)
         # Masks/tiles cover the WHOLE framebuffer (shadow margin included).
         real_fb = cls.framebuffer_size or (fb_w, fb_h)
-        cls.cache.mask_begin_frame((int(real_fb[0]), int(real_fb[1])))
+        cls.cache.mask_begin_frame((int(real_fb[0]), int(real_fb[1])), imgui.get_io().display_fb_scale)
 
         # Channel-split the foreground/overlay draw list the same way as the
         # window draw list (max_depth channels) so per-window overlays can be
@@ -5058,8 +5063,8 @@ class Melty:
                 # Glow rects as light sources: hand the composite the low-res
                 # glow buffer (add_glow marks, stamped in finalize_captures
                 # PASS 6). glow_strength=0 skips the path in the shader, so an
-                # empty/absent glow costs nothing; texture 0 is a legal
-                # placeholder bind for the sampler in that case.
+                # empty/absent glow costs nothing. Still bind a complete
+                # texture for Apple's driver, even when the branch is off.
                 _glow_tex = (Melty.cache.glow_tex
                              if Melty.cache.glow_active else None)
                 _glow_on = _glow_tex is not None and Toggles.glow
@@ -5083,7 +5088,7 @@ class Melty:
                     shadow_size=(float(composite_shadow_size[0]),
                                  float(composite_shadow_size[1])),
                     depth_sharpness=float(Toggles.shadow_edge_sharpness),
-                    glow_map=_glow_tex if _glow_on else 0,
+                    glow_map=_glow_tex if _glow_on else shadow_raw,
                     glow_strength=(float(Toggles.glow_strength)
                                    if _glow_on else 0.0),
                     glow_shadow_cut=float(Toggles.glow_shadow_cut),

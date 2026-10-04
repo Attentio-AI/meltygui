@@ -17,6 +17,7 @@ import shutil
 import signal
 import struct
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -89,7 +90,9 @@ def _inheritable_fds():
     """Every fd >= 3 that would survive an exec (not FD_CLOEXEC). Python-created fds are
     CLOEXEC by default (PEP 446); this catches the C libraries' (CUDA / GL / inotify)."""
     fds = []
-    for name in os.listdir("/proc/self/fd"):
+    # macOS exposes descriptors through devfs, without Linux's procfs mount.
+    directory = "/dev/fd" if sys.platform == "darwin" else "/proc/self/fd"
+    for name in os.listdir(directory):
         fd = int(name)
         if fd < 3:
             continue
