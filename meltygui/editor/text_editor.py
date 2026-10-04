@@ -1344,6 +1344,20 @@ for _i in range(26):
     _ch = chr(ord('a') + _i)
     _KEY_CHAR_MAP[_key] = (_ch, _ch.upper())
 
+
+def typed_characters(key_events, native_text=None):
+    """Text from the platform's Unicode service, or desktop key translation.
+
+    ``None`` selects the existing desktop mapping. An empty native list still
+    suppresses that mapping: native key events carry chords/navigation, while
+    the separate text service owns printable characters and composition.
+    """
+    if native_text is not None:
+        return ''.join(native_text).replace('\r\n', '\n').replace('\r', '\n')
+    return ''.join(_KEY_CHAR_MAP[key][bool(mods & glfw.MOD_SHIFT)]
+                   for key, mods in key_events
+                   if key in _KEY_CHAR_MAP and not mods & glfw.MOD_CONTROL)
+
 # Keys the editor repeats when held: every typed char plus certain navigation/edit
 # keys. Used to supplement frame_key_events with imgui's synthesized auto-repeat
 # (see draw_text) so held keys repeat even when the platform's GLFW backend

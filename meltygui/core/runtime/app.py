@@ -81,6 +81,21 @@ def _write_startup_log(app_id, subject):
 
 
 # --- boot -------------------------------------------------------------------------
+def install_native_host(host):
+    """Select an externally paced host before app imports register their views.
+
+    The host owns native window/render/input resources. Existing decorators and
+    persistence continue to use this module; ``run()`` starts the host's views
+    and returns to its display callback instead of entering the desktop loop.
+    """
+    if _state['booted'] or _state['ran']:
+        raise RuntimeError('A native host must be installed before meltygui.boot()')
+    existing = _state.get('native_host')
+    if existing is not None and existing is not host:
+        raise RuntimeError('An application already owns the native host')
+    _state['native_host'] = host
+
+
 def _default_app_id():
     main = sys.modules.get('__main__')
     path = getattr(main, '__file__', None)
@@ -117,6 +132,10 @@ def boot(app_id=None):
     cache = cache_root(_state['app_id'])
     _state['cache'] = cache
     _register_editable(getattr(sys.modules.get('__main__'), '__file__', None))
+    native_host = _state.get('native_host')
+    if native_host is not None:
+        native_host.boot()
+        return
     if sys.platform.startswith('linux'):
         os.environ.setdefault('GDK_BACKEND', 'wayland')
     import meltygui.core.styling.warm_start as warm_start
@@ -444,7 +463,7 @@ def glfw_window(fn=None, *, name=None, width=1280, height=800, app_id=None, app_
         else:
             config['settings'] = _app_settings(settings, config['name'], None)
             _ROOTS.append((fn, config))
-        if not _state.get('hooked'):
+        if not _state.get('hooked') and _state.get('native_host') is None:
             _state['hooked'] = True
             _hook_main_return()
         return fn
@@ -532,6 +551,9 @@ def _draw_root(fn, name, value=None, **kwargs):
     the decorator's view kwargs. ``with_header=draw_header`` puts the meltygui
     header in the chrome row beside the window controls
     (surface.root_view_kwargs)."""
+    native_host = _state.get('native_host')
+    if native_host is not None:
+        return fn(value, **native_host.root_view_kwargs(name or fn.__name__, **kwargs))
     from meltygui.core.windowing.surface import root_view_kwargs
     # A closable meltygui window (the studio's Mode.MODE_WINDOW), pinned to
     # the surface: layouts (draw_rows / draw_columns) register their
@@ -665,6 +687,10 @@ def run():
     _state['ran'] = True
     if not _state['booted']:
         boot()
+    native_host = _state.get('native_host')
+    if native_host is not None:
+        native_host.start()
+        return
     import meltygui.core.windowing.window_api as glfw
     _wait_imports()
     _init_melty()

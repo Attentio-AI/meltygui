@@ -164,7 +164,9 @@ new one shows its default. The file is `$XDG_CONFIG_HOME/<app_id>/settings.json`
 (default `~/.config`), one section per window name, written when the settings
 window changes a value and on exit. A window with settings shows a cog in its
 title bar, just inside the window controls, that opens the settings window
-(the dict drawn as a child native window). See `meltygui/examples/settings_demo.py`.
+(the dict drawn as a child native window). With OS decorations, including macOS,
+the cog sits at the right of the app's content header; a headerless app reserves
+a control row above its body. See `meltygui/examples/settings_demo.py`.
 
 ## Tiled editors
 

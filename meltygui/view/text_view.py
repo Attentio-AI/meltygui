@@ -1128,7 +1128,7 @@ def draw_text(input_value: str, height=None,
     from meltygui.editor.text_editor import _FIM_NON_TRIGGER_KEYS
     from meltygui.editor.text_editor import _FOLD_SEED_VER
     from meltygui.editor.text_editor import _FoldLineNumbers
-    from meltygui.editor.text_editor import _KEY_CHAR_MAP
+    from meltygui.editor.text_editor import typed_characters
     from meltygui.editor.text_editor import _LoadingSentinel
     from meltygui.editor.text_editor import _REPEATABLE_KEYS
     from meltygui.editor.text_editor import _WinVCols
@@ -3891,14 +3891,9 @@ def draw_text(input_value: str, height=None,
         typed_dot_this_frame = False
         typed_word_char_this_frame = False
 
-        for _fk, _fmods in _frame_keys:
-            if _fmods & glfw.MOD_CONTROL:
-                continue
-            _cm = _KEY_CHAR_MAP.get(_fk)
-            if _cm is None:
-                continue
+        native_text = Melty.frame_text_events if Melty.graphics_backend is not None else None
+        for ch in typed_characters(_frame_keys, native_text):
             ds.text_cursor_blink_time = time.time()
-            ch = _cm[1] if (_fmods & glfw.MOD_SHIFT) else _cm[0]
             if _has_selection(ds):
                 text, ds.text_cursor_pos = _delete_selection(text, ds)
             text = text[:ds.text_cursor_pos] + ch + text[ds.text_cursor_pos:]

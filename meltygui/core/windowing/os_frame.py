@@ -206,10 +206,10 @@ def _root_windows():
     because the persisted registry also contains other surfaces' windows.
     Include parentless entries in the surface-local root_draw_states too."""
     from meltygui.core.melty import Melty
-    from meltygui.core.windowing.surface import Surface
     seen, roots = set(), []
-    if Surface.active is not None:
-        candidates = list(getattr(Surface.active, "root_windows", {}).values())
+    surface = Melty.current_surface()
+    if surface is not None:
+        candidates = list(getattr(surface, "root_windows", {}).values())
     else:
         candidates = [getattr(managed, "draw_state", None)
                       for managed in list(getattr(Melty, "registered_windows", {}).values())]

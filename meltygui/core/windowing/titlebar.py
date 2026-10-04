@@ -23,8 +23,9 @@ top-left on a DOUBLE right-drag, the meltygui windows' rule) and, through
 gl_gui/wayland_move.py, the SAME strip / drag-anywhere move and edge resize
 as X11: xdg_toplevel.move / .resize sent straight to the compositor (what
 Super+drag and the caption strip do), the grab then driven by GNOME. With libdecor still on, its own
-title bar carries the buttons and nothing here draws (backend_supported
-is False).
+title bar carries the window controls (backend_supported is False).
+The app settings cog remains in the content header with OS decorations,
+including on macOS; it does not require the move/resize integration.
 
 Everything here runs on the visualization thread inside the imgui frame
 (called from LSDStudio.render). The decoration attribute is synced live
@@ -215,9 +216,9 @@ _rdrag = None
 
 def top_inset():
     """px of top-edge chrome the app should keep clear (the window-control
-    row) — 0 when the custom titlebar is off. For overlays that would
+    row, or the settings cog beside OS decorations). For overlays that would
     otherwise collide with the buttons (e.g. the GPU readout)."""
-    return _BTN_H if titlebar_enabled() else 0.0
+    return _BTN_H if controls_enabled() else 0.0
 
 
 def _on_wayland():
@@ -276,6 +277,11 @@ def titlebar_enabled():
         return backend_supported()
     from meltygui.core.runtime.toggles import Toggles
     return Toggles.Melty.enhanced_titlebar and backend_supported()
+
+
+def controls_enabled():
+    """App settings remain accessible when the OS supplies the window frame."""
+    return titlebar_enabled() or settings_available()
 
 
 def wants_os_decoration():
@@ -500,7 +506,10 @@ def control_kinds():
     innermost of the right group, before the move toggle, or after the
     left group when every control is on the left — set apart by
     _SETTINGS_GAP and painted flat (_paint_buttons), so it reads as the
-    app's button, not the window's."""
+    app's button, not the window's. With OS decorations, only the app's
+    settings cog is drawn, at the right of the content header."""
+    if not titlebar_enabled():
+        return (), ("settings",) if settings_available() else ()
     from meltygui.core.runtime.toggles import Toggles
     left_kinds, right_kinds = tuple(button_layout()[0]), tuple(button_layout()[1])
     if Toggles.Melty.titlebar_move_toggle and hypr_left_drag.available():
@@ -520,14 +529,14 @@ def settings_available():
     """Whether the active OS window has settings to open: a
     `@glfw_window(settings=...)` root (surface.settings, app.py). The
     studio has no Surface, an app's child windows carry none."""
-    from meltygui.core.windowing.surface import Surface
-    surface = Surface.active
+    from meltygui.core.melty import Melty
+    surface = Melty.current_surface()
     return surface is not None and getattr(surface, "settings", None) is not None
 
 
 def _active_settings():
-    from meltygui.core.windowing.surface import Surface
-    surface = Surface.active
+    from meltygui.core.melty import Melty
+    surface = Melty.current_surface()
     return getattr(surface, "settings", None) if surface is not None else None
 
 
@@ -568,7 +577,7 @@ def _button_layout(disp_w, maximized):
     for kind in left_kinds:
         icon = _button_icon(kind, maximized)
         width = widths[icon]
-        if kind == "settings":
+        if kind == "settings" and len(left_kinds) > 1:
             x0 += settings_gap           # set apart from the window's own controls
         buttons.append((kind, icon, (x0, button_margin, x0 + width, button_margin + height)))
         x0 += width + button_gap
@@ -577,7 +586,7 @@ def _button_layout(disp_w, maximized):
     for kind in reversed(right_kinds):
         icon = _button_icon(kind, maximized)
         width = widths[icon]
-        if kind == "settings":
+        if kind == "settings" and len(right_kinds) > 1:
             x1 -= settings_gap           # set apart from the window's own controls
         right.append((kind, icon, (x1 - width, button_margin, x1, button_margin + height)))
         x1 -= width + button_gap
@@ -599,8 +608,8 @@ def chrome_insets():
     corners this frame — what a meltygui header drawn in the chrome row keeps
     clear on each side (surface.root_view_kwargs: `header_indent` on the
     left, a reserving `with_header_end` on the right). 0 for an empty side
-    or with the chrome off."""
-    if not titlebar_enabled():
+    or when neither custom chrome nor app settings are present."""
+    if not controls_enabled():
         return 0.0, 0.0
     left_kinds, right_kinds = control_kinds()
     button_margin, button_gap, height, widths = _button_metrics()
@@ -612,7 +621,7 @@ def chrome_insets():
         if not kinds:
             return 0.0
         return button_margin + sum(widths[_button_icon(k, maximized)] for k in kinds) \
-            + button_gap * len(kinds) + (settings_gap if "settings" in kinds else 0.0)
+            + button_gap * len(kinds) + (settings_gap if "settings" in kinds and len(kinds) > 1 else 0.0)
 
     return group(left_kinds), group(right_kinds)
 
@@ -639,7 +648,7 @@ def draw_header_controls(draw_state=None, **kwargs):
     global _hosted_frame
     from meltygui.core.melty import Melty
     imgui.dummy(chrome_insets()[1], 0)
-    if draw_state is None or not titlebar_enabled():
+    if draw_state is None or not controls_enabled():
         return
     window = _studio_window()
     io = imgui.get_io()
@@ -726,7 +735,7 @@ def paint_window_controls(draw_list):
     global _pressed_button
     from meltygui.core.melty import Melty
     from meltygui.core.runtime.toggles import shadow_depth_at
-    if not titlebar_enabled() or _hosted_frame == Melty.frame_count:
+    if not controls_enabled() or _hosted_frame == Melty.frame_count:
         return      # off, or the root's header painted them this frame (draw_header_controls)
     window = _studio_window()
     io = imgui.get_io()
@@ -776,7 +785,7 @@ def paint_fps(overlay, chrome, frame_ms, fps):
     io = imgui.get_io()
     disp_w = io.display_size.x
     right = disp_w
-    if chrome and titlebar_enabled():
+    if (chrome and titlebar_enabled()) or settings_available():
         buttons = _button_layout(disp_w, _maximized(_studio_window()))
         right = _button_bands(buttons, disp_w)[1]
     # Use the compact 14px mono face; the manager applies the display scale.
@@ -922,11 +931,13 @@ def draw_titlebar(window):
     and wayland_move (xdg_toplevel.move/resize) on Wayland.
     """
     global _pressed_button, _wm_move_started, _rdrag
-    if not sync_decoration(window):
-        _pressed_button = None
+    custom_titlebar = sync_decoration(window)
+    if not custom_titlebar:
         _wm_move_started = False
         _rdrag = None
-        return
+        if not settings_available():
+            _pressed_button = None
+            return
 
     from meltygui.core.melty import Melty
     from meltygui.core.runtime.toggles import Toggles
@@ -935,21 +946,22 @@ def draw_titlebar(window):
     disp_w, disp_h = io.display_size.x, io.display_size.y
     mx, my = io.mouse_pos.x, io.mouse_pos.y
     maximized = _maximized(window)
-    sync_window_geometry(window)
-    sync_input_region(window)
+    if custom_titlebar:
+        sync_window_geometry(window)
+        sync_input_region(window)
     # The strip and edge gestures hand the drag to the window manager
     # (_begin_wm_move / _begin_wm_resize) - on Wayland only once wayland_move
     # is ready. The right-drag resize is app-driven (set_window_size) and
     # runs on both; on Wayland it reads the surface relative pointer and
     # always grabs the bottom-right corner (the top-left is pinned).
-    wayland = _on_wayland()
-    gestures = _wm_gestures_available()
+    gestures = custom_titlebar and _wm_gestures_available()
 
     # --- the control buttons in the top corners, per the desktop's setup --
     # (titlebar_buttons: re-read while frames render, if a changed desktop
     # setting lands without a restart; the focus hook re-reads too)
-    titlebar_buttons.refresh_if_stale(Toggles.Melty.titlebar_button_refresh_s)
-    hypr_left_drag.refresh_if_stale(Toggles.Melty.titlebar_button_refresh_s)
+    if custom_titlebar:
+        titlebar_buttons.refresh_if_stale(Toggles.Melty.titlebar_button_refresh_s)
+        hypr_left_drag.refresh_if_stale(Toggles.Melty.titlebar_button_refresh_s)
     buttons = _button_layout(disp_w, maximized)
     strip_left, strip_right = _button_bands(buttons, disp_w)
 
@@ -983,6 +995,11 @@ def draw_titlebar(window):
         if over_button == _pressed_button and _pressed_button < len(buttons):
             _activate_button(buttons[_pressed_button][0], window)
         _pressed_button = None
+
+    # Native decorations own movement and resizing; the app cog above
+    # still uses the same paint and click path on every backend.
+    if not custom_titlebar:
+        return
 
     # --- drag strip along the top edge -------------------------------------
     # Register as the lowest-priority drag subscriber while the cursor is in

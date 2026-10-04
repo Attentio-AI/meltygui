@@ -468,7 +468,7 @@ class Surface:
             from meltygui.core.cache.tile_marks import add_shadow
             add_shadow((0, 0, disp_w, disp_h), offset=0.5, corner_radius=radius, clip=False)
 
-        top = titlebar.top_inset() if self.chrome else 0.0
+        top = titlebar.top_inset()
         imgui.set_cursor_screen_pos((0, top))
         # The root fills the OS MODEL's size (os_frame.content_size): equal
         # to the display except while our own resize is still landing.
@@ -490,8 +490,7 @@ class Surface:
             Melty.bg_stack.pop()
             Melty.bg_color_stack.pop()
             Melty.style_manager.set_imgui_tint(*previous_tint)
-        if self.chrome:
-            titlebar.paint_window_controls(draw_list)
+        titlebar.paint_window_controls(draw_list)
         Melty.end_frame()
         if self.request is not None:
             Melty.finish_surface_root(self.request, self)
@@ -500,8 +499,7 @@ class Surface:
         draw_list.channels_merge()
         Melty.channels_split = False
         views.end()
-        if self.chrome:
-            titlebar.draw_titlebar(self.window)
+        titlebar.draw_titlebar(self.window)
         if Toggles.show_fps:
             # Here in the root loop, outside every view and Melty.end_frame:
             # no cache, tile or invalidation decides whether it is current.
@@ -650,7 +648,8 @@ def root_view_kwargs(name, /, **kwargs):
     the wrapper right-aligns and clips the header exactly as it does
     around a header's close button. No collapse arrow (`is_tree=False`): an
     OS window does not fold to its header. Without a header the body
-    starts under the control row (titlebar.top_inset).
+    starts under the control row (titlebar.top_inset). OS-decorated surfaces
+    use the same row for the app settings cog, without custom window controls.
 
     Caller kwargs win over every pinned value (``show_header=False`` hides
     a passed header, ``disable_scroll=False`` scrolls the root, a ``name=``
@@ -659,8 +658,7 @@ def root_view_kwargs(name, /, **kwargs):
     header = kwargs.get('with_header') is not None
     if header:
         surface = Surface.active
-        chrome = surface is not None and surface.chrome
-        left_inset, right_inset = titlebar.chrome_insets() if chrome else (0.0, 0.0)
+        left_inset, right_inset = titlebar.chrome_insets()
         # The header row IS the chrome row: the view starts at the very
         # top and the body is immediately under the header.
         height, top = height + top, 0.0

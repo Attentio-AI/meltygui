@@ -750,6 +750,8 @@ class Melty:
         """The framebuffer a frame's draws go to: the fp16 scene target
         (scene_target.py) while a frame is open, else the window's 0. Every
         'bind 0' inside a frame must go through here."""
+        if cls.graphics_backend is not None:
+            return cls.graphics_backend.scene_framebuffer
         import meltygui.core.graphics.scene_target as scene_target
         return scene_target.framebuffer()
 
@@ -917,6 +919,26 @@ class Melty:
     windows = []
     collection_stack = []
     glfw_window = None
+    # The native host's graphics owner; desktop surfaces retain their GL path.
+    # Input remains on ``backend`` below, independently of GPU submission.
+    graphics_backend = None
+    native_surface = None
+
+    @classmethod
+    def current_surface(cls):
+        """The host that owns the current view, without loading a GL surface on iOS."""
+        if cls.native_surface is not None:
+            return cls.native_surface
+        from meltygui.core.windowing.surface import Surface
+        return Surface.active
+
+    @classmethod
+    def open_surfaces(cls):
+        if cls.native_surface is not None:
+            return () if cls.native_surface.closed else (cls.native_surface,)
+        from meltygui.core.windowing.surface import Surface
+        return Surface.all
+
     # Frameless-window shadow margin (titlebar.window_inset): imgui's viewport
     # is the CONTENT, painted inset by frame_inset px into a framebuffer of
     # framebuffer_size - masks, tiles and filters point at the latter. Both
@@ -1314,6 +1336,9 @@ class Melty:
     # instead of polling imgui.is_key_pressed, so keystrokes aren't lost on slow
     # frames. Cleared in end_frame after this frame's views have read them.
     frame_key_events = []
+    # Native text services deliver Unicode strings separately from key chords.
+    # The input backend clears this before each frame, alongside key edges.
+    frame_text_events = []
 
     # App-level keyboard shortcuts that fire wherever the focus is:
     # (glfw_key, modifier bits) → callback. Drained by begin_frame from the
@@ -2379,6 +2404,8 @@ class Melty:
         Shift during a camera pan force-redrew the focused editor's whole
         parent window per frame (120 → 40fps); a modifier+key combo still
         triggers via the non-modifier key itself."""
+        if cls.frame_text_events:
+            return True
         for k, _m in cls.frame_key_events:
             if not (glfw.KEY_LEFT_SHIFT <= k <= glfw.KEY_RIGHT_SUPER):
                 return True
@@ -2390,6 +2417,27 @@ class Melty:
         return False
 
     @classmethod
+    def _background_palette(cls):
+        """Allocate the current renderer's shared dynamic-colour lookup."""
+        renderer = cls.graphics_backend
+        if renderer is not None:
+            capacity = renderer.max_texture_size
+            return renderer.ensure_palette(capacity), capacity
+        import OpenGL.GL as gl
+        from meltygui.core.graphics.gl_state import GLState, gl_limits
+        if cls.dynamic_style_gl is None:
+            cls.dynamic_style_gl = GLState()
+        capacity = gl_limits()['max_2d']
+        palette = cls.dynamic_style_gl.peek('background_palette')
+        if palette is None or (palette.width, palette.height) != (capacity, 1):
+            previous_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
+            try:
+                palette = cls.dynamic_style_gl.fbo('background_palette', capacity, 1)
+            finally:
+                gl.glBindTexture(gl.GL_TEXTURE_2D, previous_texture)
+        return palette.texture_id, capacity
+
+    @classmethod
     def add_background(cls, style, *, rect=None, corner_radius=0.0, draw_list=None, draw_state=None):
         """Suggest a background in the current view's geometry and paint channel.
 
@@ -2397,31 +2445,16 @@ class Melty:
         compositing slot, preserving clipping, rounded edges and window order.
         Explicit draw_state/draw_list retain ownership during live replay.
         """
-        import OpenGL.GL as gl
         if not Toggles.dynamic_styles:
             return
-        from meltygui.core.graphics.gl_state import GLState
-        from meltygui.core.graphics.gl_state import gl_limits
         if draw_state is None and not cls.draw_state_stack and rect is None:
             return  # Outside a view there is no surface to paint.
         explicit_owner = draw_state is not None
         if draw_state is None:
             draw_state = cls.draw_state_stack[-1] if cls.draw_state_stack else None
-        if cls.dynamic_style_gl is None:
-            cls.dynamic_style_gl = GLState()
-        capacity = gl_limits()['max_2d']
+        texture_id, capacity = cls._background_palette()
         if len(cls.backgrounds) >= capacity:
-            raise RuntimeError("Dynamic background palette exceeds GL texture capacity")
-        palette = cls.dynamic_style_gl.peek('background_palette')
-        if palette is None or (palette.width, palette.height) != (capacity, 1):
-            # Empty per-frame paint queues do not mean the GPU palette is new.
-            # Only allocation can change the texture binding; warm overlay
-            # backgrounds submit geometry without a synchronous GL query.
-            previous_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
-            try:
-                palette = cls.dynamic_style_gl.fbo('background_palette', capacity, 1)
-            finally:
-                gl.glBindTexture(gl.GL_TEXTURE_2D, previous_texture)
+            raise RuntimeError('Dynamic background palette exceeds renderer texture capacity')
         index = len(cls.backgrounds)
         cls.backgrounds.append((draw_state, style))
         if rect is not None:
@@ -2433,7 +2466,7 @@ class Melty:
             clip = (*dl.get_clip_rect_min(), *dl.get_clip_rect_max())
             cls.background_rects.append((left, top, width, height, clip, corner_radius))
             uv = ((index + 0.5) / capacity, 0.5)
-            dl.add_image_rounded(palette.texture_id, (left, top),
+            dl.add_image_rounded(texture_id, (left, top),
                                  (left + width, top + height), uv, uv, 0xffffffff, corner_radius)
             return
         left, top = draw_state.abs_left, draw_state.abs_top
@@ -2490,7 +2523,7 @@ class Melty:
                            corner_radius=draw_state.corner_radius)
         uv = ((index + 0.5) / capacity, 0.5)
         (draw_list if draw_list is not None else imgui.get_window_draw_list()).add_image_rounded(
-            palette.texture_id, (left, top), (left + width, top + height),
+            texture_id, (left, top), (left + width, top + height),
             uv, uv, 0xffffffff, draw_state.corner_radius)
 
     @staticmethod
@@ -2519,13 +2552,11 @@ class Melty:
     @classmethod
     def draw_backgrounds(cls):
         """Resolve the queued style hierarchy in one pass before draw lists."""
-        import OpenGL.GL as gl
         if not Toggles.dynamic_styles or not cls.backgrounds:
             return
         import numpy as np
         from meltygui.core.styling.style import draw_background
         from meltygui.core.styling.style import default_tint_accumulation
-        from meltygui.core.graphics.gl_state import gl_limits
         root = tuple(hdr_color.srgb_to_linear(c) for c in Toggles.dynamic_style_root) + (1.0,)
         resolved = {}
         colors = []
@@ -2566,12 +2597,19 @@ class Melty:
                 resolved[id(draw_state)] = (color, tint_fn)
                 object.__setattr__(draw_state, '_dynamic_bg', (color, tint_fn))
             colors.append(color)
-        palette = cls.dynamic_style_gl.fbo('background_palette', gl_limits()['max_2d'], 1)
-        previous_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, palette.texture_id)
-        gl.glTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, len(colors), 1,
-                           gl.GL_RGBA, gl.GL_FLOAT, np.asarray(colors, dtype=np.float32))
-        gl.glBindTexture(gl.GL_TEXTURE_2D, previous_texture)
+        texture_id, capacity = cls._background_palette()
+        if len(colors) > capacity:
+            raise RuntimeError('Dynamic background palette exceeds renderer texture capacity')
+        pixels = np.asarray(colors, dtype=np.float32)
+        if cls.graphics_backend is not None:
+            cls.graphics_backend.upload_palette(pixels.tobytes(), len(colors))
+        else:
+            import OpenGL.GL as gl
+            previous_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
+            gl.glTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, len(colors), 1,
+                               gl.GL_RGBA, gl.GL_FLOAT, pixels)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, previous_texture)
         cls.style_context_root = root
         cls.background_gen += 1
 
@@ -2592,8 +2630,8 @@ class Melty:
 
     @classmethod
     def begin_frame(cls):
-        import OpenGL.GL as gl
-        cls._sync_gl_error_checking()
+        if cls.graphics_backend is None:
+            cls._sync_gl_error_checking()
         # Every cached tile holds pixels composed on the previous root colour
         # (and then adjusted against it): a root / toggle change repaints all.
         # Tracked ON the cache: every Surface swaps in its own, and a key on
@@ -2654,11 +2692,13 @@ class Melty:
 
         cls.layer_inc = 0.04 / ((Melty.max_layer - 1.0) * (Melty.max_depth - 1.0)) * 65535.0
 
-        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, cls.default_framebuffer())
-        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
-        gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, 0)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
-        gl.glBindVertexArray(0)
+        if cls.graphics_backend is None:
+            import OpenGL.GL as gl
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, cls.default_framebuffer())
+            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+            gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, 0)
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+            gl.glBindVertexArray(0)
         is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
         Melty.imgui_popup_open = is_popup_open
 
@@ -2855,7 +2895,7 @@ class Melty:
         # freshest pointer position rather than after the (possibly slow)
         # draw pass; the render tail pushes again against imgui's immediate
         # shapes. See mouse_cursor.apply.
-        if cls.glfw_window is not None:
+        if cls.glfw_window is not None and cls.graphics_backend is None:
             import meltygui.core.input.mouse_cursor as mouse_cursor
             mouse_cursor.apply(cls.glfw_window, early=True)
 
@@ -4063,8 +4103,11 @@ class Melty:
         except Exception:
             pass
         try:
-            from meltygui.core.graphics.gl_state import GLState
-            GLState.on_window_deleted(ds)
+            if cls.graphics_backend is not None:
+                cls.graphics_backend.on_window_deleted(ds)
+            else:
+                from meltygui.core.graphics.gl_state import GLState
+                GLState.on_window_deleted(ds)
         except Exception:
             pass
         try:
@@ -4174,8 +4217,11 @@ class Melty:
         # Drain GL resources queued for deletion (released GLStates, shader
         # programs invalidated by an edit) - must run on the render thread with
         # the context current, which is exactly here.
-        from meltygui.core.graphics.gl_state import GLState
-        GLState.flush_deletes()
+        if cls.graphics_backend is not None:
+            cls.graphics_backend.flush_deletes()
+        else:
+            from meltygui.core.graphics.gl_state import GLState
+            GLState.flush_deletes()
 
         # Drain callables posted from worker threads (post_to_render) - work
         # that must not race the frame, e.g. attaching symbol usages into a
@@ -4297,9 +4343,8 @@ class Melty:
         # child OS window's root (Settings, the file dialog) otherwise lands
         # in the parent's window-occlusion mask at its own local (0, 0) and
         # the specular pass outlines its rect inside the parent.
-        from meltygui.core.windowing.surface import Surface
-        surface_roots = (getattr(Surface.active, "root_windows", None)
-                         if Surface.active is not None else None)
+        surface = cls.current_surface()
+        surface_roots = getattr(surface, 'root_windows', None)
 
         def drawn_here(root_ds):
             return surface_roots is None or id(root_ds) in surface_roots
@@ -4968,6 +5013,9 @@ class Melty:
 
     @classmethod
     def post_frame(cls, imgui_impl, window):
+        if cls.graphics_backend is not None:
+            cls._post_native_frame()
+            return
         import OpenGL.GL as gl
         # TEMP perf (present-stall hunt): CPU split of each frame segment
         # plus GPU timestamps at the same boundaries. The CPU numbers say
@@ -5206,6 +5254,28 @@ class Melty:
         apply_drag_and_drop()
         pass
 
+        InvalidateTracker.on_frame_end()
+        AttributeChurnMonitor.on_frame_end()
+
+    @classmethod
+    def _post_native_frame(cls):
+        """The same UI/capture/composition order on the native graphics owner."""
+        renderer = cls.graphics_backend
+        renderer.begin_frame_split()
+        imgui.render()
+        draw_data = imgui.get_draw_data()
+        size = tuple(int(v) for v in cls.framebuffer_size)
+        cls.draw_backgrounds()
+        renderer.draw_backgrounds(cls.background_rects, cls.style_context_root)
+        renderer.render_except_overlay(draw_data)
+        cls.cache.finalize_captures(size)
+        renderer.compose_scene(cls.cache)
+        renderer.render_overlay_only(draw_data)
+        renderer.end_scene()
+        from meltygui.core.automation.mcp_eval import process_evals
+        from meltygui.core.core_render import apply_drag_and_drop
+        process_evals()
+        apply_drag_and_drop()
         InvalidateTracker.on_frame_end()
         AttributeChurnMonitor.on_frame_end()
 

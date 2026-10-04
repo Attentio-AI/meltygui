@@ -1010,6 +1010,11 @@ def render_func(*args, **o_kwargs):
         # draw_surface_root) and the result comes back a frame later
         # through returned_values. The child surface's draw call carries no
         # glfw_window, so it renders normally there.
+        if kwargs.get('glfw_window') and Melty.graphics_backend is not None:
+            # UIKit supplies one native surface. Dialogs use Melty's existing
+            # managed windows inside it, retaining their normal open lifecycle.
+            kwargs = dict(kwargs, glfw_window=False, closable=True)
+            closable = True
         if closable or kwargs.get('glfw_window'):
             from meltygui.core.windowing.window_visibility import resolved_window_kwargs
             kwargs = resolved_window_kwargs(draw_state, kwargs)
@@ -1083,11 +1088,11 @@ def render_func(*args, **o_kwargs):
 
         if closable:
             if draw_state.parent_window is None and not kwargs.get("unmanaged", False):
-                from meltygui.core.windowing.surface import Surface
-                if Surface.active is not None:
+                surface = Melty.current_surface()
+                if surface is not None:
                     # The persisted registered_windows dict spans surfaces;
                     # surface roots must belong to the window drawing them.
-                    Surface.active.__dict__.setdefault('root_windows', {})[id(draw_state)] = draw_state
+                    surface.__dict__.setdefault('root_windows', {})[id(draw_state)] = draw_state
                 # Read BEFORE the defaultdict inserts the entry below. A new
                 # key first reuses the hollow entry saved under this NAME
                 # (or ID of a previous draw_state - see reclaim_window_slot),
