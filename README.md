@@ -2,7 +2,7 @@
 
 Low latency tensor visualization for PyTorch.
 
-MeltyGUI is an open source data visualization toolkit for PyTorch, designed to render massive tensors in-place on the GPU at an interactive framerate. The purpose of this project is to make PyTorch code easier to understand and faster to debug. Along with its core tensor rendering components, MeltyGUI is bundled with a Blender inspired UI framework designed to make interacting with high dimensional tensors feel fast and intuitive. 
+MeltyGUI is an open source data visualization toolkit for PyTorch, designed to render large tensors in-place on the GPU at an interactive framerate. The purpose of this project is to make PyTorch code easier to understand and faster to debug. Along with its core tensor rendering components, MeltyGUI is bundled with a Blender inspired UI framework designed to make interacting with high dimensional tensors feel fast and intuitive. 
 
 MeltyGUI is capable of rendering tensors exceeding 64GB in size. The primary challenge with visualizing data this large is moving it around. MeltyGUI skips the data movement entirely, and ray-marches tensors directly from CUDA memory.
 
