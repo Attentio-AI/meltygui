@@ -4,12 +4,19 @@ settings shared by every app (Show all folders; `added_folders` lists extra
 directories to show without a conversation)."""
 import json
 import os
+import sys
 from pathlib import Path
 
 from meltygui.model.chat_model import recent_chat_time
+from meltygui.core.runtime.paths import cache_root
 
-# Shared by every app that draws the chat (melty-claude's original location).
-SETTINGS_PATH = Path.home() / '.cache' / 'melty-claude' / 'folders.json'
+
+def settings_path():
+    """Resolve the sandbox at use time; preserve melty-claude's desktop path."""
+    folder = (cache_root('melty-claude') if sys.platform == 'ios'
+              else Path.home() / '.cache' / 'melty-claude')
+    return folder / 'folders.json'
+
 
 _settings = None
 
@@ -20,7 +27,7 @@ def folder_settings():
     global _settings
     if _settings is None:
         try:
-            saved = json.loads(SETTINGS_PATH.read_text())
+            saved = json.loads(settings_path().read_text())
         except (OSError, ValueError):
             saved = {}
         _settings = {'show_all_folders': bool(saved.get('show_all_folders', False)),
@@ -30,9 +37,10 @@ def folder_settings():
 
 def save_folder_settings():
     """Write the settings; a cache that cannot be written only forgets them."""
+    path = settings_path()
     try:
-        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        SETTINGS_PATH.write_text(json.dumps(folder_settings()))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(folder_settings()))
     except OSError:
         pass
 

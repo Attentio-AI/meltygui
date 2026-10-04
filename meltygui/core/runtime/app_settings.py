@@ -15,8 +15,9 @@ type (a bool never lands on an int, a str never on a nested dict), and a
 nested dict is a sub-folder merged the same way — so a setting removed or
 renamed in the code simply disappears from the window and the file, and a
 new one shows up with its default. The file:
-`$XDG_CONFIG_HOME/<app_id>/settings.json` (default `~/.config`), one per
-app id, a section per window name (an app with two settings windows shares
+`$XDG_CONFIG_HOME/<app_id>/settings.json` (default `~/.config`) on desktop,
+or `Library/Application Support/<app_id>/settings.json` inside the iOS
+sandbox, one per app id, a section per window name (two windows share
 the file). Written when the settings window changes a value and on the
 loop's exit; a file that fails to parse is moved aside
 (`settings.json.broken-<time>`), never overwritten in place.
@@ -34,6 +35,8 @@ import pathlib
 import sys
 import time
 
+from meltygui.core.runtime.paths import config_root
+
 # The settings window's content size when it opens. Change here for every app.
 WINDOW_SIZE = (520, 640)
 # The window's name: its OS title and the draw_any call's name.
@@ -41,11 +44,8 @@ WINDOW_NAME = 'Settings'
 
 
 def settings_dir(app_id):
-    """`$XDG_CONFIG_HOME/<app_id>` (default `~/.config/<app_id>`): the XDG
-    home for what the user configures, unlike the state dir of the session
-    (app_session.session_dir)."""
-    base = os.environ.get('XDG_CONFIG_HOME') or pathlib.Path.home() / '.config'
-    return pathlib.Path(base) / app_id
+    """Private settings directory; see runtime.paths.config_root."""
+    return config_root(app_id)
 
 
 def settings_path(app_id):

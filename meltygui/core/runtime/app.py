@@ -113,7 +113,8 @@ def boot(app_id=None):
     # modules already imported and hook the import of the rest.
     from meltygui.core.runtime import launch_override
     launch_override.install(_state['app_id'])
-    cache = pathlib.Path(os.environ.get('XDG_CACHE_HOME') or pathlib.Path.home() / '.cache') / _state['app_id']
+    from meltygui.core.runtime.paths import cache_root
+    cache = cache_root(_state['app_id'])
     _state['cache'] = cache
     _register_editable(getattr(sys.modules.get('__main__'), '__file__', None))
     if sys.platform.startswith('linux'):
@@ -758,15 +759,33 @@ def run():
         # must stop before interpreter teardown, even after a failed frame.
         from meltygui.core.melty import FileWatch
         FileWatch.stop()
-        if not _state['failed']:
-            _flush_pending_saves()
-            _save_session()
-            _save_settings()
-            from meltygui.core.runtime import launch_override
-            launch_override.flush()
+        checkpoint()
         for surface in list(Surface.all):
             surface.destroy()
         glfw.terminate()
+
+
+def checkpoint():
+    """Persist the current app without closing its surfaces or interpreter.
+
+    Native hosts call this on the render thread between frames before the
+    app is suspended; mobile processes may disappear without an exit callback.
+    The desktop exit uses the same save order. Return False if the runtime has
+    failed or a persistence write failed; a failed runtime keeps the last good
+    session instead of overwriting it. Pending source-save exceptions propagate.
+    """
+    if _state['failed']:
+        return False
+    window_utils = sys.modules.get('meltygui.core.windowing.glfw_utils')
+    render_thread = getattr(window_utils, '_render_thread_id', None)
+    if render_thread is not None and render_thread != threading.get_ident():
+        raise RuntimeError('Application checkpoints must run on the render thread between frames')
+    _flush_pending_saves()
+    session_saved = _save_session()
+    settings_saved = _save_settings()
+    from meltygui.core.runtime import launch_override
+    overrides_saved = launch_override.flush()
+    return session_saved and settings_saved and overrides_saved
 
 
 def _flush_pending_saves():
@@ -791,10 +810,13 @@ def _save_settings():
     """Write every window's settings dict (app_settings.AppSettings.save):
     the exit backstop behind the save-on-edit, so a value the app changed
     itself lands too. Skipped after a failed frame like the session."""
+    saved = True
     for fn, kw in _ROOTS:
         settings = kw.get('settings')
         if settings is not None:
-            settings.save()
+            if settings.save() is None:
+                saved = False
+    return saved
 
 
 def _save_session():
@@ -803,10 +825,11 @@ def _save_session():
     broken state must not replace the last good session."""
     session = _state.get('session')
     if session is None:
-        return
+        return True
     import meltygui.core.runtime.app_session as app_session
     path = app_session.save(session, _state['app_id'])
     _debug(f'session saved to {path}' if path else 'session save failed')
+    return path is not None
 
 
 def _open_requested_children():

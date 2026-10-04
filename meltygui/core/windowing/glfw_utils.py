@@ -3,7 +3,6 @@ import sys
 import re
 import io
 import shutil
-import subprocess
 import pprint
 import inspect
 import threading
@@ -74,6 +73,7 @@ def _gsettings_get(key):
     (stripped), None if the tool is missing, fails or times out."""
     if not os.path.exists(_GSETTINGS):
         return None
+    import subprocess
     try:
         result = subprocess.run([_GSETTINGS, "get", _DESKTOP_INTERFACE_SCHEMA, key],
                                 capture_output=True, text=True, timeout=3,
@@ -1384,6 +1384,10 @@ def take_surface_request(surface, drawn_generation):
 
 def _wake_render_loop():
     _needs_render.set()
+    native_host = sys.modules.get('_melty_ios')
+    if native_host is not None:
+        native_host.request_frame()
+        return
     try:
         glfw.post_empty_event()
     except Exception:
@@ -1401,7 +1405,9 @@ def request_render(for_frames: int | None = None):
     # call. Lazy import because Meltygui imports this module (circular at top level); meltygui
     # is fully loaded by the time any thread calls request_render at start.
     from meltygui.core.melty import Melty
-    if Melty.glfw_window is None:
+    # The iOS host installs its built-in service module before importing Melty.
+    # Its display link can be woken without a GLFW window, from any thread.
+    if Melty.glfw_window is None and '_melty_ios' not in sys.modules:
         return
     # NOTE: no glfw.get_current_context() readiness check here - it returns the
     # context current on the CALLING thread, which is None on every worker

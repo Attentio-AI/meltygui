@@ -1,7 +1,8 @@
 """Per-file display attributes (tint, icon, order …) in ONE store shared
 by every meltygui app on the machine — the studio, melty_code_editor, the
 folder windows — as `file_meta_store()`: a FileMetaProxy, path string ->
-FileMeta, backed by a pickle at ~/.melty/file_meta.pkl.
+FileMeta, backed by a pickle at ~/.melty/file_meta.pkl on desktop, or in
+the app's Library/Application Support/meltygui directory on iOS.
 
 Shaped like GitProxy: the store is a dict subclass and THE SAME OBJECT for
 every holder, so reads are plain dict reads and every holder sees updates
@@ -24,11 +25,13 @@ live. The file I/O is the proxy's job and stays off the render thread:
   wins for a path it already has.
 
 `MELTY_FILE_META=/path.pkl` overrides the location (tests, a second user).
+An iOS override must resolve within the current app container.
 """
 import atexit
 import contextlib
 import os
 import pickle
+import sys
 import tempfile
 import threading
 import time
@@ -42,6 +45,7 @@ else:
 from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.rendering.core_decoration import defaults
 from meltygui.core.rendering.core_decoration import no_save
+from meltygui.core.runtime.paths import data_root
 
 SAVE_DELAY_S = 0.4
 POLL_S = 0.5
@@ -77,7 +81,21 @@ def _unlock_fd(fd):
 def default_store_path():
     override = os.environ.get("MELTY_FILE_META")
     if override:
-        return Path(override).expanduser()
+        if sys.platform != 'ios':
+            return Path(override).expanduser()
+        # A desktop launch environment can survive into an embedded host.
+        # Honor an explicit in-container location, including relative paths
+        # from its workspace, but never follow an escaping symlink.
+        try:
+            path = Path(override).expanduser().resolve()
+            inside = path.is_relative_to(Path.home().resolve())
+        except (OSError, ValueError, RuntimeError) as error:
+            raise ValueError('MELTY_FILE_META must resolve within the iOS app container') from error
+        if not inside:
+            raise ValueError('MELTY_FILE_META must resolve within the iOS app container')
+        return path
+    if sys.platform == 'ios':
+        return data_root('meltygui') / 'file_meta.pkl'
     return Path.home() / ".melty" / "file_meta.pkl"
 
 
