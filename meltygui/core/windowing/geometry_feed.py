@@ -489,10 +489,10 @@ def _current_frame():
 
 def _active_surface_title():
     try:
-        from meltygui.core.windowing.surface import Surface
+        from meltygui.core.melty import Melty
     except Exception:
         return None
-    active = Surface.active
+    active = Melty.current_surface()
     return active.title if active is not None else None
 
 

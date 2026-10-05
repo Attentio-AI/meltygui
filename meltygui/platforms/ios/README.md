@@ -1,0 +1,166 @@
+# MeltyGUI on iOS
+
+UIKit owns one native surface and display link; Metal owns GPU submission.
+MeltyGUI supplies the application lifecycle, ordinary window/view rendering,
+input, settings, persistence and tile cache. The same application entry module
+runs on desktop and iOS. Applications do not implement a native adapter.
+
+## Application inputs
+
+The build tools are installed with MeltyGUI:
+
+```sh
+python -m meltygui.platforms.ios stage --help
+python -m meltygui.platforms.ios generate --help
+```
+
+They read existing `[tool.melty.app]` metadata from the application's
+`pyproject.toml`. A minimal application can use:
+
+```toml
+[tool.melty.app]
+entry = "main.py"
+bundle_id = "org.example.counter"
+dependencies = ["meltygui"]
+```
+
+`entry` can be a relative Python file or dotted module. `sources` defaults to
+`["*.py"]`; package applications should list their package directories.
+`resources` lists additional relative paths or glob patterns (fonts, templates,
+images). `dependencies` defaults to `[project].dependencies`, or `["meltygui"]`
+for a script app without project metadata. Development checkout paths are build
+inputs, never runtime import paths. The app's normal `meltygui.boot(app_id=...)`
+continues to choose its saved-session identity.
+
+`examples/portable_counter` is a second app with no Pro dependency and no
+platform Python code. The editor likewise uses its existing `editor.py`.
+
+## Device dependencies
+
+Use full Xcode with the iPhoneOS SDK and MetalToolchain. Supply an ARM64 device
+`Python.framework` and matching `lib/python3.13`. The tooling checks runtime
+headers and Mach-O platform metadata, rejecting macOS/simulator extensions.
+Build artifacts default to `build/ios` in the calling directory; set
+`MELTY_IOS_BUILD_DIR` to share an explicit artifact location. Nothing writes into
+the installed toolkit.
+
+Run the recipes using an isolated build Python with MeltyGUI installed plus
+build, setuptools, setuptools-scm, wheel, hatchling, packaging, Cython 3.2.4 and
+CMake. Rust recipes require an isolated Cargo/Rustup installation with the
+`aarch64-apple-ios` target. `--help` lists each recipe's runtime/toolchain paths.
+
+```sh
+python -m meltygui.platforms.ios build-imgui --python-framework /device/Python.framework
+python -m meltygui.platforms.ios numeric-wheels --python-framework /device/Python.framework
+python -m meltygui.platforms.ios build-platform --help
+python -m meltygui.platforms.ios build-rust --help
+python -m meltygui.platforms.ios build-crypto --help
+```
+
+Recipes cover ImGui, NumPy, Pillow, CFFI, LibCST, Pydantic Core, jiter, rpds-py
+and cryptography. FreeType and libspatialindex are separate embedded frameworks.
+Cryptography statically includes OpenSSL; NumPy uses Accelerate. Watchdog uses
+its polling observer and PyYAML-ft its Python implementation.
+
+`dependencies.json` is a catalogue of hash-pinned portable package recipes.
+Staging selects only the application's dependency closure, including extras and
+iOS/Python 3.13 markers. Unused recipes are not downloaded or shipped. Supply
+additional native wheels with `--wheel-dir`, a different locked catalogue with
+`--lock`, or source packages to build as ordinary wheels with `--package-source`.
+Conflicting versions and missing device dependencies fail explicitly.
+
+## Stage and build an app
+
+Run in the application directory. For a development checkout, explicitly supply
+the package sources used by that app; a toolkit-only app needs no Pro source:
+
+```sh
+python -m meltygui.platforms.ios stage --application . \
+  --package-source /checkout/meltygui
+```
+
+For the editor, add `--package-source /checkout/meltygui-pro`. For installed
+releases, supply their ordinary wheels with `--wheel-dir`. Staging produces
+`build/ios/app-bundle/{app,packages,manifest.json}` and includes no editable
+install, `.pth` file, desktop virtualenv or implicit sibling checkout.
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+python -m meltygui.platforms.ios generate --application . \
+  --python-framework /device/Python.framework --python-lib /device/lib \
+  --embed-framework build/ios/dependencies/platform/frameworks/freetype.framework \
+  --embed-framework build/ios/dependencies/platform/frameworks/spatialindex_c.framework \
+  --team YOURTEAMID
+
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+xcodebuild -project build/ios/MeltyIOS.xcodeproj -scheme Melty \
+  -configuration Debug -destination 'generic/platform=iOS' build
+```
+
+Xcode compiles the toolkit's shader ports, copies the generic bootstrap and app
+resources, and packages signed device extensions. Build metadata chooses the
+entry module and bundle identity. The host installs the native runtime before
+importing that module; its normal decorators and `run()` then use the shared
+MeltyGUI lifecycle.
+
+## Run from the editor
+
+On macOS the Tasks environment picker includes paired iPhones/iPads by their
+device names. Select one and Run the task for the app's declared `entry` module.
+MeltyGUI stages the app's current sources (including the entry's pending editor
+text), builds with Xcode, installs the signed app and streams its device console.
+Stop terminates the installed app; it does not stop unrelated device processes.
+
+Stage dependencies and generate the signed Xcode project once using the steps
+above. The runner reads `build/ios/host-build.json` and `MeltyIOS.xcodeproj`.
+For a different output directory, set `MELTY_IOS_BUILD_DIR` or declare
+`build_directory` under `[tool.melty.app.ios]`. Re-stage dependencies when they
+change. Xcode signing, device pairing and Developer Mode must already be ready;
+Run reports setup/build failures in the task console.
+
+Device targets launch the configured app entry. They do not provide a remote
+shell, arbitrary task working directories or remote debugger transport. Local
+venv targets continue to support Run and Debug. Device discovery/deployment uses
+[Xcode's command-line tools](https://developer.apple.com/documentation/xcode/xcode-command-line-tool-reference).
+
+## Runtime ownership
+
+`core/windowing/surface_frame.py` owns the common root layout, settings controls,
+render-host pump and frame drawing. Desktop surfaces and the UIKit owner supply
+input, geometry, graphics targets and presentation. Fonts, styles and session
+initialization are shared in `core/runtime/app.py`. Platform resources are
+released by their owning host.
+
+Documents/Projects is the editable workspace; Library/Application Support holds
+settings/sessions and Library/Caches holds disposable data. Clipboard access,
+keyboard visibility, safe-zone updates and frame requests are native services.
+Input and frame dimensions use UIKit points; `scale` converts to Metal pixels.
+Keyboard viewport animation uses the presentation-layer bounds at native scale.
+`Toggles.Mobile.Safezone` controls the top inset. Idle rendering pauses; active
+rendering requests the available cadence up to 120 Hz.
+
+Project execution/debugging belongs to MeltyGUI Pro's `ProjectExecution` model.
+On iOS it runs Python modules in the embedded interpreter and rejects shell or
+external-process requests. The editor's Tasks tile only owns its definitions,
+selection and presentation. User code shares process state; cancellation is
+cooperative, and native blocking calls must return.
+
+## Verification and remaining device work
+
+Run toolkit tests with `python -m pytest tests/ios tests/test_portable_native_app.py`.
+The portable-app test exercises the real Python frame, settings, cache and save
+lifecycle while recording GPU calls; it does not validate Metal pixels.
+On macOS, `tests/ios/build_metal_test.py` builds the real offscreen Metal encoder;
+set `MELTY_METAL_TEST=1` to opt into pixel tests. Editor integration/device checks
+remain in the editor repository's `tests/ios` directory.
+
+Physical-device verification is still required for input latency, 120 Hz pacing,
+keyboard transitions, task cancellation, suspension and relaunch. Queued editor
+input still needs durable handling before suspension checkpoint guarantees hold.
+The host currently supports basic UIKeyInput text/backspace, not full UITextInput
+composition/selection, hardware-key handling or accessibility. Files coordination,
+external-write conflicts and container-relative persisted references remain work.
+Tensor rendering and arbitrary live GLSL authoring have no Metal implementation;
+unsupported operations report an error rather than copying tensors or emulating
+another graphics backend. Live GLSL text-policy edits still require rebuilding
+the Metal library.

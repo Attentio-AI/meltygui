@@ -126,6 +126,7 @@ def chrome(monkeypatch):
     import meltygui.core.windowing.titlebar as titlebar
     from meltygui.core.runtime.toggles import Toggles
     monkeypatch.setattr(Toggles.Melty, 'titlebar_move_toggle', True)
+    monkeypatch.setattr(titlebar, 'titlebar_enabled', lambda: True)
     monkeypatch.setattr(titlebar.hypr_left_drag, 'available', lambda: True)
     return titlebar
 
@@ -159,3 +160,49 @@ def test_settings_button_asks_the_active_surface_to_open(chrome, monkeypatch):
     monkeypatch.setattr(Surface, 'active', None)
     titlebar._activate_button('settings', None)      # no surface: nothing to open, no error
     assert opened == [True]
+
+
+@pytest.mark.parametrize('platform', ['darwin', 'win32', 'linux'])
+def test_os_decorated_window_keeps_only_its_settings_control(monkeypatch, platform):
+    import sys
+    from meltygui.core.runtime.toggles import Toggles
+    from meltygui.core.windowing import titlebar
+    from meltygui.core.windowing.surface import Surface
+
+    monkeypatch.setattr(sys, 'platform', platform)
+    monkeypatch.setattr(titlebar, '_on_wayland', lambda: False)
+    monkeypatch.setattr(Toggles.Melty, 'enhanced_titlebar', False)
+    monkeypatch.setattr(Surface, 'active', _Surface(object()))
+    assert titlebar.wants_os_decoration()
+    assert titlebar.control_kinds() == ((), ('settings',))
+    assert titlebar.top_inset() > 0
+
+    monkeypatch.setattr(Surface, 'active', _Surface(None))
+    assert titlebar.control_kinds() == ((), ())
+    assert titlebar.top_inset() == 0
+
+
+def test_os_decorated_root_header_reserves_room_for_the_cog(monkeypatch):
+    from meltygui import imgui
+    from meltygui.core.melty import Melty
+    from meltygui.core.windowing import titlebar
+    from meltygui.core.windowing.surface import Surface
+    from meltygui.core.windowing.surface_frame import root_view_kwargs
+
+    surface = _Surface(object())
+    surface.chrome, surface.title = False, 'Editor'
+    monkeypatch.setattr(Surface, 'active', surface)
+    monkeypatch.setattr(titlebar, 'titlebar_enabled', lambda: False)
+    monkeypatch.setattr(titlebar, '_studio_window', lambda: None)
+    monkeypatch.setattr(Melty, 'root_fill', (800, 570, 30))
+    imgui.new_frame()
+    kwargs = root_view_kwargs('Editor', with_header=lambda **kwargs: None)
+    assert kwargs['with_header_end'] is titlebar.draw_header_controls
+    assert kwargs['header_indent'] == 0
+    assert kwargs['window_pos'] == (0, 0)
+    assert kwargs['height'] == 600
+    left, right = titlebar.chrome_insets()
+    assert left == 0 and right > 0
+    buttons = titlebar._button_layout(800, False)
+    assert len(buttons) == 1 and buttons[0][0] == 'settings'
+    assert 800 - right <= buttons[0][2][0] < buttons[0][2][2] <= 800

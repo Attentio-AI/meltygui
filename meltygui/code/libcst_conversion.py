@@ -558,11 +558,12 @@ _xref_cache: dict[_Path, tuple[float, dict[str, list[UsageRef]]]] = {}
 
 DISABLE_JEDI = False
 
-# ── Jedi subprocess pool ──────────────────────────────────────
-# Runs jedi in a child process so CPU-intensive parso parsing
-# doesn't hold the main process GIL.
+# ── Jedi workers ──────────────────────────────────────────────
+# Desktop analysis runs in child processes to avoid the render thread's GIL.
+# iOS uses one thread in the embedded interpreter: processes are unavailable,
+# and concurrent Jedi jobs must not race its shared parser/inference caches.
 
-from concurrent.futures import ProcessPoolExecutor as _PPE
+from concurrent.futures import Executor as _Executor
 from concurrent.futures import Future as _Future
 
 # Two pools, same forkserver context. "index" (4 workers) runs the heavy
@@ -572,7 +573,7 @@ from concurrent.futures import Future as _Future
 # every interactive job lands on the SAME worker process, so parso's per-process
 # parse cache stays warm for the file being edited (~10-30ms per completion vs
 # ~1s re-parsing cold on whichever index worker happened to be idle).
-_jedi_pools: dict[str, _PPE] = {}
+_jedi_pools: dict[str, _Executor] = {}
 _jedi_pool_lock = threading.Lock()
 _jedi_mp_ctx = None
 
@@ -595,6 +596,8 @@ def _get_jedi_mp_ctx():
     COW-share that ~0.4 GB base instead of each re-importing it. Built once and cached:
     the server persists across restarts, so rebuilt pools fork from the same clean base."""
     global _jedi_mp_ctx
+    if sys.platform == 'ios':
+        raise RuntimeError('iOS Jedi analysis uses the embedded interpreter, not multiprocessing')
     if _jedi_mp_ctx is None:
         import multiprocessing as _mp
         if "forkserver" in _mp.get_all_start_methods():
@@ -611,7 +614,15 @@ def _get_jedi_mp_ctx():
     return _jedi_mp_ctx
 
 
-def _get_jedi_pool(kind: str = "index") -> _PPE:
+def _get_jedi_pool(kind: str = "index") -> _Executor:
+    if sys.platform == 'ios':
+        from concurrent.futures import ThreadPoolExecutor
+        with _jedi_pool_lock:
+            pool = _jedi_pools.get('ios')
+            if pool is None or pool._shutdown:
+                pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='melty-jedi-ios')
+                _jedi_pools['ios'] = pool
+            return pool
     # A studio restart-in-place ends the session, which fires concurrent.futures'
     # atexit (_python_exit) even though THIS process keeps running. That sets the
     # module-level _global_shutdown flag and kills the worker processes, so EVERY
@@ -619,14 +630,15 @@ def _get_jedi_pool(kind: str = "index") -> _PPE:
     # silently disabling jedi + every off-GIL task. Clear that stale signal (the
     # process is not actually exiting) and rebuild BOTH pools.
     import concurrent.futures.process as _cfp
+    from concurrent.futures import ProcessPoolExecutor
     with _jedi_pool_lock:
         if getattr(_cfp, "_global_shutdown", False):
             _cfp._global_shutdown = False
             _jedi_pools.clear()
         pool = _jedi_pools.get(kind)
         if pool is None or getattr(pool, "_shutdown_thread", False):
-            pool = _PPE(max_workers=1 if kind == "ac" else 4,
-                        mp_context=_get_jedi_mp_ctx())
+            pool = ProcessPoolExecutor(max_workers=1 if kind == "ac" else 4,
+                                       mp_context=_get_jedi_mp_ctx())
             _jedi_pools[kind] = pool
         return pool
 
@@ -647,6 +659,10 @@ def _submit_interactive(worker, *args) -> _Future:
     forkserver — which preloads this module, >1s of imports — so pool get +
     submit happen on a short-lived daemon thread and the pool future's result is
     mirrored into the returned Future (same done()/add_done_callback contract)."""
+    if sys.platform == 'ios':
+        # Thread startup does not import/spawn a second interpreter. Returning
+        # its own Future also preserves cancellation of queued device work.
+        return _get_jedi_pool('ac').submit(worker, *args)
     out = _Future()
 
     def _bg():
@@ -679,7 +695,7 @@ def _jedi_project(file_path=None):
     held = _jedi_projects.get(project.key)
     if held is None:
         held = _jedi_projects[project.key] = jedi.Project(
-            path=project.root, environment_path=project.environment,
+            path=project.root, environment_path=None if sys.platform == 'ios' else project.environment,
             added_sys_path=list(project.source_paths))
     return held
 
@@ -688,7 +704,14 @@ def _jedi_script(file_path, code=None):
     """jedi.Script on the file’s owning project. `code` (in-memory source) overrides
     the on-disk file so unsaved edits are analyzed; path still drives resolution."""
     import jedi
-    return jedi.Script(code=code, path=str(file_path), project=_jedi_project(file_path))
+    kwargs = {}
+    if sys.platform == 'ios':
+        # Threading alone is insufficient: Script's default Environment probes
+        # an executable and runs compiled-module introspection in a subprocess.
+        # InterpreterEnvironment performs those lookups in bundled CPython.
+        from jedi.api.environment import InterpreterEnvironment
+        kwargs['environment'] = InterpreterEnvironment()
+    return jedi.Script(code=code, path=str(file_path), project=_jedi_project(file_path), **kwargs)
 
 
 def shutdown_jedi_pool():
@@ -696,8 +719,8 @@ def shutdown_jedi_pool():
         pools = list(_jedi_pools.values())
         _jedi_pools.clear()
     for pool in pools:
-        # Kill worker processes first because shutdown(cancel_futures=True) only
-        # cancels pending futures, not ones already running in a subprocess.
+        # Desktop workers can be killed. An iOS job already executing in a
+        # thread must finish; shutdown cancels its queued requests only.
         for pid, proc in list(getattr(pool, '_processes', {}).items()):
             try:
                 proc.kill()
@@ -809,7 +832,11 @@ def _completion_namespace():
     if _completion_ns_cache is None:
         import importlib
         ns = {}
-        for alias, mod in _COMPLETION_MODULES.items():
+        modules = _COMPLETION_MODULES
+        if sys.platform == 'ios':
+            modules = dict(modules, imgui='meltygui_imgui',
+                           glfw='meltygui.core.windowing.window_api')
+        for alias, mod in modules.items():
             try:
                 ns[alias] = importlib.import_module(mod)
             except Exception:
@@ -827,8 +854,7 @@ def _jedi_complete_worker(code: str, line: int, col: int, path: str = None):
     module/class/function/instance/param/keyword/statement/property/path)."""
     import jedi
     try:
-        kw = {"path": path, "project": _jedi_project(path)} if path else {}
-        script = (jedi.Script(code, **kw) if path else
+        script = (_jedi_script(path, code) if path else
                   jedi.Interpreter(code, [_completion_namespace()]))
         comps = script.complete(line, col)
     except Exception:
@@ -904,8 +930,7 @@ def _jedi_signatures_worker(code: str, line: int, col: int, path: str = None):
     'x', 'y=0', '*args')."""
     import jedi
     try:
-        kw = {"path": path, "project": _jedi_project(path)} if path else {}
-        script = (jedi.Script(code, **kw) if path else
+        script = (_jedi_script(path, code) if path else
                   jedi.Interpreter(code, [_completion_namespace()]))
         sigs = script.get_signatures(line, col)
     except Exception:
@@ -3704,7 +3729,7 @@ _FRAME_STAMP_STALE_S = 2.0    # a frame stamp this old = frame aborted mid-draw
 
 def _park_while_frame(max_park_s=_FRAME_PARK_MAX_S):
     """Sleep a background thread while the render thread is INSIDE a frame
-    (Melty._frame_draw_start set at frame start, cleared at post_frame end).
+    (Melty._frame_draw_start set by the surface, restored in its finally).
 
     Why: post_frame's capture pass is hundreds of ctypes GL calls, each
     releasing and re-acquiring the GIL. Under a CPU-bound background
@@ -3725,9 +3750,13 @@ def _park_while_frame(max_park_s=_FRAME_PARK_MAX_S):
     cur = threading.current_thread()
     if cur is threading.main_thread():
         return 0.0
-    import meltygui.core.graphics.gl_state as gl_state
-    glt = getattr(gl_state, "_gl_thread", None)  # read, don't claim
-    if glt is None or cur is glt:
+    from meltygui.core.windowing import glfw_utils
+    render_id = glfw_utils._render_thread_id
+    # Native Metal hosts have a render thread but no GL-state owner. Read an
+    # existing GL module only for the studio's older dedicated render loop.
+    gl_state = sys.modules.get("meltygui.core.graphics.gl_state")
+    glt = getattr(gl_state, "_gl_thread", None)
+    if cur.ident == render_id or cur is glt or (render_id is None and glt is None):
         return 0.0
     t0 = time.monotonic()
     if t0 - fs >= _FRAME_STAMP_STALE_S:

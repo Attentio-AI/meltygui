@@ -391,7 +391,7 @@ class PendingSave:
                               draw_state=ds))
 
     @classmethod
-    def current_file_text(cls, path):
+    def current_file_text(cls, path, *, canonical_file=False):
         """Disk text of `path` with every queued (unsaved) span edit spliced in —
         the file as it WOULD be on disk if the deferred saves flushed right now.
 
@@ -405,11 +405,11 @@ class PendingSave:
         Returns None if the file can't be read."""
         from meltygui.core.melty import Melty
         from pathlib import Path as _P
-        disk = Melty.read_code(path)
-        if disk is None:
-            return None
+        disk = Melty.read_code(path, canonical_file=canonical_file)
+        if disk is None or not cls.pending_saves:
+            return disk
         try:
-            rp = _P(path).resolve()
+            rp = _P(path) if canonical_file else _P(path).resolve()
         except OSError:
             return disk
         edits = []

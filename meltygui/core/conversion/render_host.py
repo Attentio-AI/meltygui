@@ -285,7 +285,6 @@ class RenderHost(_DeepAttrMixin, dict):
         doing nothing — that is what dropped drags to 70fps. ``mark(label)``,
         if given, receives a perf-trace label per gate decision and host drawn."""
         import meltygui_imgui as imgui
-        from meltygui.core.windowing.surface import Surface
         import meltygui.core.windowing.window_api as glfw
         any_mouse_held = (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
                           or imgui.is_mouse_down(2) or Melty.space_mouse_drag)
@@ -295,7 +294,7 @@ class RenderHost(_DeepAttrMixin, dict):
         # the drag. Read the windows' button state without changing contexts.
         any_mouse_held = any_mouse_held or any(
             glfw.get_mouse_button(surface.window, button) == glfw.PRESS
-            for surface in Surface.all if surface.window is not None and not surface.closed
+            for surface in Melty.open_surfaces() if surface.window is not None and not surface.closed
             for button in (glfw.MOUSE_BUTTON_LEFT, glfw.MOUSE_BUTTON_RIGHT, glfw.MOUSE_BUTTON_MIDDLE))
         typing_held = cls.typing_hold()
         if mark is not None:

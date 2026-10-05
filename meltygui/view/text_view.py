@@ -1128,7 +1128,8 @@ def draw_text(input_value: str, height=None,
     from meltygui.editor.text_editor import _FIM_NON_TRIGGER_KEYS
     from meltygui.editor.text_editor import _FOLD_SEED_VER
     from meltygui.editor.text_editor import _FoldLineNumbers
-    from meltygui.editor.text_editor import _KEY_CHAR_MAP
+    from meltygui.editor.text_editor import typed_characters
+    from meltygui.editor.text_editor import _mono_char_w
     from meltygui.editor.text_editor import _LoadingSentinel
     from meltygui.editor.text_editor import _REPEATABLE_KEYS
     from meltygui.editor.text_editor import _WinVCols
@@ -2452,7 +2453,7 @@ def draw_text(input_value: str, height=None,
     # Character advance. Every caller uses JetBrains Mono (monospace), so one
     # character advance lets us position and measure text by character count
     # instead of calling imgui.calc_text_size per glyph/slice each frame.
-    char_w = imgui.calc_text_size("0").x
+    char_w = _mono_char_w()
     changed = False
     original_input = input_value
     # Edit splice for THIS body run's display text (frame-start -> edited),
@@ -3891,14 +3892,9 @@ def draw_text(input_value: str, height=None,
         typed_dot_this_frame = False
         typed_word_char_this_frame = False
 
-        for _fk, _fmods in _frame_keys:
-            if _fmods & glfw.MOD_CONTROL:
-                continue
-            _cm = _KEY_CHAR_MAP.get(_fk)
-            if _cm is None:
-                continue
+        native_text = Melty.frame_text_events if Melty.graphics_backend is not None else None
+        for ch in typed_characters(_frame_keys, native_text):
             ds.text_cursor_blink_time = time.time()
-            ch = _cm[1] if (_fmods & glfw.MOD_SHIFT) else _cm[0]
             if _has_selection(ds):
                 text, ds.text_cursor_pos = _delete_selection(text, ds)
             text = text[:ds.text_cursor_pos] + ch + text[ds.text_cursor_pos:]
@@ -4835,10 +4831,13 @@ def draw_text(input_value: str, height=None,
 
 
     # --- Horizontal auto-scroll ---
-    # Only kicks in when the cursor moved this frame, so middle-drag pans
-    # are not snapped back. Brings the cursor into view on a single line.
+    # Follow caret edits or a one-shot native viewport shrink (keyboard /
+    # rotation). Ordinary frames leave wheel and middle-drag pans alone.
+    reveal_cursor = ds.misc.pop('reveal_text_cursor', False)
+    follow_cursor = (ds.text_cursor_pos != ds.text_prev_cursor_pos
+                     or (reveal_cursor and Melty.text_focused_ds is ds))
     visible_width = text_visible_width
-    if (ds.text_cursor_pos != ds.text_prev_cursor_pos and visible_width > 0
+    if (follow_cursor and visible_width > 0
             and not restore_active):
         cursor_logical_x = _colx(ds.text_cursor_pos)
         edge_padding = 20.0
@@ -4919,7 +4918,7 @@ def draw_text(input_value: str, height=None,
     # to a line off the top/bottom of the viewport (typing past the last visible
     # line, wheeling/paging the cursor away, pasting a multi-line block), scroll
     # the editor - or its scroll container - so the caret's line comes back into
-    # view. Same cursor-moved test so wheel/middle-drag pans that leave the caret
+    # view. Same one-shot follow test so wheel/middle-drag pans that leave the caret
     # put are not snapped back. Anchors on origin_y and hands _scroll_into_view
     # the caret line's full vertical band exactly like the search scroll above.
     # Never for the find box: it's pinned to the host view's clip (bottom-left),
@@ -4927,7 +4926,7 @@ def draw_text(input_value: str, height=None,
     # nudges it by the box's bottom-height overflow - and since the pin leaves
     # the box put, the same overflow reapplies every keystroke, creeping the
     # host view up a line per typed character.
-    if (ds.text_cursor_pos != ds.text_prev_cursor_pos and line_px
+    if (follow_cursor and line_px
             and not is_search_box and not restore_active):
         cursor_line, _ = _index_to_line_col(text, ds.text_cursor_pos)
         # LIVE origin, not the body-start origin_y: the Ctrl+B usage jump runs

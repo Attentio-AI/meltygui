@@ -636,12 +636,31 @@ def _draw_wide_picker(input_value, draw_state, gl_state, info):
     return False, input_value
 
 
+def _native_picker_texture(renderer, state, key, width, height, data_factory, deps):
+    """Keep HDR picker pixels and their lifetime with the active renderer."""
+    def create():
+        import numpy as np
+        # Metal's rgba16f upload takes half-float bytes. Keep negative and
+        # above-white linear channels: these squares include P3 and HDR.
+        pixels = data_factory().astype(np.float16, copy=False).tobytes(order='C')
+        return types.SimpleNamespace(texture_id=renderer.create_texture(
+            width, height, 'rgba16f', pixels))
+
+    return state.get(key, create, lambda texture: renderer.delete_texture(texture.texture_id),
+                     deps=(renderer, *deps))
+
+
 def _wide_square_texture(gl_state, hue, size, top_fraction, max_stops):
-    """The hue slice as an RGBA16F GLTexture, cached on the picker's GLState
+    """The hue slice as an RGBA16F texture, cached on the picker's GLState
     and re-baked when the hue (or the layout toggles) change."""
     if gl_state is None:
         return None
     import meltygui.hdr_color as hdr_color
+    deps = (round(float(hue), 4), int(size), round(top_fraction, 4), round(max_stops, 4))
+    if Melty.graphics_backend is not None:
+        return _native_picker_texture(
+            Melty.graphics_backend, gl_state, "wide_square", size, size,
+            lambda: hdr_color.wide_square_linear(hue, size, top_fraction, max_stops), deps)
     import OpenGL.GL as gl
     from meltygui.core.graphics.gl_state import GLTexture
     from meltygui.core.graphics.gl_state import _scalar
@@ -659,7 +678,7 @@ def _wide_square_texture(gl_state, hue, size, top_fraction, max_stops):
         return GLTexture(tex_id, gl.GL_TEXTURE_2D, (size, size), gl.GL_RGBA16F)
 
     return gl_state.get("wide_square", create, lambda t: gl.glDeleteTextures([t.texture_id]),
-                        deps=(round(float(hue), 4), int(size), round(top_fraction, 4), round(max_stops, 4)))
+                        deps=deps)
 
 
 def _draw_extended_picker(input_value, draw_state, gl_state, info):
@@ -826,15 +845,20 @@ def _draw_extended_picker(input_value, draw_state, gl_state, info):
 
 def _srgb_plus_texture(gl_state, hue, square, ext, band, max_stops):
     """The sRGB+ picking area (band + square + strip) as an RGBA16F
-    GLTexture, cached on the picker's GLState and re-baked when the hue (or
+    texture, cached on the picker's GLState and re-baked when the hue (or
     the layout) changes."""
     if gl_state is None:
         return None
     import meltygui.hdr_color as hdr_color
+    cols, rows = int(square + ext), int(band + square)
+    deps = (round(float(hue), 4), int(square), int(ext), int(band), round(max_stops, 4))
+    if Melty.graphics_backend is not None:
+        return _native_picker_texture(
+            Melty.graphics_backend, gl_state, "srgb_plus", cols, rows,
+            lambda: hdr_color.srgb_plus_linear(hue, square, ext, band, max_stops), deps)
     import OpenGL.GL as gl
     from meltygui.core.graphics.gl_state import GLTexture
     from meltygui.core.graphics.gl_state import _scalar
-    cols, rows = int(square + ext), int(band + square)
 
     def create():
         data = hdr_color.srgb_plus_linear(hue, square, ext, band, max_stops)
@@ -849,7 +873,7 @@ def _srgb_plus_texture(gl_state, hue, square, ext, band, max_stops):
         return GLTexture(tex_id, gl.GL_TEXTURE_2D, (cols, rows), gl.GL_RGBA16F)
 
     return gl_state.get("srgb_plus", create, lambda t: gl.glDeleteTextures([t.texture_id]),
-                        deps=(round(float(hue), 4), int(square), int(ext), int(band), round(max_stops, 4)))
+                        deps=deps)
 
 
 def _draw_srgb_picker(input_value, draw_state, info):

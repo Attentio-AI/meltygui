@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 
 from PIL import Image
-from OpenGL import GL
+from meltygui.core.graphics import desktop_gl as GL
 from meltygui.model.texture_model import TextureId
 from meltygui.core.graphics.gl_state import GLTexture, tight_unpack
 
@@ -201,7 +201,7 @@ def load_folder_icon(folder):
 
 class FolderIconTexture(TextureId):
     def __init__(self, pixels):
-        super().__init__(GL.GL_TEXTURE_2D)
+        super().__init__(0x0DE1)  # GL_TEXTURE_2D metadata; allocation waits for the active renderer
         self.pixels = pixels
 
     def _upload(self, state):
@@ -226,6 +226,15 @@ class FolderIconTexture(TextureId):
             finally:
                 GL.glBindTexture(GL.GL_TEXTURE_2D, previous)
         return state.get('icon', create, lambda texture: GL.glDeleteTextures([texture.texture_id]))
+
+    def _upload_native(self, state, renderer):
+        from types import SimpleNamespace
+
+        def create():
+            return SimpleNamespace(texture_id=renderer.create_texture(
+                self.pixels.width, self.pixels.height, 'rgba8srgb', self.pixels.data))
+
+        return state.get('icon', create, lambda texture: renderer.delete_texture(texture.texture_id))
 
 
 class FolderIcons:

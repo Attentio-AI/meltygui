@@ -26,8 +26,12 @@ def record(stage, window, event=None, error=False, **details):
             logger.addHandler(handler)
             logger.setLevel(logging.INFO)
             logger.propagate = False
-        from meltygui.core.windowing.surface import Surface
-        entry = dict(time=time.time(), app=Surface.app_id, frame=Melty.frame_count, stage=stage,
+        if Melty.native_surface is not None:
+            app_id = Melty.native_surface.config['app_id']
+        else:
+            from meltygui.core.windowing.surface import Surface
+            app_id = Surface.app_id
+        entry = dict(time=time.time(), app=app_id, frame=Melty.frame_count, stage=stage,
                      window=str(getattr(window, 'id', None)), identity=id(window),
                      name=str(getattr(window, 'name', ''))[:200])
         for key in ('window_pos', 'width', 'height', 'abs_left', 'abs_top',

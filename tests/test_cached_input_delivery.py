@@ -101,3 +101,29 @@ def test_click_invalidates_ancestors_even_after_hover(monkeypatch):
     Melty.events['text'] = {'cursor_hover': InputEvent('cursor', None, 'hovered')}
     Melty.invalidate_event_targets()
     invalidate.assert_not_called()
+
+
+def test_native_first_press_wakes_cached_consumer_without_waking_held_drag(monkeypatch):
+    from meltygui.core import melty
+    from meltygui.core.melty import Melty
+    from meltygui.core.input.input_handler import InputEvent
+    invalidate = Mock()
+    monkeypatch.setattr(Melty, 'cache', SimpleNamespace(invalidate_up=invalidate))
+    monkeypatch.setattr(Melty, 'native_surface', object())
+    monkeypatch.setattr(Melty, 'on_scroll', False)
+    monkeypatch.setattr(Melty, 'space_mouse_drag', False)
+    monkeypatch.setattr(melty.imgui, 'is_mouse_down', lambda button: button == 0)
+    monkeypatch.setattr(Melty, 'events', {'text': {
+        'left_mouse_down': InputEvent('left_mouse', 'down', 'text-tile'),
+        'left_mouse_drag': InputEvent('left_mouse', 'dragged', 'drag-tile'),
+    }})
+    Melty.invalidate_event_targets()
+    invalidate.assert_called_once_with('text-tile', max_depth=10, force=True)
+    invalidate.reset_mock()
+    del Melty.events['text']['left_mouse_down']
+    Melty.invalidate_event_targets()
+    invalidate.assert_not_called()
+    monkeypatch.setattr(Melty, 'native_surface', None)
+    Melty.events['text']['left_mouse_down'] = InputEvent('left_mouse', 'down', 'text-tile')
+    Melty.invalidate_event_targets()
+    invalidate.assert_not_called()

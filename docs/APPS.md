@@ -164,7 +164,9 @@ new one shows its default. The file is `$XDG_CONFIG_HOME/<app_id>/settings.json`
 (default `~/.config`), one section per window name, written when the settings
 window changes a value and on exit. A window with settings shows a cog in its
 title bar, just inside the window controls, that opens the settings window
-(the dict drawn as a child native window). See `meltygui/examples/settings_demo.py`.
+(the dict drawn as a child native window). With OS decorations, including macOS,
+the cog sits at the right of the app's content header; a headerless app reserves
+a control row above its body. See `meltygui/examples/settings_demo.py`.
 
 ## Tiled editors
 
@@ -328,6 +330,20 @@ streaming, waking the UI), not a new feature's shape.
 **A design doc is a page**: the state fields, the function signatures, the view, the build order,
 and a "later" list. The first version ships the core; extras wait in "later" until someone wants
 them. When a design genuinely needs more than this, say why in a sentence and go ahead.
+
+## Native application hosts
+
+An iOS application uses its ordinary Python entry module, including `boot`,
+`@glfw_window`, `persisted` and `run`. The UIKit host installs MeltyGUI's native
+runtime before importing that module. Desktop and native hosts share root layout,
+settings, fonts and session initialization; only platform input, graphics targets
+and frame pacing belong to the host.
+
+Declare sources, resources and dependencies in `[tool.melty.app]`. The packaging
+commands live in `meltygui.platforms.ios`; applications do not copy the native
+host or provide a platform-specific Python adapter. See the
+[iOS build guide](../meltygui/platforms/ios/README.md) and the
+[toolkit-only counter](../examples/portable_counter/main.py).
 
 ## Native binding imports
 

@@ -1,7 +1,7 @@
 """Image interaction prepares textures; overlays fit them to live view bounds."""
 import math
 
-import OpenGL.GL as gl
+from meltygui.core.graphics import desktop_gl as gl
 import meltygui_imgui as imgui
 import numpy
 
@@ -103,6 +103,9 @@ def draw_texture(input_value: numpy.uint32 | ImageTexture, hovered, scroll_y_cha
                  _texture_state: TextureViewState = None, gl_state: GLState = None,
                  left_mouse_double_clicked=None, kp_1_pressed=None, keyboard_available=True, **kwargs):
     """Prepare this view's image and handle injected events; the overlay paints it."""
+    from meltygui.core.melty import Melty
+    if Melty.graphics_backend is not None:
+        raise NotImplementedError('The image inspector filters do not yet have a native Metal implementation')
     _texture_state.texture_id = 0
     original_id = int(input_value)
     imgui.dummy(draw_state.width, max(0, draw_state.height - 20))

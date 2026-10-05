@@ -235,12 +235,11 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
             Melty._popover_open_frame = Melty.frame_count  # grace the opening click
             if collection_source is not None:
                 collection = collection_source()
-            # Fresh open: start with an empty query and give the search box a few
-            # frames to grab text focus so the user can type to filter immediately.
+            # Desktop opens ready to type; touch users tap the search field.
             drop_down_state.search_query = ""
             drop_down_state.search = ""
-            drop_down_state._focus_search = 8 if len(collection) > 4 else 0
-            if len(collection) <= 4:
+            drop_down_state._focus_search = 8 if len(collection) > 4 and not Core.melty.is_touch else 0
+            if not drop_down_state._focus_search:
                 Melty.clear_focus(not_this=draw_state)
             # Start the highlight on the last-selected item (expanded to it) rather
             # than the top, so re-opening starts where you left off.
@@ -496,8 +495,12 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
     if show_search is None:
         show_search = len(input_value) > 4
     if show_search and not path_prefix and root_state is not None:
+        if Core.melty.is_touch:
+            # Direct menus (icon pickers, etc.) may also arm a focus retry.
+            # Explicit taps still focus draw_text normally.
+            root_state._focus_search = 0
         # Root owns the search box. Single-line so Up/Down/Enter pass through to
-        # menu nav; it auto-focuses once when the menu opens (_focus_search).
+        # menu nav; desktop auto-focuses when the menu opens (_focus_search).
         q = getattr(root_state, "search_query", "") or ""
         box = draw_text(q, name=f"dd_search{unique}", show_name=False, searchable=False,
                         single_line=True, is_search_box=True, is_tree=False,

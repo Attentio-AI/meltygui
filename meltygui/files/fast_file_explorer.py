@@ -61,6 +61,7 @@ Esc clears the search (a second Esc the selection). A navigation clears it.
 """
 import os
 import re
+import sys
 from pathlib import Path
 
 import meltygui.core.windowing.window_api as glfw
@@ -69,6 +70,7 @@ import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
 from meltygui.core.runtime.toggles import Toggles
+from meltygui.core.runtime.paths import documents_root, workspace_root
 from meltygui.core.windowing.glfw_utils import request_render
 from meltygui.code.codec_registry import file_icon_for_path
 from meltygui.core.cache.tile_marks import add_shadow
@@ -233,9 +235,13 @@ _XDG_LINE = re.compile(r'^\s*XDG_(\w+)_DIR\s*=\s*"?(.*?)"?\s*$')
 
 
 def shortcut_directories(home=None):
-    """The shortcuts column: home, the XDG user directories that exist
-    (`~/.config/user-dirs.dirs`, the conventional names when the file is
-    missing) and the filesystem root. [(label, Path)], home first."""
+    """The shortcuts column: Projects and Documents on iOS; desktop home,
+    the XDG directories that exist (`~/.config/user-dirs.dirs`, conventional
+    names when absent), and the filesystem root. Returns [(label, Path)]."""
+    if sys.platform == 'ios':
+        documents = Path(home) / 'Documents' if home is not None else documents_root()
+        projects = documents / 'Projects' if home is not None else workspace_root()
+        return [('Projects', projects), ('Documents', documents)]
     home = Path(home) if home is not None else Path.home()
     names = ["DESKTOP", "DOCUMENTS", "DOWNLOAD", "PICTURES", "MUSIC", "VIDEOS"]
     fallback = {"DESKTOP": "Desktop", "DOCUMENTS": "Documents", "DOWNLOAD": "Downloads",

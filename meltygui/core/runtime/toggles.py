@@ -485,6 +485,11 @@ class Swoosh:
 
 @window(tint=(0.27, 0.19, 0.14))
 class Toggles:
+    class Mobile:
+        # Top inset in logical UI pixels (UIKit points), below the Dynamic
+        # Island/status area. Set to 0 for edge-to-edge content.
+        Safezone = 64
+
     @defaults(tint=(0.85, 0.75, 0.05))
     class ColorPicker:
         # [tint=(0.85, 0.75, 0.05)]

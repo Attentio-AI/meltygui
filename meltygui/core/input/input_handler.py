@@ -618,6 +618,19 @@ class InputHandler:
 
         state.last_up_time = t
 
+    def feed_cancel(self, input_id: str):
+        """Abandon one gesture without triggering click, drop or release actions.
+
+        Native touch cancellation and scene suspension are not successful
+        releases. Clear this input's held state, deferred click and capture,
+        leaving unrelated inputs and cached-view registrations intact.
+        """
+        self._states.pop(input_id, None)
+        self._pending[:] = [event for event in self._pending if event.input_id != input_id]
+        for store in (self._drag_capture, self._drag_activated, self._down_origins,
+                      self._pending_clicks, self._drag_cursor):
+            store.pop(input_id, None)
+
     def feed_move(self, x: float, y: float, dx: float = None, dy: float = None, t: float = None):
         t = t or time.perf_counter()
         dx = x - self._cursor_x if dx is None else dx

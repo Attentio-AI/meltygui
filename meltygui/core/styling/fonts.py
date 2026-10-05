@@ -161,7 +161,7 @@ def detect_auto_scale(window=None) -> float:
     (mid-drag between screens). 1.0 on any glfw failure."""
     # Cocoa window geometry is already in the user's chosen logical points.
     # Retina backing resolution controls raster quality, not layout size.
-    if sys.platform == 'darwin':
+    if sys.platform in ('darwin', 'ios'):
         return 1.0
     try:
         import meltygui.core.windowing.window_api as glfw

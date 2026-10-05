@@ -182,11 +182,14 @@ def clear_override(module_name, path):
 
 
 def flush():
-    """Write the overrides when they changed since the last write."""
-    if not _state['dirty'] or _state['path'] is None:
-        return
+    """Write changed overrides, returning whether no pending write remains."""
+    if not _state['dirty']:
+        return True
+    if _state['path'] is None:
+        return False
     if write_file(_state['path'], {'version': _FORMAT, 'overrides': _state['overrides']}):
         _state['dirty'] = False
+    return not _state['dirty']
 
 
 class _OverrideLoader(importlib.abc.Loader):

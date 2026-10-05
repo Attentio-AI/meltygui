@@ -13,7 +13,8 @@ BEFORE the first Surface (each surface's `Melty.vis.root` IS the session,
 so `get_draw_state`, `note_window_seen` and `adopt_registered_windows` find
 their stores where they look for them), and written by `app.run` on the
 way out. The file: `$XDG_STATE_HOME/<app_id>/session.pkl` (default
-`~/.local/state`), one per app id; two instances of one app share it and
+`~/.local/state`) on desktop, or `Library/Application Support/<app_id>/
+session.pkl` in the iOS sandbox, one per app id; two instances share it and
 the last to exit wins.
 
 Same pickler, same rules as the studio: `_`-prefixed and `@no_save` fields
@@ -25,12 +26,11 @@ they are the studio model's lifecycle, not a view-state one.
 """
 from __future__ import annotations
 
-import os
-import pathlib
 import sys
 import time
 
 from meltygui.core.conversion.dict_conversion import DictConversion
+from meltygui.core.runtime.paths import state_root
 
 
 class AppSession(DictConversion):
@@ -58,10 +58,8 @@ class AppSession(DictConversion):
 
 
 def session_dir(app_id):
-    """`$XDG_STATE_HOME/<app_id>` (default `~/.local/state/<app_id>`): the
-    XDG home for state that should survive a restart but is not config."""
-    base = os.environ.get('XDG_STATE_HOME') or pathlib.Path.home() / '.local' / 'state'
-    return pathlib.Path(base) / app_id
+    """Private saved-state directory; see runtime.paths.state_root."""
+    return state_root(app_id)
 
 
 def session_path(app_id):

@@ -29,6 +29,7 @@ from meltygui.core.runtime.app import content_size
 from meltygui.core.runtime.app import mark
 from meltygui.core.runtime.app import persisted
 from meltygui.core.runtime.app import after_first_frame
+from meltygui.core.runtime.app import checkpoint
 
 if TYPE_CHECKING:   # IDE / type checkers only; never executed
     from meltygui.state.new_core_model import DrawState
@@ -115,6 +116,6 @@ def __getattr__(name):
     return value
 
 
-__all__ = ['Style', 'boot', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', 'after_first_frame',
+__all__ = ['Style', 'boot', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', 'after_first_frame', 'checkpoint',
            'toggles', 'window_api', 'imgui',
            *_VIEWS]

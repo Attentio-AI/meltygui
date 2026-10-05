@@ -26,6 +26,7 @@ from __future__ import annotations
 import math
 import os
 import pickle
+import sys
 import threading
 import time
 from pathlib import Path
@@ -33,6 +34,7 @@ from pathlib import Path
 
 from meltygui.text_index import _SKIP_DIRS
 from meltygui.core.windowing.glfw_utils import request_render
+from meltygui.core.runtime.paths import cache_root
 from meltygui.code.melty_scan import Import
 from meltygui.code.melty_scan import ImportFrom
 from meltygui.code.melty_scan import ScanError
@@ -209,14 +211,16 @@ def resolve_import(root, importer, node, roots=None, memo=None):
 
 # ── per-file import cache: (mtime, size) + the file's import records ─────────
 # Invalidation is content-free (stat only - never a digest); a hit costs one
-# stat, a miss one tokenize pass (scan_imports). Persisted in ~/.lsd so the
-# first build of a session is as fast as a rebuild. Records are plain tuples:
+# stat, a miss one tokenize pass (scan_imports). Persisted in ~/.lsd on desktop
+# or Library/Caches on iOS, so session startup can reuse it. Records are tuples:
 #   ("Import", None, 0, ((name, asname), ...)) / ("ImportFrom", module, level, names)
 
 CACHE_VERSION = 1
 
 
 def cache_path():
+    if sys.platform == 'ios':
+        return cache_root('meltygui') / 'import_graph_cache.pkl'
     return Path.home() / ".lsd" / "import_graph_cache.pkl"
 
 

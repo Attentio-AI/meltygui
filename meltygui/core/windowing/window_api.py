@@ -22,6 +22,8 @@ def use_native_windows(enabled, environment=None, platform=None):
 def select_backend(enabled):
     if _state['selected']:
         return backend_name()
+    if sys.platform == 'ios':
+        raise RuntimeError('the native iOS host must call select_ios_backend(host) before boot')
     if use_native_windows(enabled):
         from meltygui.core.windowing.backends.native_wayland import Backend
         _state['backend'] = Backend()
@@ -30,19 +32,37 @@ def select_backend(enabled):
 
 
 def backend_name():
-    return 'wayland' if _state['backend'] is not None else 'glfw'
+    backend = _state['backend']
+    return getattr(backend, 'name', 'wayland') if backend is not None else 'glfw'
+
+
+def select_ios_backend(host):
+    """Bind the UIKit host explicitly, before importing/booting the app."""
+    if _state['selected']:
+        backend = _state['backend']
+        if backend_name() != 'ios' or backend.host is not host:
+            raise RuntimeError('a different window backend or iOS host is already active')
+        return backend
+    from meltygui.core.windowing.backends.native_ios import Backend
+    backend = Backend(host)
+    _state.update(backend=backend, selected=True)
+    return backend
 
 
 def is_native_window(window):
     # Inspect the class marker, not a truthy instance attribute: MagicMock
     # manufactures attributes and must never pass as a real window handle.
-    return getattr(type(window), 'native_wayland', False) is True
+    return (getattr(type(window), 'native_wayland', False) is True or
+            getattr(type(window), 'native_ios', False) is True)
 
 
 def terminate():
     backend = _state['backend']
     try:
-        (backend or importlib.import_module('glfw')).terminate()
+        if backend is not None:
+            backend.terminate()
+        elif sys.platform != 'ios':
+            importlib.import_module('glfw').terminate()
     finally:
         _state.update(backend=None, selected=False)
 
@@ -59,4 +79,6 @@ def __getattr__(name):
     if backend is not None and not name.isupper() and not name.startswith('_'):
         # Never send native handles to GLFW's C functions by accident.
         return getattr(backend, name)
+    if sys.platform == 'ios' or backend_name() == 'ios':
+        raise AttributeError(f'the native iOS window API does not provide {name!r}')
     return getattr(importlib.import_module('glfw'), name)

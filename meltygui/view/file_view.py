@@ -4,7 +4,7 @@ from meltygui.view.header_view import flat_button
 from meltygui.core.files.path_icons import with_path_icons, cleanup_path_icon
 from meltygui.state.path_icon_state import PathIconState
 from pathlib import Path
-from meltygui.core.runtime.paths import debug_log_path
+from meltygui.core.runtime.paths import debug_log_path, default_file_directory
 from meltygui.core.files.file_explorer_core import _trace_browser_size, with_recent_files, cleanup_file_listing
 from meltygui.model.file_location_model import FileLocation, RECENT_URI
 from meltygui.core.rendering.modes import Modes
@@ -673,7 +673,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     # The tint control leads the row; icon & name shift right past it.
     chip_x = 0.0
     text_x = pad + (chip + px(6) if show_tint_chips else 0.0)
-    location = FileLocation(str(input_value or Path.home()))
+    location = FileLocation(str(input_value or default_file_directory()))
     directory = location.directory
     dir_key = location.key
     if location.is_recent:
@@ -1263,7 +1263,7 @@ def draw_fast_file_explorer(input_value: str, draw_state, file_metadata=None, co
 
     px = Melty.px
     clear_glows(draw_state)      # The current shortcut's retained shadow (see the listing)
-    location = FileLocation(str(input_value or Path.home()))
+    location = FileLocation(str(input_value or default_file_directory()))
     directory = location.directory
     draw_list = imgui.get_window_draw_list()
     mouse_x, mouse_y = imgui.get_mouse_pos()
@@ -1334,8 +1334,8 @@ def draw_file_selector(input_value: str | None = None, draw_state=None,
                        context_menu=None, browse=None, show_hidden=None, file_metadata=None):
     """Return (True, absolute_path) once when a file is activated.
 
-    Navigation stays here. input_value seeds the initial directory (home
-    by default); later opens remember the last directory. Double-click or
+    Navigation stays here. input_value seeds the initial directory (Projects
+    on iOS, home on desktop); later opens remember it. Double-click or
     Enter selects a file. Cancel / the window close button returns no change.
     In an OS child, selection closes the window. Pass open_requested=True
     for one frame to open/reopen it; False leaves its current state alone.
@@ -1353,7 +1353,7 @@ def draw_file_selector(input_value: str | None = None, draw_state=None,
     from meltygui.view.file_view import draw_fast_file_explorer
 
     if selector_state.directory is None or (choose_folder and selector_state.directory == RECENT_URI):
-        directory = Path(input_value or Path.home()).expanduser().resolve()
+        directory = Path(input_value or default_file_directory()).expanduser().resolve()
         selector_state.directory = str(directory if directory.is_dir() else directory.parent)
     # ``browse``: a directory to show - a path, or ``(path, token)`` where
     # a new token re-applies the same path - applied once per distinct

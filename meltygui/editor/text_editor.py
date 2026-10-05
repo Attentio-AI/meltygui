@@ -1344,6 +1344,20 @@ for _i in range(26):
     _ch = chr(ord('a') + _i)
     _KEY_CHAR_MAP[_key] = (_ch, _ch.upper())
 
+
+def typed_characters(key_events, native_text=None):
+    """Text from the platform's Unicode service, or desktop key translation.
+
+    ``None`` selects the existing desktop mapping. An empty native list still
+    suppresses that mapping: native key events carry chords/navigation, while
+    the separate text service owns printable characters and composition.
+    """
+    if native_text is not None:
+        return ''.join(native_text).replace('\r\n', '\n').replace('\r', '\n')
+    return ''.join(_KEY_CHAR_MAP[key][bool(mods & glfw.MOD_SHIFT)]
+                   for key, mods in key_events
+                   if key in _KEY_CHAR_MAP and not mods & glfw.MOD_CONTROL)
+
 # Keys the editor repeats when held: every typed char plus certain navigation/edit
 # keys. Used to supplement frame_key_events with imgui's synthesized auto-repeat
 # (see draw_text) so held keys repeat even when the platform's GLFW backend
@@ -4335,11 +4349,12 @@ def _verify_def_line(lines, line, name):
 _PENDING_GEN_MAP = (None, {})
 
 
-def _pending_gen_of(path):
+def _pending_gen_of(path, *, canonical_file=False):
     """PendingSave edit generation for `path` — 0 when it has no queued edits.
     queue_save keys _pending_gen by the address's OWN path value while def
     paths arrive resolved, so lookups go through a realpath-keyed snapshot
-    map, refreshed only when the total generation moves."""
+    map, refreshed only when the total generation moves. Already-normalized
+    source-table keys bypass the per-query realpath memo."""
     global _PENDING_GEN_MAP
     try:
         from meltygui.editor.pending_save import PendingSave
@@ -4355,7 +4370,7 @@ def _pending_gen_of(path):
             rp = _real(str(k))
             m[rp] = m.get(rp, 0) + v
         _PENDING_GEN_MAP = (total, m)
-    return _PENDING_GEN_MAP[1].get(_real(str(path)), 0)
+    return _PENDING_GEN_MAP[1].get(str(path) if canonical_file else _real(str(path)), 0)
 
 
 def _pending_total_gen():
@@ -6841,8 +6856,15 @@ def _get_line_end(text, index):
 
 
 def _mono_char_w():
-    """Glyph advance for the monospace editor font (current imgui font)."""
-    return imgui.calc_text_size("0").x
+    """Unrounded advance for the current, pixel-snapped monospace font."""
+    # CalcTextSize rounds UP to whole UI points. On a 3x atlas a glyph can
+    # advance 25 physical pixels = 8 1/3 points; using 9 for every character
+    # makes the caret and touch hit-test drift away from the rendered text.
+    # FontManager snaps advances in atlas pixels. Measure a short run to
+    # dilute CalcTextSize's final rounding, then recover that integer advance
+    # before converting back to UI points (also exact at desktop 1x/2x).
+    scale = imgui.get_io().font_global_scale
+    return round(imgui.calc_text_size("0" * 32).x / (32 * scale)) * scale
 
 
 def _build_vcols(text, tokens, token_views, pos_trails=None):

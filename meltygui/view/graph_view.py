@@ -19,7 +19,7 @@ from meltygui.view.lut_view import draw_lut
 from meltygui.view.tensor_view import _tick_values
 from meltygui.state.file_state import ROOT
 from pathlib import Path
-import OpenGL.GL as gl
+from meltygui.core.graphics import desktop_gl as gl
 import colorsys
 import math
 import meltygui_imgui as imgui

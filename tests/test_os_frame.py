@@ -1683,7 +1683,7 @@ def _classify_frame_pinned(window, kwargs):
 
 
 def test_fixed_picker_keeps_size_during_parent_resize(studio, monkeypatch):
-    from meltygui.core.windowing.surface import root_view_kwargs
+    from meltygui.core.windowing.surface_frame import root_view_kwargs
     parent = app_root(studio)
     app_frame(studio, parent)
     picker = nested(studio, parent, x=100, width=280, name='color_picker')

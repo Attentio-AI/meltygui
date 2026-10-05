@@ -176,6 +176,9 @@ def _observe():
     window_id) of the content rect on screen — the far edges from the
     SAME source as the position (the feed's own width / height; glfw's on
     X11) — or None without both geometry and a native adjustment path."""
+    from meltygui.core.melty import Melty
+    if Melty.native_surface is not None:
+        return None  # UIKit owns fixed view bounds; use the existing walls model.
     import meltygui.core.windowing.titlebar as titlebar
     window = titlebar._studio_window()
     if not titlebar.can_adjust_window_edges(window):
@@ -206,10 +209,10 @@ def _root_windows():
     because the persisted registry also contains other surfaces' windows.
     Include parentless entries in the surface-local root_draw_states too."""
     from meltygui.core.melty import Melty
-    from meltygui.core.windowing.surface import Surface
     seen, roots = set(), []
-    if Surface.active is not None:
-        candidates = list(getattr(Surface.active, "root_windows", {}).values())
+    surface = Melty.current_surface()
+    if surface is not None:
+        candidates = list(getattr(surface, "root_windows", {}).values())
     else:
         candidates = [getattr(managed, "draw_state", None)
                       for managed in list(getattr(Melty, "registered_windows", {}).values())]
@@ -1530,10 +1533,10 @@ def flush():
     size / position → ONE surface request, applied at the next frame's
     start (titlebar.apply_pending_surface_size: size + attach-offset move
     in one commit). Returns the requested content size or None."""
-    import meltygui.core.windowing.titlebar as titlebar
     from meltygui.core.melty import Melty
     if not _enabled() or not available():
         return None
+    import meltygui.core.windowing.titlebar as titlebar
     window = titlebar._studio_window()
     display = Melty.display_size
     if window is None or not display:
