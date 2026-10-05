@@ -126,7 +126,7 @@ def _enabled():
 
 
 def mode():
-    """"feed" (Wayland, the extension's position), "x11" (glfw's position)
+    """"feed" (Wayland), "x11" (GLFW), "cocoa" (Melty Windows agreement)
     or "walls" (no reliable native adjustment: the OS edges are immovable)."""
     return _STATE["mode"]
 
@@ -183,6 +183,9 @@ def _observe():
     window = titlebar._studio_window()
     if not titlebar.can_adjust_window_edges(window):
         return None
+    if titlebar.sys.platform == "darwin":
+        from meltygui.core.windowing import melty_windows
+        return melty_windows.observe(window)
     if titlebar._on_wayland():
         import meltygui.core.windowing.geometry_feed as geometry_feed
         # the Hyprland backend reports the SURFACE: shrink by the shadow

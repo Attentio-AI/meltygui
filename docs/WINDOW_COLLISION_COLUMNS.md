@@ -121,8 +121,16 @@ policy for an already impossible set of constraints.
 The current implementation opts in Linux X11 resizable, nonmaximized windows;
 Wayland needs its geometry feed plus either GNOME's available surface-offset
 path or Hyprland's controllable floating window. Fullscreen, maximized,
-unsupported and unobservable windows use fixed bounds. macOS uses this
-fallback until its native edge-adjustment integration is implemented.
+unsupported and unobservable windows use fixed bounds. macOS uses the Melty Windows v1 surface agreement when the utility is running,
+enabled, and able to intercept gestures. The shared Cocoa adapter discovers it
+automatically, registers each native window, and applies position/size changes
+on the render thread in logical screen points. Native decoration insets reduce
+the content workarea. Without a current agreement (including pause, disconnect,
+or an unsupported/maximized/fullscreen surface), macOS uses fixed bounds.
+This integration does not change the layout collision or gesture rules above;
+Melty Windows yields registered surfaces' input to MeltyGUI. Automated native
+geometry/handshake and solver regressions cover the adapter; full visual and
+physical-gesture parity with Hyprland remains a live acceptance check.
 
 Native decoration constraints also count. On Hyprland with Hyprview's
 `keep_on_screen` policy, the compositor clamps the decorated frame while its

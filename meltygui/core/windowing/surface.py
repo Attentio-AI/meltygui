@@ -348,6 +348,9 @@ class Surface:
 
     def _on_refresh(self):
         request_render()
+        from meltygui.core.windowing import melty_windows
+        if melty_windows.defer_refresh(self.window):
+            return
         from meltygui.core.runtime.app import refresh_surface
         refresh_surface(self)
 

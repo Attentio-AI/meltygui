@@ -7,12 +7,13 @@ import meltygui_imgui as imgui
 
 from meltygui.core.melty import Melty
 from meltygui.core.runtime import app
-from meltygui.core.windowing import glfw_utils, window_api as glfw
+from meltygui.core.windowing import glfw_utils, window_api as glfw, melty_windows
 from meltygui.core.windowing.surface import Surface
 
 
 @pytest.fixture
 def refresh_windows(monkeypatch):
+    monkeypatch.setattr(melty_windows, 'defer_refresh', lambda window: False)
     monkeypatch.setattr(app.sys, 'platform', 'darwin')
     monkeypatch.setattr(app, '_state', {'failed': False})
     monkeypatch.setattr(Melty, 'app_tick', 10)
@@ -141,3 +142,18 @@ def test_refresh_error_reaches_app_loop_instead_of_being_lost_in_ctypes(refresh_
     assert not app._state['processing_events'] and not app._state['refreshing']
     assert context == {'gl': first.window, 'imgui': first.ctx}
     assert Surface.active is first and Melty.glfw_window is first.window
+
+
+def test_cooperative_resize_queues_refresh_until_event_dispatch_returns(refresh_windows, monkeypatch):
+    _, second, _, presented, callback = refresh_windows
+    monkeypatch.setattr(melty_windows, 'defer_refresh', lambda window: True)
+    def dispatch():
+        for _ in range(100):
+            callback(second.window)
+        assert not presented
+    monkeypatch.setitem(glfw.__dict__, 'poll_events', dispatch)
+    app._process_events()
+    assert second in glfw_utils._requested_surfaces
+    assert second.wants_frame()
+    second.frame()
+    assert len(presented) == 1

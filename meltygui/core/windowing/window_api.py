@@ -56,7 +56,20 @@ def is_native_window(window):
             getattr(type(window), 'native_ios', False) is True)
 
 
+def destroy_window(window):
+    if sys.platform == 'darwin':
+        from meltygui.core.windowing import melty_windows
+        melty_windows.forget(window)
+    backend = _state['backend']
+    if backend is not None:
+        return backend.destroy_window(window)
+    return importlib.import_module('glfw').destroy_window(window)
+
+
 def terminate():
+    if sys.platform == 'darwin':
+        from meltygui.core.windowing import melty_windows
+        melty_windows.stop()
     backend = _state['backend']
     try:
         if backend is not None:

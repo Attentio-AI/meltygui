@@ -31,8 +31,12 @@ APP = textwrap.dedent('''\
     Toggles.Melty.wayland_show_frame = True
     Toggles.Melty.push_os_window_edges = True
     # On Linux this also exercises an unavailable native adjustment backend.
-    # macOS uses the actual capability check.
-    if sys.platform != 'darwin':
+    # macOS uses the actual capability check against an absent endpoint,
+    # independent of whether the user's Melty Windows utility is running.
+    if sys.platform == 'darwin':
+        from meltygui.core.windowing import melty_windows
+        melty_windows.PATH = str(result_path.with_suffix('.absent-socket'))
+    else:
         titlebar.can_adjust_window_edges = lambda window: False
     os_frame._any_button_down = lambda: True
     travels = [0., -500., -500., -100., 0., 900., 900., 0.]

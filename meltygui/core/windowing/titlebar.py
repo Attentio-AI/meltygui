@@ -245,14 +245,18 @@ def can_adjust_window_edges(window):
     """Can collision pushes control this native frame's position AND size?
 
     Reading a position or starting a compositor-owned interactive resize is
-    insufficient. Only the implemented X11 and Wayland control paths opt in;
-    Cocoa and unknown backends keep the observed content bounds fixed.
+    insufficient. Cocoa requires a live Melty Windows surface agreement;
+    X11 and Wayland retain their backend-specific control paths.
     """
-    if window is None or not sys.platform.startswith("linux"):
+    if window is None or sys.platform not in ("linux", "darwin"):
         return False
     try:
         if not glfw.get_window_attrib(window, glfw.RESIZABLE) or _fullscreen(window):
             return False
+        if sys.platform == "darwin":
+            from meltygui.core.windowing import melty_windows
+            return (not bool(glfw.get_window_attrib(window, glfw.MAXIMIZED))
+                    and melty_windows.available(window))
         if not _on_wayland():
             return (glfw.get_platform() == glfw.PLATFORM_X11
                     and not bool(glfw.get_window_attrib(window, glfw.MAXIMIZED)))
@@ -418,6 +422,9 @@ def _workarea_for(window):
     """(left, top, right, bottom) of the workarea of the monitor holding the
     window's center — the resize bounds. Falls back to the primary monitor
     when the center sits off every monitor (mid-drag between screens)."""
+    if sys.platform == "darwin":
+        from meltygui.core.windowing import melty_windows
+        return melty_windows.workarea(window)
     if _on_wayland():
         # No window positions on Wayland: the bounds are the primary
         # monitor's workarea SIZE anchored at the window's own top-left
@@ -1385,7 +1392,11 @@ def set_surface_size(window, width, height, offset=None, box=True):
     global _self_resize
     _self_resize = True
     try:
-        glfw.set_window_size(window, int(width), int(height))
+        if sys.platform == "darwin" and offset is not None:
+            from meltygui.core.windowing import melty_windows
+            melty_windows.apply(window, width, height, offset)
+        else:
+            glfw.set_window_size(window, int(width), int(height))
     finally:
         _self_resize = False
     if box and _on_hyprland():
@@ -1525,7 +1536,7 @@ def apply_pending_surface_size(window):
     on_hyprland = _on_hyprland()
     # Hyprland ignores a toplevel's buffer offset (the surface stays
     # anchored at `at`): the move rides the box resize's own IPC request.
-    set_surface_size(window, *size, offset=offset if on_hyprland else None)
+    set_surface_size(window, *size, offset=offset if on_hyprland or sys.platform == "darwin" else None)
     # The move rides the same commit: armed HERE, right after GLFW's resize
     # (which reset the EGL window's offset to 0) and before anything is
     # drawn. Arming it late - right before the swap - blanked every frame
@@ -1537,7 +1548,7 @@ def apply_pending_surface_size(window):
     # as for GLFW's own resizes. Nothing else touches the EGL window until
     # the swap.
     _frame_surface_offset = None
-    if offset and (offset[0] or offset[1]) and not on_hyprland:
+    if offset and (offset[0] or offset[1]) and not on_hyprland and sys.platform != "darwin":
         wayland_move.set_surface_offset(offset[0], offset[1])
     return size
 
