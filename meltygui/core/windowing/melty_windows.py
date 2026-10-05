@@ -16,6 +16,9 @@ _STATE = globals().get('_STATE') or {
     'lock': threading.Lock(), 'windows': set(), 'expires': 0., 'thread': None,
     'stop': threading.Event(), 'numbers': {},
 }
+_STATE.setdefault('frame_library', None)
+_STATE.setdefault('frame_apis', {})
+_STATE.setdefault('frame_tokens', {})
 _OBJC = globals().get('_OBJC')
 _LIVE_RESIZE = globals().get('_LIVE_RESIZE')
 PATH = os.path.expanduser('~/Library/Application Support/Melty Windows/surfaces-v1.sock')
@@ -68,10 +71,12 @@ def _exchange(windows):
                 raise OSError('surface service disconnected')
             data += part
     reply = json.loads(data)
-    return (isinstance(reply, dict) and type(reply.get('version')) is int
-            and reply.get('version') == 1 and reply.get('capability') == 'native-edges'
-            and reply.get('enabled') is True and type(reply.get('lease_seconds')) is int
-            and reply.get('lease_seconds') == 1)
+    active = (isinstance(reply, dict) and type(reply.get('version')) is int
+              and reply.get('version') == 1 and reply.get('capability') == 'native-edges'
+              and reply.get('enabled') is True and type(reply.get('lease_seconds')) is int
+              and reply.get('lease_seconds') == 1)
+    library = reply.get('frame_library') if active and reply.get('frame_api') == 1 else None
+    return active, library if isinstance(library, str) else None
 
 
 def _poll():
@@ -80,15 +85,16 @@ def _poll():
             windows = set(_STATE['windows'])
         began = time.monotonic()
         try:
-            active = _exchange(windows)
+            active, library = _exchange(windows)
         except (OSError, ValueError, TypeError):
-            active = False
+            active, library = False, None
         with _STATE['lock']:
             was_active = _STATE['expires'] > began
             accepted = windows if active else set()
             changed = accepted != _STATE.get('accepted', set())
             _STATE['accepted'] = accepted
             _STATE['expires'] = began + 1 if active else 0.
+            _STATE['frame_library'] = library
         if changed or active != was_active:
             from meltygui.core.windowing.glfw_utils import request_render
             request_render()
@@ -147,6 +153,67 @@ def defer_refresh(window):
     return owned and not _in_live_resize(window)
 
 
+def _frame_api(path):
+    """Load the installed utility's app-side helper once, off the hot path."""
+    cache = _STATE['frame_apis']
+    if path not in cache:
+        api = None
+        try:
+            info = os.lstat(path)
+            if (not os.path.isabs(path) or os.path.basename(path) != 'MeltySurfaceFrame.dylib'
+                    or not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, os.getuid())
+                    or info.st_mode & 0o022):
+                raise OSError('invalid native frame helper')
+            api = ctypes.CDLL(path)
+            api.MeltySurfaceFrameVersion.argtypes = []
+            api.MeltySurfaceFrameVersion.restype = ctypes.c_int
+            if api.MeltySurfaceFrameVersion() != 1:
+                raise OSError('unsupported native frame helper')
+            api.MeltySurfaceFrameBegin.argtypes = [ctypes.c_void_p]
+            api.MeltySurfaceFrameBegin.restype = ctypes.c_void_p
+            api.MeltySurfaceFrameSet.argtypes = [ctypes.c_void_p] + [ctypes.c_double] * 4
+            api.MeltySurfaceFrameSet.restype = ctypes.c_int
+            api.MeltySurfaceFrameEnd.argtypes = [ctypes.c_void_p]
+            api.MeltySurfaceFrameEnd.restype = None
+        except (OSError, AttributeError):
+            api = None
+        cache[path] = api
+    return cache[path]
+
+
+def begin_frame(window):
+    """Begin a native group that lasts through this surface's buffer swap."""
+    if not defer_refresh(window):
+        return None
+    with _STATE['lock']:
+        path = _STATE.get('frame_library')
+    if not path:
+        return None
+    api = _frame_api(path)
+    if api is None:
+        return None
+    from meltygui.core.windowing import window_api as glfw
+    native = glfw.get_cocoa_window(window)
+    if native in _STATE['frame_tokens']:
+        return None  # A nested refresh must not end the outer frame's group.
+    token = api.MeltySurfaceFrameBegin(native)
+    if not token:
+        return None
+    frame = (native, api, token)
+    _STATE['frame_tokens'][native] = frame
+    return frame
+
+
+def end_frame(frame):
+    if frame is None:
+        return
+    native, api, token = frame
+    try:
+        api.MeltySurfaceFrameEnd(token)
+    finally:
+        _STATE['frame_tokens'].pop(native, None)
+
+
 def forget(window):
     if sys.platform != 'darwin':
         return
@@ -203,7 +270,15 @@ def observe(window):
 def apply(window, width, height, offset):
     """Apply position and size together before the next render/input pass."""
     from meltygui.core.windowing import window_api as glfw
-    x, y = glfw.get_window_pos(window)
     dx, dy = offset or (0, 0)
+    if _STATE['frame_tokens']:
+        frame = _STATE['frame_tokens'].get(glfw.get_cocoa_window(window))
+        if frame is not None:
+            _, api, token = frame
+            if not api.MeltySurfaceFrameSet(token, float(width), float(height), float(dx), float(dy)):
+                raise RuntimeError('native surface frame rejected geometry')
+            return
+    x, y = glfw.get_window_pos(window)
     glfw.set_window_size(window, int(width), int(height))
-    glfw.set_window_pos(window, int(x + dx), int(y + dy))
+    if dx or dy:
+        glfw.set_window_pos(window, int(x + dx), int(y + dy))

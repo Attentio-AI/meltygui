@@ -36,8 +36,8 @@ def test_protocol_handshake_and_pause(socket_directory, monkeypatch):
                     connection.sendall(payload[8:])
         worker = threading.Thread(target=serve)
         worker.start()
-        assert bridge._exchange({17, 9}) is True
-        assert bridge._exchange({17}) is False
+        assert bridge._exchange({17, 9}) == (True, None)
+        assert bridge._exchange({17}) == (False, None)
         worker.join(1)
         assert requests == [dict(version=1, operation='claim', windows=[9, 17]),
                             dict(version=1, operation='claim', windows=[17])]
@@ -129,3 +129,31 @@ def test_only_cooperative_nonmodal_resizes_defer_refresh(monkeypatch, owned, liv
     monkeypatch.setattr(bridge, '_in_live_resize', lambda window: live)
     monkeypatch.setattr(bridge, '_STATE', dict(lock=threading.Lock(), accepted={7} if owned else set(), expires=float('inf')))
     assert bridge.defer_refresh(object()) is expected
+
+
+def test_native_frame_groups_geometry_until_matching_frame_finishes(monkeypatch):
+    from types import SimpleNamespace
+    calls = []
+    api = SimpleNamespace(
+        MeltySurfaceFrameBegin=lambda native: calls.append(('begin', native)) or 99,
+        MeltySurfaceFrameSet=lambda *args: calls.append(('set', *args)) or 1,
+        MeltySurfaceFrameEnd=lambda token: calls.append(('end', token)))
+    monkeypatch.setattr(bridge, 'defer_refresh', lambda window: True)
+    monkeypatch.setattr(bridge, '_frame_api', lambda path: api)
+    monkeypatch.setattr(bridge, '_STATE', dict(lock=threading.Lock(), frame_library='/helper', frame_tokens={}))
+    monkeypatch.setitem(window_api.__dict__, 'get_cocoa_window', lambda window: 7)
+    monkeypatch.setitem(window_api.__dict__, 'set_window_size', lambda *args: pytest.fail('intermediate GLFW resize'))
+    monkeypatch.setitem(window_api.__dict__, 'set_window_pos', lambda *args: pytest.fail('intermediate GLFW move'))
+    frame = bridge.begin_frame(object())
+    assert bridge.begin_frame(object()) is None
+    bridge.apply(object(), 900, 700, (-100, -50))
+    calls.append(('present',))
+    bridge.end_frame(frame)
+    assert calls == [('begin', 7), ('set', 99, 900., 700., -100., -50.), ('present',), ('end', 99)]
+    assert not bridge._STATE['frame_tokens']
+
+
+def test_missing_native_helper_keeps_older_service_compatible(monkeypatch):
+    monkeypatch.setattr(bridge, 'defer_refresh', lambda window: True)
+    monkeypatch.setattr(bridge, '_STATE', dict(lock=threading.Lock(), frame_library=None))
+    assert bridge.begin_frame(object()) is None

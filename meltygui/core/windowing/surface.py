@@ -390,11 +390,19 @@ class Surface:
         glfw_utils.render_scope = self
         interrupted_frame = Melty._frame_draw_start
         Melty._frame_draw_start = time.monotonic()
+        from meltygui.core.windowing import melty_windows
+        native_frame = None
         try:
+            native_frame = melty_windows.begin_frame(self.window)
             self._frame()
         finally:
-            Melty._frame_draw_start = interrupted_frame
-            glfw_utils.render_scope = interrupted_scope
+            try:
+                # post_frame has submitted the matching GL buffer. Also unwind
+                # the native group on close, zero-sized surfaces, and errors.
+                melty_windows.end_frame(native_frame)
+            finally:
+                Melty._frame_draw_start = interrupted_frame
+                glfw_utils.render_scope = interrupted_scope
 
     def _frame(self):
         self.activate()

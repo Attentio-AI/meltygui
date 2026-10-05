@@ -157,3 +157,24 @@ def test_cooperative_resize_queues_refresh_until_event_dispatch_returns(refresh_
     assert second.wants_frame()
     second.frame()
     assert len(presented) == 1
+
+
+@pytest.mark.parametrize('failure', [False, True])
+def test_native_presentation_group_always_ends_after_render(refresh_windows, monkeypatch, failure):
+    _, second, _, _, _ = refresh_windows
+    events = []
+    monkeypatch.setattr(melty_windows, 'begin_frame', lambda window: events.append('begin') or 'token')
+    monkeypatch.setattr(melty_windows, 'end_frame', lambda token: events.append(('end', token)))
+    def render():
+        events.append('render')
+        if failure:
+            raise RuntimeError('draw failed')
+        events.append('swap')
+    second._frame = render
+    if failure:
+        with pytest.raises(RuntimeError, match='draw failed'):
+            second.frame()
+    else:
+        second.frame()
+    assert events == ['begin', 'render'] + ([] if failure else ['swap']) + [('end', 'token')]
+    assert glfw_utils.render_scope is None

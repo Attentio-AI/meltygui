@@ -128,6 +128,12 @@ on the render thread in logical screen points. Native decoration insets reduce
 the content workarea. Without a current agreement (including pause, disconnect,
 or an unsupported/maximized/fullscreen surface), macOS uses fixed bounds.
 This integration does not change the layout collision or gesture rules above;
+Melty Windows 0.2.1 can also supply an app-side native frame helper. The shared
+adapter groups the combined native size/position change and the surface's buffer
+swap in a zero-duration AppKit animation context, without forcing intermediate
+display. Native border drags retain the existing modal refresh path; app-owned
+resizes retain queued refreshes to prevent reentrant rendering.
+
 Melty Windows yields registered surfaces' input to MeltyGUI. Automated native
 geometry/handshake and solver regressions cover the adapter; full visual and
 physical-gesture parity with Hyprland remains a live acceptance check.

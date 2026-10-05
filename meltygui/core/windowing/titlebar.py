@@ -1392,7 +1392,7 @@ def set_surface_size(window, width, height, offset=None, box=True):
     global _self_resize
     _self_resize = True
     try:
-        if sys.platform == "darwin" and offset is not None:
+        if sys.platform == "darwin":
             from meltygui.core.windowing import melty_windows
             melty_windows.apply(window, width, height, offset)
         else:
