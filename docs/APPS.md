@@ -331,6 +331,20 @@ streaming, waking the UI), not a new feature's shape.
 and a "later" list. The first version ships the core; extras wait in "later" until someone wants
 them. When a design genuinely needs more than this, say why in a sentence and go ahead.
 
+## Native application hosts
+
+An iOS application uses its ordinary Python entry module, including `boot`,
+`@glfw_window`, `persisted` and `run`. The UIKit host installs MeltyGUI's native
+runtime before importing that module. Desktop and native hosts share root layout,
+settings, fonts and session initialization; only platform input, graphics targets
+and frame pacing belong to the host.
+
+Declare sources, resources and dependencies in `[tool.melty.app]`. The packaging
+commands live in `meltygui.platforms.ios`; applications do not copy the native
+host or provide a platform-specific Python adapter. See the
+[iOS build guide](../meltygui/platforms/ios/README.md) and the
+[toolkit-only counter](../examples/portable_counter/main.py).
+
 ## Native binding imports
 
 MeltyGUI uses a namespaced ImGui binding. Low-level app code should use

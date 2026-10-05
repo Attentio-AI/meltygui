@@ -38,7 +38,7 @@ import time
 
 import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
-import OpenGL.GL as gl
+from meltygui.core.graphics import desktop_gl as gl
 
 import meltygui.core.input.mouse_cursor as mouse_cursor
 import meltygui.core.windowing.titlebar_buttons as titlebar_buttons

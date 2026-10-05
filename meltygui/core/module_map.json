@@ -911,5 +911,6 @@
   "meltygui.files.explorer.FileExplorerState": "meltygui.state.file_state.FileExplorerState",
   "meltygui.files.explorer.ShortcutState": "meltygui.state.file_state.ShortcutState",
   "meltygui.files.fast_file_explorer.FileExplorerState": "meltygui.state.file_state.FileExplorerState",
-  "meltygui.files.fast_file_explorer.ShortcutState": "meltygui.state.file_state.ShortcutState"
+  "meltygui.files.fast_file_explorer.ShortcutState": "meltygui.state.file_state.ShortcutState",
+  "meltygui.core.windowing.surface.root_view_kwargs": "meltygui.core.windowing.surface_frame.root_view_kwargs"
 }

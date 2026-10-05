@@ -23,7 +23,7 @@ class NativeApplication:
         self.root_windows = {}
         self.closed = self.started = self.suspended = False
         self.frames = 0
-        self.name = self.title = config['app_id']
+        self.name = self.title = config.get('app_id', config.get('entry_module', 'Melty'))
         self.settings = None
         self.tint = None
         self._thread = threading.get_ident()
@@ -42,6 +42,9 @@ class NativeApplication:
         from meltygui.core.windowing import window_api, glfw_utils
         from meltygui.core.melty import Melty
 
+        from meltygui.core.runtime import app
+        if app._state.get('app_id') is not None:
+            self.config['app_id'] = app._state['app_id']
         self.window_backend = window_api.select_ios_backend(self.host)
         self.window = self.window_backend.window
         self.ctx = imgui.create_context()
@@ -67,23 +70,15 @@ class NativeApplication:
         self.boot()
         import meltygui_imgui as imgui
         from meltygui.core.melty import Melty
-        from meltygui.core.styling.fonts import FontManager
-        from meltygui.core.styling.style_core import ImGuiStyleManager
         from meltygui.core.input.input_handler import InputHandler
         from meltygui.core.input.ios_input import IOSInput
         from meltygui.core.cache.tile_cache import TileCacheMasked
         from meltygui.core.windowing import glfw_utils
 
         io = imgui.get_io()
-        Melty.font_mgr = FontManager(io, Melty.resolve_ui_scale())
-        Melty.font_mgr.prewarm()
+        app._initialize_fonts(io)
         self.renderer.refresh_font_texture()
-        Melty.style_manager = ImGuiStyleManager()
-        Melty.global_attrs['style_manager'] = Melty.style_manager
-        session = app._load_session()
-        app._register_projects()
-        Melty.draw_state_registry = session.draw_state_registry
-        Melty.adopt_registered_windows(session)
+        session = app._initialize_session()
         Melty.vis = SimpleNamespace(root=session, window=self.window, tracked_keys=[],
                                     first_frame_keys=set(), fa_font=None)
         Melty.event_handler = InputHandler()
@@ -93,7 +88,6 @@ class NativeApplication:
         TileCacheMasked.window_caches[self.cache] = self.request_frame
         # Match desktop warm-up: collect two frames of geometry, then cache.
         self.cache.enabled = False
-        Melty.annotation_mode = False
         fn, config = app._ROOTS[0]
         self.name = self.title = config['name']
         self.root_config = config
@@ -122,22 +116,6 @@ class NativeApplication:
 
     def content_size(self):
         return self.window_backend.get_framebuffer_size(self.window)
-
-    def root_view_kwargs(self, name, /, **kwargs):
-        from meltygui.core.melty import Melty
-        width, height, top = Melty.root_fill
-        header = kwargs.get('with_header') is not None
-        if header:
-            kwargs.setdefault('is_tree', False)
-            kwargs.setdefault('show_tint', True)
-            kwargs.setdefault('display_name', self.title)
-        pinned = dict(name=name, closable=True, draggable=False, frame_pinned=True,
-                      window_pos=(0, top), width=width, height=height,
-                      auto_resize=False, show_header=header, with_footer=None,
-                      shadow=False, show_bg=True, selectable=False, use_cache=False,
-                      disable_scroll=True, indent_size=5,
-                      initial={'width': width, 'height': height, 'window_pos': (0, top)})
-        return pinned | kwargs
 
     def frame(self, info, events):
         self._check_thread()
@@ -196,69 +174,10 @@ class NativeApplication:
             glfw_utils.render_scope = previous_scope
 
     def _draw_frame(self):
-        import meltygui_imgui as imgui
         from meltygui.core.melty import Melty
-        from meltygui.core.runtime.toggles import Toggles
-        from meltygui.core.rendering.parameter_core import flush_deferred_writes
-        from meltygui.core.conversion.render_host import RenderHost
-        from meltygui.core.windowing import os_frame
-        from meltygui.view.decoration_view import draw_bg
-        from meltygui.utils import render_utils as views
-
-        flags = (imgui.WINDOW_NO_BACKGROUND | imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_NO_RESIZE
-                 | imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_SCROLLBAR | imgui.WINDOW_NO_NAV_FOCUS
-                 | imgui.WINDOW_NO_BRING_TO_FRONT_ON_FOCUS | imgui.WINDOW_NO_NAV_INPUTS
-                 | imgui.WINDOW_NO_NAV | imgui.WINDOW_NO_COLLAPSE | imgui.WINDOW_NO_SAVED_SETTINGS
-                 | imgui.WINDOW_NO_SCROLL_WITH_MOUSE)
-        views.new_frame()
-        width, height = imgui.get_io().display_size
-        imgui.set_next_window_position(0, 0)
-        imgui.set_next_window_size(width, height)
-        imgui.push_style_var(imgui.STYLE_WINDOW_PADDING, (0.0, 0.0))
-        imgui.push_style_var(imgui.STYLE_WINDOW_BORDERSIZE, 0.0)
-        views.begin('main##window_melty', closable=False, flags=flags)
-        imgui.pop_style_var(2)
-        Melty.imgui_main_window_hovered = imgui.is_window_hovered()
-        Melty.begin_frame()
-        flush_deferred_writes()
-        os_frame.begin_frame()
-        os_frame.solve()
-        imgui.set_cursor_screen_pos((0, 0))
-        imgui.set_item_allow_overlap()
-        draw_list = imgui.get_window_draw_list()
-        draw_list.channels_split(Melty.max_depth)
-        Melty.channels_split = True
-        Melty.window_stack.append((self.name, True))
-        previous_tint = Melty.style_manager.get_tint()
-        tint = (self.root_config.get('view_kwargs') or {}).get('tint')
-        if tint is None:
-            tint = Toggles.Melty.app_root_tint
-        Melty.style_manager.set_imgui_tint(*tint[:4])
-        _, bg_color = draw_bg(bypass=True, left=0, top=0, width=width, height=height,
-                              rounding=0, outline=False, opacity=1.0, max_bg_value=0.130,
-                              depth=Melty.shadow_depth, style_manager=Melty.style_manager)
-        Melty.root_fill = (float(width), float(height), 0.0)
-        Melty.root_fill_used = False
-        Melty.bg_depth += 1
-        Melty.bg_stack.append(Melty.style_manager.get_tint())
-        Melty.bg_color_stack.append(bg_color)
-        try:
-            self.body(self)
-            if Melty.render_hosts and Melty.render_hosts_tick != Melty.app_tick:
-                Melty.render_hosts_tick = Melty.app_tick
-                RenderHost.draw_all()
-        finally:
-            Melty.root_fill = None
-            Melty.bg_depth -= 1
-            Melty.bg_stack.pop()
-            Melty.bg_color_stack.pop()
-            Melty.style_manager.set_imgui_tint(*previous_tint)
-        Melty.end_frame()
-        Melty.window_stack.pop()
-        draw_list.channels_merge()
-        Melty.channels_split = False
-        views.end()
-        views.end_frame()
+        from meltygui.core.windowing.surface_frame import draw_surface_frame
+        self.tint = (self.root_config.get('view_kwargs') or {}).get('tint')
+        draw_surface_frame(self)
         Melty.post_frame(self.renderer, self.window)
 
     def presented(self):
@@ -277,7 +196,7 @@ class NativeApplication:
         if self.input is not None:
             self.input.suspend()
         if not app.checkpoint():
-            raise RuntimeError('The editor could not save its state before suspension')
+            raise RuntimeError('The application could not save its state before suspension')
 
     def resume(self):
         self._check_thread()
@@ -310,7 +229,7 @@ class NativeApplication:
 
         def save():
             if not app.checkpoint():
-                raise RuntimeError('The editor could not save its state before closing')
+                raise RuntimeError('The application could not save its state before closing')
 
         if self.started:
             release(FileWatch.stop)
@@ -336,3 +255,21 @@ class NativeApplication:
             raise errors[0]
         if errors:
             raise ExceptionGroup('The native application could not close cleanly', errors)
+
+
+def start_native_application(config, host, renderer_factory=None):
+    """Launch an ordinary app module after installing its native host."""
+    import importlib
+    from meltygui.core.runtime import app
+    if renderer_factory is None:
+        import _melty_metal
+        from meltygui.core.graphics.metal_renderer import MetalRenderer
+        renderer_factory = lambda: MetalRenderer(_melty_metal)
+    entry = config['entry_module']
+    if not isinstance(entry, str) or not all(part.isidentifier() for part in entry.split('.')):
+        raise ValueError('entry_module must be a Python module name')
+    application = NativeApplication(config, host, renderer_factory)
+    app.install_native_host(application)
+    importlib.import_module(entry)
+    app.run()
+    return application

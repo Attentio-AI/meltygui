@@ -1098,7 +1098,7 @@ class Melty:
         the OS window, its meltygui header in the chrome row when the call
         passed with_header=), on the same draw_state as the parent-side
         call, its result threaded back through pending_return_values."""
-        from meltygui.core.windowing.surface import root_view_kwargs
+        from meltygui.core.windowing.surface_frame import root_view_kwargs
         kwargs = {k: v for k, v in req.kwargs.items()
                   if k not in ('glfw_window', 'window_pos', 'window_size', 'closable',
                                'layer_unique', 'draw_state', 'return_extras', 'closed', 'open_requested')}
