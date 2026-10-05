@@ -186,7 +186,8 @@ def test_os_decorated_root_header_reserves_room_for_the_cog(monkeypatch):
     from meltygui import imgui
     from meltygui.core.melty import Melty
     from meltygui.core.windowing import titlebar
-    from meltygui.core.windowing.surface import Surface, root_view_kwargs
+    from meltygui.core.windowing.surface import Surface
+    from meltygui.core.windowing.surface_frame import root_view_kwargs
 
     surface = _Surface(object())
     surface.chrome, surface.title = False, 'Editor'

@@ -238,10 +238,7 @@ def _init_melty():
     import meltygui.core.windowing.window_api as glfw
     import meltygui_imgui as imgui
     from meltygui.core.melty import Melty
-    from meltygui.core.styling.fonts import FontManager
     from meltygui.core.windowing.surface import Surface
-    from meltygui.core.runtime.toggles import Toggles
-    from meltygui.core.styling.style_core import ImGuiStyleManager
     import meltygui.core.styling.warm_start as warm_start
     owner = _state['owner']
     glfw.make_context_current(owner)
@@ -253,10 +250,29 @@ def _init_melty():
     window_size, framebuffer_size = glfw.get_window_size(owner), glfw.get_framebuffer_size(owner)
     pixel_scale = max(1.0, *(pixels / max(1, points)
                               for pixels, points in zip(framebuffer_size, window_size)))
-    Melty.font_mgr = FontManager(imgui.get_io(), Melty.resolve_ui_scale(), pixel_scale=pixel_scale)
-    Melty.font_mgr.prewarm()
+    _initialize_fonts(imgui.get_io(), pixel_scale=pixel_scale)
     warm_start.cache_hinted_atlas(Melty.font_mgr, _state['cache'])
     mark('fonts loaded')
+    Surface.session = _initialize_session()
+    Surface.app_id = _state['app_id']
+    import meltygui.core.windowing.geometry_feed as geometry_feed
+    geometry_feed.start()          # for rects: the size fit, child placement, os_frame
+    mark('meltygui configured')
+
+
+def _initialize_fonts(io, *, pixel_scale=1.0):
+    """Initialize the atlas for the host's active ImGui context."""
+    from meltygui.core.melty import Melty
+    from meltygui.core.styling.fonts import FontManager
+    Melty.font_mgr = FontManager(io, Melty.resolve_ui_scale(), pixel_scale=pixel_scale)
+    Melty.font_mgr.prewarm()
+
+
+def _initialize_session():
+    """Shared style, persistence and runtime state, independent of native windows."""
+    from meltygui.core.melty import Melty
+    from meltygui.core.styling.style_core import ImGuiStyleManager
+    from meltygui.core.runtime.toggles import Toggles
     Melty.style_manager = ImGuiStyleManager()
     Melty.global_attrs['style_manager'] = Melty.style_manager
     # The app's persisted draw states (app_session.py): loaded on the
@@ -267,7 +283,6 @@ def _init_melty():
     _register_projects()
     Melty.draw_state_registry = session.draw_state_registry
     Melty.adopt_registered_windows(session)
-    Surface.session = session
     # meltygui boots in "annotation mode" (view calls return carriers, nothing
     # renders) until the studio's Melty.init() clears it. That init also
     # starts file watchers and a jedi worker we do not need.
@@ -278,10 +293,7 @@ def _init_melty():
         Toggles.show_fps = False
     if os.environ.get('MELTY_NO_OS_FRAME'):
         Toggles.Melty.push_os_window_edges = False
-    Surface.app_id = _state['app_id']
-    import meltygui.core.windowing.geometry_feed as geometry_feed
-    geometry_feed.start()          # for rects: the size fit, child placement, os_frame
-    mark('meltygui configured')
+    return session
 
 
 def _load_session():
@@ -550,11 +562,8 @@ def _draw_root(fn, name, value=None, **kwargs):
     the view's input value (None: the view owns its state); ``kwargs`` are
     the decorator's view kwargs. ``with_header=draw_header`` puts the meltygui
     header in the chrome row beside the window controls
-    (surface.root_view_kwargs)."""
-    native_host = _state.get('native_host')
-    if native_host is not None:
-        return fn(value, **native_host.root_view_kwargs(name or fn.__name__, **kwargs))
-    from meltygui.core.windowing.surface import root_view_kwargs
+    (surface_frame.root_view_kwargs)."""
+    from meltygui.core.windowing.surface_frame import root_view_kwargs
     # A closable meltygui window (the studio's Mode.MODE_WINDOW), pinned to
     # the surface: layouts (draw_rows / draw_columns) register their
     # children on the enclosing view, so the root must be one.

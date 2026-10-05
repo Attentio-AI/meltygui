@@ -19,7 +19,7 @@ import ctypes
 
 import meltygui_imgui as imgui
 from meltygui.hdr_color import pack_color
-import OpenGL.GL as gl
+from meltygui.core.graphics import desktop_gl as gl
 
 from meltygui.core.graphics.gl_state import GLState, GLTexture
 from meltygui.hdr_color import GLSL_DECODE as _GLSL_DECODE

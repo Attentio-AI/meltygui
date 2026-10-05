@@ -1,0 +1,5 @@
+[tool.melty.app]
+name = "Portable Counter"
+entry = "main.py"
+bundle_id = "org.meltygui.portable-counter"
+dependencies = ["meltygui"]

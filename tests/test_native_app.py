@@ -129,7 +129,7 @@ def native(monkeypatch, app_environment):
         monkeypatch.setattr(Melty, name, 0)
 
     class DefaultFonts:
-        def __init__(self, io, scale):
+        def __init__(self, io, scale, *, pixel_scale=1.0):
             self.io = io
 
         def prewarm(self):

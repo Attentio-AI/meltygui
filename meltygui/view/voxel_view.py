@@ -14,7 +14,7 @@ from meltygui.view.header_view import draw_header
 # The lut= parameter's picker: importing registers draw_lut as the Lut
 # renderer (without it the row falls back to the generic str input).
 from meltygui.view.lut_view import draw_lut
-import OpenGL.GL as gl
+from meltygui.core.graphics import desktop_gl as gl
 import math
 import meltygui_imgui as imgui
 import numpy as np
