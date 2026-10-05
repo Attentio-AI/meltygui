@@ -461,7 +461,8 @@ def _state():
 
 
 def _project_state(project):
-    project = analysis_project(project)
+    if not hasattr(project, "key"):
+        project = analysis_project(project)
     records = _state().setdefault("projects", {})
     key = project.key
     if key not in records:
@@ -626,10 +627,24 @@ def _gen_bump(st, path=None):
     st["gen"] += 1
     st["by_name_gen"] = -1
     for record in list(st.get("projects", {}).values()):
-        if path is None or record["project"].resolves(path) or path in record["observed"]:
+        if path is None or _possibly_resolves(record["project"], path) or path in record["observed"]:
             record["gen"] += 1
     if st["consumers"]:
         _schedule_notify()
+
+
+def _possibly_resolves(project, path):
+    """Conservative invalidation only; exact ownership belongs on the worker.
+
+    Repainting an enclosing project for a nested project's edit is harmless.
+    Statting every ancestor directory while publishing source tables is not.
+    """
+    root = getattr(project, "root", None)
+    roots = getattr(project, "import_paths", ())
+    if root is None and not roots:
+        return True
+    return any(base and (path == base or path.startswith(base + os.sep))
+               for base in (root, *roots))
 
 
 class pass_scope:
@@ -645,6 +660,7 @@ class pass_scope:
         if st["frozen"] == 1:
             st["pass_names"] = None
             st["pass_project_names"] = {}
+            st["pass_paths"] = {}
         return self
 
     def __exit__(self, *exc):
@@ -653,6 +669,7 @@ class pass_scope:
         if st["frozen"] == 0:
             st["pass_names"] = None
             st["pass_project_names"] = {}
+            st["pass_paths"] = {}
         return False
 
 
@@ -667,13 +684,13 @@ def _file_key(path):
     FileWatch-cached disk string, pending generation). Never hashes."""
     try:
         from meltygui.core.melty import Melty
-        disk = Melty.read_code(path)
+        disk = Melty.read_code(path, canonical_file=True)
         did = id(disk) if disk is not None else None
     except Exception:
         did = None
     try:
         from meltygui.editor.text_editor import _pending_gen_of
-        gen = _pending_gen_of(path)
+        gen = _pending_gen_of(path, canonical_file=True)
     except Exception:
         gen = 0
     if did is None:
@@ -688,7 +705,7 @@ def _file_key(path):
 def _current_text(path):
     try:
         from meltygui.editor.pending_save import PendingSave
-        t = PendingSave.current_file_text(Path(path))
+        t = PendingSave.current_file_text(path, canonical_file=True)
         if t is not None:
             return t
     except Exception:
@@ -810,17 +827,29 @@ def table_for(path, live_text=None, line_offset=0):
     return ent
 
 
-def _pending_table(st, p):
-    ent = st["tables"].get(p)
-    if ent is not None and st.get("frozen"):
-        return ent                      # inside a pass: no key re-derivation
-    key = _file_key(p)
-    if ent is None or ent.key != key:
+def _pending_table(st, p, *, allow_frozen=True):
+    while True:
+        ent = st["tables"].get(p)
+        if ent is not None and allow_frozen and st.get("frozen"):
+            return ent                  # inside a pass: no key re-derivation
+        key = _file_key(p)
+        if ent is not None and ent.key == key:
+            return ent
+        revision = _sweep_revision(st, p) if not allow_frozen else None
         text = _current_text(p)
         tbl = extract_table(p, text or "", key, previous=ent)
-        _install(st, p, tbl)
-        ent = tbl
-    return ent
+        if not allow_frozen:
+            # Read/parse without the roster lock, but never publish an old
+            # result over a table installed by a newer edit in the meantime.
+            if _file_key(p) != key:
+                continue
+            with st["lock"]:
+                if st["tables"].get(p) is not ent or _sweep_revision(st, p) != revision:
+                    continue
+                _install(st, p, tbl)
+        else:
+            _install(st, p, tbl)
+        return tbl
 
 
 def _install(st, p, tbl):
@@ -847,11 +876,12 @@ def _apply_overrides(st, p, tbl):
 
 
 def sweep(force=False, project=None):
-    """Notice edits in OTHER files cheaply: re-key every file with queued
-    pending edits (O(edited files), every call ≥100ms apart) and every cached
-    table every 2s (catches external disk changes through FileWatch's
-    replaced string). Changed files re-extract and bump the generation, which
-    is what re-keys the editors' tint caches. Call outside a pass."""
+    """Queue source refreshes without reading a project's files while drawing.
+
+    Pending/watcher changes are coalesced on one worker; a two-second sweep
+    reconciles cached tables. Installing changed tables wakes their consumers.
+    ``force=True`` retains the synchronous refresh used by explicit callers.
+    """
     st = _state()
     now = time.monotonic()
     if project is not None:
@@ -865,34 +895,122 @@ def sweep(force=False, project=None):
             ensure_universe(blocking=False)
         except Exception:
             pass
-    dirty = st.setdefault("dirty_paths", set())
-    if not force and not dirty and now - st.get("last_sweep", 0.0) < 0.1:
-        return
-    st["last_sweep"] = now
-    full = force or now - st.get("last_full_sweep", 0.0) > 2.0
-    if full:
-        st["last_full_sweep"] = now
-    paths = set(dirty)
-    dirty.difference_update(paths)
+    with st["lock"]:
+        dirty = st.setdefault("dirty_paths", set())
+        if not force and not dirty and now - st.get("last_sweep", 0.0) < 0.1:
+            return
+        st["last_sweep"] = now
+        full = force or now - st.get("last_full_sweep", 0.0) > 2.0
+        if full:
+            st["last_full_sweep"] = now
+        paths = set(dirty)
+        dirty.difference_update(paths)
+        if full:
+            paths.update(st["tables"])
     try:
         from meltygui.editor.pending_save import PendingSave
         for pp in list(PendingSave._pending_gen):
             paths.add(_norm(pp))
     except Exception:
         pass
-    if full:
-        paths.update(st["tables"])
+    if force:
+        _refresh_sweep_paths(st, paths)
+    elif paths:
+        _queue_sweep(st, paths)
+
+
+def _queue_sweep(st, paths):
+    with st["lock"]:
+        st.setdefault("sweep_pending", set()).update(paths)
+        if st.get("sweep_running"):
+            return
+        st["sweep_running"] = True
+    threading.Thread(target=_sweep_worker, args=(st,), daemon=True,
+                     name="source-refresh").start()
+
+
+def _sweep_worker(st):
+    try:
+        while True:
+            with st["lock"]:
+                paths = st.setdefault("sweep_pending", set())
+                if not paths:
+                    st["sweep_running"] = False
+                    return
+                st["sweep_pending"] = set()
+            _refresh_sweep_paths(st, paths, deferred=True)
+    except BaseException:
+        with st["lock"]:
+            st["sweep_running"] = False
+        raise
+
+
+def _sweep_revision(st, path):
+    """In-memory validity check; applying worker results must not read files."""
+    from meltygui.core.melty import Melty
+    from meltygui.editor.pending_save import PendingSave
+    pending = PendingSave._pending_gen
+    # A global pending generation conservatively retries on another file's
+    # edit, without resolving the pending map's potentially aliased paths.
+    return (st.get("path_generations", {}).get(path, 0),
+            id(Melty.code_cache.get(path)), id(pending), sum(pending.values()))
+
+
+def _apply_sweep_results(st):
+    # Melty drains this callback between frames. In particular, it cannot
+    # detach live_parts while a text view is constructing a new live table.
+    with st["lock"]:
+        results = st.pop("sweep_results", {})
+        st["sweep_posted"] = False
+    retry = set()
+    for path, (base, held, revision, fresh) in results.items():
+        with st["lock"]:
+            if st["tables"].get(path) is not base or _sweep_revision(st, path) != revision:
+                retry.add(path)
+                continue
+            _install(st, path, fresh)
+            _discard_sweep_live(st, path, held, fresh)
+    if retry:
+        _queue_sweep(st, retry)
+
+
+def _discard_sweep_live(st, path, held, fresh):
+    if held is not None and held[1] != fresh.key:
+        with st["lock"]:
+            if st["live"].get(path) is held:
+                st["live"].pop(path, None)
+                st.get("live_parts", {}).pop(path, None)
+                if _tables_differ(held[0], fresh):
+                    _gen_bump(st, path)
+
+
+def _refresh_sweep_paths(st, paths, *, deferred=False):
     for p in paths:
         ent = st["tables"].get(p)
         if ent is None:
             continue
-        if ent.key != _file_key(p):
-            _pending_table(st, p)       # re-extracts + bumps gen if it matters
-            held = st["live"].get(p)
-            if held is not None and held[1] != st["tables"][p].key:
+        held = st["live"].get(p)
+        key = _file_key(p)
+        if ent.key == key:
+            continue
+        if deferred:
+            revision = _sweep_revision(st, p)
+            text = _current_text(p)
+            fresh = extract_table(p, text or "", key, previous=ent)
+            if key != _file_key(p) or revision != _sweep_revision(st, p):
                 with st["lock"]:
-                    st["live"].pop(p, None)
-                    st.get("live_parts", {}).pop(p, None)
+                    st.setdefault("sweep_pending", set()).add(p)
+                continue
+            with st["lock"]:
+                st.setdefault("sweep_results", {})[p] = (ent, held, revision, fresh)
+                post = not st.get("sweep_posted")
+                st["sweep_posted"] = True
+            if post:
+                from meltygui.core.melty import Melty
+                Melty.post_to_render(lambda: _apply_sweep_results(st))
+        else:
+            fresh = _pending_table(st, p, allow_frozen=False)
+            _discard_sweep_live(st, p, held, fresh)
 
 
 def _tables_differ(a, b):
@@ -909,10 +1027,24 @@ def _tables_differ(a, b):
 
 
 def _norm(path):
+    # A tint/lookup pass freezes its source tables already. Resolve each input
+    # once within that pass, including repeated uses of the canonical result.
+    # Drop the memo at its end so later passes still notice symlink retargets.
+    state = getattr(sys, "_lsd_symbol_roster", None)
+    memo = state.setdefault("pass_paths", {}) if state and state.get("frozen") else None
+    key = os.fspath(path)
+    if not os.path.isabs(key):
+        key = os.path.join(os.getcwd(), key)
+    if memo is not None and key in memo:
+        return memo[key]
     try:
-        return str(Path(path).resolve())
+        resolved = str(Path(path).resolve())
     except (OSError, ValueError):
-        return str(path)
+        resolved = str(path)
+    if memo is not None:
+        memo[key] = resolved
+        memo[resolved] = resolved
+    return resolved
 
 
 def set_tint(path, qualname, tint):
@@ -948,7 +1080,7 @@ def universe_paths(project=None):
     from meltygui.text_index import _walk_rel_files
     paths = [_norm(os.path.join(project.root, relative))
              for relative in _walk_rel_files(project.root) if relative.endswith(".py")]
-    paths = [path for path in paths if project.owns(path)]
+    paths = [path for path in paths if project.owns(path, canonical_file=True)]
     record["universe"], record["universe_at"] = paths, now
     record["paths"] = set(paths)
     return paths
@@ -986,29 +1118,211 @@ def ensure_universe(blocking=False, project=None):
     return False
 
 
+def _update_name_indexes(previous, indexed_tables, owned_tables, cooperate=None):
+    """Replace changed files' contributions without mutating a held snapshot."""
+    if previous is None or indexed_tables is None:
+        indexes = ({}, {})
+        for position, table in enumerate(owned_tables.values()):
+            if cooperate is not None and position % 64 == 0:
+                cooperate()
+            for entry in table.entries:
+                index = indexes[1 if "." in entry.qualname else 0]
+                index.setdefault(entry.name, []).append(entry)
+        return indexes
+
+    removed = [table for path, table in indexed_tables.items()
+               if owned_tables.get(path) is not table]
+    added = [table for path, table in owned_tables.items()
+             if indexed_tables.get(path) is not table]
+    if not removed and not added:
+        return previous
+
+    removals, additions = ({}, {}), ({}, {})
+    for position, table in enumerate(removed):
+        if cooperate is not None and position % 64 == 0:
+            cooperate()
+        for entry in table.entries:
+            index = removals[1 if "." in entry.qualname else 0]
+            index.setdefault(entry.name, set()).add(id(entry))
+    for position, table in enumerate(added):
+        if cooperate is not None and position % 64 == 0:
+            cooperate()
+        for entry in table.entries:
+            index = additions[1 if "." in entry.qualname else 0]
+            index.setdefault(entry.name, []).append(entry)
+
+    indexes = list(previous)
+    order = {path: position for position, path in enumerate(owned_tables)}
+    for part in (0, 1):
+        changed_names = removals[part].keys() | additions[part].keys()
+        if not changed_names:
+            continue
+        indexes[part] = previous[part].copy()
+        for position, name in enumerate(changed_names):
+            if cooperate is not None and position % 64 == 0:
+                cooperate()
+            removed_ids = removals[part].get(name, ())
+            entries = [entry for entry in previous[part].get(name, ())
+                       if id(entry) not in removed_ids]
+            entries.extend(additions[part].get(name, ()))
+            if entries:
+                # Keep a full rebuild's file order even when an edited file
+                # shares this name with unchanged files; within-file order
+                # is already preserved by the table's entries.
+                entries.sort(key=lambda entry: order[entry.path])
+                indexes[part][name] = entries
+            else:
+                indexes[part].pop(name, None)
+    return tuple(indexes)
+
+
+def _drawing_names():
+    """Only defer lookups made by the actual drawing thread inside a frame."""
+    melty_module = sys.modules.get("meltygui.core.melty")
+    melty = getattr(melty_module, "Melty", None)
+    windows = sys.modules.get("meltygui.core.windowing.glfw_utils")
+    return (bool(getattr(melty, "_frame_draw_start", 0.0))
+            and threading.get_ident() == getattr(windows, "_render_thread_id", None))
+
+
+def _names_need_refresh(record, revision, now):
+    from meltygui.code.source_context import OWNERSHIP_CHECK_SECONDS
+    return (record["names"] is None or record.get("names_tables") is None
+            or record["names_gen"] != record["gen"]
+            or record.get("names_revision") != revision
+            or now - record.get("names_checked_at", -float("inf")) >= OWNERSHIP_CHECK_SECONDS)
+
+
+def _prepare_name_indexes(state, record, *, cooperative=False):
+    project = record["project"]
+    cooperate = None
+    if cooperative:
+        from meltygui.code.libcst_conversion import _park_while_frame
+        cooperate = _park_while_frame
+        cooperate()
+    revision = getattr(project, "ownership_revision", None)
+    checked_at = time.monotonic()
+    ownership = project.ownership_snapshot() if hasattr(project, "ownership_snapshot") else project
+    checked_at = getattr(ownership, "checked_at", checked_at)
+    with state["lock"]:
+        generation = record["gen"]
+        previous = record["names"]
+        indexed_tables = record.get("names_tables")
+        effective = dict(state["tables"])
+        effective.update((path, held[0]) for path, held in state["live"].items())
+    owned_tables = {}
+    for position, (path, table) in enumerate(effective.items()):
+        if cooperate is not None and position % 64 == 0:
+            cooperate()
+        if ownership.owns(path, canonical_file=True):
+            owned_tables[path] = table
+    names = _update_name_indexes(previous, indexed_tables, owned_tables, cooperate)
+    return generation, revision, previous, names, owned_tables, checked_at
+
+
+def _apply_name_indexes(state):
+    """Constant work per project at the existing between-frame boundary."""
+    with state["lock"]:
+        results = state.pop("names_results", {})
+        state["names_posted"] = False
+    for record, result in results.values():
+        generation, revision, previous, names, owned_tables, checked_at = result
+        project = record["project"]
+        with state["lock"]:
+            record["names_refreshing"] = False
+            current_revision = getattr(project, "ownership_revision", None)
+            valid = (record["gen"] == generation and current_revision == revision
+                     and record["names"] is previous)
+            if valid:
+                record["names"] = names
+                record["names_tables"] = owned_tables
+                record["names_revision"] = revision
+                record["names_checked_at"] = checked_at
+                # Consumers may already have drawn the old fallback at this
+                # source generation. Wake them when the new index arrives.
+                if names is not previous:
+                    record["gen"] += 1
+                    state["gen"] += 1
+                    if state["consumers"]:
+                        _schedule_notify()
+                record["names_gen"] = record["gen"]
+            retry = not valid and _names_need_refresh(record, current_revision, time.monotonic())
+        if retry:
+            _queue_name_indexes(state, record)
+
+
+def _name_index_worker(state):
+    while True:
+        with state["lock"]:
+            pending = state.setdefault("names_pending", {})
+            if not pending:
+                state["names_running"] = False
+                return
+            key, record = pending.popitem()
+        try:
+            result = _prepare_name_indexes(state, record, cooperative=True)
+        except Exception:
+            with state["lock"]:
+                record["names_refreshing"] = False
+            import traceback
+            traceback.print_exc()
+            continue
+        with state["lock"]:
+            state.setdefault("names_results", {})[key] = record, result
+            post = not state.get("names_posted")
+            state["names_posted"] = True
+        if post:
+            from meltygui.core.melty import Melty
+            Melty.post_to_render(lambda: _apply_name_indexes(state))
+
+
+def _queue_name_indexes(state, record):
+    with state["lock"]:
+        if record.get("names_refreshing"):
+            return
+        record["names_refreshing"] = True
+        state.setdefault("names_pending", {})[id(record)] = record
+        if state.get("names_running"):
+            return
+        state["names_running"] = True
+    threading.Thread(target=_name_index_worker, args=(state,),
+                     daemon=True, name="symbol-names").start()
+
+
 def _name_indexes(project=None):
-    """Project-local fallback names; unrelated repos cannot introduce ambiguity."""
-    project = analysis_project(project)
+    """Project fallback snapshots; drawing never scans the source corpus."""
+    if not hasattr(project, "key"):
+        project = analysis_project(project)
     state = _state()
     record = _project_state(project)
     pass_names = state.setdefault("pass_project_names", {})
     if state.get("frozen") and project.key in pass_names:
         return pass_names[project.key]
-    if record["names"] is None or record["names_gen"] != record["gen"]:
-        by_name, by_leaf = {}, {}
-        effective = dict(state["tables"])
-        effective.update((path, held[0]) for path, held in list(state["live"].items()))
-        for path, table in effective.items():
-            if not project.owns(path):
-                continue
-            for entry in table.entries:
-                index = by_leaf if "." in entry.qualname else by_name
-                index.setdefault(entry.name, []).append(entry)
-        record["names"] = (by_name, by_leaf)
-        record["names_gen"] = record["gen"]
+    revision = getattr(project, "ownership_revision", None)
+    with state["lock"]:
+        names = record["names"]
+        refresh = _names_need_refresh(record, revision, time.monotonic())
+    if refresh:
+        if _drawing_names():
+            _queue_name_indexes(state, record)
+            # Mark/unmark invalidates the old ownership scope immediately;
+            # keep a running pass stable, but do not offer wrong-scope names.
+            if record.get("names_revision") != revision:
+                names = None
+        else:
+            generation, revision, _previous, names, owned_tables, checked_at = _prepare_name_indexes(state, record)
+            with state["lock"]:
+                record["names"] = names
+                record["names_tables"] = owned_tables
+                record["names_revision"] = revision
+                record["names_checked_at"] = checked_at
+                # Installs during the scan still leave the generation stale.
+                record["names_gen"] = generation
+    if names is None:
+        names = ({}, {})
     if state.get("frozen"):
-        pass_names[project.key] = record["names"]
-    return record["names"]
+        pass_names[project.key] = names
+    return names
 
 
 # ── Resolution ───────────────────────────────────────────────────────────────
@@ -1563,14 +1877,30 @@ def local_key(table, scope, name, bindings):
 
 
 def _project_file_changed(path):
+    from meltygui.code.fileref import _PROJECT_MARKERS
+    if os.path.basename(path) in _PROJECT_MARKERS:
+        # Resolve the containing directory, not a marker symlink's target.
+        from meltygui.code.source_context import invalidate_ownership
+        directory = _norm(os.path.dirname(path))
+        state = _state()
+        with state["lock"]:
+            invalidate_ownership(directory)
+            for record in state.get("projects", {}).values():
+                record["universe"] = None
+                record["complete"] = False
+            _gen_bump(state)
+        return
     if not str(path).endswith((".py", ".pyi", ".pth", "pyvenv.cfg")):
         return
     path = _norm(path)
     state = _state()
+    exists = os.path.exists(path)
     with state["lock"]:
+        revisions = state.setdefault("path_generations", {})
+        revisions[path] = revisions.get(path, 0) + 1
         state.setdefault("dirty_paths", set()).add(path)
         for record in list(state.get("projects", {}).values()):
-            if record["project"].resolves(path) and (path not in record["paths"] or not os.path.exists(path)):
+            if _possibly_resolves(record["project"], path) and (path not in record["paths"] or not exists):
                 record["universe"] = None
                 record["complete"] = False
         _gen_bump(state, path)

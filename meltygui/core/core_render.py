@@ -100,6 +100,52 @@ _offscreen_rescue = {"count": 0}
 channels_split_stack = False
 child_stack_holder = {}
 
+def _report_draw_exception(e, draw_state, func):
+    # A hotswapped function/class/module that compiled clean can still
+    # throw when its new code actually RUNS here. Ask the rollback guard to
+    # match this traceback to a recent hotswap; if it owns it, the live
+    # object is reverted to its previous good state (app stays up) and the
+    # error is recorded for the user to surface. A rolled-back swap won't
+    # throw again next frame, so the loop recovers.
+    import meltygui.code.hotswap_guard as hotswap_guard
+    if hotswap_guard.handle_exception(e):
+        request_render()
+
+    # Check if previous stack trace is the same as the current one to avoid flooding logs with the same error
+    is_same_exception = False
+    if draw_state is not None and draw_state._stack_trace is not None:
+        previous_exception = draw_state._stack_trace
+        if type(e) == type(previous_exception):
+            is_same_exception = True
+    if draw_state is not None:
+        draw_state._stack_trace = e
+
+    if not is_same_exception:
+        # The fancy printer resolves watches against live objects and
+        # can itself throw. An escape here would land in the finally
+        # below, whose return DISCARDS the in-flight exception and the
+        # original trace would vanish without a sound. Fall back to a
+        # plain traceback, which cannot fail.
+        try:
+            with trace_group(f"Drawing {func.__name__} {draw_state.name}", hash=draw_state.unique) as g:
+                watch = ["draw_state.name", "input_value", "convert_path", "clean_args.input_value", "func.__name__",
+                         "mode"]
+                print_stack_trace(frames=get_live_frames(), section="UI Thread",
+                                  group=g, watch=watch)
+                print_stack_trace(exception=e, section="Exception",
+                                  group=g, watch=watch)
+                print_stack_trace(exception=e, ignore_functions=[])
+        except Exception as report_err:
+            print(f"print_stack_trace failed, plain traceback for {func.__name__}:")
+            traceback.print_exception(type(e), e, e.__traceback__)
+            print("--- reporter's own failure ---")
+            traceback.print_exception(type(report_err), report_err,
+                                      report_err.__traceback__)
+    else:
+        print(f"Exception in {func.__name__}: {e}")
+
+
+
 #2322
 def _run_convert_chain(value=None, chain=None, **extra_kwargs):
     """Run a list of converter functions in sequence.
@@ -4519,41 +4565,7 @@ def render_func(*args, **o_kwargs):
                             draw_list.pop_clip_rect()
 
 
-                if Melty.inside_clip(draw_state=draw_state):
-                    hover_eligible = draw_state.hover_eligible(rect=draw_state.get_content_rect()) and draw_state.hover_reported
-                else:
-                    hover_eligible = False
-
-                if hover_eligible:
-                    if closable:
-                        Melty.any_window_hovered_pending = True
-                    max_layer_depth = Melty.max_depth * Melty.max_depth + Melty.max_depth
-                    priority = max_layer_depth - draw_state.z_pos
-                    event_names = copy(wanted_params)
-
-                    # Remove event names from wanted params that aren't in kwargs
-                    event_names = [e for e in event_names if e in kwargs]
-                    if _event_rects:
-                        # A param the body scoped with event_rect registers only
-                        # while the pointer is within one of its rects (stored
-                        # relative to the view creation to re-anchor to the LIVE
-                        # window, as replay_body_actions needs); elsewhere it is
-                        # left unsubscribed so the click/drag falls through to
-                        # the view behind (the window's move button, ...).
-                        _er_left, _er_top = draw_state._abs_left(), draw_state._abs_top()
-                        event_names = [
-                            e for e in event_names
-                            if e not in _event_rects
-                            or any(draw_state.hover_eligible((_er_left + r[0], _er_top + r[1],
-                                                              _er_left + r[2], _er_top + r[3]))
-                                   for r in _event_rects[e])]
-                    _content_cursor = kwargs.get("mouse_cursor")
-                    Melty.event_handler.register_hovered(tile_id, event_names, priority - 3, tile_id,
-                                                         selected=draw_state.selected,
-                                                         blocker=closable,
-                                                         cursor=_content_cursor,
-                                                         cursor_rect=(draw_state.get_content_rect()
-                                                                      if _content_cursor is not None else None))
+                draw_state.register_parameter_actions(wanted_params, kwargs, _event_rects, closable)
 
                 ###########################################################
                 kwargs['next_kwargs'] = kwargs
@@ -5129,49 +5141,7 @@ def render_func(*args, **o_kwargs):
 
 
         except Exception as e:
-            # A hotswapped function/class/module that compiled clean can still
-            # throw when its new code actually RUNS here. Ask the rollback guard to
-            # match this traceback to a recent hotswap; if it owns it, the live
-            # object is reverted to its previous good state (app stays up) and the
-            # error is recorded for the user to surface. A rolled-back swap won't
-            # throw again next frame, so the loop recovers.
-            import meltygui.code.hotswap_guard as hotswap_guard
-            if hotswap_guard.handle_exception(e):
-                request_render()
-
-            # Check if previous stack trace is the same as the current one to avoid flooding logs with the same error
-            is_same_exception = False
-            if draw_state is not None and draw_state._stack_trace is not None:
-                previous_exception = draw_state._stack_trace
-                if type(e) == type(previous_exception):
-                    is_same_exception = True
-            if draw_state is not None:
-                draw_state._stack_trace = e
-
-            if not is_same_exception:
-                # The fancy printer resolves watches against live objects and
-                # can itself throw. An escape here would land in the finally
-                # below, whose return DISCARDS the in-flight exception and the
-                # original trace would vanish without a sound. Fall back to a
-                # plain traceback, which cannot fail.
-                try:
-                    with trace_group(f"Drawing {func.__name__} {draw_state.name}", hash=draw_state.unique) as g:
-                        watch = ["draw_state.name", "input_value", "convert_path", "clean_args.input_value", "func.__name__",
-                                 "mode"]
-                        print_stack_trace(frames=get_live_frames(), section="UI Thread",
-                                          group=g, watch=watch)
-                        print_stack_trace(exception=e, section="Exception",
-                                          group=g, watch=watch)
-                        print_stack_trace(exception=e, ignore_functions=[])
-                except Exception as report_err:
-                    print(f"print_stack_trace failed, plain traceback for {func.__name__}:")
-                    traceback.print_exception(type(e), e, e.__traceback__)
-                    print("--- reporter's own failure ---")
-                    traceback.print_exception(type(report_err), report_err,
-                                              report_err.__traceback__)
-            else:
-                print(f"Exception in {func.__name__}: {e}")
-
+            _report_draw_exception(e, draw_state, func)
 
         finally:
             if _style_font_pushed:
@@ -5726,55 +5696,60 @@ def render_func(*args, **o_kwargs):
                     #         imgui.text_colored(f"No lens for type {type(driven_value).__name__}", 1, 0.5, 0.5)
                     # else:
 
-                    if getattr(draw_state, "_lv_capture_body", False):
-                        # One-shot from a menu-open capture: monitor this func
-                        # call's entry/exit (sys.monitoring, local events on
-                        # the target code only) and its locals + source line
-                        # show as frame-snapshot markers at return - then
-                        # the LOCAL stack copy (the context menu's Code tab)
-                        # swaps its terminal entry's signature scope for the
-                        # body's full locals.
-                        draw_state._lv_capture_body = False
-                        from meltygui.code.live_view import call_with_body_capture
-                        _bc_code = getattr(inspect.unwrap(func), "__code__",
-                                           None)
+                    try:
+                        if getattr(draw_state, "_lv_capture_body", False):
+                            # One-shot from a menu-open capture: monitor this func
+                            # call's entry/exit (sys.monitoring, local events on
+                            # the target code only) and its locals + source line
+                            # show as frame-snapshot markers at return - then
+                            # the LOCAL stack copy (the context menu's Code tab)
+                            # swaps its terminal entry's signature scope for the
+                            # body's full locals.
+                            draw_state._lv_capture_body = False
+                            from meltygui.code.live_view import call_with_body_capture
+                            _bc_code = getattr(inspect.unwrap(func), "__code__",
+                                               None)
 
-                        def _adopt_body_locals(scope, _ds=draw_state,
-                                               _code=_bc_code):
-                            # Replace IN A NEW list - the Code tab keys its
-                            # pane rebuild on the stack list's identity, so
-                            # mutating in place would never re-resolve. Only
-                            # when the tail really is this function (the
-                            # terminal append is skipped on non-project
-                            # source).
-                            stack = getattr(_ds, "_call_stack_frames", None)
-                            if not stack or _code is None:
-                                return
-                            tail = stack[-1]
-                            if (tail[0] != _code.co_filename
-                                    or tail[1] != _code.co_firstlineno):
-                                return
-                            _ds._call_stack_frames = stack[:-1] + [
-                                (tail[0], tail[1], tail[2], scope)]
-                            # The Code tab retains the OLD list object -
-                            # find its tiles by that object and re-render
-                            # them so the fresh locals show without waiting
-                            # for an unrelated repaint.
-                            try:
-                                Melty.cache.invalidate_by_obj(stack)
-                                request_render()
-                            except Exception:
-                                pass
+                            def _adopt_body_locals(scope, _ds=draw_state,
+                                                   _code=_bc_code):
+                                # Replace IN A NEW list - the Code tab keys its
+                                # pane rebuild on the stack list's identity, so
+                                # mutating in place would never re-resolve. Only
+                                # when the tail really is this function (the
+                                # terminal append is skipped on non-project
+                                # source).
+                                stack = getattr(_ds, "_call_stack_frames", None)
+                                if not stack or _code is None:
+                                    return
+                                tail = stack[-1]
+                                if (tail[0] != _code.co_filename
+                                        or tail[1] != _code.co_firstlineno):
+                                    return
+                                _ds._call_stack_frames = stack[:-1] + [
+                                    (tail[0], tail[1], tail[2], scope)]
+                                # The Code tab retains the OLD list object -
+                                # find its tiles by that object and re-render
+                                # them so the fresh locals show without waiting
+                                # for an unrelated repaint.
+                                try:
+                                    Melty.cache.invalidate_by_obj(stack)
+                                    request_render()
+                                except Exception:
+                                    pass
 
-                        return_value = call_with_body_capture(
-                            func, clean_args, on_captured=_adopt_body_locals)
-                    else:
-                        draw_state._wt_body0 = time.perf_counter()   # TEMP perf
-                        return_value = func(**clean_args)
-                        draw_state._wt_body1 = time.perf_counter()   # TEMP perf
-
-
-                    # Stack cleanup handled by the finally block below
+                            return_value = call_with_body_capture(
+                                func, clean_args, on_captured=_adopt_body_locals)
+                        else:
+                            draw_state._wt_body0 = time.perf_counter()   # TEMP perf
+                            return_value = func(**clean_args)
+                            draw_state._wt_body1 = time.perf_counter()   # TEMP perf
+                    except Exception as e:
+                        # Keep the wrapper's normal group/ID/clip/cache epilogue
+                        # running when application code fails. Catching only at
+                        # the outer wrapper skips those pops and turns a Python
+                        # error into an ImGui stack assertion at frame end.
+                        _report_draw_exception(e, draw_state, func)
+                        return_value = False, input_value
 
                     draw_state._return_value = return_value
                     end_cursor = imgui.get_cursor_screen_pos()

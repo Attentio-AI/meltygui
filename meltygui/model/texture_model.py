@@ -1,8 +1,9 @@
 """Integer-like texture values with lazy, context-owned GPU storage."""
 from functools import total_ordering
 import operator
+from types import SimpleNamespace
 
-import OpenGL.GL as gl
+from meltygui.core.graphics import desktop_gl as gl
 from meltygui.core.graphics.gl_state import GLTexture, tight_unpack
 from meltygui.core.runtime.toggles import Toggles
 
@@ -40,7 +41,23 @@ class TextureId:
         raise NotImplementedError
 
     def __int__(self):
+        from meltygui.core.melty import Melty
+        renderer = Melty.graphics_backend
+        if renderer is not None:
+            import threading
+            from meltygui.core.windowing import glfw_utils
+            if threading.get_ident() != glfw_utils._render_thread_id:
+                raise RuntimeError('A texture ID must be uploaded on the render thread')
+            state = self._states.get(renderer)
+            if state is None:
+                # GLState's resource/deferred-deletion policy is shared; these
+                # allocations belong to the single native owner, with no GL context.
+                state = self._states[renderer] = GLState()
+            return self._upload_native(state, renderer).texture_id
         return self._upload(self._state()).texture_id
+
+    def _upload_native(self, state, renderer):
+        raise NotImplementedError(f'{type(self).__name__} has no native texture upload')
 
     def __index__(self):
         return int(self)
@@ -96,7 +113,7 @@ class ImageTexture(TextureId):
     """
     def __init__(self, name, tex_width, tex_height, gl_format, data,
                  tint=(1.0, 1.0, 1.0)):
-        super().__init__(gl.GL_TEXTURE_2D)
+        super().__init__(0x0DE1)  # GL_TEXTURE_2D: serialized desktop metadata, not a GPU call
         self.name = name
         self.tex_width = tex_width
         self.tex_height = tex_height
@@ -129,6 +146,20 @@ class ImageTexture(TextureId):
                 gl.glBindTexture(gl.GL_TEXTURE_2D, previous)
         return state.get('image', create, lambda texture: gl.glDeleteTextures([texture.texture_id]))
 
+    def _upload_native(self, state, renderer):
+        if self.gl_format not in (0x1907, 0x1908):  # GL_RGB / GL_RGBA CPU images
+            raise ValueError('Native image textures require RGB or RGBA pixels')
+
+        def create():
+            pixels = self.data.tobytes() if hasattr(self.data, 'tobytes') else bytes(self.data)
+            if self.gl_format == 0x1907:
+                from PIL import Image
+                pixels = Image.frombytes('RGB', (self.tex_width, self.tex_height), pixels).convert('RGBA').tobytes()
+            return SimpleNamespace(texture_id=renderer.create_texture(
+                self.tex_width, self.tex_height, 'rgba8srgb', pixels))
+
+        return state.get('image', create, lambda texture: renderer.delete_texture(texture.texture_id))
+
     def __getstate__(self):
         return {key: value for key, value in self.__dict__.items() if key != '_states'}
 
@@ -138,7 +169,7 @@ class ImageTexture(TextureId):
         state.pop('texture_id', None)
         state.pop('_states', None)
         self.__dict__.update(state)
-        self.target = int(gl.GL_TEXTURE_2D)
+        self.target = 0x0DE1
         self._states = {}
 
 

@@ -42,7 +42,7 @@ import threading
 import weakref
 
 import numpy as np
-import OpenGL.GL as gl
+from meltygui.core.graphics import desktop_gl as gl
 from meltygui.core.rendering.core_decoration import defaults
 
 
@@ -637,10 +637,12 @@ class GLState:
 
         return self.get(key, create, delete, deps=deps)[0]
 
-    def buffer(self, key, data=None, nbytes=None, target=gl.GL_ARRAY_BUFFER,
-               usage=gl.GL_DYNAMIC_DRAW, version=None):
+    def buffer(self, key, data=None, nbytes=None, target=None,
+               usage=None, version=None):
         """A plain GL buffer, sized from `data` (numpy) or `nbytes`. This is
         the allocation the CUDA-interop step will register against."""
+        target = gl.GL_ARRAY_BUFFER if target is None else target
+        usage = gl.GL_DYNAMIC_DRAW if usage is None else usage
         if data is not None:
             data = np.ascontiguousarray(data)
             nbytes = data.nbytes

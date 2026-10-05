@@ -176,10 +176,10 @@ def _surface():
     Per-window Melty state is swapped in by Surface.activate, so each
     surface's frame sees its own windows, handler and native model."""
     try:
-        from meltygui.core.windowing.surface import Surface
+        from meltygui.core.melty import Melty
     except Exception:
         return None
-    return Surface.active
+    return Melty.current_surface()
 
 
 def _surface_title(surface):

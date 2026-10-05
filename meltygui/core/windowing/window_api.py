@@ -59,7 +59,10 @@ def is_native_window(window):
 def terminate():
     backend = _state['backend']
     try:
-        (backend or importlib.import_module('glfw')).terminate()
+        if backend is not None:
+            backend.terminate()
+        elif sys.platform != 'ios':
+            importlib.import_module('glfw').terminate()
     finally:
         _state.update(backend=None, selected=False)
 

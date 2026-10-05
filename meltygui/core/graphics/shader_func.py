@@ -50,10 +50,11 @@ None.
 """
 
 import inspect
+from functools import cache
 import re
 
 import numpy as np
-import OpenGL.GL as gl
+from meltygui.core.graphics import desktop_gl as gl
 
 from meltygui.core.graphics.gl_state import GLState
 from meltygui.core.graphics.gl_state import GLTexture
@@ -219,14 +220,16 @@ def _link_program(stage_shaders):
     return program
 
 
-_SAMPLER_TARGETS = {
-    int(gl.GL_SAMPLER_1D): gl.GL_TEXTURE_1D,
-    int(gl.GL_SAMPLER_2D): gl.GL_TEXTURE_2D,
-    int(gl.GL_SAMPLER_3D): gl.GL_TEXTURE_3D,
-    int(gl.GL_SAMPLER_CUBE): gl.GL_TEXTURE_CUBE_MAP,
-    int(gl.GL_SAMPLER_2D_ARRAY): gl.GL_TEXTURE_2D_ARRAY,
-    int(gl.GL_SAMPLER_2D_SHADOW): gl.GL_TEXTURE_2D,   # depth texture (pbr shadow maps)
-}
+@cache
+def _sampler_targets():
+    return {
+        int(gl.GL_SAMPLER_1D): gl.GL_TEXTURE_1D,
+        int(gl.GL_SAMPLER_2D): gl.GL_TEXTURE_2D,
+        int(gl.GL_SAMPLER_3D): gl.GL_TEXTURE_3D,
+        int(gl.GL_SAMPLER_CUBE): gl.GL_TEXTURE_CUBE_MAP,
+        int(gl.GL_SAMPLER_2D_ARRAY): gl.GL_TEXTURE_2D_ARRAY,
+        int(gl.GL_SAMPLER_2D_SHADOW): gl.GL_TEXTURE_2D,   # depth texture (pbr shadow maps)
+    }
 
 
 def reflect_uniforms(program):
@@ -262,21 +265,23 @@ def _set_matrix(fn, loc, val):
         fn(loc, 1, gl.GL_TRUE, _as_f32(val))
 
 
-_SETTERS = {
-    int(gl.GL_FLOAT): lambda loc, v: gl.glUniform1f(loc, float(v)),
-    int(gl.GL_INT): lambda loc, v: gl.glUniform1i(loc, int(v)),
-    int(gl.GL_UNSIGNED_INT): lambda loc, v: gl.glUniform1ui(loc, int(v)),
-    int(gl.GL_BOOL): lambda loc, v: gl.glUniform1i(loc, 1 if v else 0),
-    int(gl.GL_FLOAT_VEC2): lambda loc, v: gl.glUniform2fv(loc, 1, _as_f32(v)),
-    int(gl.GL_FLOAT_VEC3): lambda loc, v: gl.glUniform3fv(loc, 1, _as_f32(v)),
-    int(gl.GL_FLOAT_VEC4): lambda loc, v: gl.glUniform4fv(loc, 1, _as_f32(v)),
-    int(gl.GL_INT_VEC2): lambda loc, v: gl.glUniform2iv(loc, 1, _as_i32(v)),
-    int(gl.GL_INT_VEC3): lambda loc, v: gl.glUniform3iv(loc, 1, _as_i32(v)),
-    int(gl.GL_INT_VEC4): lambda loc, v: gl.glUniform4iv(loc, 1, _as_i32(v)),
-    int(gl.GL_FLOAT_MAT2): lambda loc, v: _set_matrix(gl.glUniformMatrix2fv, loc, v),
-    int(gl.GL_FLOAT_MAT3): lambda loc, v: _set_matrix(gl.glUniformMatrix3fv, loc, v),
-    int(gl.GL_FLOAT_MAT4): lambda loc, v: _set_matrix(gl.glUniformMatrix4fv, loc, v),
-}
+@cache
+def _setters():
+    return {
+        int(gl.GL_FLOAT): lambda loc, v: gl.glUniform1f(loc, float(v)),
+        int(gl.GL_INT): lambda loc, v: gl.glUniform1i(loc, int(v)),
+        int(gl.GL_UNSIGNED_INT): lambda loc, v: gl.glUniform1ui(loc, int(v)),
+        int(gl.GL_BOOL): lambda loc, v: gl.glUniform1i(loc, 1 if v else 0),
+        int(gl.GL_FLOAT_VEC2): lambda loc, v: gl.glUniform2fv(loc, 1, _as_f32(v)),
+        int(gl.GL_FLOAT_VEC3): lambda loc, v: gl.glUniform3fv(loc, 1, _as_f32(v)),
+        int(gl.GL_FLOAT_VEC4): lambda loc, v: gl.glUniform4fv(loc, 1, _as_f32(v)),
+        int(gl.GL_INT_VEC2): lambda loc, v: gl.glUniform2iv(loc, 1, _as_i32(v)),
+        int(gl.GL_INT_VEC3): lambda loc, v: gl.glUniform3iv(loc, 1, _as_i32(v)),
+        int(gl.GL_INT_VEC4): lambda loc, v: gl.glUniform4iv(loc, 1, _as_i32(v)),
+        int(gl.GL_FLOAT_MAT2): lambda loc, v: _set_matrix(gl.glUniformMatrix2fv, loc, v),
+        int(gl.GL_FLOAT_MAT3): lambda loc, v: _set_matrix(gl.glUniformMatrix3fv, loc, v),
+        int(gl.GL_FLOAT_MAT4): lambda loc, v: _set_matrix(gl.glUniformMatrix4fv, loc, v),
+    }
 
 
 class _Stage:
@@ -289,7 +294,6 @@ class _Stage:
         self.identifiers = glsl_identifiers(source)
         self.predeclared = declared_uniform_names(source)
 
-
 class _ProgramRecord:
     __slots__ = ("program", "uniforms", "sampler_units")
 
@@ -300,7 +304,7 @@ class _ProgramRecord:
         # recompiles, so a given sampler keeps its unit as the source evolves.
         self.sampler_units = {
             name: unit for unit, name in enumerate(sorted(
-                n for n, (_, t, _s) in self.uniforms.items() if t in _SAMPLER_TARGETS))
+                n for n, (_, t, _s) in self.uniforms.items() if t in _sampler_targets()))
         }
 
 
@@ -313,9 +317,11 @@ class ShaderFunc:
         self._name = name or f"{func.__module__}.{func.__qualname__}"
         self.__name__ = getattr(func, "__name__", self._name)
         self.__doc__ = getattr(func, "__doc__", None)
+        # Stage-type metadata (GL_VERTEX_SHADER / GL_FRAGMENT_SHADER) does
+        # not require loading a desktop driver while registering a view.
         self.stages = [
-            _Stage("vertex", gl.GL_VERTEX_SHADER, vertex or DEFAULT_VERTEX_FULLSCREEN),
-            _Stage("fragment", gl.GL_FRAGMENT_SHADER, fragment),
+            _Stage("vertex", 0x8B31, vertex or DEFAULT_VERTEX_FULLSCREEN),
+            _Stage("fragment", 0x8B30, fragment),
         ]
 
         sig = inspect.signature(func)
@@ -358,6 +364,9 @@ class ShaderFunc:
                 f"forward it — {self.__name__}(gl_state, ...)")
         if not is_gl_thread():
             return None   # Render mode / Background thread - no GL here
+        from meltygui.core.melty import Melty
+        if Melty.graphics_backend is not None:
+            raise NotImplementedError('Desktop GLSL passes require a Metal implementation on the native host')
 
         merged = {**self._defaults, **kwargs}
 
@@ -426,7 +435,7 @@ class ShaderFunc:
                 if info is None:
                     continue   # optimized out (or only matched a non-uniform use)
                 loc, utype, _size = info
-                target = _SAMPLER_TARGETS.get(utype)
+                target = _sampler_targets().get(utype)
                 if target is not None:
                     unit = rec.sampler_units.get(uname, 0)
                     gl.glActiveTexture(gl.GL_TEXTURE0 + unit)
@@ -438,7 +447,7 @@ class ShaderFunc:
                         gl.glBindTexture(target, int(val))
                     gl.glUniform1i(loc, unit)
                     continue
-                setter = _SETTERS.get(utype)
+                setter = _setters().get(utype)
                 if setter is None:
                     continue
                 try:

@@ -2184,6 +2184,33 @@ class DrawState(DictConversion):
                                                       1),
                              thickness=1.0)
 
+    def register_parameter_actions(self, wanted_params, kwargs, event_rects, closable):
+        """Register declared input parameters against current content geometry.
+
+        Shared by the render wrapper and native first-contact hit testing.
+        A finger can land on a cached text field without a hover render first.
+        """
+        if not (Core.melty.inside_clip(draw_state=self)
+                and self.hover_eligible(rect=self.get_content_rect()) and self.hover_reported):
+            return
+        if closable:
+            Core.melty.any_window_hovered_pending = True
+        max_layer_depth = Core.melty.max_depth * Core.melty.max_depth + Core.melty.max_depth
+        priority = max_layer_depth - self.z_pos
+        event_names = [name for name in wanted_params if name in kwargs]
+        if event_rects:
+            left, top = self._abs_left(), self._abs_top()
+            event_names = [name for name in event_names
+                           if name not in event_rects
+                           or any(self.hover_eligible((left + r[0], top + r[1],
+                                                       left + r[2], top + r[3]))
+                                  for r in event_rects[name])]
+        cursor = kwargs.get('mouse_cursor')
+        Core.melty.event_handler.register_hovered(
+            self._tile_id, event_names, priority - 3, self._tile_id,
+            selected=self.selected, blocker=closable, cursor=cursor,
+            cursor_rect=self.get_content_rect() if cursor is not None else None)
+
     def replay_body_actions(self):
         """Blit-cache hit: the body did not run, so re-issue every on_action
         it made on its last real render (see on_action). Rects re-anchor to

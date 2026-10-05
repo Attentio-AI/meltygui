@@ -923,6 +923,8 @@ class Melty:
     # Input remains on ``backend`` below, independently of GPU submission.
     graphics_backend = None
     native_surface = None
+    # Input policy for the active host; views branch through Core.melty.is_touch.
+    is_touch = False
 
     @classmethod
     def current_surface(cls):
@@ -1284,6 +1286,7 @@ class Melty:
     hovered_drawstate = set()
     hovered_drawstate_pending = set()
     frame_count = 0
+    _frame_draw_start = 0.0  # monotonic stamp while a surface owns the render thread
     last_print_invalidate = 0
 
     # Emphasis flashes: key -> SimpleNamespace note, drawn in the overlay
@@ -1479,16 +1482,18 @@ class Melty:
     _debug_overlay_test = True  # controlled sub-top overlay to verify masking
 
     @classmethod
-    def read_code(cls, path):
+    def read_code(cls, path, *, canonical_file=False):
         """File text via code_cache, invalidated by FileWatch on change. Returns
         None on read error. Use for repeated reads of the same source (e.g. the
-        symbol-usage index) so an unchanged file isn't re-read every pass."""
+        symbol-usage index) so an unchanged file isn't re-read every pass.
+        Already-resolved source-table keys use canonical_file=True to avoid
+        repeated filesystem resolution while sweeping a large symbol index."""
         # Path.resolve() is a realpath call (syscalls per component); the
         # roster's _file_changed calls this every frame, so the result is
         # memoized on the path string (bounded, never invalidated - a
         # symlink retarget mid-session is not a case this handles).
         path_str = str(path)
-        key = _RESOLVED_PATH_MEMO.get(path_str)
+        key = path_str if canonical_file else _RESOLVED_PATH_MEMO.get(path_str)
         if key is None:
             key = str(Path(path).resolve())
             if len(_RESOLVED_PATH_MEMO) > 4096:
@@ -2616,15 +2621,19 @@ class Melty:
     @classmethod
     def invalidate_event_targets(cls):
         """Wake cached consumers of delivered input before the render pass."""
-        if (not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
-                and not imgui.is_mouse_down(2) and not cls.on_scroll
-                and not cls.space_mouse_drag):
+        settled = (not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
+                   and not imgui.is_mouse_down(2) and not cls.on_scroll
+                   and not cls.space_mouse_drag)
+        if settled or cls.native_surface is not None:
             # A hover notification can precede a click on the same view.
             # Wake every delivered device-event target, not just the first
             # event, so cached ancestors run the nested consumer this frame.
             event_tiles = {event.tile_id for evts in cls.events.values()
                            for event in evts.values()
-                           if event.action is not None and event.tile_id is not None}
+                           if event.action is not None and event.tile_id is not None
+                           # Touch has no preceding hover to wake its consumer.
+                           # Only the press edge bypasses the held-drag freeze.
+                           and (settled or event.action == EventAction.DOWN)}
             for tile_id in event_tiles:
                 Melty.cache.invalidate_up(tile_id, max_depth=10, force=True)
 

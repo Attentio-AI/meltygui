@@ -406,9 +406,12 @@ class Surface:
         self.drawn_tick = Melty.app_tick
         interrupted_scope = glfw_utils.render_scope
         glfw_utils.render_scope = self
+        interrupted_frame = Melty._frame_draw_start
+        Melty._frame_draw_start = time.monotonic()
         try:
             self._frame()
         finally:
+            Melty._frame_draw_start = interrupted_frame
             glfw_utils.render_scope = interrupted_scope
 
     def _frame(self):

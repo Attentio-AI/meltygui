@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from math import ceil, floor, radians, tan
 from typing import Dict, List, Optional, Tuple, MutableMapping, Any
 
-from OpenGL import GL as gl
+from meltygui.core.graphics import desktop_gl as gl
 import meltygui_imgui as imgui
 from meltygui_imgui.core import _DrawList
 
@@ -257,7 +257,9 @@ class _Rect:
 # ==============================
 # Tiles hold LINEAR scRGB (hdr_color.py): RGBA16F keeps everything above 1 and
 # below 0 and doesn't band in the darks the way 8 bits of linear would.
-def _create_color_tex(w: int, h: int, internal_format=gl.GL_RGBA16F, clamp_to_border=False, filter=gl.GL_LINEAR) -> int:
+def _create_color_tex(w: int, h: int, internal_format=None, clamp_to_border=False, filter=None) -> int:
+    internal_format = gl.GL_RGBA16F if internal_format is None else internal_format
+    filter = gl.GL_LINEAR if filter is None else filter
     Melty.cache.tex_init_count += 1
 
     tex = gl.glGenTextures(1)
@@ -379,8 +381,10 @@ def _clear_mask_regions(mask_tex: int, rects) -> None:
 
 
 def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, draw_state=None, tile_id=None,
-                 pixel_scale=(1.0, 1.0)) -> \
+                 pixel_scale=(1.0, 1.0), gpu=None) -> \
         Optional[Tile]:
+    if gpu is not None:
+        return gpu.ensure_tile(existing, w, h, frame_id, draw_state, pixel_scale)
     # Layout occasionally hands us fractional or negative dims (e.g. a
     # midline is 0.333... width). glTexImage2D coerces those to int and lands on
     # 0, producing an incomplete FBO attachment (0x8CD6). Snap to integer
@@ -1214,10 +1218,13 @@ void main() { oColor = uColor; }
 # Main class
 # ==============================
 class TileCacheMasked:
+    # Existing desktop instances survive hotswap without an __init__ replay.
+    gpu = None
     # Existing live caches acquire per-window backing scale on their next
     # frame after a hotswap; unscaled caches retain their previous behavior.
     _pixel_scale = (1.0, 1.0)
-    def __init__(self):
+    def __init__(self, gpu=None):
+        self.gpu = gpu
         self.initial_value = {}
         self.did_deviate = {}
         self.enabled: bool = False
@@ -1570,6 +1577,9 @@ class TileCacheMasked:
         """Drop a tile and free its GL resources (e.g. a view grew too large to cache)."""
         t = self._tiles.pop(key, None)
         if t is None:
+            return
+        if self.gpu is not None:
+            self.gpu.delete_tile(t)
             return
         gl.glDeleteFramebuffers(1, [t.fbo])
         gl.glDeleteTextures(1, [t.tex])
@@ -2133,6 +2143,9 @@ class TileCacheMasked:
         return t.tex if t else None
 
     def cleanup(self) -> None:
+        if self.gpu is not None:
+            self.gpu.cleanup(self)
+            return
         for t in self._tiles.values():
             gl.glDeleteFramebuffers(1, [t.fbo])
             gl.glDeleteTextures(1, [t.tex])
@@ -2310,7 +2323,9 @@ class TileCacheMasked:
         # size - resized in-place via glTexImage2D rebind, which keeps the
         # texture name and its FBO attachment valid.
         self._fb_alloc_size = getattr(self, "_fb_alloc_size", (0, 0))
-        if fb_w > 0 and fb_h > 0:
+        if self.gpu is not None:
+            self.gpu.begin_masks(self, fb_w, fb_h)
+        elif fb_w > 0 and fb_h > 0:
             aw, ah = self._fb_alloc_size
             if fb_w > aw or fb_h > ah or self._snapshot_fbo is None:
                 def safe_del_tex(t):
@@ -2420,6 +2435,10 @@ class TileCacheMasked:
         strips = [s for s in strips if s[2] > 0 and s[3] > 0]
         if not strips:
             return False
+        if self.gpu is not None:
+            for rect in strips:
+                self.gpu.renderer.clear_rect(self._full_mask_tex, rect)
+            return True
         st = _GLState()
         try:
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._full_mask_fbo)
@@ -3021,6 +3040,8 @@ class TileCacheMasked:
         happens per fragment in the shader against the full mask (bound on
         unit 0 — PASS 5 is complete by now). RGB is plain additive; alpha
         is unused. Leaves blend/scissor disabled."""
+        if self.gpu is not None:
+            return self.gpu.stamp_glows(self, glows, dp_x, dp_y, s_x, s_y, fb_w, fb_h)
         self._ensure_glow_target(fb_w, fb_h)
         gw, gh = self._glow_size
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._glow_fbo)
@@ -3330,6 +3351,9 @@ class TileCacheMasked:
         tile bakes pass False (cached masks outlive today's overlaps and are
         z-composited by PASS 5). Leaves scissor disabled and blend restored
         to FUNC_ADD/off."""
+        if self.gpu is not None:
+            return self.gpu.stamp_shadows(self, shadows, dp_x, dp_y, s_x, s_y, fb_h,
+                                          scissor_fb=scissor_fb, win_gate=win_gate)
         if _batched is None:
             from meltygui.core.runtime.toggles import Toggles
             _batched = bool(Toggles.Melty.batch_shadow_stamps)
@@ -4180,6 +4204,12 @@ class TileCacheMasked:
         if cw > w:  # right band: screen cols [w, cw), full content height
             bands.append((w, ah - ch, cw - w, ch))
         bands = [_pixel_rect(rect, t.pixel_scale) for rect in bands]
+        if self.gpu is not None:
+            self.gpu.clear_bands(t, bands)
+            t.content_scroll = so
+            t.content_bg = True
+            t.content_stale = False
+            return
         st = _GLState()
         try:
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, t.fbo)
@@ -4213,7 +4243,8 @@ class TileCacheMasked:
         layer = draw_state.z_pos
         name = draw_state.name
 
-        gl.glDisable(gl.GL_DEPTH_TEST)
+        if self.gpu is None:
+            gl.glDisable(gl.GL_DEPTH_TEST)
 
         Melty.tile_id_stack.append(key)
         x, y = imgui.get_cursor_screen_pos()
@@ -4471,6 +4502,7 @@ class TileCacheMasked:
         self.retain_input_view(ctx.draw_state)
 
     def mark_end_offscreen(self, draw_state=None) -> None:
+        gpu = getattr(self, "gpu", None)
         if not self.enabled:
             return
 
@@ -4619,13 +4651,14 @@ class TileCacheMasked:
             t = self._tiles.get(ctx.key)
             if t is not None and getattr(t, 'content_stale', False):
                 self._scrub_stale_content(t, ctx.draw_state)
-            if self._dummy_vao is None:
+            if gpu is None and self._dummy_vao is None:
                 vao = gl.glGenVertexArrays(1)
                 if isinstance(vao, (list, tuple)):
                     vao = vao[0]
                 self._dummy_vao = int(vao)
 
-            gl.glBindVertexArray(self._dummy_vao)
+            if gpu is None:
+                gl.glBindVertexArray(self._dummy_vao)
             old_size = t.size if t else None
 
             if (((t is None) or ((int(t.size[0]), int(t.size[1])) != (
@@ -4634,7 +4667,7 @@ class TileCacheMasked:
                     and not Melty.space_mouse_drag):
                 old_t = t
                 t = _ensure_tile(t, ctx.size[0], ctx.size[1], frame_id=self._frame_id,
-                                 draw_state=ctx.draw_state, pixel_scale=self._pixel_scale)
+                                 draw_state=ctx.draw_state, pixel_scale=self._pixel_scale, gpu=gpu)
 
                 if t is not None and t is old_t:
                     # Within-bucket logical resize: the tile was updated in
@@ -4967,6 +5000,8 @@ class TileCacheMasked:
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
     def finalize_captures(self, framebuffer_size: Tuple[int, int]) -> None:
+        if self.gpu is not None:
+            return self.gpu.finalize(self, framebuffer_size)
 
         self.all_keys = set()
         self.last_capture_stats = (0, 0, 0)
@@ -5205,51 +5240,8 @@ class TileCacheMasked:
             # inputs and keep last frame's textures instead (Lukas 08-31:
             # "move away from restamp everything every frame"). Compared by
             # value with ==, never hashed (mark tuples carry lists).
-            _mask_sig = None
-            _rebuild_masks = True
-            try:
-                if Toggles.Melty.mask_rebuild_on_change:
-                    _sig_rects = []
-                    for _rk, _rects in subtree_rects_by_root.items():
-                        for r in _rects:
-                            _ds = self.key_to_draw_state.get(r.key)
-                            _t = self._tiles.get(r.key)
-                            _sig_rects.append((
-                                _rk, r.key, r.x, r.y, r.w, r.h, r.depth_and_layer,
-                                r.corner_radius, getattr(r, "layer", None),
-                                None if _ds is None else (
-                                    _ds.abs_left, _ds.abs_top, _ds.width, _ds.height,
-                                    bool(_ds.size_change), bool(getattr(_ds, "freeze_resize", False)),
-                                    _ds.shadow_margin,
-                                    tuple(_ds.clipped_by_rect) if _ds.clipped_by_rect is not None else None),
-                                None if _t is None else (_t.mask_tex is not None, _t.mask_layer, tuple(_t.size)),
-                                r.key in self._key_to_ctx))
-                    _sig_windows = tuple(
-                        (id(_w), _w.abs_left, _w.abs_top, _w.width, _w.height, bool(_w.closed),
-                         getattr(_w, "corner_radius", None))
-                        for _w in (getattr(Melty, "paint_ordered_ds", None) or ()))
-                    _sig_retained = tuple(
-                        (_k, len(_m), id(_e), _e.abs_left, _e.abs_top, _a)
-                        for _k, (_m, _e, _a) in list(self._depth_marks_by_emitter.items())
-                    ) + tuple(
-                        (_k, len(_m), id(_e), _e.abs_left, _e.abs_top, _a)
-                        for _k, (_m, _e, _a) in list(self._glow_marks_by_emitter.items()))
-                    _settled_sig = (imgui.is_mouse_down(0), imgui.is_mouse_down(1),
-                                    imgui.is_mouse_down(2), bool(Melty.on_drag))
-                    _mask_sig = [
-                        (fb_w, fb_h, dp_x, dp_y, s_x, s_y),
-                        _sig_rects, list(self._shadow_rects), _sig_windows, _sig_retained,
-                        list(self._depth_frame), list(getattr(self, "_glow_rects", ()) or ()),
-                        set(self._glow_cleared), set(self._depth_cleared), _settled_sig,
-                        tuple((p.key, p.depth_and_layer) for p in local_pending),
-                    ]
-                    _rebuild_masks = (
-                        self._full_mask_tex is None
-                        or getattr(self, "_mask_sig_prev", None) != _mask_sig
-                        or any(p.tile is None or p.tile.mask_tex is None for p in local_pending))
-            except Exception:
-                _mask_sig = None
-                _rebuild_masks = True
+            _rebuild_masks, _mask_sig = self._mask_rebuild(
+                subtree_rects_by_root, local_pending, fb_w, fb_h, dp_x, dp_y, s_x, s_y)
             if _rebuild_masks:
                 background_depth = 0.001
                 background_depth = 0
@@ -5597,410 +5589,7 @@ class TileCacheMasked:
                 # Glow must never abort a capture pass (an exception here would
                 # leave tiles half-processed AND read as a state hotswap to the
                 # rollback guard) - it is purely UI, so trap and report once.
-                try:
-                    self._ensure_glow_state()
-                    _glow_retained = self._glow_marks_by_emitter
-                    _depth_retained = self._depth_marks_by_emitter
-                    for _eid in self._glow_cleared:
-                        _glow_retained.pop(_eid, None)
-                    # Depth retain fold per (emitter, group) - see
-                    # _fold_depth_retention; the glow store stays id-keyed.
-                    _depth_emitted = self._fold_depth_retention()
-
-                    # Kill evidence shared by BOTH retained stores: the rects of
-                    # every tile capturing FRESH this frame, tagged with their
-                    # root window AND their live ancestor chain. A capture in
-                    # the emitter's OWN window that repaints its territory
-                    # without the emitter re-emitting tells the pixels under the
-                    # glow were replaced (tab switch, jump-to content swap, any
-                    # culled content) - the marks die. Two exemptions keep
-                    # legitimate repaints from flickering the glow:
-                    # - captures INSIDE the emitter's subtree (scrolled-in
-                    #   widgets capturing during a scroll or frame_delta widget,
-                    #   token overlays) repaint fragments OF the glowing
-                    #   content, not over it - walking the CAPTURING view's
-                    #   _parent chain is safe, it just rendered so its links
-                    #   are live (only the culled emitter's chain goes stale);
-                    # - the territory is the marks INTERSECTED with the
-                    #   emitter's live rect (same origin-clip from stamp
-                    #   below), so a freeze-resize drag that shrinks the view
-                    #   stops stale-wide marks from overlapping the sibling
-                    #   tile's every-frame captures across the window.
-                    # Captures in OTHER windows (popups floating above) never
-                    # repaint the emitter's surface - same-root scoping keeps
-                    # them from killing marks beneath.
-                    def _anc_ids(node):
-                        ids = set()
-                        hops = 0
-                        while node is not None and hops < 64:
-                            ids.add(id(node))
-                            parent = getattr(node, "_parent", None)
-                            if parent is None or parent is node:
-                                break
-                            node = parent
-                            hops += 1
-                        return ids
-
-                    _pend_rects = []
-                    for p in local_pending:
-                        try:
-                            _pend_rects.append(
-                                (p.pos[0], p.pos[1],
-                                 p.pos[0] + p.size[0], p.pos[1] + p.size[1],
-                                 self._glow_root_ds(p.draw_state),
-                                 _anc_ids(p.draw_state), p.draw_state))
-                        except Exception:
-                            pass
-
-                    def _live_clip_of(eds):
-                        # The emitter's live rect - clips mark ORIGIN rects,
-                        # re-stamped depth marks and kill territory alike (never
-                        # the rendered light): during a freeze-resize drag the
-                        # body didn't re-run, but width/height keep the drag
-                        # live. Intersected with the enclosing windows' live
-                        # clip (_enclosing_window_clip): an emitter its window
-                        # scrolled / shrank out of view keeps its own rect, but
-                        # no pixel of it shows, so none of its marks may cast -
-                        # an empty rect here makes the code skip them.
-                        if eds is None:
-                            return None
-                        try:
-                            l, t = eds.abs_left, eds.abs_top
-                            w, h = eds.width, eds.height
-                            rect = ((l, t, l + w, t + h)
-                                    if w is not None and h is not None else None)
-                        except Exception:
-                            rect = None
-                        try:
-                            win = self._enclosing_window_clip(eds)
-                        except Exception:
-                            win = None
-                        if win is None:
-                            return rect
-                        if rect is None:
-                            return win
-                        return (max(rect[0], win[0]), max(rect[1], win[1]),
-                                min(rect[2], win[2]), min(rect[3], win[3]))
-
-                    # Kills only EXECUTE when interaction has settled: mid-drag
-                    # repaints (column resize, window resize reflows) hit the
-                    # glow territory constantly and immediate kills kill the
-                    # glow for the whole drag. Unsettled hits flag the entry
-                    # (it keeps glowing); the kill executes on settle unless
-                    # the emitter re-emitted since (which clears it).
-                    _settled = not (imgui.is_mouse_down(0)
-                                    or imgui.is_mouse_down(1)
-                                    or imgui.is_mouse_down(2)
-                                    or Melty.on_drag)
-
-                    def _territory_hit(marks, delta, root, eds, live):
-                        # Returns the pending capture that repainted the
-                        # emitter's territory, or None. Exempt: captures inside
-                        # the emitter's subtree (live _parent walk) and small
-                        # fragment captures fully CONTAINED in the emitter's
-                        # live rect (< half its area) - inline children / token
-                        # overlays hosted outside the emitter's parent chain
-                        # repaint fragments OF the glowing content on hover; a
-                        # real content swap covers the region wholesale.
-                        e_id = id(eds)
-                        e_area = ((live[2] - live[0]) * (live[3] - live[1])
-                                  if live is not None else None)
-                        for m in marks:
-                            mx0 = m[0] + delta[0]
-                            my0 = m[1] + delta[1]
-                            mx1, my1 = mx0 + m[2], my0 + m[3]
-                            if live is not None:
-                                mx0, my0 = max(mx0, live[0]), max(my0, live[1])
-                                mx1, my1 = min(mx1, live[2]), min(my1, live[3])
-                                if mx1 <= mx0 or my1 <= my0:
-                                    continue
-                            for pr in _pend_rects:
-                                px0, py0, px1, py1, proot, p_ancs, _pds = pr
-                                if proot is not root or e_id in p_ancs:
-                                    continue
-                                if (e_area
-                                        and px0 >= live[0] and py0 >= live[1]
-                                        and px1 <= live[2] and py1 <= live[3]
-                                        and ((px1 - px0) * (py1 - py0)
-                                             < 0.5 * e_area)):
-                                    continue
-                                if (mx0 < px1 and px0 < mx1
-                                        and my0 < py1 and py0 < my1):
-                                    return pr
-                        return None
-
-                    def _log_kill(kind, eds, hit, deferred):
-                        if not Toggles.glow_debug_log:
-                            return
-                        _pds = hit[6]
-                        print(f"glow kill[{kind}]"
-                              f"{' DEFERRED' if deferred else ''}: "
-                              f"emitter={getattr(eds, 'name', None)!r} "
-                              f"by={getattr(_pds, 'name', None)!r} "
-                              f"cap_rect=({hit[0]:.0f},{hit[1]:.0f},"
-                              f"{hit[2]:.0f},{hit[3]:.0f})")
-
-                    # Retained DEPTH marks re-stamp to the the mask FIRST -
-                    # before the glow band samples it - so on frames where an
-                    # enclosing tile rebuilt the mask without this emitter's
-                    # body running, the interior depth detail (block peels, chip
-                    # lifts) is preserved instead of flashing flat. MAX stability
-                    # makes re-stamping marks that were also freshly emitted
-                    # this frame idempotent.
-                    _depth_stamp = []
-                    # _key = (id(emitter), group); kill-pending is per key too,
-                    # so a killed body group never takes the scrollbar's with
-                    # it on a frame the bar legitimately re-emitted.
-                    for _key, (marks, _eds, _anchor) in list(
-                            _depth_retained.items()):
-                        if _eds is None or getattr(_eds, "abs_closed", False):
-                            _depth_retained.pop(_key, None)
-                            self._depth_kill_pending.discard(_key)
-                            continue
-                        if _key in _depth_emitted:
-                            self._depth_kill_pending.discard(_key)
-                            continue  # stamped via the normal emit path already
-                        _delta = (_eds.abs_left - _anchor[0],
-                                  _eds.abs_top - _anchor[1])
-                        _root_ds = self._glow_root_ds(_eds)
-                        if self._pixels_preserved(_eds):
-                            # Emitter reached this frame, or an ancestor was
-                            # reached and blit-served (subtree pixels intact).
-                            # Tab-switched/culled emitters fail both, so real
-                            # content swaps still kill.
-                            self._depth_kill_pending.discard(_key)
-                        else:
-                            _hit = _territory_hit(marks, _delta, _root_ds, _eds,
-                                                  _live_clip_of(_eds))
-                            if _hit is None:
-                                # An ancestor ran its body and left this
-                                # branch undrawn: same kill as a capture
-                                # covering the territory (_branch_dropped).
-                                _hit = self._branch_dropped(_eds)
-                            if _hit is not None:
-                                _log_kill("depth", _eds, _hit, not _settled)
-                                if _settled:
-                                    _depth_retained.pop(_key, None)
-                                    self._depth_kill_pending.discard(_key)
-                                    continue
-                                self._depth_kill_pending.add(_key)
-                            elif _settled and _key in self._depth_kill_pending:
-                                _depth_retained.pop(_key, None)
-                                self._depth_kill_pending.discard(_key)
-                                continue
-                        dx, dy = _delta
-                        # Re-stamped marks clip to the emitter's LIVE rect -
-                        # same rule as glow origin rects: during a freeze-resize
-                        # drag the body doesn't re-run but width/height track
-                        # the drag, so record-time clips (or clip=False marks
-                        # like the gutter strip) may't stamp depth past the
-                        # live clip edge.
-                        _live = _live_clip_of(_eds)
-                        # Live rank shift (see the anchor comment in
-                        # add_shadow): re-anchor absolute mark ranks on the
-                        # emitter's CURRENT surface rank so z reorders that
-                        # record re-gate them; falls back to the ROOT window's
-                        # delta if the emitter's rank stamp is stale (ancestor
-                        # blit-served, wrapper never entered this frame).
-                        _shift = self._anchor_rank_shift(_eds, _root_ds, _anchor)
-                        for m in marks:
-                            (mx, my, mw, mh, ranks, cr, margin, mclip, _own,
-                             _ins) = m[:10]
-                            _shape = m[10] if len(m) > 10 else None
-                            if mclip is not None:
-                                _c = (mclip[0] + dx, mclip[1] + dy,
-                                      mclip[2] + dx, mclip[3] + dy)
-                                if _live is not None:
-                                    _c = (max(_c[0], _live[0]),
-                                          max(_c[1], _live[1]),
-                                          min(_c[2], _live[2]),
-                                          min(_c[3], _live[3]))
-                            else:
-                                _c = _live
-                            if _c is not None and (_c[2] <= _c[0]
-                                                   or _c[3] <= _c[1]):
-                                continue
-                            if _shift:
-                                ranks = tuple(max(0.0, rk + _shift)
-                                              for rk in ranks)
-                            # Shape payloads carry position AND rank per vertex -
-                            # translate and re-anchor them the same way.
-                            if _shape is not None and (dx or dy or _shift):
-                                _shape = tuple(
-                                    (vx + dx, vy + dy, max(0.0, vr + _shift))
-                                    for (vx, vy, vr) in _shape)
-                            # Owner key passed along so the window-occlusion gate
-                            # can resolve the emitter's own clip at stamp time.
-                            _depth_stamp.append(
-                                (mx + dx, my + dy, mw, mh, ranks, cr, margin,
-                                 _c, _own, False, _shape))
-                    if _depth_stamp:
-                        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER,
-                                             self._full_mask_fbo)
-                        gl.glColorMask(gl.GL_TRUE, gl.GL_FALSE, gl.GL_FALSE,
-                                       gl.GL_FALSE)
-                        self._stamp_shadow_marks(_depth_stamp, dp_x, dp_y,
-                                                 s_x, s_y, fb_h)
-                        gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE,
-                                       gl.GL_TRUE)
-
-                    # Tunable band offsets, applied LINEARLY in rank units -
-                    # never by shifting shadow_depth_at's depth argument (its
-                    # depth term is non-monotone: spikes ~530 rank units at z~59
-                    # then decreases, so a large depth offset can LOWER a mark
-                    # and collapse the band). Toggle units: one shallow depth
-                    # step (~layer_inc * 53.42/5.975 rank units).
-                    _fc_marks.append(("pass6a_depth_retained", time.perf_counter()))
-                    _g_step = float(Melty.layer_inc) * (53.42 / 5.975)
-                    _g_lo_off = float(getattr(
-                        Toggles, "glow_mask_lower_offset", -4.0)) * _g_step
-                    _g_hi_off = float(getattr(
-                        Toggles, "glow_mask_upper_offset", 8.0)) * _g_step
-
-                    def _resolve_glow(m, delta, eds, root_ds, anchor=None):
-                        # Band anchors are the LIVE shadow_depth properties -
-                        # the same scalar ranks those views' mask rects stamp
-                        # (depth_at_layer through shadow_depth_at), so the band
-                        # is always in the mask's own units. Emitter anchor:
-                        # the emitting view's surface + the mark's relative
-                        # offset; floor anchor: the root window's surface. The
-                        # emitter's "live" shadow_depth is only live if the
-                        # was rendered this frame - resolve it through the
-                        # retained mark instead (record rank + live shift), so
-                        # a z reorder while everything blit-serves still moves
-                        # the band via the root window's delta.
-                        _anchor_rank = None
-                        if eds is not None:
-                            try:
-                                if (anchor is not None and len(anchor) > 2
-                                        and anchor[2] is not None):
-                                    _anchor_rank = (
-                                        anchor[2]
-                                        + self._anchor_rank_shift(
-                                            eds, root_ds, anchor)
-                                        + m[6] * _g_step)
-                                else:
-                                    _anchor_rank = (float(eds.shadow_depth)
-                                                    + m[6] * _g_step)
-                            except Exception:
-                                _anchor_rank = None
-                        if _anchor_rank is None:
-                            _anchor_rank = m[7]  # record-time absolute fallback
-                        _lo_anchor = None
-                        if root_ds is not None:
-                            try:
-                                _lo_anchor = float(root_ds.shadow_depth)
-                            except Exception:
-                                _lo_anchor = None
-                        if _lo_anchor is None:
-                            _lo_anchor = _anchor_rank
-                        _rank = (_anchor_rank + _g_hi_off) / 65535.5
-                        _floor = (_lo_anchor + _g_lo_off) / 65535.5
-                        return (m, delta, min(1.0, _rank), max(0.0, _floor),
-                                _live_clip_of(eds), self._win_z_for_ds(eds))
-
-                    _stamp_list = []
-                    _emitted_now = defaultdict(list)
-                    for mark, _eds, _anchor in self._glow_rects:
-                        if _eds is None:
-                            _stamp_list.append(
-                                _resolve_glow(mark, (0.0, 0.0), None, None))
-                        else:
-                            _emitted_now[id(_eds)].append((mark, _eds, _anchor))
-                    for _eid, entries in _emitted_now.items():
-                        _glow_retained[_eid] = (
-                            [m for m, _d, _a in entries],
-                            entries[0][1], entries[0][2])
-
-                    for _eid, (marks, _eds, _anchor) in list(
-                            _glow_retained.items()):
-                        if _eds is None or getattr(_eds, "abs_closed", False):
-                            _glow_retained.pop(_eid, None)
-                            self._glow_kill_pending.discard(_eid)
-                            continue
-                        _delta = (_eds.abs_left - _anchor[0],
-                                  _eds.abs_top - _anchor[1])
-                        _root_ds = self._glow_root_ds(_eds)
-                        # Freshly-emitted entries skip the kill: their own
-                        # frame's capture legitimately overlaps their origin.
-                        if _eid in _emitted_now:
-                            self._glow_kill_pending.discard(_eid)
-                        elif self._pixels_preserved(_eds):
-                            # Emitter ran this frame, or an ancestor was
-                            # reached and blit-served (its blit carried the
-                            # emitter's pixels intact - the doubly-cache-served
-                            # case that used to read as "inactive" and cull the
-                            # glow). Culled cache-switched emitters fail here, so
-                            # content swaps still kill.
-                            self._glow_kill_pending.discard(_eid)
-                        else:
-                            _hit = _territory_hit(marks, _delta, _root_ds, _eds,
-                                                  _live_clip_of(_eds))
-                            if _hit is None:
-                                _hit = self._branch_dropped(_eds)
-                            if _hit is not None:
-                                _log_kill("glow", _eds, _hit, not _settled)
-                                if _settled:
-                                    _glow_retained.pop(_eid, None)
-                                    self._glow_kill_pending.discard(_eid)
-                                    continue
-                                self._glow_kill_pending.add(_eid)
-                            elif (_settled
-                                  and _eid in self._glow_kill_pending):
-                                _glow_retained.pop(_eid, None)
-                                self._glow_kill_pending.discard(_eid)
-                                continue
-                        for m in marks:
-                            _stamp_list.append(
-                                _resolve_glow(m, _delta, _eds, _root_ds,
-                                              _anchor))
-                    # Same-surface dedupe: identical glow marks (same pos,
-                    # size, color after the live-position delta) collapse to
-                    # ONE emission at the strongest intensity. The old
-                    # draw-list blur alpha-blended duplicates into
-                    # near-invisibility; the light map is ADDITIVE, so any
-                    # doubled surface (duplicate _dt_lines entries, a window
-                    # drawn twice through different windows) reads as a glaring
-                    # 2x glow.
-                    _dedup = {}
-                    _dup_count = 0
-                    for _se in _stamp_list:
-                        _m, _d = _se[0], _se[1]
-                        _k = (round(_m[0] + _d[0], 1), round(_m[1] + _d[1], 1),
-                              round(_m[2], 1), round(_m[3], 1), _m[4])
-                        _prev = _dedup.get(_k)
-                        if _prev is None or _se[0][5] > _prev[0][5]:
-                            if _prev is not None:
-                                _dup_count += 1
-                            _dedup[_k] = _se
-                        else:
-                            _dup_count += 1
-                    _stamp_list = list(_dedup.values())
-
-                    if Toggles.glow_debug_log and self._frame_id % 60 == 0:
-                        _s0 = _stamp_list[0] if _stamp_list else None
-                        print(
-                            f"glow6 f{self._frame_id}: glow={Toggles.glow} "
-                            f"frame_marks={len(self._glow_rects)} "
-                            f"retained={len(_glow_retained)} "
-                            f"cleared={len(self._glow_cleared)} "
-                            f"stamped={len(_stamp_list)} dups={_dup_count} "
-                            f"tex={getattr(self, '_glow_size', None)} "
-                            f"empty={self._glow_tex_empty}"
-                            + (f" first: rect={tuple(round(v, 1) for v in _s0[0][:4])}"
-                               f" rank={_s0[2]:.5f} floor={_s0[3]:.5f}"
-                               f" inten={_s0[0][5]:.3f}" if _s0 else ""))
-                    if not Toggles.glow:
-                        _stamp_list = []  # retained entries stay warm
-                    if _stamp_list or not self._glow_tex_empty:
-                        self._stamp_glow_marks(_stamp_list, dp_x, dp_y, s_x, s_y,
-                                               fb_w, fb_h)
-                except Exception:
-                    if not getattr(self, "_glow_error_logged", False):
-                        self._glow_error_logged = True
-                        print("glow PASS 6 failed (glow disabled this frame):")
-                        traceback.print_exc()
-
+                self._finalize_retained_marks(local_pending, dp_x, dp_y, s_x, s_y, fb_w, fb_h, _fc_marks)
                 gl.glViewport(0, 0, fb_w, fb_h)
                 gl.glDisable(gl.GL_BLEND)
                 gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
@@ -6093,3 +5682,457 @@ class TileCacheMasked:
                           breakdown=" ".join(_fc_parts))
         except Exception:
             pass
+
+    def _finalize_retained_marks(self, local_pending, dp_x, dp_y, s_x, s_y, fb_w, fb_h, _fc_marks):
+        try:
+            self._ensure_glow_state()
+            _glow_retained = self._glow_marks_by_emitter
+            _depth_retained = self._depth_marks_by_emitter
+            for _eid in self._glow_cleared:
+                _glow_retained.pop(_eid, None)
+            # Depth retain fold per (emitter, group) - see
+            # _fold_depth_retention; the glow store stays id-keyed.
+            _depth_emitted = self._fold_depth_retention()
+
+            # Kill evidence shared by BOTH retained stores: the rects of
+            # every tile capturing FRESH this frame, tagged with their
+            # root window AND their live ancestor chain. A capture in
+            # the emitter's OWN window that repaints its territory
+            # without the emitter re-emitting tells the pixels under the
+            # glow were replaced (tab switch, jump-to content swap, any
+            # culled content) - the marks die. Two exemptions keep
+            # legitimate repaints from flickering the glow:
+            # - captures INSIDE the emitter's subtree (scrolled-in
+            #   widgets capturing during a scroll or frame_delta widget,
+            #   token overlays) repaint fragments OF the glowing
+            #   content, not over it - walking the CAPTURING view's
+            #   _parent chain is safe, it just rendered so its links
+            #   are live (only the culled emitter's chain goes stale);
+            # - the territory is the marks INTERSECTED with the
+            #   emitter's live rect (same origin-clip from stamp
+            #   below), so a freeze-resize drag that shrinks the view
+            #   stops stale-wide marks from overlapping the sibling
+            #   tile's every-frame captures across the window.
+            # Captures in OTHER windows (popups floating above) never
+            # repaint the emitter's surface - same-root scoping keeps
+            # them from killing marks beneath.
+            def _anc_ids(node):
+                ids = set()
+                hops = 0
+                while node is not None and hops < 64:
+                    ids.add(id(node))
+                    parent = getattr(node, "_parent", None)
+                    if parent is None or parent is node:
+                        break
+                    node = parent
+                    hops += 1
+                return ids
+
+            _pend_rects = []
+            for p in local_pending:
+                try:
+                    _pend_rects.append(
+                        (p.pos[0], p.pos[1],
+                         p.pos[0] + p.size[0], p.pos[1] + p.size[1],
+                         self._glow_root_ds(p.draw_state),
+                         _anc_ids(p.draw_state), p.draw_state))
+                except Exception:
+                    pass
+
+            def _live_clip_of(eds):
+                # The emitter's live rect - clips mark ORIGIN rects,
+                # re-stamped depth marks and kill territory alike (never
+                # the rendered light): during a freeze-resize drag the
+                # body didn't re-run, but width/height keep the drag
+                # live. Intersected with the enclosing windows' live
+                # clip (_enclosing_window_clip): an emitter its window
+                # scrolled / shrank out of view keeps its own rect, but
+                # no pixel of it shows, so none of its marks may cast -
+                # an empty rect here makes the code skip them.
+                if eds is None:
+                    return None
+                try:
+                    l, t = eds.abs_left, eds.abs_top
+                    w, h = eds.width, eds.height
+                    rect = ((l, t, l + w, t + h)
+                            if w is not None and h is not None else None)
+                except Exception:
+                    rect = None
+                try:
+                    win = self._enclosing_window_clip(eds)
+                except Exception:
+                    win = None
+                if win is None:
+                    return rect
+                if rect is None:
+                    return win
+                return (max(rect[0], win[0]), max(rect[1], win[1]),
+                        min(rect[2], win[2]), min(rect[3], win[3]))
+
+            # Kills only EXECUTE when interaction has settled: mid-drag
+            # repaints (column resize, window resize reflows) hit the
+            # glow territory constantly and immediate kills kill the
+            # glow for the whole drag. Unsettled hits flag the entry
+            # (it keeps glowing); the kill executes on settle unless
+            # the emitter re-emitted since (which clears it).
+            _settled = not (imgui.is_mouse_down(0)
+                            or imgui.is_mouse_down(1)
+                            or imgui.is_mouse_down(2)
+                            or Melty.on_drag)
+
+            def _territory_hit(marks, delta, root, eds, live):
+                # Returns the pending capture that repainted the
+                # emitter's territory, or None. Exempt: captures inside
+                # the emitter's subtree (live _parent walk) and small
+                # fragment captures fully CONTAINED in the emitter's
+                # live rect (< half its area) - inline children / token
+                # overlays hosted outside the emitter's parent chain
+                # repaint fragments OF the glowing content on hover; a
+                # real content swap covers the region wholesale.
+                e_id = id(eds)
+                e_area = ((live[2] - live[0]) * (live[3] - live[1])
+                          if live is not None else None)
+                for m in marks:
+                    mx0 = m[0] + delta[0]
+                    my0 = m[1] + delta[1]
+                    mx1, my1 = mx0 + m[2], my0 + m[3]
+                    if live is not None:
+                        mx0, my0 = max(mx0, live[0]), max(my0, live[1])
+                        mx1, my1 = min(mx1, live[2]), min(my1, live[3])
+                        if mx1 <= mx0 or my1 <= my0:
+                            continue
+                    for pr in _pend_rects:
+                        px0, py0, px1, py1, proot, p_ancs, _pds = pr
+                        if proot is not root or e_id in p_ancs:
+                            continue
+                        if (e_area
+                                and px0 >= live[0] and py0 >= live[1]
+                                and px1 <= live[2] and py1 <= live[3]
+                                and ((px1 - px0) * (py1 - py0)
+                                     < 0.5 * e_area)):
+                            continue
+                        if (mx0 < px1 and px0 < mx1
+                                and my0 < py1 and py0 < my1):
+                            return pr
+                return None
+
+            def _log_kill(kind, eds, hit, deferred):
+                if not Toggles.glow_debug_log:
+                    return
+                _pds = hit[6]
+                print(f"glow kill[{kind}]"
+                      f"{' DEFERRED' if deferred else ''}: "
+                      f"emitter={getattr(eds, 'name', None)!r} "
+                      f"by={getattr(_pds, 'name', None)!r} "
+                      f"cap_rect=({hit[0]:.0f},{hit[1]:.0f},"
+                      f"{hit[2]:.0f},{hit[3]:.0f})")
+
+            # Retained DEPTH marks re-stamp to the the mask FIRST -
+            # before the glow band samples it - so on frames where an
+            # enclosing tile rebuilt the mask without this emitter's
+            # body running, the interior depth detail (block peels, chip
+            # lifts) is preserved instead of flashing flat. MAX stability
+            # makes re-stamping marks that were also freshly emitted
+            # this frame idempotent.
+            _depth_stamp = []
+            # _key = (id(emitter), group); kill-pending is per key too,
+            # so a killed body group never takes the scrollbar's with
+            # it on a frame the bar legitimately re-emitted.
+            for _key, (marks, _eds, _anchor) in list(
+                    _depth_retained.items()):
+                if _eds is None or getattr(_eds, "abs_closed", False):
+                    _depth_retained.pop(_key, None)
+                    self._depth_kill_pending.discard(_key)
+                    continue
+                if _key in _depth_emitted:
+                    self._depth_kill_pending.discard(_key)
+                    continue  # stamped via the normal emit path already
+                _delta = (_eds.abs_left - _anchor[0],
+                          _eds.abs_top - _anchor[1])
+                _root_ds = self._glow_root_ds(_eds)
+                if self._pixels_preserved(_eds):
+                    # Emitter reached this frame, or an ancestor was
+                    # reached and blit-served (subtree pixels intact).
+                    # Tab-switched/culled emitters fail both, so real
+                    # content swaps still kill.
+                    self._depth_kill_pending.discard(_key)
+                else:
+                    _hit = _territory_hit(marks, _delta, _root_ds, _eds,
+                                          _live_clip_of(_eds))
+                    if _hit is None:
+                        # An ancestor ran its body and left this
+                        # branch undrawn: same kill as a capture
+                        # covering the territory (_branch_dropped).
+                        _hit = self._branch_dropped(_eds)
+                    if _hit is not None:
+                        _log_kill("depth", _eds, _hit, not _settled)
+                        if _settled:
+                            _depth_retained.pop(_key, None)
+                            self._depth_kill_pending.discard(_key)
+                            continue
+                        self._depth_kill_pending.add(_key)
+                    elif _settled and _key in self._depth_kill_pending:
+                        _depth_retained.pop(_key, None)
+                        self._depth_kill_pending.discard(_key)
+                        continue
+                dx, dy = _delta
+                # Re-stamped marks clip to the emitter's LIVE rect -
+                # same rule as glow origin rects: during a freeze-resize
+                # drag the body doesn't re-run but width/height track
+                # the drag, so record-time clips (or clip=False marks
+                # like the gutter strip) may't stamp depth past the
+                # live clip edge.
+                _live = _live_clip_of(_eds)
+                # Live rank shift (see the anchor comment in
+                # add_shadow): re-anchor absolute mark ranks on the
+                # emitter's CURRENT surface rank so z reorders that
+                # record re-gate them; falls back to the ROOT window's
+                # delta if the emitter's rank stamp is stale (ancestor
+                # blit-served, wrapper never entered this frame).
+                _shift = self._anchor_rank_shift(_eds, _root_ds, _anchor)
+                for m in marks:
+                    (mx, my, mw, mh, ranks, cr, margin, mclip, _own,
+                     _ins) = m[:10]
+                    _shape = m[10] if len(m) > 10 else None
+                    if mclip is not None:
+                        _c = (mclip[0] + dx, mclip[1] + dy,
+                              mclip[2] + dx, mclip[3] + dy)
+                        if _live is not None:
+                            _c = (max(_c[0], _live[0]),
+                                  max(_c[1], _live[1]),
+                                  min(_c[2], _live[2]),
+                                  min(_c[3], _live[3]))
+                    else:
+                        _c = _live
+                    if _c is not None and (_c[2] <= _c[0]
+                                           or _c[3] <= _c[1]):
+                        continue
+                    if _shift:
+                        ranks = tuple(max(0.0, rk + _shift)
+                                      for rk in ranks)
+                    # Shape payloads carry position AND rank per vertex -
+                    # translate and re-anchor them the same way.
+                    if _shape is not None and (dx or dy or _shift):
+                        _shape = tuple(
+                            (vx + dx, vy + dy, max(0.0, vr + _shift))
+                            for (vx, vy, vr) in _shape)
+                    # Owner key passed along so the window-occlusion gate
+                    # can resolve the emitter's own clip at stamp time.
+                    _depth_stamp.append(
+                        (mx + dx, my + dy, mw, mh, ranks, cr, margin,
+                         _c, _own, False, _shape))
+            if _depth_stamp:
+                if self.gpu is None:
+                    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._full_mask_fbo)
+                    gl.glColorMask(gl.GL_TRUE, gl.GL_FALSE, gl.GL_FALSE, gl.GL_FALSE)
+                self._stamp_shadow_marks(_depth_stamp, dp_x, dp_y,
+                                         s_x, s_y, fb_h)
+                if self.gpu is None:
+                    gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
+
+            # Tunable band offsets, applied LINEARLY in rank units -
+            # never by shifting shadow_depth_at's depth argument (its
+            # depth term is non-monotone: spikes ~530 rank units at z~59
+            # then decreases, so a large depth offset can LOWER a mark
+            # and collapse the band). Toggle units: one shallow depth
+            # step (~layer_inc * 53.42/5.975 rank units).
+            _fc_marks.append(("pass6a_depth_retained", time.perf_counter()))
+            _g_step = float(Melty.layer_inc) * (53.42 / 5.975)
+            _g_lo_off = float(getattr(
+                Toggles, "glow_mask_lower_offset", -4.0)) * _g_step
+            _g_hi_off = float(getattr(
+                Toggles, "glow_mask_upper_offset", 8.0)) * _g_step
+
+            def _resolve_glow(m, delta, eds, root_ds, anchor=None):
+                # Band anchors are the LIVE shadow_depth properties -
+                # the same scalar ranks those views' mask rects stamp
+                # (depth_at_layer through shadow_depth_at), so the band
+                # is always in the mask's own units. Emitter anchor:
+                # the emitting view's surface + the mark's relative
+                # offset; floor anchor: the root window's surface. The
+                # emitter's "live" shadow_depth is only live if the
+                # was rendered this frame - resolve it through the
+                # retained mark instead (record rank + live shift), so
+                # a z reorder while everything blit-serves still moves
+                # the band via the root window's delta.
+                _anchor_rank = None
+                if eds is not None:
+                    try:
+                        if (anchor is not None and len(anchor) > 2
+                                and anchor[2] is not None):
+                            _anchor_rank = (
+                                anchor[2]
+                                + self._anchor_rank_shift(
+                                    eds, root_ds, anchor)
+                                + m[6] * _g_step)
+                        else:
+                            _anchor_rank = (float(eds.shadow_depth)
+                                            + m[6] * _g_step)
+                    except Exception:
+                        _anchor_rank = None
+                if _anchor_rank is None:
+                    _anchor_rank = m[7]  # record-time absolute fallback
+                _lo_anchor = None
+                if root_ds is not None:
+                    try:
+                        _lo_anchor = float(root_ds.shadow_depth)
+                    except Exception:
+                        _lo_anchor = None
+                if _lo_anchor is None:
+                    _lo_anchor = _anchor_rank
+                _rank = (_anchor_rank + _g_hi_off) / 65535.5
+                _floor = (_lo_anchor + _g_lo_off) / 65535.5
+                return (m, delta, min(1.0, _rank), max(0.0, _floor),
+                        _live_clip_of(eds), self._win_z_for_ds(eds))
+
+            _stamp_list = []
+            _emitted_now = defaultdict(list)
+            for mark, _eds, _anchor in self._glow_rects:
+                if _eds is None:
+                    _stamp_list.append(
+                        _resolve_glow(mark, (0.0, 0.0), None, None))
+                else:
+                    _emitted_now[id(_eds)].append((mark, _eds, _anchor))
+            for _eid, entries in _emitted_now.items():
+                _glow_retained[_eid] = (
+                    [m for m, _d, _a in entries],
+                    entries[0][1], entries[0][2])
+
+            for _eid, (marks, _eds, _anchor) in list(
+                    _glow_retained.items()):
+                if _eds is None or getattr(_eds, "abs_closed", False):
+                    _glow_retained.pop(_eid, None)
+                    self._glow_kill_pending.discard(_eid)
+                    continue
+                _delta = (_eds.abs_left - _anchor[0],
+                          _eds.abs_top - _anchor[1])
+                _root_ds = self._glow_root_ds(_eds)
+                # Freshly-emitted entries skip the kill: their own
+                # frame's capture legitimately overlaps their origin.
+                if _eid in _emitted_now:
+                    self._glow_kill_pending.discard(_eid)
+                elif self._pixels_preserved(_eds):
+                    # Emitter ran this frame, or an ancestor was
+                    # reached and blit-served (its blit carried the
+                    # emitter's pixels intact - the doubly-cache-served
+                    # case that used to read as "inactive" and cull the
+                    # glow). Culled cache-switched emitters fail here, so
+                    # content swaps still kill.
+                    self._glow_kill_pending.discard(_eid)
+                else:
+                    _hit = _territory_hit(marks, _delta, _root_ds, _eds,
+                                          _live_clip_of(_eds))
+                    if _hit is None:
+                        _hit = self._branch_dropped(_eds)
+                    if _hit is not None:
+                        _log_kill("glow", _eds, _hit, not _settled)
+                        if _settled:
+                            _glow_retained.pop(_eid, None)
+                            self._glow_kill_pending.discard(_eid)
+                            continue
+                        self._glow_kill_pending.add(_eid)
+                    elif (_settled
+                          and _eid in self._glow_kill_pending):
+                        _glow_retained.pop(_eid, None)
+                        self._glow_kill_pending.discard(_eid)
+                        continue
+                for m in marks:
+                    _stamp_list.append(
+                        _resolve_glow(m, _delta, _eds, _root_ds,
+                                      _anchor))
+            # Same-surface dedupe: identical glow marks (same pos,
+            # size, color after the live-position delta) collapse to
+            # ONE emission at the strongest intensity. The old
+            # draw-list blur alpha-blended duplicates into
+            # near-invisibility; the light map is ADDITIVE, so any
+            # doubled surface (duplicate _dt_lines entries, a window
+            # drawn twice through different windows) reads as a glaring
+            # 2x glow.
+            _dedup = {}
+            _dup_count = 0
+            for _se in _stamp_list:
+                _m, _d = _se[0], _se[1]
+                _k = (round(_m[0] + _d[0], 1), round(_m[1] + _d[1], 1),
+                      round(_m[2], 1), round(_m[3], 1), _m[4])
+                _prev = _dedup.get(_k)
+                if _prev is None or _se[0][5] > _prev[0][5]:
+                    if _prev is not None:
+                        _dup_count += 1
+                    _dedup[_k] = _se
+                else:
+                    _dup_count += 1
+            _stamp_list = list(_dedup.values())
+
+            if Toggles.glow_debug_log and self._frame_id % 60 == 0:
+                _s0 = _stamp_list[0] if _stamp_list else None
+                print(
+                    f"glow6 f{self._frame_id}: glow={Toggles.glow} "
+                    f"frame_marks={len(self._glow_rects)} "
+                    f"retained={len(_glow_retained)} "
+                    f"cleared={len(self._glow_cleared)} "
+                    f"stamped={len(_stamp_list)} dups={_dup_count} "
+                    f"tex={getattr(self, '_glow_size', None)} "
+                    f"empty={self._glow_tex_empty}"
+                    + (f" first: rect={tuple(round(v, 1) for v in _s0[0][:4])}"
+                       f" rank={_s0[2]:.5f} floor={_s0[3]:.5f}"
+                       f" inten={_s0[0][5]:.3f}" if _s0 else ""))
+            if not Toggles.glow:
+                _stamp_list = []  # retained entries stay warm
+            if _stamp_list or not self._glow_tex_empty:
+                self._stamp_glow_marks(_stamp_list, dp_x, dp_y, s_x, s_y,
+                                       fb_w, fb_h)
+        except Exception:
+            if self.gpu is not None:
+                raise
+            if not getattr(self, "_glow_error_logged", False):
+                self._glow_error_logged = True
+                print("glow PASS 6 failed (glow disabled this frame):")
+                traceback.print_exc()
+
+    def _mask_rebuild(self, subtree_rects_by_root, local_pending, fb_w, fb_h, dp_x, dp_y, s_x, s_y):
+        signature = None
+        rebuild = True
+        try:
+            if Toggles.Melty.mask_rebuild_on_change:
+                _sig_rects = []
+                for _rk, _rects in subtree_rects_by_root.items():
+                    for r in _rects:
+                        _ds = self.key_to_draw_state.get(r.key)
+                        _t = self._tiles.get(r.key)
+                        _sig_rects.append((
+                            _rk, r.key, r.x, r.y, r.w, r.h, r.depth_and_layer,
+                            r.corner_radius, getattr(r, "layer", None),
+                            None if _ds is None else (
+                                _ds.abs_left, _ds.abs_top, _ds.width, _ds.height,
+                                bool(_ds.size_change), bool(getattr(_ds, "freeze_resize", False)),
+                                _ds.shadow_margin,
+                                tuple(_ds.clipped_by_rect) if _ds.clipped_by_rect is not None else None),
+                            None if _t is None else (_t.mask_tex is not None, _t.mask_layer, tuple(_t.size)),
+                            r.key in self._key_to_ctx))
+                _sig_windows = tuple(
+                    (id(_w), _w.abs_left, _w.abs_top, _w.width, _w.height, bool(_w.closed),
+                     getattr(_w, "corner_radius", None))
+                    for _w in (getattr(Melty, "paint_ordered_ds", None) or ()))
+                _sig_retained = tuple(
+                    (_k, len(_m), id(_e), _e.abs_left, _e.abs_top, _a)
+                    for _k, (_m, _e, _a) in list(self._depth_marks_by_emitter.items())
+                ) + tuple(
+                    (_k, len(_m), id(_e), _e.abs_left, _e.abs_top, _a)
+                    for _k, (_m, _e, _a) in list(self._glow_marks_by_emitter.items()))
+                _settled_sig = (imgui.is_mouse_down(0), imgui.is_mouse_down(1),
+                                imgui.is_mouse_down(2), bool(Melty.on_drag))
+                signature = [
+                    (fb_w, fb_h, dp_x, dp_y, s_x, s_y),
+                    _sig_rects, list(self._shadow_rects), _sig_windows, _sig_retained,
+                    list(self._depth_frame), list(getattr(self, "_glow_rects", ()) or ()),
+                    set(self._glow_cleared), set(self._depth_cleared), _settled_sig,
+                    tuple((p.key, p.depth_and_layer) for p in local_pending),
+                ]
+                rebuild = (
+                    self._full_mask_tex is None
+                    or getattr(self, "_mask_sig_prev", None) != signature
+                    or any(p.tile is None or p.tile.mask_tex is None for p in local_pending))
+        except Exception:
+            signature = None
+            rebuild = True
+        return rebuild, signature

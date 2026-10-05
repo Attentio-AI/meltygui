@@ -31,9 +31,9 @@ from meltygui.core.melty import Melty
 from meltygui.core.melty import FileWatch
 from meltygui.core.diagnostics.perf_trace import trace_rl as _ptrace_rl
 from meltygui.model.texture_model import ImageTexture
-from OpenGL.GL import GL_RED, GL_RG, GL_RGB, GL_RGBA
-
-PIL_TO_GL_FORMAT = {"L": GL_RED, "LA": GL_RG, "RGB": GL_RGB, "RGBA": GL_RGBA}
+# Pixel layout metadata carried by saved ImageTexture values. Decoding images
+# is CPU work, including on native hosts without a desktop GL loader.
+PIL_TO_GL_FORMAT = {"L": 0x1903, "LA": 0x8227, "RGB": 0x1907, "RGBA": 0x1908}
 
 # ImageCodec decodes off-thread. ImageTexture uploads on integer conversion
 # in draw_texture, with the rendering context current.

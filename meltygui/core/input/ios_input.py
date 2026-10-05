@@ -13,7 +13,7 @@ import time
 
 import meltygui_imgui as imgui
 
-from meltygui.core.input.input_handler import input_tap, set_button_probe
+from meltygui.core.input.input_handler import input_tap, set_button_probe, parse_event_name
 from meltygui.core.windowing import window_constants as codes
 
 
@@ -41,10 +41,12 @@ class IOSInput:
         self._last_presentation = None
         self._pressed_keys = set()
         self._touch_pressed = self._release_pending = False
+        self._pointer_cancelled = True
         self._modifiers = 0
         self._keyboard_visible = None
         self._key_inputs = {}
         self._frame_cursor = self.window.cursor_pos
+        self._body_action_hits = ()
         self._button_probe = self.button_really_down
         set_button_probe(self._button_probe)
         for imgui_name, native_name in _IMGUI_KEYS.items():
@@ -103,6 +105,7 @@ class IOSInput:
             if window.primary_touch != identity:
                 return
             self._frame_cursor = float(event['x']), float(event['y'])
+            self._pointer_cancelled = False
             self._move(event)
             window.buttons[codes.MOUSE_BUTTON_LEFT] = codes.PRESS
             window.hovered = True
@@ -129,6 +132,7 @@ class IOSInput:
             else:
                 self.handler.feed_cancel('left_mouse')
                 self._touch_pressed = False
+                self._pointer_cancelled = True
             window.buttons[codes.MOUSE_BUTTON_LEFT] = codes.RELEASE
             window.primary_touch = None
             window.hovered = False
@@ -243,7 +247,7 @@ class IOSInput:
         self._drain_edit_batch()
         self.io.display_size = self.backend.get_window_size(self.window)
         self.io.display_fb_scale = self.backend.get_window_content_scale(self.window)
-        self.io.mouse_pos = self.window.cursor_pos
+        self.io.mouse_pos = (-1e30, -1e30) if self._pointer_cancelled else self.window.cursor_pos
         self.io.mouse_down[0] = bool(self.window.buttons.get(0, 0) or self._touch_pressed)
         for button in range(1, len(self.io.mouse_down)):
             self.io.mouse_down[button] = False
@@ -261,8 +265,78 @@ class IOSInput:
     def pump(self):
         """Refresh held-input recency; queued native edges were already fed."""
         self._set_modifiers(self._modifiers)
+        self._refresh_touch_targets()
         if self.window.primary_touch is not None or self.melty._keys_down:
             self._stamp()
+
+    def _refresh_touch_targets(self):
+        """Re-hit cached body actions before dispatching a new native touch.
+
+        UIKit has no hover frame before a finger lands. The previous render's
+        subscriptions therefore describe the previous contact, even though
+        begin_frame has already hit-tested this contact against the live BVH.
+        Named body actions and declared parameters can be re-hit separately;
+        retain the remaining merged window-chrome subscriptions and captures.
+        """
+        hits = tuple(self.melty.bvh_query(*self.io.mouse_pos))
+        previous, self._body_action_hits = self._body_action_hits, hits
+        if not self._touch_pressed:
+            return
+        # The BVH can retain old tab/conditional-child geometry. Only revive
+        # controls whose pixels survived the last render (including a cached
+        # ancestor's snapshot); a replaced branch must not steal the tap.
+        hits = tuple(view for view in hits if self.melty.cache._pixels_preserved(view))
+        views, descendants, current_views = {}, set(), set()
+        for current, roots in ((True, hits), (False, previous)):
+            pending = list(roots)
+            while pending:
+                view = pending.pop()
+                if current:
+                    current_views.add(id(view))
+                if id(view) in views:
+                    continue
+                views[id(view)] = view
+                for child in (*view._children.values(), *view._view_children.values()):
+                    if (child is not None and child is not view
+                            and getattr(child._wrapper, 'fast_host', False)):
+                        if current:
+                            descendants.add(id(child))
+                        pending.append(child)
+        stale, parameters = set(), {}
+        for view in views.values():
+            names = getattr(view._wrapper, '__params__', ())
+            parameters[view._tile_id] = {
+                parse_event_name(name)[:2] for name in names if name in view._kwargs}
+            record = view._body_actions
+            if record:
+                stale.update(f'{view._tile_id}_{action[0]}' for action in record[1]
+                             if action[0] is not None)
+        handler = self.handler
+        handler._hovered[:] = [
+            (identity, priority, subscriptions - parameters.get(identity, set()))
+            for identity, priority, subscriptions in handler._hovered if identity not in stale]
+        for identity in stale:
+            handler._view_cursor.pop(identity, None)
+        # Retain queued edges, previous hover, blockers and drag captures. A
+        # begin_frame() here would discard the touch we are about to deliver.
+        roots = [view for view in hits if id(view) not in descendants]
+        if not roots:
+            return
+        # _register_action selects the debug overlay channel even with debug
+        # drawing off. Normal begin_frame splits it after input dispatch, so
+        # give this input-only replay a temporary split and merge it back.
+        overlay = imgui.get_overlay_draw_list()
+        overlay.channels_split(self.melty.max_layer)
+        try:
+            for view in roots:
+                view.replay_body_actions()
+            for identity in current_views:
+                view = views[identity]
+                names = getattr(view._wrapper, '__params__', ())
+                if names:
+                    view.register_parameter_actions(names, view._kwargs, view._event_rects, view.closable)
+        finally:
+            overlay.channels_merge()
 
     def update_keyboard(self, visible=None):
         """Call after drawing, when the app has resolved its text-focus owner."""
@@ -289,6 +363,7 @@ class IOSInput:
         self.melty._keys_down.clear()
         self._pressed_keys.clear()
         self._touch_pressed = self._release_pending = False
+        self._pointer_cancelled = True
         self._set_modifiers(0)
         for button in range(len(self.io.mouse_down)):
             self.io.mouse_down[button] = False

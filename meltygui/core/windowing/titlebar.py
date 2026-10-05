@@ -233,10 +233,12 @@ def backend_supported():
     (the fallback frame has no buttons — ours fill in), never beside
     libdecor's own title bar. Never off Linux: the move / resize / frame
     plumbing behind it is Xlib and Wayland."""
+    if not sys.platform.startswith("linux"):
+        return False
     if _on_wayland():
         from meltygui.core.windowing.glfw_utils import wayland_native_frame_active
         return wayland_native_frame_active()
-    return sys.platform.startswith("linux")
+    return True
 
 
 def can_adjust_window_edges(window):
@@ -273,6 +275,8 @@ def titlebar_enabled():
     opt-in). Wayland: whenever the native frame is up — GLFW's fallback frame
     carries no buttons, so ours are the only min/max/close the window gets,
     and the toggle is not consulted."""
+    if not sys.platform.startswith("linux"):
+        return False
     if _on_wayland():
         return backend_supported()
     from meltygui.core.runtime.toggles import Toggles
@@ -291,6 +295,8 @@ def wants_os_decoration():
     move by the compositor. X11: only while the enhanced titlebar is off (it
     replaces the WM's frame with _NET_WM_MOVERESIZE gestures). Boot hint and
     per-frame sync both read this."""
+    if not sys.platform.startswith("linux"):
+        return True
     if _on_wayland():
         if not backend_supported():
             return True
@@ -301,6 +307,10 @@ def wants_os_decoration():
 
 def sync_decoration(window):
     """Apply the toggle live: called every frame on the viz thread."""
+    # These platforms always request native decorations at window creation;
+    # none of our settings can change that policy while the window is open.
+    if not sys.platform.startswith("linux"):
+        return False
     want_bar = titlebar_enabled()
     decorated = bool(glfw.get_window_attrib(window, glfw.DECORATED))
     want_decorated = wants_os_decoration()
@@ -562,7 +572,7 @@ def _button_metrics():
     return button_margin, button_gap, height, {icon: s.x + Melty.px(15.0) for icon, s in sizes.items()}
 
 
-def _button_layout(disp_w, maximized):
+def _button_layout(disp_w, maximized=None):
     """[(kind, icon, rect)] of every control the layout asks for, in
     on-screen order: the left group from the top-left corner, the right
     group right-aligned at the top-right, each inset button_margin from
@@ -570,6 +580,8 @@ def _button_layout(disp_w, maximized):
     _SETTINGS_GAP inward of the controls."""
     from meltygui.core.melty import Melty
     left_kinds, right_kinds = control_kinds()
+    if maximized is None:
+        maximized = ("maximize" in left_kinds or "maximize" in right_kinds) and _maximized(_studio_window())
     button_margin, button_gap, height, widths = _button_metrics()
     settings_gap = Melty.px(_SETTINGS_GAP)
     buttons = []
@@ -613,7 +625,7 @@ def chrome_insets():
         return 0.0, 0.0
     left_kinds, right_kinds = control_kinds()
     button_margin, button_gap, height, widths = _button_metrics()
-    maximized = _maximized(_studio_window())
+    maximized = ("maximize" in left_kinds or "maximize" in right_kinds) and _maximized(_studio_window())
     from meltygui.core.melty import Melty
     settings_gap = Melty.px(_SETTINGS_GAP)
 
@@ -652,7 +664,7 @@ def draw_header_controls(draw_state=None, **kwargs):
         return
     window = _studio_window()
     io = imgui.get_io()
-    buttons = _button_layout(io.display_size.x, _maximized(window))
+    buttons = _button_layout(io.display_size.x)
     mx, my = io.mouse_pos.x, io.mouse_pos.y
     over_button = next((i for i, (kind, icon, (x0, y0, x1, y1)) in enumerate(buttons)
                         if x0 <= mx <= x1 and y0 <= my <= y1), None)
@@ -735,14 +747,12 @@ def paint_window_controls(draw_list):
     global _pressed_button
     from meltygui.core.melty import Melty
     from meltygui.core.runtime.toggles import shadow_depth_at
-    if not controls_enabled() or _hosted_frame == Melty.frame_count:
+    if _hosted_frame == Melty.frame_count or not controls_enabled():
         return      # off, or the root's header painted them this frame (draw_header_controls)
-    window = _studio_window()
     io = imgui.get_io()
     disp_w = io.display_size.x
     mx, my = io.mouse_pos.x, io.mouse_pos.y
-    maximized = _maximized(window)
-    buttons = _button_layout(disp_w, maximized)
+    buttons = _button_layout(disp_w)
     over_button = next((i for i, (kind, icon, (x0, y0, x1, y1)) in enumerate(buttons)
                         if x0 <= mx <= x1 and y0 <= my <= y1), None)
     # Top-most of everything painted: the highest paint rank + a little depth.
@@ -786,7 +796,7 @@ def paint_fps(overlay, chrome, frame_ms, fps):
     disp_w = io.display_size.x
     right = disp_w
     if (chrome and titlebar_enabled()) or settings_available():
-        buttons = _button_layout(disp_w, _maximized(_studio_window()))
+        buttons = _button_layout(disp_w)
         right = _button_bands(buttons, disp_w)[1]
     # Use the compact 14px mono face; the manager applies the display scale.
     font = Melty.font_mgr.get(Font.JETBRAINS_MONO_14) if Melty.font_mgr else None
@@ -931,21 +941,22 @@ def draw_titlebar(window):
     and wayland_move (xdg_toplevel.move/resize) on Wayland.
     """
     global _pressed_button, _wm_move_started, _rdrag
+    from meltygui.core.melty import Melty
+
     custom_titlebar = sync_decoration(window)
     if not custom_titlebar:
         _wm_move_started = False
         _rdrag = None
-        if not settings_available():
+        if _hosted_frame == Melty.frame_count or not settings_available():
             _pressed_button = None
             return
 
-    from meltygui.core.melty import Melty
     from meltygui.core.runtime.toggles import Toggles
 
     io = imgui.get_io()
     disp_w, disp_h = io.display_size.x, io.display_size.y
     mx, my = io.mouse_pos.x, io.mouse_pos.y
-    maximized = _maximized(window)
+    maximized = custom_titlebar and _maximized(window)
     if custom_titlebar:
         sync_window_geometry(window)
         sync_input_region(window)
