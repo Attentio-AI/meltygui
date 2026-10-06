@@ -34,6 +34,8 @@ from meltygui.core.rendering.window_decoration import window
 from meltygui.core.runtime.toggles import Swoosh
 from meltygui.completion.fim import FimState
 from meltygui.editor.source_tools import SourceToolsState
+from meltygui.core.cache.deferred_invalidation import DeferredInvalidation
+from meltygui.core.rendering.injected_state import owned_state
 
 
 def _hex(h):
@@ -3391,6 +3393,14 @@ def _typing_hot():
     return bool(last) and time.monotonic() - last < _TINT_INPUT_QUIET_S
 
 
+def _defer_symbol_refresh(refresh, ds, last_collect):
+    # Keep the existing typing/collect debounce, but sleep until it expires.
+    # request_render here busy-spun at full frame rate during a roster load.
+    deadline = max(last_collect + _TINT_RECOMPUTE_MIN_S,
+                   Melty._last_input_time + _TINT_INPUT_QUIET_S)
+    refresh.schedule(ds, Melty.cache, deadline)
+
+
 _TEXT_SPLICE_CACHE = {}
 
 
@@ -3711,8 +3721,8 @@ def _usage_spans(ds, text, code_tree, line_offset=0, view_path=None):
 
     Debounced like _def_tints: the collect walks every usage in the buffer
     (~15ms on a 2200-line file) on the render thread, so a key change inside
-    _TINT_RECOMPUTE_MIN_S serves the last-good span set and re-requests a
-    frame for the trailing recompute — per-keystroke cost becomes a few
+    _TINT_RECOMPUTE_MIN_S serves the last-good span set and schedules a
+    refresh for the trailing recompute — per-keystroke cost becomes a few
     recomputes per second."""
     if code_tree is None:
         return ()
@@ -3725,6 +3735,7 @@ def _usage_spans(ds, text, code_tree, line_offset=0, view_path=None):
     # which carries refreshed positions and rebuilds exactly.
     key = (id(code_tree), id(su_top), line_offset, str(view_path))
     _old_key = getattr(ds, '_usage_spans_key', None)
+    refresh = owned_state(ds, '_usage_span_refresh', DeferredInvalidation)
     # Cold-migration: a hotswapped ds carrying only the legacy resolved tuple -
     # recompute rather than serving spans the new resolve path can't re-anchor.
     if _old_key != key or getattr(ds, "_usage_spans_raw", None) is None:
@@ -3747,10 +3758,11 @@ def _usage_spans(ds, text, code_tree, line_offset=0, view_path=None):
         _held = getattr(ds, "_usage_spans", None) is not None
         if _held and (_typing_hot()
                       or now - getattr(ds, "_usage_spans_time", 0.0) < _TINT_RECOMPUTE_MIN_S):
-            request_render()   # typing/debounced: serve held (remapped below), retry later
+            _defer_symbol_refresh(refresh, ds, getattr(ds, '_usage_spans_time', 0.0))
         elif _held and _su_pending:
-            pass   # hold; the frame-boundary attach (attach_to_render) wakes the loop & busts the key
+            refresh.cancel()  # the frame-boundary attach wakes the loop & busts the key
         else:
+            refresh.cancel()
             # Collect against the TREE'S OWN text when the buffer has moved on:
             # a reparse that lands mid-burst carries sites for the text it was
             # parsed from (gp.source) - verifying these against the NEWER buffer
@@ -3796,6 +3808,8 @@ def _usage_spans(ds, text, code_tree, line_offset=0, view_path=None):
             ds._usage_spans_time = now
             ds._usage_spans_text = text
             ds._usage_tc = {}   # per-(su, at_def) jump-target counts; valid per span set
+    else:
+        refresh.cancel()
     # Text drift since the held set was computed (typing between reparses):
     # re-resolve from the immutable raw result so entries displaced by the
     # edit are re-found by content and never chained-splice-dropped.
@@ -5698,8 +5712,8 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None,
     churn instead of instantly.
 
     Recompute is additionally debounced (_TINT_RECOMPUTE_MIN_S): a key
-    change inside the window serves the last-good result and re-requests a
-    frame, so the trailing recompute lands once the window expires —
+    change inside the window serves the last-good result and schedules a
+    refresh, so the trailing recompute lands once the window expires —
     fast typing pays the collect a few times a second, not per keystroke.
     Stale spans can sit a hair off the glyphs for that window; they're
     translucent washes, and the background parse churn already did this."""
@@ -5713,6 +5727,7 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None,
     _roster = bool(Toggles.TextEditor.roster_def_tints) and view_path is not None
     if not _roster and not isinstance(code_tree, dict):
         return ((), (), (), {})
+    refresh = owned_state(ds, '_def_tint_refresh', DeferredInvalidation)
     # Hotswap shape check: a held result from before the comment-tints split
     # was a 5-tuple; drop it rather than serve it through the debounce path.
     if (getattr(ds, "_def_tints", None) is not None
@@ -5762,16 +5777,20 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None,
         # symbol gone until the next good recompute. Hold the last-good
         # result instead; the attach's fresh su map busts the key.
         _su_pending = (not _roster and su_top is None
-                       and getattr(code_tree, "symbol_usage", None))
+                       and getattr(code_tree, "_needs_distribute", False)
+                       and isinstance(getattr(code_tree, "symbol_usage", None), dict))
         # A pure window move (same content key) recomputes right away: it's
         # a ~ms windowed scan and holding it would leave the freshly scrolled-
         # in lines unwashed for the debounce window.
         _win_only = (_roster and getattr(ds, "_def_tints_ckey", None) == _ckey)
         if (getattr(ds, "_def_tints", None) is not None and not _win_only
-                and (_typing_hot() or _su_pending
+                and (_typing_hot()
                      or now - getattr(ds, "_def_tints_time", 0.0) < _TINT_RECOMPUTE_MIN_S)):
-            request_render()   # typing/debounced: serve held (remapped below), retry later
+            _defer_symbol_refresh(refresh, ds, getattr(ds, '_def_tints_time', 0.0))
+        elif getattr(ds, "_def_tints", None) is not None and _su_pending:
+            refresh.cancel()  # attaching the pending symbol layer requests its own frame
         else:
+            refresh.cancel()
             # Collect on the tree's own text, then RESOLVE onto the buffer -
             # same root-cause fix as _usage_spans (see the anchor block).
             _base = text
@@ -5820,6 +5839,8 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None,
             ds._def_tints_key = key
             ds._def_tints_time = now
             ds._def_tints_text = text
+    else:
+        refresh.cancel()
     # Re-resolve the held washes onto the edited buffer from the immutable raw
     # result (see _usage_spans) - displaced lines are re-found by content.
     prev_text = getattr(ds, "_def_tints_text", None)

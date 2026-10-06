@@ -26,7 +26,7 @@ def test_cooperative_resize_has_no_release_settling_delay(monkeypatch, cooperati
 
 
 def test_native_resize_settling_belongs_to_its_surface(monkeypatch):
-    from meltygui.core.windowing.surface import Surface, MELTY_ATTRS, MODULE_GLOBALS
+    from meltygui.core.windowing.surface import MELTY_ATTRS, MODULE_GLOBALS
     from meltygui.core.windowing import titlebar
     first, second = Surface.__new__(Surface), Surface.__new__(Surface)
     first._melty, first._mods = {'os_resize_time': 100.}, {(titlebar, '_last_stamped_size'): (800, 600)}

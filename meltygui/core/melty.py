@@ -1502,7 +1502,9 @@ class Melty:
         text = cls.code_cache.get(key)
         if text is None:                       # absent (not an empty file)
             try:
-                text = Path(key).read_text()
+                # Source files use UTF-8 even when a native app launcher
+                # leaves the process in an ASCII locale (macOS Finder).
+                text = Path(key).read_text(encoding='utf-8')
             except (OSError, UnicodeDecodeError):
                 # UnicodeDecodeError: binary file (an image) - this is a
                 # TEXT cache; binary reads go to the git/file_system

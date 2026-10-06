@@ -190,18 +190,18 @@ def draw_tile_links(endpoint, endpoints, width, height, resize_record=None):
     return changed
 
 
-def tile_control_layout(width, height, parameter_count):
+def tile_control_layout(width, height, parameter_count, picker_width=180.0):
     """One compact footer: tile switcher followed by a single link button."""
     icon_count = parameter_count
     parameter_count = int(bool(parameter_count))
     row_height = 28.0
     gap = min(4.0, width / (2 * max(1, parameter_count)))
     if not parameter_count:
-        return max(0.0, height - row_height), min(180.0, width), []
+        return max(0.0, height - row_height), min(picker_width, width), []
     available = max(0.0, width - gap * parameter_count)
     # Fixed slots keep neighboring controls stationary when a link changes.
     link_width = min(28.0 + 22.0 * icon_count, available / (parameter_count + 1))
-    editor_width = min(180.0, max(0.0, available - parameter_count * link_width))
+    editor_width = min(picker_width, max(0.0, available - parameter_count * link_width))
     slots = [(editor_width + gap + index * (link_width + gap), 0.0, link_width)
              for index in range(parameter_count)]
     return max(0.0, height - row_height), editor_width, slots
@@ -216,13 +216,15 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
     # Change the picker size here; it sits in the tile's bottom-left corner and
     # renderers may opt into the remaining row with tile_toolbar=True.
     picker_height = 28.0
-    picker_width = 180.0
     tile = input_value
+    picker_label = "Empty" if tile.render_func is None else renderer_label(tile.render_func)
+    picker_width = imgui.calc_text_size(picker_label).x + 30
     endpoint = endpoints.get(tile.id) if endpoints is not None else None
     parameter_count = len(endpoint.parameters) if endpoint is not None else 0
     if resize_record is not None:
         resize_record.link_parameter_count = parameter_count
-    content_height, picker_width, link_slots = tile_control_layout(width, height, parameter_count)
+        resize_record.picker_width = picker_width
+    content_height, picker_width, link_slots = tile_control_layout(width, height, parameter_count, picker_width)
     choices = {"Empty": None}
     row_tints = {}
     for renderer in multi_instance_renderers:
@@ -288,7 +290,7 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
         tile.render_func, collection=choices, name="Editor type", key=tile.id,
         show_name=False, width=min(picker_width, width), height=picker_height,
         show_header=False, row_tints=row_tints,
-        display_label="Empty" if tile.render_func is None else renderer_label(tile.render_func),
+        display_label=picker_label, trigger_caret=("", ""),
         return_extras=resize_record is not None,
     )
     selected, renderer = result[:2]

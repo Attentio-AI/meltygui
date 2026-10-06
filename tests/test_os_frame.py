@@ -1952,28 +1952,6 @@ def test_regrab_between_frames_does_not_restore_previous_divider_snapshot(studio
     assert studio.size[0] == 1160.
 
 
-@pytest.mark.parametrize('axis', ['x', 'y'])
-@pytest.mark.parametrize('increment', [25.25, 11.2, 16.75, .5])
-def test_fractional_near_ack_does_not_move_the_display_wall(studio, hand, axis, increment):
-    studio.mode = 'cocoa'
-    i = 0 if axis == 'x' else 1
-    studio.size = [1000., 1000.]
-    wall = studio.area[i] + studio.area[i + 2]
-    studio.pos[i] = wall - 1000.
-    root = app_root(studio)
-    app_frame(studio, root)
-    far = C._frame(root, axis)[1]
-    for step in [increment] * 15 + [0.] * 3 + [-increment] * 15 + [0.] * 3:
-        C._pending(root, axis).append((far, far[axis] + step, True))
-        app_frame(studio, root)
-        # Combine the queued move and size into the next committed rectangle.
-        # Its integer origin and size must keep the far edge fixed.
-        pending = getattr(studio, '_offset', None)
-        actual_near = studio.pos[i] + (pending[i] if pending else 0.)
-        assert actual_near + studio.size[i] == pytest.approx(wall)
-        assert (root.width if axis == 'x' else root.height) == studio.size[i]
-
-
 @pytest.mark.parametrize('mode', ['feed', 'cocoa'])
 def test_regrab_at_display_wall_starts_from_current_native_frame(studio, monkeypatch, mode):
     from meltygui.core.input.input_handler import InputHandler

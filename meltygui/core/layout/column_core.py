@@ -1292,8 +1292,6 @@ def _frame_pass(window, axis):
         moved = True
     size = window.width if axis == "x" else window.height
     native_size = int(round(far[axis])) if binding is not None else None
-    if binding is not None and os_ctx is not None and os_frame.mode() == "cocoa":
-        native_size = int(round(binding.content_size(os_frame.requested_size(axis))))
     if (native_size is not None and native_size != size) or abs(far[axis] - size) > 0.5:
         # A surface-bound frame is the native content size. Match flush()'s
         # integer request: truncating here but rounding there makes its own

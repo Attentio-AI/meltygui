@@ -542,6 +542,11 @@ class GlfwQueueBackend:
 
     def _on_button(self, window, button, action, mods):
         try:
+            from meltygui.core.windowing import melty_windows
+            melty_windows.capture_move_press(window, button, action)
+        except Exception:
+            pass  # Optional native handoff must never interrupt normal input.
+        try:
             from meltygui.core.windowing.glfw_utils import request_render
             self._stamp_input()   # mouse button press/release defers the parse
             self._set_mods(self.handler, mods)
@@ -1053,5 +1058,3 @@ class JsonBackend:
 #         """True if ImGui allows hovering (not blocking input)."""
 #         return True
 #
-
-

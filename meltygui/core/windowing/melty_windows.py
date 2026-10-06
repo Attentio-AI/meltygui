@@ -19,6 +19,7 @@ _STATE = globals().get('_STATE') or {
 _STATE.setdefault('frame_library', None)
 _STATE.setdefault('frame_apis', {})
 _STATE.setdefault('frame_tokens', {})
+_STATE.setdefault('move_enabled', False)
 _OBJC = globals().get('_OBJC')
 _LIVE_RESIZE = globals().get('_LIVE_RESIZE')
 PATH = os.path.expanduser('~/Library/Application Support/Melty Windows/surfaces-v1.sock')
@@ -76,7 +77,18 @@ def _exchange(windows):
               and reply.get('enabled') is True and type(reply.get('lease_seconds')) is int
               and reply.get('lease_seconds') == 1)
     library = reply.get('frame_library') if active and reply.get('frame_api') == 1 else None
-    return active, library if isinstance(library, str) else None
+    library = library if isinstance(library, str) else None
+    move = active and library is not None and reply.get('move_api') == 1 and reply.get('move_enabled') is True
+    # Keep the existing two-value exchange contract: a hotswapped app may
+    # still be executing the old heartbeat loop on its live worker thread.
+    # The same accepted-surface lease gates this optional permission at use.
+    with _STATE['lock']:
+        move_changed = move != _STATE.get('move_enabled', False)
+        _STATE['move_enabled'] = move
+    if move_changed:
+        from meltygui.core.windowing.glfw_utils import request_render
+        request_render()
+    return active, library
 
 
 def _poll():
@@ -178,7 +190,57 @@ def _frame_api(path):
         except (OSError, AttributeError):
             api = None
         cache[path] = api
-    return cache[path]
+    api = cache[path]
+    # A live app may have cached this library before the move adapter hotswaps
+    # in. Configure its new exports too: ctypes otherwise truncates NSWindow*
+    # to its default int argument type. Keep initialization local to the handle.
+    if api is not None and not getattr(api, '_melty_move_configured', False):
+        if hasattr(api, 'MeltySurfaceMoveBegin') and hasattr(api, 'MeltySurfaceMoveCapture'):
+            api.MeltySurfaceMoveCapture.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            api.MeltySurfaceMoveCapture.restype = None
+            api.MeltySurfaceMoveBegin.argtypes = [ctypes.c_void_p]
+            api.MeltySurfaceMoveBegin.restype = ctypes.c_int
+        api._melty_move_configured = True
+    return api
+
+
+def _move_api(window):
+    if sys.platform != 'darwin' or window is None:
+        return None
+    with _STATE['lock']:
+        if not _STATE.get('move_enabled') or time.monotonic() >= _STATE['expires']:
+            return None
+        accepted = _STATE.get('accepted', ())
+        path = _STATE.get('frame_library')
+    if _window_number(window) not in accepted:
+        return None
+    api = _frame_api(path) if path else None
+    return api if (api is not None and hasattr(api, 'MeltySurfaceMoveBegin')
+                   and hasattr(api, 'MeltySurfaceMoveCapture')) else None
+
+
+def move_available(window):
+    """Cached per-surface permission and helper support; no IPC on input/draw."""
+    return _move_api(window) is not None
+
+
+def capture_move_press(window, button, action):
+    """Called inside GLFW's callback, while NSApp still has the original event."""
+    if sys.platform != 'darwin' or button != 0:
+        return
+    api = _move_api(window)
+    if api is not None:
+        from meltygui.core.windowing import window_api as glfw
+        api.MeltySurfaceMoveCapture(glfw.get_cocoa_window(window), int(action == glfw.PRESS))
+
+
+def begin_move(window):
+    """Hand MeltyGUI's unclaimed background drag to Cocoa, using its real press."""
+    api = _move_api(window)
+    if api is None:
+        return False
+    from meltygui.core.windowing import window_api as glfw
+    return bool(api.MeltySurfaceMoveBegin(glfw.get_cocoa_window(window)))
 
 
 def begin_frame(window):
@@ -242,7 +304,7 @@ def stop():
     if thread is not None:
         thread.join(timeout=.5)
     with _STATE['lock']:
-        _STATE.update(thread=None, expires=0., windows=set(), accepted=set(), numbers={})
+        _STATE.update(thread=None, expires=0., windows=set(), accepted=set(), numbers={}, move_enabled=False)
 
 
 def workarea(window):

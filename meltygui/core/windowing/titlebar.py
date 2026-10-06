@@ -394,6 +394,9 @@ def _release_after_wayland_grab(window):
 
 
 def _begin_wm_move(window):
+    if sys.platform == 'darwin':
+        from meltygui.core.windowing import melty_windows
+        return melty_windows.begin_move(window)
     if _on_wayland():
         if wayland_move.begin_move(window):
             _release_after_wayland_grab(window)
@@ -936,6 +939,29 @@ def _close_window(window):
     request_render()      # posts the empty event that wakes wait_events
 
 
+def _draw_native_background_move(window):
+    """Native decorations keep Melty's lowest-priority background drag target."""
+    global _wm_move_started
+    from meltygui.core.melty import Melty
+    from meltygui.core.runtime.toggles import Toggles
+    from meltygui.core.windowing import melty_windows
+    if not melty_windows.move_available(window):
+        _wm_move_started = False
+        return
+    handler = Melty.event_handler
+    if not handler.is_down('left_mouse'):
+        _wm_move_started = False
+    if not Toggles.Melty.move_drag_anywhere or _fullscreen(window) or _maximized(window):
+        return
+    handler.register_hovered(
+        _STRIP_ID, ['non_blocking_left_mouse_dragged'], priority=_STRIP_PRIORITY,
+        cursor=mouse_cursor.MOVE if Toggles.Melty.window_move_cursor else None,
+        cursor_gate='left_mouse_dragged')
+    events = (Melty.events or {}).get(_STRIP_ID, {})
+    if 'non_blocking_left_mouse_dragged' in events and not _wm_move_started:
+        _wm_move_started = _begin_wm_move(window)
+
+
 def draw_titlebar(window):
     """Per-frame entry point — call inside the imgui frame on the viz thread.
 
@@ -952,7 +978,10 @@ def draw_titlebar(window):
 
     custom_titlebar = sync_decoration(window)
     if not custom_titlebar:
-        _wm_move_started = False
+        if sys.platform == 'darwin':
+            _draw_native_background_move(window)
+        else:
+            _wm_move_started = False
         _rdrag = None
         if _hosted_frame == Melty.frame_count or not settings_available():
             _pressed_button = None

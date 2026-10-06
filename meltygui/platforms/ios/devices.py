@@ -24,12 +24,33 @@ def xcrun():
     return executable
 
 
+def xcode_environment():
+    """Keep explicit/selected Xcode; find full Xcode when only CLT is selected."""
+    env = dict(os.environ)
+    if env.get('DEVELOPER_DIR'):
+        return env
+    selected = subprocess.run(['/usr/bin/xcode-select', '-p'], close_fds=False,
+                              capture_output=True, text=True, timeout=5)
+    directory = Path(selected.stdout.strip())
+    if selected.returncode == 0 and (directory / 'usr/bin/devicectl').is_file():
+        return env
+    candidates = [Path('/Applications/Xcode.app'),
+                  *sorted(Path('/Applications').glob('Xcode*.app'))]
+    for application in candidates:
+        directory = application / 'Contents/Developer'
+        if (directory / 'usr/bin/devicectl').is_file():
+            env['DEVELOPER_DIR'] = str(directory)
+            return env
+    raise ValueError('iOS devices require full Xcode; install Xcode or set DEVELOPER_DIR.')
+
+
 def device_command(arguments, *, timeout=30):
     """Read machine output separately from devicectl's human progress output."""
     with tempfile.TemporaryDirectory(prefix='melty-device-') as directory:
         output = Path(directory) / 'result.json'
         result = subprocess.run([xcrun(), 'devicectl', *arguments, '--json-output', str(output)],
-                                close_fds=False, capture_output=True, text=True, timeout=timeout)
+                                close_fds=False, capture_output=True, text=True, timeout=timeout,
+                                env=xcode_environment())
         if result.returncode:
             raise RuntimeError((result.stderr or result.stdout).strip() or 'Device command failed.')
         data = json.loads(output.read_text())
@@ -131,7 +152,7 @@ def run_application(request):
         print('Building iOS app…', flush=True)
         subprocess.run([xcrun(), 'xcodebuild', '-project', str(build / 'MeltyIOS.xcodeproj'),
                         '-scheme', 'Melty', '-configuration', 'Debug', '-destination', 'generic/platform=iOS',
-                        '-derivedDataPath', str(derived), 'build'], check=True, close_fds=False)
+                        '-derivedDataPath', str(derived), 'build'], check=True, close_fds=False, env=xcode_environment())
         bundle = derived / 'Build/Products/Debug-iphoneos/Melty.app'
         info = plistlib.loads((bundle / 'Info.plist').read_bytes())
         print('Installing on device…', flush=True)
@@ -148,7 +169,7 @@ def run_application(request):
             print('Running on device…', flush=True)
             subprocess.run([xcrun(), 'devicectl', 'device', 'process', 'launch', '--device', device,
                             '--terminate-existing', '--console', info['CFBundleIdentifier']],
-                           check=True, close_fds=False)
+                           check=True, close_fds=False, env=xcode_environment())
         finally:
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             try:

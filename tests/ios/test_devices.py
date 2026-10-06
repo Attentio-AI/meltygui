@@ -33,6 +33,7 @@ def test_request_refuses_wrong_entry_and_missing_build(tmp_path, monkeypatch):
 
 def test_run_stages_snapshot_builds_installs_and_stops_exact_app(tmp_path, monkeypatch):
     monkeypatch.setattr(devices, 'xcrun', lambda: '/usr/bin/xcrun')
+    monkeypatch.setattr(devices, 'xcode_environment', lambda: {})
     monkeypatch.setattr(devices, 'list_devices', lambda: [{'id': 'device-a', 'name': 'Work iPhone'}])
     build = tmp_path / 'build/ios'
     build.mkdir(parents=True)
@@ -75,3 +76,33 @@ def test_run_stages_snapshot_builds_installs_and_stops_exact_app(tmp_path, monke
     assert any('xcodebuild' in call for call in calls)
     terminated = [call[-1] for call in calls if 'terminate' in call]
     assert terminated == ['42', '42']
+
+
+def test_xcode_environment_respects_explicit_directory(monkeypatch):
+    monkeypatch.setenv('DEVELOPER_DIR', '/custom/Xcode/Contents/Developer')
+    assert devices.xcode_environment()['DEVELOPER_DIR'] == '/custom/Xcode/Contents/Developer'
+
+
+@pytest.mark.parametrize('selected_full_xcode', [False, True])
+def test_xcode_environment_finds_beta_when_clt_selected(monkeypatch, selected_full_xcode):
+    from types import SimpleNamespace
+    monkeypatch.delenv('DEVELOPER_DIR', raising=False)
+    selected = '/custom/Xcode/Contents/Developer' if selected_full_xcode else '/Library/Developer/CommandLineTools'
+    monkeypatch.setattr(devices.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=0, stdout=selected))
+    beta = Path('/Applications/Xcode-beta.app/Contents/Developer')
+    monkeypatch.setattr(Path, 'glob', lambda *a: [beta.parent.parent])
+    monkeypatch.setattr(Path, 'is_file', lambda path: path == beta / 'usr/bin/devicectl' or
+                        (selected_full_xcode and path == Path(selected) / 'usr/bin/devicectl'))
+    env = devices.xcode_environment()
+    assert env.get('DEVELOPER_DIR') == (None if selected_full_xcode else str(beta))
+
+
+def test_xcode_environment_reports_missing_full_xcode(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.delenv('DEVELOPER_DIR', raising=False)
+    monkeypatch.setattr(devices.subprocess, 'run', lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout='/Library/Developer/CommandLineTools'))
+    monkeypatch.setattr(Path, 'glob', lambda *a: [])
+    monkeypatch.setattr(Path, 'is_file', lambda path: False)
+    with pytest.raises(ValueError, match='require full Xcode'):
+        devices.xcode_environment()

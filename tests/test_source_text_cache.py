@@ -1,5 +1,7 @@
 """Normalized source sweeps keep warm reads cheap and external edits fresh."""
+import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 import sys
 
@@ -8,6 +10,31 @@ from meltygui.core.melty import FileWatch, Melty
 from meltygui.editor.external_changes import ExternalChanges
 from meltygui.editor.pending_save import PendingSave
 from meltygui.editor import text_editor
+
+
+def test_source_read_is_utf8_even_when_launcher_uses_ascii(tmp_path):
+    path = tmp_path / 'source.py'
+    source = '# Editor \u2014 settings\nlabel = "caf\u00e9"\n'
+    path.write_text(source, encoding='utf-8')
+    program = '''
+import locale
+from pathlib import Path
+import sys
+from meltygui.core.melty import Melty
+from meltygui.editor.pending_save import PendingSave
+assert not sys.flags.utf8_mode
+if sys.platform != 'win32':
+    assert locale.getencoding().lower() in ('ascii', 'us-ascii', 'ansi_x3.4-1968')
+path = Path(sys.argv[1])
+expected = path.read_text(encoding='utf-8')
+text = PendingSave.current_file_text(str(path))
+assert text == expected, repr(text)
+assert Melty.read_code(str(path)) is text
+'''
+    env = dict(os.environ, LC_ALL='C', LANG='C', PYTHONUTF8='0', PYTHONCOERCECLOCALE='0')
+    result = subprocess.run([sys.executable, '-X', 'utf8=0', '-c', program, str(path)],
+                            env=env, close_fds=False, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_large_cached_source_sweep_does_not_resolve_files(tmp_path, monkeypatch):

@@ -53,6 +53,31 @@ def test_untrusted_or_absent_endpoint_cannot_enable_geometry(tmp_path, monkeypat
         bridge._exchange({1})
 
 
+@pytest.mark.parametrize('active,move,expected', [(True, True, True), (True, False, False), (False, True, False)])
+def test_native_move_advertisement_follows_service_and_setting(socket_directory, monkeypatch, active, move, expected):
+    import os
+    monkeypatch.setattr(bridge, '_STATE', dict(lock=threading.Lock(), move_enabled=False))
+    path = socket_directory + '/move.sock'
+    monkeypatch.setattr(bridge, 'PATH', path)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(path)
+        os.chmod(path, 0o600)
+        server.listen()
+        def serve():
+            connection, _ = server.accept()
+            with connection:
+                connection.recv(4096)
+                connection.sendall(json.dumps(dict(version=1, capability='native-edges', enabled=active,
+                    lease_seconds=1, frame_api=1, frame_library='/helper/MeltySurfaceFrame.dylib',
+                    move_api=1, move_enabled=move)).encode() + b'\n')
+        worker = threading.Thread(target=serve)
+        worker.start()
+        result = bridge._exchange({7})
+        worker.join(1)
+    assert result == (active, '/helper/MeltySurfaceFrame.dylib' if active else None)
+    assert bridge._STATE['move_enabled'] is expected
+
+
 def test_lease_is_per_surface_and_expires(monkeypatch):
     state = dict(lock=threading.Lock(), windows=set(), accepted={7},
                  expires=20., thread=object())

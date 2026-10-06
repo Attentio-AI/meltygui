@@ -138,6 +138,14 @@ Melty Windows yields registered surfaces' input to MeltyGUI. Automated native
 geometry/handshake and solver regressions cover the adapter; full visual and
 physical-gesture parity with Hyprland remains a live acceptance check.
 
+Melty Windows 0.2.3 also advertises an optional native background-move helper.
+Decorated Cocoa surfaces register the same lowest-priority left-drag target as
+Linux. MeltyGUI's existing press capture decides ownership; the helper hands
+only an unclaimed background drag's original mouse-down event to AppKit. It
+delivers a release to the application's own input queue because the native
+window move may consume mouse-up. Controls, dividers and fixed popovers retain
+their existing priorities, and cooperative movement needs no pixel sampling.
+
 Native decoration constraints also count. On Hyprland with Hyprview's
 `keep_on_screen` policy, the compositor clamps the decorated frame while its
 geometry feed reports the content rectangle. `geometry_feed.resize_workarea()`

@@ -3,6 +3,18 @@ from types import SimpleNamespace
 from meltygui import text_index as index
 
 
+def test_discovery_prunes_generated_dependency_copies_at_any_depth(tmp_path):
+    sources = ['app.py', 'platforms/ios/launcher.py', 'src/build_tools.py']
+    generated = ['build/lib/copied.py', 'dist/package/copied.py',
+                 'platforms/ios/build/dependencies/python/lib/copied.py',
+                 '.venv/lib/dependency.py']
+    for relative in sources + generated:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('def symbol(): pass\n')
+    assert index._walk_rel_files(str(tmp_path)) == sorted(sources)
+
+
 def test_overlay_cache_tracks_repeated_edits_and_deletion(tmp_path, monkeypatch):
     path = tmp_path / 'sample.py'
     path.write_text('def first(): pass\n')

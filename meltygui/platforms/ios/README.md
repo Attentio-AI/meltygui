@@ -106,7 +106,9 @@ MeltyGUI lifecycle.
 ## Run from the editor
 
 On macOS the Tasks environment picker includes paired iPhones/iPads by their
-device names. Select one and Run the task for the app's declared `entry` module.
+device names. Device commands honor `DEVELOPER_DIR` and the selected full Xcode.
+If only Command Line Tools are selected, they find Xcode (including Xcode beta)
+in `/Applications` without changing the system developer-directory selection. Select one and Run the task for the app's declared `entry` module.
 MeltyGUI stages the app's current sources (including the entry's pending editor
 text), builds with Xcode, installs the signed app and streams its device console.
 Stop terminates the installed app; it does not stop unrelated device processes.
@@ -151,7 +153,10 @@ Run toolkit tests with `python -m pytest tests/ios tests/test_portable_native_ap
 The portable-app test exercises the real Python frame, settings, cache and save
 lifecycle while recording GPU calls; it does not validate Metal pixels.
 On macOS, `tests/ios/build_metal_test.py` builds the real offscreen Metal encoder;
-set `MELTY_METAL_TEST=1` to opt into pixel tests. Editor integration/device checks
+set `MELTY_METAL_TEST=1` to opt into pixel tests. On a Mac with a display server,
+`tests/ios/test_presentation.py` also checks 90 real display-link drawables using
+the production submission helper and Metal validation. Offscreen pixel tests
+do not exercise the compositor or drawable presentation fences. Editor integration/device checks
 remain in the editor repository's `tests/ios` directory.
 
 Physical-device verification is still required for input latency, 120 Hz pacing,

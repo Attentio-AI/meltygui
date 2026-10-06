@@ -589,8 +589,6 @@ def begin_frame():
         requested_size = (bool(_STATE["size_requests"][axis])
                           and _STATE["size_expected"][i] is not None
                           and abs(feed_far[i] - pos[i] - _STATE["size_expected"][i]) < 1.0)
-        ack_before = (near[axis], far[axis])
-        own_size_ack = _STATE["size_expected"][i] == size[i]
         size_pending = _observe_size(axis, size[i])
         expected = _STATE["expected"][i]
         if expected is None:                      # first sight
@@ -684,19 +682,6 @@ def begin_frame():
                     _STATE["os_seen"][i] = (seen[0], far[axis])
             if not size_pending:
                 _STATE["size_expected"][i] = size[i]
-        if (new_mode == "cocoa" and pos[i] == expected and own_size_ack
-                and not size_pending and not _STATE["unapplied"][i]
-                and abs(near[axis] - pos[i]) < 1.0):
-            # Cocoa has applied the integer rectangle synchronously. Retaining
-            # a fractional near edge while acknowledging only the span moves
-            # the model's far edge off the real screen wall on every frame.
-            near[axis], far[axis] = pos[i], pos[i] + size[i]
-            after = (near[axis], far[axis])
-            if all(abs(a - b) < 1.0 for a, b in zip(ack_before, after)):
-                _STATE["size_ack_snaps"][axis] = (ack_before, after)
-                seen = _STATE["os_seen"][i]
-                if seen is not None and all(abs(a - b) < 1.0 for a, b in zip(seen, after)):
-                    _STATE["os_seen"][i] = after
     for axis in _AXIS:
         _walls_to_edges(axis)
 
@@ -1562,16 +1547,6 @@ def solve(bindings=()):
 # Apply
 # ---------------------------------------------------------------------------
 
-def requested_size(axis):
-    """The integer native span, preserving Cocoa's rounded screen edges."""
-    near, far = _STATE["edges"][axis]
-    if _STATE["mode"] == "cocoa":
-        # Rounding position and span independently lets an immovable far edge
-        # alternate by one pixel. Quantize the two screen edges as one box.
-        return int(round(far[axis])) - int(round(near[axis]))
-    return int(round(far[axis] - near[axis]))
-
-
 def flush():
     """End of the frame (after end_frame's window dispatch): the model's
     size / position → ONE surface request, applied at the next frame's
@@ -1589,7 +1564,8 @@ def flush():
     changed = False
     for axis, i in _AXIS.items():
         near, far = _STATE["edges"][axis]
-        size[i] = requested_size(axis)
+        want = far[axis] - near[axis]
+        size[i] = int(round(want))
         if size[i] != float(display[i]):
             changed = True
         recent = _STATE["size_requests"][axis]
@@ -1597,15 +1573,14 @@ def flush():
             changed = True              # cancel the older request even at the observed size
         if _STATE["mode"] != "walls":
             expected = _STATE["expected"][i]
-            target_near = round(near[axis]) if _STATE["mode"] == "cocoa" else near[axis]
-            if expected is not None and abs(target_near - expected) > 0.5:
+            if expected is not None and abs(near[axis] - expected) > 0.5:
                 moves = _STATE["move_requests"][axis]
                 previous = (expected, _STATE["size_expected"][i])
                 if not moves or moves[-1] != previous:
                     moves.append(previous)
                 # Keep a bounded history even if the OS feed stalls.
                 del moves[:-INFLIGHT_FRAMES * 2]
-                offset[i] = int(round(target_near - expected))
+                offset[i] = int(round(near[axis] - expected))
                 _STATE["expected"][i] = expected + offset[i]
                 _STATE["inflight"][i] = Melty.frame_count
                 changed = True

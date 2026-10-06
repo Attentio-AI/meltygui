@@ -21,6 +21,7 @@ class TileResizeRecord:
     controls: list = field(default_factory=list)
     toolbar: bool = False
     link_parameter_count: int = 0
+    picker_width: float = 180.0
 
     def replay(self, tile, rect, cache):
         from meltygui.core.melty import Melty
@@ -32,7 +33,7 @@ class TileResizeRecord:
                 or (tile.render_func is not None and self.body is None)):
             return False
         x, y, width, height = rect
-        content_height, picker_width, slots = tile_control_layout(width, height, self.link_parameter_count)
+        content_height, picker_width, slots = tile_control_layout(width, height, self.link_parameter_count, self.picker_width)
         body_height = height if self.toolbar else content_height
         if width <= 0 or body_height <= 0:
             return False

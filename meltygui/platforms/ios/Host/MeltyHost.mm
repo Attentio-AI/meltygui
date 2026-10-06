@@ -593,9 +593,7 @@ static const char *kindName(melty::InputKind kind) {
             [self performSelector:@selector(fail:) onThread:self->_thread withObject:message waitUntilDone:NO];
         }
     }];
-    [commands commit];
-    // CAMetalDisplayLink requires present(), not presentAtTime:.
-    [update.drawable present];
+    MeltyPresentFrame(commands, update.drawable);
     // Resource release/after-frame work belongs after encoding and submission,
     // while the persistent render thread still owns Python application state.
     // This callback does not mean that the GPU has completed presentation.

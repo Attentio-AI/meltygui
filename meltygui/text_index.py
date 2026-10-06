@@ -64,8 +64,10 @@ _TEXT_EXTS = {
     ".yaml", ".yml", ".sh", ".glsl", ".frag", ".vert", ".comp", ".c", ".h",
     ".cpp", ".hpp", ".cu", ".cuh", ".js", ".ts", ".css", ".html", ".xml",
 }
+# Build trees can contain whole dependency copies (e.g. an iOS Python bundle).
+# Do not discover them as project source; explicit file/import lookups still work.
 _SKIP_DIRS = {"__pycache__", ".git", ".hg", ".idea", ".vscode", "node_modules",
-              ".venv", "venv", ".mypy_cache", ".pytest_cache"}
+              ".venv", "venv", ".mypy_cache", ".pytest_cache", "build", "dist"}
 _MAX_FILE_BYTES = 8 << 20      # bigger than this → skipped (generated blobs)
 _STAT_TTL = 5.0                # seconds between staleness stat sweeps
 _WALK_TTL = 30.0               # seconds between new-file directory walks
