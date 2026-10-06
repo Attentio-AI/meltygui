@@ -235,10 +235,11 @@ def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
     # Change the corner grips here: the grab zone size, the visible
     # triangle's leg length and inset from the tile edge, and its resting /
     # hovered (or dragging) colour.
-    corner_size = 14.0
-    corner_triangle_size = 9.0
-    corner_triangle_inset = 1.0
-    corner_color = (1.0, 1.0, 1.0, 0.16)
+    touch = Core.melty.is_touch
+    corner_size = 44.0 if touch else 14.0
+    corner_triangle_size = 22.0 if touch else 9.0
+    corner_triangle_inset = 4.0 if touch else 1.0
+    corner_color = (1.0, 1.0, 1.0, 0.35 if touch else 0.16)
     corner_hover_color = (1.0, 1.0, 1.0, 0.55)
     # Change the tile lift here: how far each tile rises above the host
     # (its shadow spread) and the rounding of that shadow.
@@ -264,6 +265,11 @@ def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
 
     changed = False
     gesture = tile_state.gesture if tile_state is not None else None
+    # Keep opposite targets disjoint even in a minimum-sized tile.
+    if touch:
+        corner_size = min(corner_size, (x1 - x0) / 2, max(0.0, (y1 - y0 - 28.0) / 2))
+        corner_triangle_inset = min(corner_triangle_inset, corner_size / 4)
+        corner_triangle_size = min(corner_triangle_size, max(0.0, corner_size - 2 * corner_triangle_inset))
     for name, on_left, on_top in CORNERS:
         grip = corner_rect(rect, on_left, on_top, corner_size)
         owns = gesture is not None and gesture["corner"] == corner_view_id(tile, name)
@@ -293,7 +299,7 @@ def tile_corner_gesture(tile, frame, draw_state, path, tree, root_frame,
     split shifts the path while the drag is still captured. Returns True
     on the frame the tree changed."""
     # [tint=(1.0, 0.8, 0.3)]
-    split_threshold = 8.0
+    split_threshold = 16.0 if Core.melty.is_touch else 8.0
 
     view_id = corner_view_id(tile, corner)
     # Both events share the same hit region and priority. Register once;
@@ -621,7 +627,10 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
         if right - left <= 2 * content_padding or bottom <= top:
             continue
         # Keep the 28px picker/toolbar usable when a row reaches its 40px minimum.
-        vertical_inset = min(content_padding, max(0.0, (bottom - top - 28.0) * 0.5))
+        # Touch grips need a clear strip above/below content: enlarging only
+        # their hit boxes would steal taps from toolbar and editor controls.
+        vertical_padding = 44.0 if Core.melty.is_touch else content_padding
+        vertical_inset = min(vertical_padding, max(0.0, (bottom - top - 28.0) * 0.5))
         imgui.set_cursor_screen_pos((left + content_padding, top + vertical_inset))
         content_rect = (left + content_padding, top + vertical_inset,
                         right - left - 2 * content_padding, bottom - top - 2 * vertical_inset)

@@ -69,6 +69,7 @@ import meltygui_imgui as imgui
 
 from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
+from meltygui.core.rendering.core_decoration import Core
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.runtime.paths import documents_root, workspace_root
 from meltygui.core.windowing.glfw_utils import request_render
@@ -353,6 +354,12 @@ def claim_keyboard(draw_state):
     invalidate tracker) stay muted. Returns True when the view has the
     keyboard this frame; an open popover (a colour picker, the context menu)
     keeps it off so the two never read the same arrows."""
+    # A file selection is not text entry. Claiming this slot opens UIKit's
+    # keyboard; explicit name/search fields own their own focus instead.
+    if Core.melty.is_touch:
+        if Melty.text_focused_ds is draw_state:
+            Melty.text_focused_ds = None
+        return False
     holder = Melty.text_focused_ds
     if holder is None or (holder is not draw_state
                           and getattr(holder, "_tile_id", None) == draw_state._tile_id):

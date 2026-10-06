@@ -569,9 +569,10 @@ class TypeCodec(Codec):
         # Addresses it resolved through the gentler is_writable_source gate
         # (folder windows mount paths outside the project), so whole-file saves
         # there pass while code codecs stay pinned to the project tree.
-        if not (_is_editable_source(address.path)
-                or getattr(address, "_allow_write", False)):
-            print(f"[codec.save] refusing to write library source: {address.path}")
+        if not (is_writable_file(address.path) and (
+                _is_editable_source(address.path)
+                or getattr(address, "_allow_write", False))):
+            print(f"[codec.save] refusing to write read-only or library source: {address.path}")
             return False
         full = address.path.read_bytes()
         newline = _detect_newline(full)

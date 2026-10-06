@@ -30,7 +30,7 @@ def xcode_environment():
     if env.get('DEVELOPER_DIR'):
         return env
     selected = subprocess.run(['/usr/bin/xcode-select', '-p'], close_fds=False,
-                              capture_output=True, text=True, timeout=5)
+                              capture_output=True, text=True, encoding="utf-8", timeout=5)
     directory = Path(selected.stdout.strip())
     if selected.returncode == 0 and (directory / 'usr/bin/devicectl').is_file():
         return env
@@ -49,11 +49,11 @@ def device_command(arguments, *, timeout=30):
     with tempfile.TemporaryDirectory(prefix='melty-device-') as directory:
         output = Path(directory) / 'result.json'
         result = subprocess.run([xcrun(), 'devicectl', *arguments, '--json-output', str(output)],
-                                close_fds=False, capture_output=True, text=True, timeout=timeout,
+                                close_fds=False, capture_output=True, text=True, encoding="utf-8", timeout=timeout,
                                 env=xcode_environment())
         if result.returncode:
             raise RuntimeError((result.stderr or result.stdout).strip() or 'Device command failed.')
-        data = json.loads(output.read_text())
+        data = json.loads(output.read_text(encoding="utf-8"))
         if data.get('error'):
             raise RuntimeError(str(data['error']))
         return data.get('result', {})

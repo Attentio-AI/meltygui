@@ -122,7 +122,7 @@ def is_editable_source(source_file) -> bool:
     except (OSError, ValueError):
         return False
     ok = True
-    if {"site-packages", "dist-packages"} & set(p.parts):
+    if _ios_bundle_source(p) or {"site-packages", "dist-packages"} & set(p.parts):
         ok = False
     else:
         ok = any(p.is_relative_to(root) for root in _EDITABLE_ROOTS)
@@ -134,6 +134,12 @@ def is_editable_source(source_file) -> bool:
 
 _LIBRARY_PARTS = frozenset({"site-packages", "dist-packages", "venv", ".venv",
                             "node_modules"})
+
+
+def _ios_bundle_source(path: Path) -> bool:
+    # Signed iOS bundles can report writable POSIX modes/access(), while the
+    # sandbox rejects writes. This includes app source registered as a project.
+    return sys.platform == "ios" and any(part.endswith(".app") for part in path.parts)
 
 
 def writable_file_refusal(path) -> str | None:
@@ -154,6 +160,8 @@ def writable_file_refusal(path) -> str | None:
         p = Path(path).resolve()
     except (OSError, ValueError) as e:
         return f"path cannot be resolved ({e})"
+    if _ios_bundle_source(p):
+        return "inside a read-only iOS app bundle"
     hit = _LIBRARY_PARTS & set(p.parts)
     if hit:
         return f"inside a library install ({sorted(hit)[0]}/)"

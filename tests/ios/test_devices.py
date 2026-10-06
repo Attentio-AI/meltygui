@@ -106,3 +106,21 @@ def test_xcode_environment_reports_missing_full_xcode(monkeypatch):
     monkeypatch.setattr(Path, 'is_file', lambda path: False)
     with pytest.raises(ValueError, match='require full Xcode'):
         devices.xcode_environment()
+
+
+def test_device_command_decodes_unicode_under_ascii_locale(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+    real_run = subprocess.run
+    monkeypatch.setattr(devices, "xcrun", lambda: "/usr/bin/xcrun")
+    monkeypatch.setattr(devices, "xcode_environment", lambda: {})
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "ascii")
+    def run(arguments, **kwargs):
+        output = Path(arguments[arguments.index("--json-output") + 1])
+        output.write_bytes(json.dumps({"result": {"name": "Lukas’s iPhone"}},
+                                     ensure_ascii=False).encode("utf-8"))
+        kwargs.pop("env")
+        return real_run([sys.executable, "-c",
+                         "import sys; sys.stdout.buffer.write(bytes.fromhex('e28099'))"], **kwargs)
+    monkeypatch.setattr(devices.subprocess, "run", run)
+    assert devices.device_command(["list", "devices"]) == {"name": "Lukas’s iPhone"}

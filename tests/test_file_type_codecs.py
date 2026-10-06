@@ -269,3 +269,52 @@ def test_asset_extensions_are_the_non_text_codecs():
     assert ".png" in exts and ".jpg" in exts
     assert ".py" not in exts and ".md" not in exts     # TextFileCodec's
 
+
+
+def test_ios_signed_bundle_is_read_only_even_with_writable_modes(tmp_path, monkeypatch):
+    from meltygui.code import fileref
+    from meltygui.code.new_codecs import TypeCodec
+    bundle = tmp_path / "Melty.app" / "app"
+    bundle.mkdir(parents=True)
+    source = bundle / "editor.py"
+    source.write_text("value = 1\n")
+    workspace = tmp_path / "Documents" / "editor.py"
+    workspace.parent.mkdir()
+    workspace.write_text("value = 1\n")
+    monkeypatch.setattr(fileref.sys, "platform", "ios")
+    monkeypatch.setattr(fileref, "_EDITABLE_ROOTS", [bundle, workspace.parent])
+    monkeypatch.setattr(fileref, "_EDITABLE_SOURCE_CACHE", {})
+    monkeypatch.setattr(fileref.os, "access", lambda *args: True)
+    assert not is_editable_source(source)
+    assert not is_writable_file(source)
+    assert "iOS app bundle" in fileref.writable_file_refusal(source)
+    assert is_editable_source(workspace)
+    assert is_writable_file(workspace)
+    address = Address(source)
+    address._allow_write = True  # stale/persisted whole-file authorization
+    assert TypeCodec.save(address, "value = 2\n") is False
+    assert source.read_text() == "value = 1\n"
+    assert TypeCodec.save(Address(workspace), "value = 2\n") is False
+    assert workspace.read_text() == "value = 2"
+
+
+def test_file_listing_does_not_claim_text_focus_on_touch(monkeypatch):
+    from types import SimpleNamespace
+    from meltygui.files.fast_file_explorer import claim_keyboard, Melty
+    from meltygui.core.rendering.core_decoration import Core
+    view = SimpleNamespace(_tile_id="files")
+    monkeypatch.setattr(Core.melty, "is_touch", True)
+    monkeypatch.setattr(Melty, "text_focused_ds", None)
+    assert not claim_keyboard(view)
+    assert Melty.text_focused_ds is None
+    Melty.text_focused_ds = view
+    assert not claim_keyboard(view)
+    assert Melty.text_focused_ds is None
+    field = SimpleNamespace(_tile_id="files")
+    Melty.text_focused_ds = field
+    assert not claim_keyboard(view)
+    assert Melty.text_focused_ds is field
+    monkeypatch.setattr(Core.melty, "is_touch", False)
+    monkeypatch.setattr(Melty, "popover_focused_ds", None)
+    assert claim_keyboard(view)
+    assert Melty.text_focused_ds is view
