@@ -157,3 +157,70 @@ def test_setup_includes_unpaired_physical_devices_with_status(monkeypatch):
     assert devices.list_devices(include_unpaired=True, details=True) == [
         dict(id='phone', name='Phone', paired=False, connected=True,
              transport='localNetwork', developer_mode='enabled')]
+
+
+def test_source_only_runs_skip_build_and_install_and_retry_failed_upload(tmp_path, monkeypatch):
+    monkeypatch.setattr(devices, 'xcrun', lambda: '/usr/bin/xcrun')
+    monkeypatch.setattr(devices, 'xcode_environment', lambda: {})
+    monkeypatch.setattr(devices, 'list_devices', lambda: [{'id': 'phone'}])
+    revision = [1]
+    monkeypatch.setattr(devices, 'native_inputs', lambda *args: {'revision': revision[0]})
+    monkeypatch.setattr(devices, 'terminate_app', lambda *args: None)
+    build = tmp_path / 'build'
+    build.mkdir()
+    (tmp_path / 'main.py').write_text('value = 1\n')
+    (build / 'host-build.json').write_text(json.dumps({'app_dir': str(build / 'app'), 'entry_module': 'main'}))
+    bundle = build / 'run-products/Build/Products/Debug-iphoneos/Melty.app'
+    bundle.mkdir(parents=True)
+    (bundle / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': 'test.app', 'CFBundleExecutable': 'Melty'}))
+    (bundle / 'HostSettings.plist').write_bytes(plistlib.dumps({'source_generation': 'a' * 32, 'source_updates': 1}))
+    calls = []
+    fail_copy = [False]
+    def command(args, **kwargs):
+        calls.append(args)
+        if 'install' in args:
+            return {'installedApplications': [{'bundleID': 'test.app', 'installationURL': 'file:///Melty.app/'}]}
+        if 'apps' in args:
+            return {'apps': [{'bundleIdentifier': 'test.app', 'url': 'file:///Melty.app/'}]}
+        if 'copy' in args and fail_copy[0]:
+            raise RuntimeError('Connection lost')
+        return {}
+    monkeypatch.setattr(devices, 'device_command', command)
+    monkeypatch.setattr(devices.subprocess, 'run', lambda args, **kwargs: calls.append(args))
+    request = dict(root=str(tmp_path), build=str(build), device='phone', module='main.py', text='value = 1\n')
+    devices.run_application(request)
+    assert sum('xcodebuild' in call for call in calls) == 1
+    devices.run_application(request)
+    assert not any('copy' in call for call in calls)
+    request['text'] = 'value = 2\n'
+    fail_copy[0] = True
+    with pytest.raises(RuntimeError, match='Connection lost'):
+        devices.run_application(request)
+    before_retry = len(calls)
+    fail_copy[0] = False
+    devices.run_application(request)
+    assert sum('copy' in call for call in calls[before_retry:]) == 2  # sources, then commit
+    assert sum('xcodebuild' in call for call in calls) == 1
+    assert sum('install' in call for call in calls) == 1
+    assert not any('--remove-existing-content' in call for call in calls)
+    before_noop = len(calls)
+    devices.run_application(request)
+    assert not any('copy' in call for call in calls[before_noop:])
+    revision[0] += 1
+    devices.run_application(request)
+    assert sum('install' in call for call in calls) == 2
+
+
+def test_native_stamps_detect_changes_and_deletions_without_build_outputs(tmp_path):
+    source = tmp_path / 'source'
+    source.mkdir()
+    module = source / 'module.py'
+    module.write_text('a = 1')
+    before = devices.input_stamps([source])
+    (source / 'build').mkdir()
+    (source / 'build/noise').write_text('build output')
+    assert devices.input_stamps([source]) == before
+    module.write_text('a = 100')
+    assert devices.input_stamps([source]) != before
+    module.unlink()
+    assert devices.input_stamps([source]) == {}

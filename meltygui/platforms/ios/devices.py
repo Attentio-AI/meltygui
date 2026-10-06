@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import uuid
 from urllib.parse import unquote, urlparse
 
 
@@ -127,6 +128,76 @@ def installed_application_url(result, bundle_id):
     return matches[0]['installationURL']
 
 
+def input_stamps(paths):
+    """Track native/runtime inputs by path, mtime and size, without hashing files."""
+    result = {}
+    ignored = {'.git', '.venv', 'venv', '__pycache__', '.pytest_cache', 'build', 'dist'}
+    for value in paths:
+        root = Path(value)
+        if not root.exists():
+            result[str(root)] = None
+            continue
+        if root.is_file():
+            files = [root]
+        else:
+            files = []
+            for directory, folders, names in os.walk(root):
+                folders[:] = sorted(n for n in folders if n not in ignored and not n.endswith('.egg-info'))
+                files.extend(Path(directory) / name for name in sorted(names) if not name.endswith('.pyc'))
+        for path in files:
+            stat = path.stat()
+            result[str(path)] = [stat.st_mtime_ns, stat.st_size]
+    return result
+
+
+def native_inputs(build, config):
+    project = build / 'MeltyIOS.xcodeproj/project.pbxproj'
+    paths = [build / 'host-build.json', project, Path(__file__).parent]
+    paths.extend(config[key] for key in ('python_lib', 'bootstrap_dir', 'packages_dir', 'shaders_dir') if config.get(key))
+    if project.is_file():
+        objects = plistlib.loads(project.read_bytes())['objects']
+        paths.extend(item['path'] for item in objects.values()
+                     if item.get('isa') == 'PBXFileReference' and Path(item.get('path', '')).is_absolute())
+    if config.get('packages_dir'):
+        manifest = Path(config['packages_dir']).parent / 'manifest.json'
+        paths.append(manifest)
+        if manifest.is_file():
+            for item in json.loads(manifest.read_text())['packages']:
+                paths.append(item.get('source') or item['wheel'])
+    environment = xcode_environment()
+    return {'files': input_stamps(paths), 'developer_dir': environment.get('DEVELOPER_DIR', ''), 'config': config}
+
+
+def application_stamps(app_dir):
+    return {p.relative_to(app_dir).as_posix(): [p.stat().st_mtime_ns, p.stat().st_size]
+            for p in sorted(app_dir.rglob('*')) if p.is_file()}
+
+
+def update_application(device, bundle_id, app_dir, receipt):
+    """Publish app sources only; a commit descriptor follows a successful upload."""
+    files = application_stamps(app_dir)
+    # Native code cannot be loaded from a writable container.
+    if any(Path(name).suffix in ('.so', '.dylib', '.fwork') for name in files):
+        return False
+    if files == receipt.get('app_files'):
+        print('App sources unchanged; using installed app.', flush=True)
+        return True
+    destination = 'Library/Application Support/meltygui/app-update'
+    generation = uuid.uuid4().hex
+    common = ['--device', device, '--domain-type', 'appDataContainer', '--domain-identifier', bundle_id]
+    print('Updating app sources on device…', flush=True)
+    device_command(['device', 'copy', 'to', *common, '--source', str(app_dir),
+                    '--destination', destination + '/' + generation + '/app'], timeout=120)
+    with tempfile.TemporaryDirectory(prefix='melty-update-') as temporary:
+        descriptor = Path(temporary) / 'update.json'
+        descriptor.write_text(json.dumps({'base_generation': receipt['generation'],
+                                          'generation': generation, 'files': files}))
+        device_command(['device', 'copy', 'to', *common, '--source', str(descriptor),
+                        '--destination', destination + '/update.json'], timeout=30)
+    receipt['app_files'] = files
+    return True
+
+
 def run_application(request):
     from meltygui.platforms.ios.application import read_application
     from meltygui.platforms.ios.stage_dependencies import copy_application, refresh_local_packages
@@ -151,9 +222,8 @@ def run_application(request):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError('This iOS app is already running from another execution. Stop it first.') from None
-        if config.get('packages_dir'):
-            print('Refreshing local iOS packages…', flush=True)
-            refresh_local_packages(config['packages_dir'])
+        snapshot_file = build / 'run-source-snapshot.json'
+        snapshot = None
         with tempfile.TemporaryDirectory(prefix='run-', dir=build) as temporary:
             staged = Path(temporary) / 'app'
             copy_application(application, staged)
@@ -162,21 +232,64 @@ def run_application(request):
                 if not entry.is_relative_to(staged):
                     raise ValueError('The entry module escapes the staged application.')
                 entry.write_text(request['text'], encoding='utf-8')
+                previous_entry = app_dir / request['module']
+                previous_snapshot = json.loads(snapshot_file.read_text()) if snapshot_file.is_file() else None
+                snapshot = {'module': request['module'], 'text': request['text']}
+                if previous_entry.is_file() and previous_snapshot:
+                    stat = previous_entry.stat()
+                    if (previous_snapshot.get('snapshot') == snapshot and
+                            previous_snapshot.get('stamp') == [stat.st_mtime_ns, stat.st_size]):
+                        os.utime(entry, ns=(stat.st_atime_ns, stat.st_mtime_ns))
             if app_dir.exists():
                 shutil.rmtree(app_dir)
             app_dir.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(staged), app_dir)
+        if snapshot is not None:
+            stat = (app_dir / request['module']).stat()
+            snapshot_file.write_text(json.dumps({'snapshot': snapshot, 'stamp': [stat.st_mtime_ns, stat.st_size]}))
+        elif snapshot_file.exists():
+            snapshot_file.unlink()
 
-        derived = build / 'run-products'
-        print('Building iOS app…', flush=True)
-        subprocess.run([xcrun(), 'xcodebuild', '-project', str(build / 'MeltyIOS.xcodeproj'),
-                        '-scheme', 'Melty', '-configuration', 'Debug', '-destination', 'generic/platform=iOS',
-                        '-derivedDataPath', str(derived), 'build'], check=True, close_fds=False, env=xcode_environment())
-        bundle = derived / 'Build/Products/Debug-iphoneos/Melty.app'
-        info = plistlib.loads((bundle / 'Info.plist').read_bytes())
-        print('Installing on device…', flush=True)
-        installed = device_command(['device', 'install', 'app', '--device', device, str(bundle)], timeout=120)
-        application_url = installed_application_url(installed, info['CFBundleIdentifier'])
+        receipt_path = build / 'run-deployments.json'
+        receipts = json.loads(receipt_path.read_text()) if receipt_path.is_file() else {}
+        receipt = receipts.get(device, {})
+        inputs = native_inputs(build, config)
+        incremental = False
+        if receipt.get('inputs') == inputs:
+            installed = device_command(['device', 'info', 'apps', '--device', device])
+            incremental = any(app.get('bundleIdentifier') == receipt['bundle_id'] and
+                              app.get('url') == receipt['application_url']
+                              for app in installed.get('apps', []))
+        if incremental:
+            incremental = update_application(device, receipt['bundle_id'], app_dir, receipt)
+        if not incremental:
+            if config.get('packages_dir'):
+                print('Refreshing local iOS packages…', flush=True)
+                refresh_local_packages(config['packages_dir'])
+            derived = build / 'run-products'
+            print('Building iOS app…', flush=True)
+            subprocess.run([xcrun(), 'xcodebuild', '-project', str(build / 'MeltyIOS.xcodeproj'),
+                            '-scheme', 'Melty', '-configuration', 'Debug', '-destination', 'generic/platform=iOS',
+                            '-derivedDataPath', str(derived), 'build'], check=True, close_fds=False, env=xcode_environment())
+            bundle = derived / 'Build/Products/Debug-iphoneos/Melty.app'
+            info = plistlib.loads((bundle / 'Info.plist').read_bytes())
+            print('Installing on device…', flush=True)
+            installed = device_command(['device', 'install', 'app', '--device', device, str(bundle)], timeout=120)
+            application_url = installed_application_url(installed, info['CFBundleIdentifier'])
+            settings_path = bundle / 'HostSettings.plist'
+            settings = plistlib.loads(settings_path.read_bytes()) if settings_path.is_file() else {}
+            receipt = dict(inputs=native_inputs(build, config), bundle_id=info['CFBundleIdentifier'],
+                           executable=info['CFBundleExecutable'], application_url=application_url,
+                           generation=settings.get('source_generation'), app_files=application_stamps(app_dir))
+            # Only a host with the writable update protocol can accept source-only runs.
+            if settings.get('source_updates') == 1:
+                receipts[device] = receipt
+            else:
+                receipts.pop(device, None)
+        pending_receipt = receipt_path.with_suffix('.tmp')
+        pending_receipt.write_text(json.dumps(receipts))
+        pending_receipt.replace(receipt_path)
+        application_url = receipt['application_url']
         previous = signal.getsignal(signal.SIGTERM)
 
         def stopped(signum, frame):
@@ -186,12 +299,12 @@ def run_application(request):
         try:
             print('Running on device…', flush=True)
             subprocess.run([xcrun(), 'devicectl', 'device', 'process', 'launch', '--device', device,
-                            '--terminate-existing', '--console', info['CFBundleIdentifier']],
+                            '--terminate-existing', '--console', receipt['bundle_id']],
                            check=True, close_fds=False, env=xcode_environment())
         finally:
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             try:
-                terminate_app(device, application_url, info['CFBundleExecutable'])
+                terminate_app(device, application_url, receipt['executable'])
             finally:
                 signal.signal(signal.SIGTERM, previous)
 

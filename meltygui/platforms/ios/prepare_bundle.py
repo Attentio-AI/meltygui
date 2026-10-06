@@ -120,11 +120,6 @@ def prepare(config, bundle, *, identity=None, signing_allowed=True):
             if not source.is_file():
                 raise ValueError(f"Compile the Metal shaders before packaging: missing {source}")
             shutil.copy2(source, bundle / name)
-    # Device source edits live for one build. A rebuild gets a fresh copy even
-    # when the app's version or source mtimes have not changed.
-    (bundle / "HostSettings.plist").write_bytes(plistlib.dumps({
-        "entry_module": config["entry_module"], "source_generation": uuid.uuid4().hex,
-    }))
 
     def sign(framework):
         if signing_allowed:
@@ -144,6 +139,14 @@ def prepare(config, bundle, *, identity=None, signing_allowed=True):
     remaining = list((bundle / "python").rglob("*.so"))
     if remaining:
         raise ValueError(f"Put additional native packages in --packages-dir: {remaining[0]}")
+    # Preserve host metadata explicitly: installation may round file timestamps.
+    # This keeps unchanged host files distinguishable from edits made on-device.
+    files = {p.relative_to(bundle / "app").as_posix(): [p.stat().st_mtime_ns, p.stat().st_size]
+             for p in sorted((bundle / "app").rglob("*")) if p.is_file()}
+    (bundle / "HostSettings.plist").write_bytes(plistlib.dumps({
+        "entry_module": config["entry_module"], "source_generation": uuid.uuid4().hex,
+        "source_updates": 1, "source_files": files,
+    }))
     return modules
 
 

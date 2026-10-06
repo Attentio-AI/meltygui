@@ -56,13 +56,15 @@ class _Log(io.TextIOBase):
         pass
 
 
-def _application_source(bundle, support):
-    """Run this build's app from real editable files outside the signed bundle.
+def _source_files(root):
+    """Metadata, not content hashes, identifies the files supplied by a build."""
+    return {p.relative_to(root).as_posix(): [p.stat().st_mtime_ns, p.stat().st_size]
+            for p in sorted(root.rglob('*')) if p.is_file()}
 
-    Keep device edits on relaunch, including a moved install container. Only
-    the packaging generation resets them. Dependencies stay in app_packages;
-    inspect, source navigation and hotswap all see the app's actual import path.
-    """
+
+def _application_source(bundle, support):
+    """Update managed app files in place; never erase device-created saves."""
+    import json
     import plistlib
     import shutil
     import tempfile
@@ -71,21 +73,76 @@ def _application_source(bundle, support):
     settings = plistlib.loads((bundle / 'HostSettings.plist').read_bytes())
     generation = uuid.UUID(settings['source_generation']).hex
     root = Path(support).resolve() / 'meltygui' / 'app-source'
-    source = root / generation
-    if not source.is_dir():
-        root.mkdir(parents=True, exist_ok=True)
-        # Publish a complete tree. A failed copy leaves the previous build's
-        # edits intact and the next launch can retry safely.
+    root.mkdir(parents=True, exist_ok=True)
+    state_path = root / 'state.json'
+    state = json.loads(state_path.read_text()) if state_path.is_file() else {}
+    if state:
+        source = root / uuid.UUID(state['directory']).hex
+    else:
+        # Keep the previous bootstrap's actual path: saved tabs refer to it.
+        previous = [p for p in root.iterdir() if p.is_dir() and len(p.name) == 32
+                    and all(c in '0123456789abcdef' for c in p.name)]
+        source = max(previous, key=lambda p: p.stat().st_mtime_ns) if previous else root / generation
+    incoming = bundle / 'app'
+    inputs = settings.get('source_files')
+    if inputs is None:
+        inputs = _source_files(incoming)
+    token = generation
+    update = root.parent / 'app-update'
+    descriptor = update / 'update.json'
+    if descriptor.is_file():
+        candidate = json.loads(descriptor.read_text())
+        if candidate['base_generation'] == generation:
+            token = uuid.UUID(candidate['generation']).hex
+            incoming = update / token / 'app'
+            inputs = candidate['files']
+    if state.get('generation') != token:
+        # Validate and stage the complete update before touching writable data.
+        for name in inputs:
+            relative = Path(name)
+            if relative.is_absolute() or '..' in relative.parts or not name:
+                raise ValueError('Invalid application update path')
+            if not (incoming / relative).resolve().is_relative_to(incoming.resolve()):
+                raise ValueError('Application update escapes its source directory')
+            if not (source / relative).resolve().is_relative_to(source.resolve()):
+                raise ValueError('Application update escapes its writable directory')
         with tempfile.TemporaryDirectory(prefix='.staging-', dir=root) as temporary:
             staged = Path(temporary) / 'app'
-            shutil.copytree(bundle / 'app', staged)
-            staged.rename(source)
-        for previous in root.iterdir():
-            if previous != source and previous.is_dir():
-                shutil.rmtree(previous)
-    # Replace the host's app search root at the same precedence, before any app
-    # module is imported. Never leave bundled modules mixed with editable ones.
-    # NSURL/Python can spell the same container as /var or /private/var.
+            shutil.copytree(incoming, staged)
+            source.mkdir(exist_ok=True)
+            old_inputs, old_files = state.get('inputs', {}), state.get('files', {})
+            files = dict(old_files)
+            for name, stamp in inputs.items():
+                destination = source / name
+                if old_inputs.get(name) == stamp and destination.is_file():
+                    continue  # Keep device edits when this host file did not change.
+                if destination.exists():
+                    actual = [destination.stat().st_mtime_ns, destination.stat().st_size]
+                    if old_files.get(name) != actual:
+                        backup = root / 'backups' / token / name
+                        backup.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(destination, backup)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(staged / name, destination)
+                if destination.suffix == '.py':
+                    for bytecode in (destination.parent / '__pycache__').glob(destination.stem + '.*.pyc'):
+                        bytecode.unlink()
+                files[name] = [destination.stat().st_mtime_ns, destination.stat().st_size]
+            for name in old_inputs.keys() - inputs.keys():
+                destination = source / name
+                if destination.is_file() and [destination.stat().st_mtime_ns, destination.stat().st_size] == old_files.get(name):
+                    destination.unlink()  # Only remove unchanged, formerly managed files.
+                files.pop(name, None)
+            state = dict(directory=source.name, generation=token, inputs=inputs, files=files)
+            pending = root / '.state.json'
+            pending.write_text(json.dumps(state))
+            pending.replace(state_path)
+        # Payloads are immutable until committed, so a failed upload can never
+        # corrupt a previously committed update that has not launched yet.
+        for payload in update.glob('*'):
+            if (payload.is_dir() and payload.name != token and len(payload.name) == 32
+                    and all(c in '0123456789abcdef' for c in payload.name)):
+                shutil.rmtree(payload)
     index = next(i for i, path in enumerate(sys.path)
                  if Path(path).resolve() == bundle / 'app')
     sys.path[index] = str(source)

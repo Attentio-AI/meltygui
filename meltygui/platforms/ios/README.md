@@ -141,9 +141,12 @@ settings/sessions and Library/Caches holds disposable data. The host imports the
 app's own sources and resources from a writable copy in
 `Library/Application Support/meltygui/app-source/<build generation>`. Source
 navigation and edits such as the header tint's `@glfw_window` use those files.
-Edits persist across device relaunches; each Mac rebuild gets a new generation,
-replaces the copy and discards the previous build's edits. Dependencies and the
-signed bundle remain read-only. Clipboard access,
+The writable source path stays stable across builds (including adoption of an
+existing generation directory). Updates replace changed managed files, retain
+local-only files such as saves, and keep device edits to unchanged host files.
+Conflicting device edits are backed up under `app-source/backups/<generation>`;
+only unchanged, formerly managed files are removed when deleted on the Mac.
+Dependencies and the signed bundle remain read-only. Clipboard access,
 keyboard visibility, safe-zone updates and frame requests are native services.
 Input and frame dimensions use UIKit points; `scale` converts to Metal pixels.
 Keyboard viewport animation uses the presentation-layer bounds at native scale.
@@ -155,6 +158,24 @@ On iOS it runs Python modules in the embedded interpreter and rejects shell or
 external-process requests. The editor's Tasks tile only owns its definitions,
 selection and presentation. User code shares process state; cancellation is
 cooperative, and native blocking calls must return.
+
+## Incremental development runs
+
+The first Run installs the host with the source-update protocol. Later runs
+compare native/runtime inputs using file names, mtimes and sizes. With the same
+installed app and unchanged native inputs, Run skips dependency builds, Xcode
+and installation: changed app sources/resources are uploaded to a private
+staging directory in the app data container, then committed with a descriptor
+and applied on relaunch. An unchanged run launches without uploading. App-code
+updates transfer the app source payload, not the runtime or dependency wheels.
+
+Uploads use separate generations; a failed transfer leaves the last committed
+payload intact. No transfer clears the app data container. Changes to runtime,
+local dependencies, host code, build configuration or native app extensions
+fall back to build/install. Per-device receipts live in the local build folder;
+removing them safely forces a full build. The installed app identity is checked
+before reusing a receipt. Source-update and save-preservation behavior is covered
+by host/worker tests; physical-device transport still needs verification.
 
 ## Verification and remaining device work
 

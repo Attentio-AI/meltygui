@@ -232,7 +232,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(os.environ["DYLD_FRAMEWORK_PATH"], str(installed / "Frameworks"))
             self.assertEqual(os.environ["SSL_CERT_FILE"], str(certificate))
 
-    def test_app_imports_its_editable_copy_and_keeps_edits_until_the_next_build(self):
+    def test_app_updates_in_place_and_preserves_device_files_across_builds(self):
         from meltygui.code.fileref import is_editable_source
         original = self.bundle / 'app/test_ios_application.py'
         with self.environment():
@@ -259,7 +259,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(source.read_text(), 'value = 2\n')
             self.bootstrap.close()
 
-        # Rebuilding replaces the device copy, including files added locally.
+        # Rebuilding updates managed code, retaining local files and the source path.
         (moved / 'app/test_ios_application.py').write_text('value = 3\n')
         (moved / 'HostSettings.plist').write_bytes(plistlib.dumps({
             'entry_module': 'test_ios_application', 'source_generation': uuid.uuid4().hex}))
@@ -267,8 +267,11 @@ class BootstrapTests(unittest.TestCase):
             self.bootstrap.initialize(self.config)
             rebuilt = Path(importlib.util.find_spec('test_ios_application').origin)
             self.assertEqual(rebuilt.read_text(), 'value = 3\n')
-            self.assertFalse((rebuilt.parent / 'local.py').exists())
-            self.assertFalse(source.exists())
+            self.assertTrue((rebuilt.parent / 'local.py').exists())
+            self.assertEqual(rebuilt, source)
+            backups = list(source.parent.parent.glob('backups/*/test_ios_application.py'))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_text(), 'value = 2\n')
 
     def test_failed_copy_keeps_the_previous_device_source(self):
         with self.environment():
@@ -282,6 +285,68 @@ class BootstrapTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, 'disk full'):
                 self.bootstrap.initialize(self.config)
         self.assertEqual(source.read_text(), 'value = 2\n')
+
+    def test_source_update_keeps_saves_and_removes_only_unchanged_managed_files(self):
+        import json
+        (self.bundle / 'app/obsolete.py').write_text('old = True')
+        (self.bundle / 'app/edited.py').write_text('original = True')
+        with self.environment():
+            self.bootstrap.initialize(self.config)
+            source = Path(importlib.util.find_spec('test_ios_application').origin)
+            (source.parent / 'save.json').write_text('{"progress": 42}')
+            (source.parent / 'edited.py').write_text('device_edit = True')
+            self.bootstrap.close()
+        update = Path(self.config['application_support']) / 'meltygui/app-update'
+        token = uuid.uuid4().hex
+        payload = update / token / 'app'
+        payload.mkdir(parents=True)
+        (payload / 'test_ios_application.py').write_text('updated = True')
+        settings = plistlib.loads((self.bundle / 'HostSettings.plist').read_bytes())
+        (update / 'update.json').write_text(json.dumps({
+            'base_generation': settings['source_generation'], 'generation': token,
+            'files': self.bootstrap._source_files(payload)}))
+        with self.environment():
+            self.bootstrap.initialize(self.config)
+            self.assertEqual(Path(importlib.util.find_spec('test_ios_application').origin), source)
+            self.assertEqual(source.read_text(), 'updated = True')
+            self.assertEqual((source.parent / 'save.json').read_text(), '{"progress": 42}')
+            self.assertFalse((source.parent / 'obsolete.py').exists())
+            self.assertEqual((source.parent / 'edited.py').read_text(), 'device_edit = True')
+            self.bootstrap.close()
+        # Uploading files without committing a new descriptor cannot apply half an update.
+        uncommitted = update / uuid.uuid4().hex / 'app'
+        uncommitted.mkdir(parents=True)
+        (uncommitted / 'test_ios_application.py').write_text('incomplete = True')
+        with self.environment():
+            self.bootstrap.initialize(self.config)
+            self.assertEqual(source.read_text(), 'updated = True')
+
+    def test_rebuild_with_unchanged_source_keeps_device_edits(self):
+        with self.environment():
+            self.bootstrap.initialize(self.config)
+            source = Path(importlib.util.find_spec('test_ios_application').origin)
+            source.write_text('device = True')
+            self.bootstrap.close()
+        (self.bundle / 'HostSettings.plist').write_bytes(plistlib.dumps({
+            'entry_module': 'test_ios_application', 'source_generation': uuid.uuid4().hex}))
+        with self.environment():
+            self.bootstrap.initialize(self.config)
+            self.assertEqual(source.read_text(), 'device = True')
+
+    def test_legacy_source_tree_is_adopted_without_losing_local_files(self):
+        import json
+        with self.environment():
+            self.bootstrap.initialize(self.config)
+            source = Path(importlib.util.find_spec('test_ios_application').origin)
+            (source.parent / 'save.json').write_text('local save')
+            self.bootstrap.close()
+        (source.parent.parent / 'state.json').unlink()  # previous bootstrap had no manifest
+        (self.bundle / 'HostSettings.plist').write_bytes(plistlib.dumps({
+            'entry_module': 'test_ios_application', 'source_generation': uuid.uuid4().hex}))
+        with self.environment():
+            self.bootstrap.initialize(self.config)
+            self.assertEqual(Path(importlib.util.find_spec('test_ios_application').origin), source)
+            self.assertEqual((source.parent / 'save.json').read_text(), 'local save')
 
     def test_native_search_path_can_use_a_symlinked_container(self):
         alias = self.root / 'container-alias'
