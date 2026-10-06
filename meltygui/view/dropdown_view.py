@@ -294,7 +294,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         width=menu_width, height=menu_height,
         parent_window=draw_state, swoosh=False, disable_scroll=False,
         row_tags=kwargs.get("row_tags"),
-        row_tints=kwargs.get("row_tints"),
+        row_tints=kwargs.get("row_tints"), row_text_colors=kwargs.get("row_text_colors"),
         row_actions=kwargs.get("row_actions"),
         row_previews=kwargs.get("row_previews"), preview_owner=draw_state,
         row_paths=kwargs.get("row_paths"),
@@ -439,7 +439,7 @@ def fast_draw_dropdown(input_value=None, **kwargs):
              on_cleanup=cleanup_path_icon)
 @with_path_icons
 def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix=(), tint=None,
-                 show_search=None, text_align="right", row_tags=None, row_tints=None,
+                 show_search=None, text_align="right", row_tags=None, row_tints=None, row_text_colors=None,
                  row_suffixes=None, row_actions=None, text_toward_bg=0.0,
                  full_render=False, row_code=None, menu_title=None,
                  row_previews=None, preview_owner=None, menu_columns=None, row_paths=None,
@@ -480,7 +480,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
 
     if menu_columns:
         return _draw_dd_columns(input_value, draw_state, root_state, menu_columns,
-                                tint, row_tints, row_previews, preview_owner, row_paths, icon_state)
+                                tint, row_tints, row_previews, preview_owner, row_paths, icon_state, row_text_colors)
 
     if menu_title and not path_prefix:
         title_x, title_y = imgui.get_cursor_screen_pos()
@@ -575,7 +575,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
     # threaded down so nested sub-menus inherit the same render path.
     row_kwargs = dict(show_bg=False, shadow=False, path_prefix=tuple(path_prefix),
                       root_state=root_state, tint=tint, text_align=text_align, z_offset=0,
-                      row_tags=row_tags, row_tints=row_tints, row_suffixes=row_suffixes,
+                      row_tags=row_tags, row_tints=row_tints, row_text_colors=row_text_colors, row_suffixes=row_suffixes,
                       cursor_path=cursor_path,
                       open_path=open_path, full_render=full_render, row_paths=row_paths)
 
@@ -641,7 +641,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
                     continue
             picked = _dd_leaf_row(key, value, label, draw_state, root_state,
                                   tuple(path_prefix), cursor_path, tint=tint,
-                                  row_tags=row_tags, row_tints=row_tints,
+                                  row_tags=row_tags, row_tints=row_tints, row_text_colors=row_text_colors,
                                   row_suffixes=row_suffixes,
                                   row_actions=row_actions,
                                   text_toward_bg=text_toward_bg,
@@ -775,6 +775,7 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
                                        show_add_delete=False,
                                        parent_window=draw_state, disable_scroll=False,
                                        full_render=full_render, row_tints=row_tints, row_paths=kwargs.get("row_paths"),
+                                       row_text_colors=kwargs.get("row_text_colors"),
                                        root_state=root_state, path_prefix=row_path,
                                        return_extras=True)
         # Register the submenu window on the shared root state so the ROOT
@@ -973,7 +974,8 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                  row_suffixes=None, row_actions=None, left_pad=10,
                  text_toward_bg=0.0, row_code=None, code_label_w=None,
                  row_width=None, row_previews=None, preview_owner=None,
-                 selected=False, selection_gutter=False, tint_background=True, row_paths=None, icon_state=None):
+                 selected=False, selection_gutter=False, tint_background=True, row_paths=None, icon_state=None,
+                 row_text_colors=None):
     """Render ONE leaf menu row inline with raw imgui — NO per-row render_func.
     Leaves are the bulk of a big menu, so skipping the dd_menu_row wrapper (its
     own draw_state / cache / BVH / hover machinery, tens of µs each) is the whole
@@ -1097,6 +1099,9 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
             _k = min(max(row_fade, 0.0), 1.0)
             color = tuple(c * (1 - _k) + _b * _k
                           for c, _b in zip(color[:3], _bg[:3]))
+    explicit_color = _dd_row_lookup(row_text_colors, value)
+    if explicit_color is not None:
+        color = explicit_color
     imgui.set_cursor_screen_pos((x + left_pad, y + (h - line_h) * 0.5))
 
     if active:
@@ -1301,7 +1306,7 @@ def _dd_column_layout(columns, available_width):
 
 
 def _draw_dd_columns(collection, draw_state, root_state, columns, tint, row_tints,
-                     row_previews, preview_owner, row_paths=None, icon_state=None):
+                     row_previews, preview_owner, row_paths=None, icon_state=None, row_text_colors=None):
     """Flat independent choice groups, sharing the normal dropdown interaction."""
     from meltygui.core.conversion.cache_tree import UNSET_VALUE
     left, top = imgui.get_cursor_screen_pos()
@@ -1321,7 +1326,7 @@ def _draw_dd_columns(collection, draw_state, root_state, columns, tint, row_tint
                 imgui.set_cursor_screen_pos((x, y + 46 + index * Toggles.Dropdown.row_height))
                 value = collection[key]
                 picked = _dd_leaf_row(key, value, label, draw_state, root_state, (), cursor_path,
-                                      tint=tint, row_tints=row_tints, row_width=cell,
+                                      tint=tint, row_tints=row_tints, row_text_colors=row_text_colors, row_width=cell,
                                       row_previews=row_previews, preview_owner=preview_owner,
                                       selected=value == column['selected'], selection_gutter=True,
                                       tint_background=False, row_paths=row_paths, icon_state=icon_state)
