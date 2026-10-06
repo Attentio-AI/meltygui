@@ -142,3 +142,18 @@ def test_install_result_selects_the_requested_bundle():
 def test_install_result_reports_missing_app_metadata(result):
     with pytest.raises(ValueError, match='installation URL for local.melty.codeeditor'):
         devices.installed_application_url(result, 'local.melty.codeeditor')
+
+
+def test_setup_includes_unpaired_physical_devices_with_status(monkeypatch):
+    entries = [dict(identifier='phone', deviceProperties={'name': 'Phone', 'developerModeStatus': 'enabled'},
+                    hardwareProperties={'platform': 'iOS', 'reality': 'physical'},
+                    connectionProperties={'pairingState': 'unpaired', 'tunnelState': 'connected',
+                                          'transportType': 'localNetwork'}),
+               dict(identifier='simulator', deviceProperties={'name': 'Simulator'},
+                    hardwareProperties={'platform': 'iOS', 'reality': 'simulated'},
+                    connectionProperties={'pairingState': 'paired'})]
+    monkeypatch.setattr(devices, 'device_command', lambda args: {'devices': entries})
+    assert devices.list_devices() == []
+    assert devices.list_devices(include_unpaired=True, details=True) == [
+        dict(id='phone', name='Phone', paired=False, connected=True,
+             transport='localNetwork', developer_mode='enabled')]

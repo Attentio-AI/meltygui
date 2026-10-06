@@ -59,7 +59,7 @@ def device_command(arguments, *, timeout=30):
         return data.get('result', {})
 
 
-def list_devices():
+def list_devices(*, include_unpaired=False, details=False):
     """Return stable CoreDevice identifiers with the device's own display name."""
     result = []
     for device in device_command(['list', 'devices']).get('devices', []):
@@ -67,14 +67,21 @@ def list_devices():
         hardware = device.get('hardwareProperties', {})
         if not properties or not hardware:
             raise ValueError('Unsupported Xcode device metadata; update the MeltyGUI device adapter.')
-        if hardware.get('platform') not in ('iOS', 'iPadOS'):
+        if hardware.get('platform') not in ('iOS', 'iPadOS') or hardware.get('reality') == 'simulated':
             continue
-        if device.get('connectionProperties', {}).get('pairingState') != 'paired':
+        connection = device.get('connectionProperties', {})
+        if not include_unpaired and connection.get('pairingState') != 'paired':
             continue
         identifier, name = device.get('identifier'), properties.get('name')
         if not identifier or not name:
             raise ValueError('Xcode returned an iOS device without an identifier or name.')
-        result.append({'id': identifier, 'name': name})
+        item = {'id': identifier, 'name': name}
+        if details:
+            item.update(paired=connection.get('pairingState') == 'paired',
+                        connected=connection.get('tunnelState') == 'connected',
+                        transport=connection.get('transportType', 'unknown'),
+                        developer_mode=properties.get('developerModeStatus', 'unknown'))
+        result.append(item)
     return sorted(result, key=lambda device: (device['name'].casefold(), device['id']))
 
 

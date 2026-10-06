@@ -30,7 +30,7 @@ def find_repo_root(start_path: Path | str = None) -> Path:
     return module_path.parent if module_path.parent.exists() else module_path
 
 
-def find_nested_classes(parent_class: type, parent_path: str) -> List[Tuple[str, type]]:
+def find_nested_classes(parent_class: type, parent_path: str, _ancestors=frozenset()) -> List[Tuple[str, type]]:
     """
     Recursively find all nested classes within a class.
 
@@ -42,6 +42,7 @@ def find_nested_classes(parent_class: type, parent_path: str) -> List[Tuple[str,
         A list of tuples (full_class_path, class_object) for nested classes
     """
     nested_classes = []
+    ancestors = _ancestors | {parent_class}
 
     # Check all attributes of the class
     for name, obj in parent_class.__dict__.items():
@@ -49,7 +50,7 @@ def find_nested_classes(parent_class: type, parent_path: str) -> List[Tuple[str,
         if name.startswith('__'):
             continue
 
-        if not isinstance(obj, type):
+        if not isinstance(obj, type) or obj in ancestors:
             continue
 
         # Build the path for this nested class
@@ -57,7 +58,7 @@ def find_nested_classes(parent_class: type, parent_path: str) -> List[Tuple[str,
         nested_classes.append((class_path, obj))
 
         # Recursively find classes nested within this class
-        inner_classes = find_nested_classes(obj, class_path)
+        inner_classes = find_nested_classes(obj, class_path, ancestors)
         nested_classes.extend(inner_classes)
 
     return nested_classes
