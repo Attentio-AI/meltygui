@@ -1074,7 +1074,7 @@ def draw_text(input_value: str, height=None,
               ctrl_b_down=False, ctrl_shift_b_down=False,
               ctrl_minus_down=False, ctrl_equal_down=False,
               ctrl_shift_minus_down=False, ctrl_shift_equal_down=False,
-              single_line=False, is_search_box=False, focusable=True,
+              single_line=False, is_search_box=False, focusable=True, editable=True,
               draw_state=None, text_editor_state: TextEditorState = None,
               request_focus=False, select_all_on_focus=False,
               wrap=False, line_height=1.2, font=Font.FONTAWESOME_MONO_19, jump_to=None,
@@ -1095,7 +1095,10 @@ def draw_text(input_value: str, height=None,
               roster_world=None, roster_table=None,
               fim="", fim_state: FimState = None,
               source_tools: SourceToolsState = None, source_context=None):
-    """`draw_breakpoints=False` hides/disables breakpoint markers over the line numbers.
+    """`editable=False` keeps caret navigation, selection and copy while disabling
+    text edits, completion and inline editing widgets. Native touch hosts do not
+    open the software keyboard for this view. Selection uses normal saved state.
+    `draw_breakpoints=False` hides/disables breakpoint markers over the line numbers.
     Markers use the file's metadata `breakpoints` mapping, keyed by the current
     whole-file code_dict/code_tree source-site keys. The codec supplies that
     mapping to keep cached panes synchronized; file_metadata is injected and
@@ -1260,6 +1263,12 @@ def draw_text(input_value: str, height=None,
     import meltygui.core.windowing.window_api as glfw
 
     ds = draw_state
+    if not editable:
+        show_widgets = False
+        autocomplete = False
+        completion_source = None
+        fim_state = None
+
     # ── Instant restore (input_value==LOADING) ─────────────────────────────
     # A caller whose real buffer is still loading (draw_code_editor's
     # loading_frame) passes the LOADING sentinel: rebuild a same-shape
@@ -3793,7 +3802,7 @@ def draw_text(input_value: str, height=None,
                 ds._fim_ghost = None
             else:
                 _fim_mode = None
-                if pressed(glfw.KEY_TAB) and not shift:
+                if editable and pressed(glfw.KEY_TAB) and not shift:
                     _fim_mode = "all" if ctrl else "chunk"
                 elif pressed(glfw.KEY_RIGHT) and ctrl and not shift:
                     _fim_mode = "word"
@@ -3843,7 +3852,7 @@ def draw_text(input_value: str, height=None,
         # opens the chooser when several imports could bind the name.
         _alt = getattr(io, 'key_alt', False)
         _qf_enter = pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)
-        if getattr(ds, '_qf_open', False):
+        if editable and getattr(ds, '_qf_open', False):
             _qf_opts = getattr(ds, '_qf_options', None) or []
             _qf_idx = getattr(ds, '_qf_index', 0)
             if pressed(glfw.KEY_ESCAPE):
@@ -3876,7 +3885,7 @@ def draw_text(input_value: str, height=None,
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
                 request_render()
-        elif _alt and _qf_enter and not ctrl and not is_search_box:
+        elif editable and _alt and _qf_enter and not ctrl and not is_search_box:
             _caret_ln = text.count('\n', 0, ds.text_cursor_pos) + 1
             _qf_opts = _qf_fixes.get(_caret_ln) or []
             if len(_qf_opts) == 1:
@@ -3906,7 +3915,7 @@ def draw_text(input_value: str, height=None,
         typed_word_char_this_frame = False
 
         native_text = Melty.frame_text_events if Melty.graphics_backend is not None else None
-        for ch in typed_characters(_frame_keys, native_text):
+        for ch in (typed_characters(_frame_keys, native_text) if editable else ()):
             ds.text_cursor_blink_time = time.time()
             if _has_selection(ds):
                 text, ds.text_cursor_pos = _delete_selection(text, ds)
@@ -3963,7 +3972,7 @@ def draw_text(input_value: str, height=None,
         # --- Tab / Shift+Tab ---
         # Never in a search box: indent is irrelevant there, and the global
         # search window uses Tab/Shift+Tab to switch result highlighted.
-        if pressed(glfw.KEY_TAB) and not ctrl and not is_search_box:
+        if editable and pressed(glfw.KEY_TAB) and not ctrl and not is_search_box:
             ds.text_cursor_blink_time = time.time()
             # Bracket-aware align (same ([{ cue as Enter): when adjusting a single
             # line's own indent (no selection, caret in the leading whitespace)
@@ -4003,7 +4012,7 @@ def draw_text(input_value: str, height=None,
         # find-prev).
         # Ctrl+Enter is reserved for recompile (general_go_to_address), so we
         # don't insert a newline when Ctrl is held.
-        if (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)) and not single_line and not ctrl:
+        if editable and (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)) and not single_line and not ctrl:
             ds.text_cursor_blink_time = time.time()
             if shift:
                 # Shift+Enter: start a new line BELOW without splitting the
@@ -4090,7 +4099,7 @@ def draw_text(input_value: str, height=None,
                 changed = True
 
         # --- Backspace ---
-        if pressed(glfw.KEY_BACKSPACE):
+        if editable and pressed(glfw.KEY_BACKSPACE):
             ds.text_cursor_blink_time = time.time()
             if _has_selection(ds):
                 text, ds.text_cursor_pos = _delete_selection(text, ds)
@@ -4130,7 +4139,7 @@ def draw_text(input_value: str, height=None,
                 changed = True
         
         # --- Delete ---
-        if pressed(glfw.KEY_DELETE):
+        if editable and pressed(glfw.KEY_DELETE):
             ds.text_cursor_blink_time = time.time()
             if _has_selection(ds):
                 text, ds.text_cursor_pos = _delete_selection(text, ds)
@@ -4258,7 +4267,7 @@ def draw_text(input_value: str, height=None,
                 imgui.set_clipboard_text(text[lo:hi])
 
         # --- Ctrl+X ---
-        if ctrl and pressed(glfw.KEY_X):
+        if editable and ctrl and pressed(glfw.KEY_X):
             if _has_selection(ds):
                 lo, hi = _sel_range(ds)
                 imgui.set_clipboard_text(text[lo:hi])
@@ -4268,7 +4277,7 @@ def draw_text(input_value: str, height=None,
                 changed = True
 
         # --- Ctrl+V ---
-        if ctrl and pressed(glfw.KEY_V):
+        if editable and ctrl and pressed(glfw.KEY_V):
             ds.text_cursor_blink_time = time.time()
             clipboard = imgui.get_clipboard_text()
             if clipboard:
@@ -4294,7 +4303,7 @@ def draw_text(input_value: str, height=None,
                 changed = True
 
         # --- Ctrl+/ (toggle line comment) ---
-        if ctrl and pressed(glfw.KEY_SLASH):
+        if editable and ctrl and pressed(glfw.KEY_SLASH):
             ds.text_cursor_blink_time = time.time()
             if _has_selection(ds):
                 lo, hi = _sel_range(ds)
@@ -4310,7 +4319,7 @@ def draw_text(input_value: str, height=None,
         # Inserts a placeholder glyph at the caret; the "icon" token_views renderer
         # immediately dresses it as the inline icon-picker dropdown, so this is
         # the keyboard entry point into icon picking.
-        if ctrl and pressed(glfw.KEY_I):
+        if editable and ctrl and pressed(glfw.KEY_I):
             ds.text_cursor_blink_time = time.time()
             if _has_selection(ds):
                 text, ds.text_cursor_pos = _delete_selection(text, ds)
@@ -6595,9 +6604,9 @@ def draw_text(input_value: str, height=None,
     # ones, through the same text path as token-widget edits, so they
     # save/undo like keystrokes.
     _pp_splices = ds.__dict__.pop('_fnrun_splices', None)
-    if _pp_splices:
+    if editable and _pp_splices:
         _pp_splices = _fnrun_resolve_splices(text, _pp_splices)
-    if _pp_splices:
+    if editable and _pp_splices:
         for _ps, _pl, _pv in sorted(_pp_splices, reverse=True):
             _ptrace("editor params-splice", name=ds.name, at=_ps,
                     old=repr(text[_ps:_ps + _pl][:24]), new=repr(_pv[:24]))
@@ -6610,7 +6619,7 @@ def draw_text(input_value: str, height=None,
                     if _v >= _ps + _pl:
                         setattr(ds, _attr, _v + _d)
         changed = True
-    if _tv_edit is not None:
+    if editable and _tv_edit is not None:
         _es, _el, _ev, _keep_caret = _tv_edit
         # Timeline: every token-widget splice, with old→new content. A splice
         # with NO mouse gesture is the echo-storm signature - this line names
@@ -7591,7 +7600,7 @@ def draw_text(input_value: str, height=None,
                 request_render()
     else:
         ds._ac_menu_sig = None   # force one repaint on the next open
-    if ac_changed and isinstance(ac_pick, str):
+    if editable and ac_changed and isinstance(ac_pick, str):
         anchor = ds._ac_anchor
         replace_end = _completion_replace_end(
             text, ds.text_cursor_pos, ac_pick, getattr(ds, '_ac_snips', None))
@@ -7756,7 +7765,7 @@ def draw_text(input_value: str, height=None,
                 # request_render()
     else:
         ds._qf_menu_sig = None      # force one repaint on the next open
-    if qf_changed and isinstance(qf_pick, str):
+    if editable and qf_changed and isinstance(qf_pick, str):
         _fx_changed, _fx_text = _apply_import_fix(qf_pick, jump_to, text)
         from meltygui.code.chain_converters import _import_bound_name
         if getattr(ds, '_qf_applied', None) is None:
@@ -7784,7 +7793,7 @@ def draw_text(input_value: str, height=None,
     from meltygui.core.runtime.extensions import call
     dependency_statement = call('source_diagnostic_view', source_tools, jump_to, _err_open_msg,
                                 _err_open_line, draw_state, origin_x, origin_y, line_px)
-    if dependency_statement:
+    if editable and dependency_statement:
         import_changed, imported_text = _apply_import_fix(dependency_statement, jump_to, text)
         from meltygui.code.chain_converters import _import_bound_name
         draw_state._qf_applied.add(_import_bound_name(dependency_statement))

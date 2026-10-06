@@ -341,7 +341,9 @@ class IOSInput:
     def update_keyboard(self, visible=None):
         """Call after drawing, when the app has resolved its text-focus owner."""
         if visible is None:
-            visible = bool(self.melty.text_focused_ds is not None or self.io.want_text_input)
+            focused = self.melty.text_focused_ds
+            visible = bool((focused is not None and focused._kwargs.get('editable', True))
+                           or self.io.want_text_input)
         if bool(visible) != self._keyboard_visible:
             self.backend.set_keyboard_visible(visible)
             self._keyboard_visible = bool(visible)

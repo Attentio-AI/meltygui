@@ -144,6 +144,13 @@ from meltygui.chat import draw_chat_interface, register_chat_backend
 addition to automatically retained view state. Keep an existing app's `app_id`
 when migrating so its session file remains the same.
 
+## Read-only text
+
+Use `draw_text(output, editable=False)` for selectable console output or previews.
+Caret navigation, selection and copy remain available; typing, paste, cut, completion
+and inline editing widgets cannot change the value. Focusing this view does not
+open the native touch keyboard. Selection stays in the view's normal persisted state.
+
 ## Settings
 
 `@glfw_window(settings=...)` takes a plain dict of defaults and keeps it between

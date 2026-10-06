@@ -387,7 +387,7 @@ def test_hardware_shortcut_and_suspend_reset_held_state(native):
 def test_native_clipboard_callbacks_and_keyboard_service(native):
     native.io.set_clipboard_text_fn('λ = 3')
     assert native.io.get_clipboard_text_fn() == 'λ = 3'
-    native.melty.text_focused_ds = object()
+    native.melty.text_focused_ds = SimpleNamespace(_kwargs={'editable': True})
     native.adapter.update_keyboard()
     native.adapter.update_keyboard()
     assert native.host.keyboard == [True]

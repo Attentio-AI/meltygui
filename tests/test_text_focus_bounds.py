@@ -3,8 +3,11 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
 
-def test_touch_focus_uses_text_rows(tmp_path):
+
+@pytest.mark.parametrize("editable", [True, False])
+def test_touch_focus_uses_text_rows(tmp_path, editable):
     program = r'''
 from pathlib import Path
 import sys
@@ -33,20 +36,24 @@ class GPU:
     def set_scene(self, *args): pass
     def mesh(self, *args): pass
 keyboard = []
+clipboard = ['']
 host = SimpleNamespace(request_frame=lambda: None, set_safe_zone=lambda top, bottom: None,
-                       set_keyboard_visible=keyboard.append)
+                       set_keyboard_visible=keyboard.append,
+                       set_clipboard_text=lambda text: clipboard.__setitem__(0, text),
+                       get_clipboard_text=lambda: clipboard[0])
 native = NativeApplication({'app_id': 'text-focus-test'}, host, lambda: MetalRenderer(GPU()))
 app.install_native_host(native)
 from meltygui import glfw_window
 from meltygui.core.core_render import render_func
 from meltygui.core.melty import Melty
 from meltygui.view.text_view import draw_text
+editable = sys.argv[2] == 'True'
 state = dict(text='one\n\nthree')
 @glfw_window(name='Focus test', app_id='text-focus-test')
 @render_func(use_cache=False)
 def body(input_value):
-    _, _, state['ds'] = draw_text(
-        state['text'], name='text', width=380, height=360,
+    state['changed'], state['result'], state['ds'] = draw_text(
+        state['text'], name='text', width=380, height=360, editable=editable,
         show_header=False, with_header=None, with_footer=None, is_tree=False,
         show_widgets=False, autocomplete=False, syntax_highlight=False,
         show_file_header=False, show_jump_bar=False, return_extras=True)
@@ -76,7 +83,27 @@ assert Melty.text_focused_ds is None
 assert not any(keyboard), keyboard
 tap(2.5)
 assert Melty.text_focused_ds is state['ds']
-assert keyboard[-1] is True, keyboard
+assert keyboard[-1] is editable, keyboard
+if not editable:
+    from meltygui.core.windowing import window_constants as keys
+    from meltygui import imgui
+    def key(code, mods=0):
+        frame([dict(kind='key', key=code, action=keys.PRESS, modifiers=mods)])
+        frame([dict(kind='key', key=code, action=keys.RELEASE, modifiers=mods)])
+    key(keys.KEY_A, keys.MOD_CONTROL)
+    ds = state['ds']
+    assert (ds.text_selection_start, ds.text_selection_end) == (0, len(state['text']))
+    key(keys.KEY_C, keys.MOD_CONTROL)
+    assert imgui.get_clipboard_text() == state['text']
+    for code, mods in [(keys.KEY_X, keys.MOD_CONTROL), (keys.KEY_V, keys.MOD_CONTROL),
+                       (keys.KEY_BACKSPACE, 0), (keys.KEY_DELETE, 0),
+                       (keys.KEY_ENTER, 0), (keys.KEY_TAB, 0),
+                       (keys.KEY_SLASH, keys.MOD_CONTROL), (keys.KEY_I, keys.MOD_CONTROL)]:
+        key(code, mods)
+        assert state['result'] == state['text'] and not state['changed']
+    frame([dict(kind='text', text='cannot edit')])
+    assert state['result'] == state['text'] and not state['changed']
+    assert not any(keyboard), keyboard
 caret = state['ds'].text_cursor_pos
 tap(6.5)
 assert Melty.text_focused_ds is None
@@ -94,6 +121,6 @@ tap(0.5)
 assert Melty.text_focused_ds is state['ds']
 native.close()
 '''
-    result = subprocess.run([sys.executable, '-c', program, str(tmp_path)],
+    result = subprocess.run([sys.executable, '-c', program, str(tmp_path), str(editable)],
                             close_fds=False, text=True, capture_output=True, timeout=45)
     assert result.returncode == 0, result.stdout + result.stderr
