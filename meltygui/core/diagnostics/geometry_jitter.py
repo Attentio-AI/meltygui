@@ -41,15 +41,18 @@ def _context():
     if state.get("frame") == frame:
         return state
     down = edge_motion_guard._button_down() if edge_motion_guard._enabled() else False
+    from meltygui.core.input.input_handler import pointer_press_token
+    press = pointer_press_token()
     # frame_count is process-wide: other surfaces may render between these
     # samples. Adjacency means successive completed frames of THIS surface.
     if ((state and not state.get("checked"))
             or (down and not state.get("down"))
+            or (press is not None and state.get("press", press) != press)
             or not edge_motion_guard._enabled()):
         state.clear()
     tail = FOLLOWUP_FRAMES if down else max(0, state.get("tail", 0) - 1)
     active = down or state.get("tail", 0) > 0
-    state.update(frame=frame, down=down, tail=tail, active=active, samples={}, checked=False)
+    state.update(frame=frame, down=down, tail=tail, active=active, samples={}, checked=False, press=press)
     if active:
         origin = edge_motion_guard._origin()
         handler = Melty.event_handler

@@ -65,6 +65,7 @@ MELTY_ATTRS = ('glfw_window', 'vis', 'framebuffer_size', 'frame_inset', 'frame_o
                'dynamic_style_gl',
                'root_draw_states', 'root_draw_states_by_layer', 'cache', 'backend',
                'event_handler', 'frame_key_events', 'hovered_ds', 'imgui_main_window_hovered',
+               'os_resize_time',
                'glfw_close_requested', 'any_window_hovered', 'any_window_hovered_pending',
                'filter',      # its executor's VAO is per GL context
                # The hit-test tree and the focus slots are per OS window: boxes
@@ -79,7 +80,7 @@ MODULE_GLOBALS = {
     titlebar: ('_pressed_button', '_wm_move_started', '_rdrag', '_corner_gl',
                '_input_rect_applied', '_geometry_applied', '_self_resize',
                '_pending_surface_size', '_pending_surface_offset', '_frame_surface_offset',
-               '_pending_surface_fit', '_pending_surface_wait', '_last_surface_size'),
+               '_pending_surface_fit', '_pending_surface_wait', '_last_surface_size', '_last_stamped_size'),
     os_frame: ('_STATE',),
     scene_target: ('_STATE',),
     wayland_move: ('_STATE',),
@@ -270,6 +271,8 @@ class Surface:
         # A surface created before the dynamic-style code was hotswapped in
         # must not inherit another surface's GL resources.
         self._melty.setdefault('dynamic_style_gl', None)
+        self._melty.setdefault('os_resize_time', -1000.0)
+        self._mods.setdefault((titlebar, '_last_stamped_size'), None)
         for name, value in self._melty.items():
             setattr(Melty, name, value)
         for (mod, name), value in self._mods.items():

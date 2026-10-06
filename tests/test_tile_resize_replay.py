@@ -169,6 +169,18 @@ def test_drag_receiver_ancestry_tolerates_a_stale_cycle(monkeypatch):
     assert cache._resize_input_keys == {'inner', 'child'}
 
 
+@pytest.mark.parametrize('action', ['down', 'up', 'drag_released', 'double_drag_released'])
+def test_new_gesture_boundaries_reach_a_tile_while_resize_is_settling(monkeypatch, action):
+    cache, ds, _ = resident()
+    cache.key_to_parent_key = {'inner': 'child', 'child': 'root', 'root': None}
+    event = SimpleNamespace(action=action, tile_id='inner')
+    monkeypatch.setattr(Melty, 'events', {'inner_handle': {action: event}})
+    cache._frozen_served['child'] = ds
+    cache._refresh_resize_input_keys()
+    assert cache._resize_input_keys == {'inner', 'child', 'root'}
+    assert not cache.can_replay_resize(ds)
+
+
 def test_batch_preflight_does_not_paint_or_stamp_any_member_on_miss(monkeypatch):
     cache, ds, _ = resident()
     cache._replay_resize_prepared = Mock()

@@ -11,7 +11,7 @@ from meltygui.core.melty import Melty
 @pytest.fixture
 def rig(monkeypatch):
     state = SimpleNamespace(pointer=[100.0, 100.0], origin=[0.0, 0.0],
-                            down=True, surface=None, records=[])
+                            down=True, surface=None, records=[], press=(10., 'right_mouse'))
     state.view = SimpleNamespace(id="column", name="column", parent_window=None,
                                  width=200.0, height=150.0, abs_left=10.0, abs_top=20.0,
                                  frame_count=10, closed=False, expanded=True)
@@ -24,6 +24,7 @@ def rig(monkeypatch):
     monkeypatch.setattr(jitter.edge_motion_guard, "_origin", lambda: tuple(state.origin))
     monkeypatch.setattr(jitter.edge_motion_guard, "_pointer", lambda origin: tuple(state.pointer))
     monkeypatch.setattr(Melty, "event_handler", SimpleNamespace(
+        pointer_press_token=lambda: state.press if state.down else None,
         is_down=lambda button: state.down and button == "right_mouse"))
     monkeypatch.setattr(Melty, "frame_count", 100)
     monkeypatch.setattr(jitter.resize_trace, "record",
@@ -227,3 +228,17 @@ def test_hotswap_module_execution_retains_surface_and_studio_history(rig):
     assert namespace["_STUDIO"] is jitter._STUDIO
     assert namespace["_SURFACES"] is jitter._SURFACES
     assert namespace["_STUDIO"]["history"][0]["samples"][id(rig.view)]["geometry"][0] == 200
+
+
+def test_new_press_between_frames_starts_new_history_but_still_reports_jitter(rig):
+    rig.frame()
+    rig.view.width += 15
+    rig.frame()
+    assert len(rig.reports()) == 1
+    rig.press = (20., 'right_mouse')
+    rig.frame()
+    assert jitter._STUDIO['start_frame'] == Melty.frame_count
+    rig.view.width += 15
+    rig.frame()
+    assert len(rig.reports()) == 2
+    assert rig.reports()[-1]['report'] == 1

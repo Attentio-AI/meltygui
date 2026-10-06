@@ -98,6 +98,7 @@ def reset(reason="studio start"):
     _STATE["expected"] = [None, None]
     _STATE["inflight"] = [None, None]
     _STATE["size_expected"] = [None, None]
+    _STATE["size_ack_snaps"] = {}
     _STATE["unapplied"] = [0.0, 0.0]
     _STATE["own_move_pending"] = [0.0, 0.0]
     _STATE["os_seen"] = [None, None]
@@ -557,6 +558,7 @@ def begin_frame():
     _STATE.setdefault("move_requests", {"x": [], "y": []})
     _STATE["frame"] = Melty.frame_count
     _STATE["consumed"] = {"x": False, "y": False}
+    _STATE["size_ack_snaps"] = {}
     display = Melty.display_size
     if not display or not display[0] or not display[1]:
         return
@@ -587,6 +589,8 @@ def begin_frame():
         requested_size = (bool(_STATE["size_requests"][axis])
                           and _STATE["size_expected"][i] is not None
                           and abs(feed_far[i] - pos[i] - _STATE["size_expected"][i]) < 1.0)
+        ack_before = (near[axis], far[axis])
+        own_size_ack = _STATE["size_expected"][i] == size[i]
         size_pending = _observe_size(axis, size[i])
         expected = _STATE["expected"][i]
         if expected is None:                      # first sight
@@ -671,12 +675,28 @@ def begin_frame():
             else:
                 # our resize landed: the integer size snaps the model's far
                 # edge by a fraction - not a move, nothing to solve
+                before = (near[axis], far[axis])
                 seen = _STATE["os_seen"][i]
                 far[axis] = near[axis] + size[i]
+                if abs(before[1] - far[axis]) < 1.0:
+                    _STATE["size_ack_snaps"][axis] = (before, (near[axis], far[axis]))
                 if seen is not None and abs(seen[1] - far[axis]) < 1.0:
                     _STATE["os_seen"][i] = (seen[0], far[axis])
             if not size_pending:
                 _STATE["size_expected"][i] = size[i]
+        if (new_mode == "cocoa" and pos[i] == expected and own_size_ack
+                and not size_pending and not _STATE["unapplied"][i]
+                and abs(near[axis] - pos[i]) < 1.0):
+            # Cocoa has applied the integer rectangle synchronously. Retaining
+            # a fractional near edge while acknowledging only the span moves
+            # the model's far edge off the real screen wall on every frame.
+            near[axis], far[axis] = pos[i], pos[i] + size[i]
+            after = (near[axis], far[axis])
+            if all(abs(a - b) < 1.0 for a, b in zip(ack_before, after)):
+                _STATE["size_ack_snaps"][axis] = (ack_before, after)
+                seen = _STATE["os_seen"][i]
+                if seen is not None and all(abs(a - b) < 1.0 for a, b in zip(seen, after)):
+                    _STATE["os_seen"][i] = after
     for axis in _AXIS:
         _walls_to_edges(axis)
 
@@ -868,6 +888,12 @@ def attach(window, axis, has_pending=True, hand_move=False, binding=None):
         window._os_gen = _STATE["generation"]
     seen = seen_all.get(axis)
     cur = (near[axis], far[axis])
+    snap = _STATE.get("size_ack_snaps", {}).get(axis)
+    if snap is not None and seen == snap[0] and cur == snap[1]:
+        # This window already solved the fractional request. Its integer
+        # acknowledgement is bookkeeping, not an external edge drag that
+        # should overwrite the gesture's restoration of the native frame.
+        seen = seen_all[axis] = cur
     os_moved = seen is not None and (abs(seen[0] - cur[0]) > 1e-6 or abs(seen[1] - cur[1]) > 1e-6)
     if seen is None:
         seen_all[axis] = cur
@@ -1257,6 +1283,11 @@ def solve(bindings=()):
         own = _STATE["pending"][axis]
         _STATE["pending"][axis] = []
         gestures = _STATE.setdefault("gestures", {})
+        from meltygui.core.input.input_handler import pointer_press_token
+        press = pointer_press_token()
+        previous = gestures.get(axis)
+        if previous is not None and press is not None and previous.setdefault("press", press) != press:
+            gestures.pop(axis)
         released = not _any_button_down()
         # A stationary release still ends the gesture. Do this before
         # the idle fast-forward, or the next drag replays an old position.
@@ -1320,7 +1351,7 @@ def solve(bindings=()):
         if own:
             from meltygui.core.layout.column_core import snapshot_edges
             if gesture is None:
-                gesture = gestures[axis] = {"snap": list(cur), "totals": [0.0, 0.0], "windows": {}}
+                gesture = gestures[axis] = {"snap": list(cur), "totals": [0.0, 0.0], "windows": {}, "press": press}
             snapshots = gesture.setdefault("windows", {})
             for window in windows:
                 identity = id(window)
@@ -1379,7 +1410,7 @@ def solve(bindings=()):
         gesture = gestures.get(axis)
         for index, inc in own:
             if gesture is None:
-                gesture = gestures[axis] = {"snap": list(cur), "totals": [0.0, 0.0]}
+                gesture = gestures[axis] = {"snap": list(cur), "totals": [0.0, 0.0], "press": press}
             gesture["totals"][index] += inc
         if own and gesture is not None:
             # replay from the gesture's start: BOTH edges go back to the
@@ -1531,6 +1562,16 @@ def solve(bindings=()):
 # Apply
 # ---------------------------------------------------------------------------
 
+def requested_size(axis):
+    """The integer native span, preserving Cocoa's rounded screen edges."""
+    near, far = _STATE["edges"][axis]
+    if _STATE["mode"] == "cocoa":
+        # Rounding position and span independently lets an immovable far edge
+        # alternate by one pixel. Quantize the two screen edges as one box.
+        return int(round(far[axis])) - int(round(near[axis]))
+    return int(round(far[axis] - near[axis]))
+
+
 def flush():
     """End of the frame (after end_frame's window dispatch): the model's
     size / position → ONE surface request, applied at the next frame's
@@ -1548,23 +1589,23 @@ def flush():
     changed = False
     for axis, i in _AXIS.items():
         near, far = _STATE["edges"][axis]
-        want = far[axis] - near[axis]
-        size[i] = int(round(want))
-        if abs(want - float(display[i])) > 0.5:
+        size[i] = requested_size(axis)
+        if size[i] != float(display[i]):
             changed = True
         recent = _STATE["size_requests"][axis]
         if recent and recent[-1] != size[i]:
             changed = True              # cancel the older request even at the observed size
         if _STATE["mode"] != "walls":
             expected = _STATE["expected"][i]
-            if expected is not None and abs(near[axis] - expected) > 0.5:
+            target_near = round(near[axis]) if _STATE["mode"] == "cocoa" else near[axis]
+            if expected is not None and abs(target_near - expected) > 0.5:
                 moves = _STATE["move_requests"][axis]
                 previous = (expected, _STATE["size_expected"][i])
                 if not moves or moves[-1] != previous:
                     moves.append(previous)
                 # Keep a bounded history even if the OS feed stalls.
                 del moves[:-INFLIGHT_FRAMES * 2]
-                offset[i] = int(round(near[axis] - expected))
+                offset[i] = int(round(target_near - expected))
                 _STATE["expected"][i] = expected + offset[i]
                 _STATE["inflight"][i] = Melty.frame_count
                 changed = True

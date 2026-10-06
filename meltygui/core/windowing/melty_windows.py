@@ -204,6 +204,18 @@ def begin_frame(window):
     return frame
 
 
+def drag_origin(window):
+    """Applied Cocoa origin for the existing screen-relative drag path.
+
+    Reading the actual window here matches GLFW's live local cursor sample;
+    the collision model can already contain next frame's requested move.
+    """
+    if window is None or not defer_refresh(window):
+        return None
+    from meltygui.core.windowing import window_api as glfw
+    return glfw.get_window_pos(window)
+
+
 def end_frame(frame):
     if frame is None:
         return

@@ -510,3 +510,18 @@ def test_near_edge_moving_at_the_declared_minimum_with_column_slack_is_reported(
         push.left["x"] -= 30.0                                 # ... and the near edge slides with it
     assert "pushed without contact" in push.kinds()
     assert any(v["edge"] == "win frame[0]" for r in push.reports for v in r["violations"])
+
+
+def test_between_frame_regrab_restarts_guard_without_disabling_reports(rig, monkeypatch):
+    from meltygui.core.input.input_handler import InputHandler
+    handler = InputHandler()
+    monkeypatch.setattr(Melty, 'event_handler', handler)
+    handler.feed_down('right_mouse', 100, 100, t=10.)
+    rig.frame()
+    start = guard._STATE['gestures'][id(None)]['start_frame']
+    handler.feed_up('right_mouse', 100, 100, t=11.)
+    handler.feed_down('right_mouse', 100, 100, t=12.)
+    rig.frame()
+    assert guard._STATE['gestures'][id(None)]['start_frame'] > start
+    rig.frame(edge=rig.divider, move=30.)
+    assert rig.reports

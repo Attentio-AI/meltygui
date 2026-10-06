@@ -513,6 +513,10 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
     else:
         origin_now = os_ctx.base - os_frame._screen_pos(window, axis)
     gesture = gestures.get(axis)
+    from meltygui.core.input.input_handler import pointer_press_token
+    press = pointer_press_token()
+    if gesture is not None and press is not None and gesture.setdefault("press", press) != press:
+        gesture = None
     if gesture is not None and gesture.get("generation") != os_frame._STATE["generation"]:
         # The geometry feed disappeared/returned or changed shape. Its
         # screen origin is a new coordinate space; keep the current layout
@@ -529,6 +533,7 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
             snap[id(e)] = e[axis]
         pos = window.window_pos[i] if window.window_pos is not None else None
         gesture = gestures[axis] = {
+            "press": press,
             "generation": os_frame._STATE["generation"],
             "edges": edges, "snap": snap, "totals": {},
             "pos": pos, "size": float(window.width if axis == "x" else window.height),
@@ -1286,8 +1291,14 @@ def _frame_pass(window, axis):
             e[axis] -= d_near
         moved = True
     size = window.width if axis == "x" else window.height
-    if abs(far[axis] - size) > 0.5:
-        size = snap_int(far[axis])
+    native_size = int(round(far[axis])) if binding is not None else None
+    if binding is not None and os_ctx is not None and os_frame.mode() == "cocoa":
+        native_size = int(round(binding.content_size(os_frame.requested_size(axis))))
+    if (native_size is not None and native_size != size) or abs(far[axis] - size) > 0.5:
+        # A surface-bound frame is the native content size. Match flush()'s
+        # integer request: truncating here but rounding there makes its own
+        # acknowledgement look like an external resize on the next pass.
+        size = native_size if native_size is not None else snap_int(far[axis])
         if axis == "x":
             window.width = size
         else:
@@ -1494,14 +1505,20 @@ def _drag_inc(draw_state, handle, drag, total="total_dx"):
     shared slot, two events alive in the same frame alternate ownership and
     each re-fires its full total against a zero baseline — moving edges
     that were never dragged. Entries are pruned by the caller when their
-    handle has no event, so a new gesture always starts from a clean
-    baseline."""
+    handle has no event. A press token also resets the baseline when release
+    and regrab arrive between rendered frames."""
     totals = getattr(draw_state, "_drag_totals", None)
     if totals is None:
         totals = draw_state._drag_totals = {}
-    last = totals.get(handle, 0.0)
+    from meltygui.core.input.input_handler import pointer_press_token
+    press = pointer_press_token()
+    previous = totals.get(handle, 0.0)
+    if isinstance(previous, tuple):
+        last = previous[1] if press is None or previous[0] == press else 0.0
+    else:
+        last = previous  # Adopt a pre-hotswap running total without a jump.
     now = getattr(drag, total)
-    totals[handle] = now
+    totals[handle] = (press, now)
     return now - last
 
 

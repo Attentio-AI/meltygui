@@ -1582,7 +1582,7 @@ def test_idle_release_forgets_os_sticky_snapshot(studio, monkeypatch, axis):
 def test_background_release_applies_only_its_remaining_motion(studio, monkeypatch):
     from types import SimpleNamespace
     studio.frame()
-    handler = SimpleNamespace(is_down=lambda button: False)
+    handler = SimpleNamespace(is_down=lambda button: False, pointer_press_token=lambda: None)
     monkeypatch.setattr(Melty, 'event_handler', handler)
     monkeypatch.setattr(Melty, 'events', {tb._RESIZE_ID: {
         'non_blocking_right_mouse_dragged': SimpleNamespace(total_dx=100.0, total_dy=0.0)}})
@@ -1884,3 +1884,111 @@ def test_inline_panel_through_view_parent_tracks_hand(
         assert size == pytest.approx(300 + (distance if resize else 0))
         previous = travel
     assert tuple(edge[axis] for edge in os_frame.edges(axis)) == initial_frame
+
+
+@pytest.mark.parametrize("mode", ["feed", "cocoa"])
+@pytest.mark.parametrize("axis", ["x", "y"])
+@pytest.mark.parametrize("step", [11.2, 11.5, .5])
+def test_fractional_bound_divider_resize_matches_native_rounding(studio, hand, mode, axis, step):
+    """An integer native acknowledgement must not become a foreign drag.
+
+    The pinned body used to truncate 988.8 to 988 while flush requested 989.
+    The next frame's extra far-edge solve reversed the divider despite the
+    continuing pointer motion, then left subsequent motion one frame behind.
+    """
+    studio.mode = mode
+    studio.size = [1000., 1000.]
+    root = app_root(studio)
+    app_frame(studio, root)
+    near, far = root._frame_edges if axis == "x" else root._frame_rows
+    divider = {axis: 700.}
+    views = root._edge_views if axis == "x" else root._row_views
+    cells = root._edge_cells if axis == "x" else root._row_cells
+    views[("fractional", axis)] = (root, [near, divider, far])
+    cells[("fractional", axis)] = ([60., 60.], [None, 300.])
+    app_frame(studio, root)
+    previous = 700.
+    # Shrink, hold, reverse and hold again within the same gesture.
+    targets = [700. - i * step for i in range(1, 16)]
+    targets += [targets[-1]] * 3
+    targets += [700. - i * step for i in range(14, -1, -1)]
+    targets += [700.] * 3
+    for target in targets:
+        pending = root._pending_drags if axis == "x" else root._pending_row_drags
+        pending.append((divider, divider[axis] + target - previous, True))
+        app_frame(studio, root)
+        assert divider[axis] == pytest.approx(target)
+        body = root.width if axis == "x" else root.height
+        assert body == studio.size[0 if axis == "x" else 1]
+        assert body == round(target + 300.)
+        previous = target
+
+
+@pytest.mark.parametrize('mode', ['feed', 'cocoa'])
+def test_regrab_between_frames_does_not_restore_previous_divider_snapshot(studio, monkeypatch, mode):
+    from meltygui.core.input.input_handler import InputHandler
+    handler = InputHandler()
+    monkeypatch.setattr(Melty, 'event_handler', handler)
+    studio.mode = mode
+    studio.size = [1000., 1000.]
+    root = app_root(studio)
+    app_frame(studio, root)
+    left, right = root._frame_edges
+    divider = {'x': 800.}
+    root._edge_views[('regrab', 'x')] = (root, [left, divider, right])
+    root._edge_cells[('regrab', 'x')] = ([60., 60.], [None, None])
+    app_frame(studio, root)
+    handler.feed_down('right_mouse', 500, 500, t=10.)
+    root._pending_drags.append((divider, 1100., True))
+    app_frame(studio, root)
+    assert studio.size[0] == 1160.
+    # Both input transitions arrive before the next rendered frame. The new
+    # gesture must start at 1160, without unwinding the old gesture's expansion.
+    handler.feed_up('right_mouse', 800, 500, t=11.)
+    handler.feed_down('right_mouse', 800, 500, t=12.)
+    root._pending_drags.append((divider, 1090., True))
+    app_frame(studio, root)
+    assert divider['x'] == 1090.
+    assert studio.size[0] == 1160.
+
+
+@pytest.mark.parametrize('axis', ['x', 'y'])
+@pytest.mark.parametrize('increment', [25.25, 11.2, 16.75, .5])
+def test_fractional_near_ack_does_not_move_the_display_wall(studio, hand, axis, increment):
+    studio.mode = 'cocoa'
+    i = 0 if axis == 'x' else 1
+    studio.size = [1000., 1000.]
+    wall = studio.area[i] + studio.area[i + 2]
+    studio.pos[i] = wall - 1000.
+    root = app_root(studio)
+    app_frame(studio, root)
+    far = C._frame(root, axis)[1]
+    for step in [increment] * 15 + [0.] * 3 + [-increment] * 15 + [0.] * 3:
+        C._pending(root, axis).append((far, far[axis] + step, True))
+        app_frame(studio, root)
+        # Combine the queued move and size into the next committed rectangle.
+        # Its integer origin and size must keep the far edge fixed.
+        pending = getattr(studio, '_offset', None)
+        actual_near = studio.pos[i] + (pending[i] if pending else 0.)
+        assert actual_near + studio.size[i] == pytest.approx(wall)
+        assert (root.width if axis == 'x' else root.height) == studio.size[i]
+
+
+@pytest.mark.parametrize('mode', ['feed', 'cocoa'])
+def test_regrab_at_display_wall_starts_from_current_native_frame(studio, monkeypatch, mode):
+    from meltygui.core.input.input_handler import InputHandler
+    handler = InputHandler()
+    monkeypatch.setattr(Melty, 'event_handler', handler)
+    studio.mode = mode
+    root = app_root(studio)
+    app_frame(studio, root)
+    handler.feed_down('right_mouse', 500, 500, t=10.)
+    os_frame.queue_drag('x', 1, 600.)
+    app_frame(studio, root)
+    near, far = os_x()
+    assert far == 3840.
+    handler.feed_up('right_mouse', 1100, 500, t=11.)
+    handler.feed_down('right_mouse', 1100, 500, t=12.)
+    os_frame.queue_drag('x', 1, -10.)
+    app_frame(studio, root)
+    assert os_x() == (near, far - 10.)

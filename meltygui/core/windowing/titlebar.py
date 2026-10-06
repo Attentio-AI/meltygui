@@ -1116,8 +1116,11 @@ def poll_os_window_drag():
             _rdrag = None
         return
     import meltygui.core.windowing.os_frame as os_frame
+    press = handler.pointer_press_token()
+    if _rdrag is not None and press is not None and _rdrag.setdefault("press", press) != press:
+        _rdrag = None
     if _rdrag is None:
-        _rdrag = {"top_left": "non_blocking_right_mouse_double_dragged" in resize_events, "x": 0.0, "y": 0.0}
+        _rdrag = {"top_left": "non_blocking_right_mouse_double_dragged" in resize_events, "x": 0.0, "y": 0.0, "press": press}
     index = 0 if _rdrag["top_left"] else 1
     for axis, total in (("x", "total_dx"), ("y", "total_dy")):
         now = float(getattr(drag, total, 0.0) or 0.0)
@@ -1569,13 +1572,15 @@ def on_surface_resized(window, width, height):
     global _last_surface_size, _last_stamped_size
     size = (int(width), int(height))
     if size != _last_stamped_size:
-        # Any backend, ours or the compositor's: stamp the gesture for
-        # freeze_resize views (Melty.resize_gesture_live); the cache keeps
-        # frames coming past the last configure until they settle.
+        # External configures may arrive in bursts. Cooperative Cocoa resizes
+        # are synchronous and the app owns the button lifecycle, so they need
+        # no settling timeout after release. Native border drags keep the tail.
         from meltygui.core.melty import Melty
         from meltygui.core.windowing.glfw_utils import request_render
+        from meltygui.core.windowing import melty_windows
         _last_stamped_size = size
-        Melty.os_resize_time = time.monotonic()
+        Melty.os_resize_time = (-1000.0 if melty_windows.defer_refresh(window)
+                                else time.monotonic())
         request_render()
     if not _on_wayland() or not wayland_move.geometry_available():
         return None

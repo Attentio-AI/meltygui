@@ -377,6 +377,13 @@ class SplitOverlayRenderer(WindowRenderer):
         hover after a gesture reads the true pointer again."""
         import meltygui.core.windowing.wayland_move as wayland_move
         down = any(io.mouse_down[i] for i in range(3))
+        from meltygui.core.input.input_handler import pointer_press_token
+        press = pointer_press_token()
+        if press is not None and getattr(self, '_slide_press', press) != press:
+            self._slide_base = self._slide_last = None
+            self._slide_clamped = (0.0, 0.0)
+            self._slide_screen_origin = self._slide_native_sample = None
+        self._slide_press = press
         if not down or not wayland_move.relative_motion_available():
             self._slide_base = None
             self._slide_last = None
@@ -401,11 +408,14 @@ class SplitOverlayRenderer(WindowRenderer):
                 io.mouse_pos = sample[1]
                 return
             import meltygui.core.windowing.geometry_feed as geometry_feed
-            rect = geometry_feed.frame_rect()
-            if rect is None:
+            from meltygui.core.windowing import melty_windows
+            origin = melty_windows.drag_origin(window)
+            if origin is None:
+                rect = geometry_feed.frame_rect()
+                origin = rect[:2] if rect is not None else None
+            if origin is None:
                 self._slide_screen_origin = None
                 return
-            origin = rect[:2]
             if self._slide_screen_origin is None:
                 self._slide_screen_origin = origin
             mx, my = io.mouse_pos

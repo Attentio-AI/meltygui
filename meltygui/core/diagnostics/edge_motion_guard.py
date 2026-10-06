@@ -193,6 +193,13 @@ def _pointer(origin):
     event's total). The handler's own cursor field lags it."""
     from meltygui.core.melty import Melty
     x, y = Melty.get_latest_mouse()
+    renderer = getattr(_surface(), "impl", None)
+    anchor = getattr(renderer, "_slide_screen_origin", None)
+    if anchor is not None:
+        # The renderer has already removed native-window movement from the
+        # drag sample. That sample is relative to the press origin, not the
+        # current model origin; adding the latter would count the move twice.
+        origin = anchor
     return (origin[0] + float(x), origin[1] + float(y))
 
 
@@ -333,6 +340,10 @@ def _check_frame():
     # never accumulate the chunks a verdict needs.
     driver = "pointer" if button else ("native" if _native_resize_live() else None)
     gesture = gestures.get(id(surface))
+    from meltygui.core.input.input_handler import pointer_press_token
+    press = pointer_press_token()
+    if gesture is not None and press is not None and gesture.setdefault("press", press) != press:
+        gesture = None
     if driver is None:
         # A released hand ends its gesture at once; only a native resize
         # (configures arriving in bursts) may pause and continue.
@@ -345,6 +356,7 @@ def _check_frame():
     positions = _edge_positions(origin)
     if gesture is None:
         gestures[id(surface)] = _new_gesture(frame, pointer, origin, positions, driver)
+        gestures[id(surface)]["press"] = press
         # One entry per gesture proves the guard watched it, even when it
         # has nothing to report.
         from meltygui.core.diagnostics import resize_trace

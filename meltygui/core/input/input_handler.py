@@ -957,8 +957,16 @@ class InputHandler:
 
                     lx, ly = get_latest_mouse()
                     state = states.get(event.input_id)
-                    total_dx = lx - state.down_x if state else 0.0
-                    total_dy = ly - state.down_y if state else 0.0
+                    newer_press = state is not None and state.down_time > event.timestamp
+                    if newer_press:
+                        # UP and a later DOWN can be queued before this frame.
+                        # The mutable state already belongs to the NEW press;
+                        # release the old drag using its immutable event data.
+                        lx, ly = event.x, event.y
+                        total_dx, total_dy = event.total_dx, event.total_dy
+                    else:
+                        total_dx = lx - state.down_x if state else 0.0
+                        total_dy = ly - state.down_y if state else 0.0
 
                     release_event = InputEvent(
                         event.input_id, rel_action, event.tile_id, lx, ly,
@@ -966,7 +974,7 @@ class InputHandler:
                     )
                     add_event(captured_view, drag_released_key, release_event)
 
-                    if state:
+                    if state and not newer_press:
                         state.down_x = 0.0
                         state.down_y = 0.0
                         state.down_time = 0.0
@@ -1158,5 +1166,24 @@ class InputHandler:
         s = self._states.get(input_id)
         return s.is_down if s else False
 
+    def pointer_press_token(self):
+        """Identity of the active pointer press, even across unrendered UP/DOWN.
+
+        Chord buttons do not start a second drag. Use the input timestamp,
+        which is retained by hotswap, rather than a per-render-frame counter.
+        """
+        presses = [(s.down_time, button) for button in
+                   ('left_mouse', 'right_mouse', 'middle_mouse')
+                   if (s := self._states.get(button)) is not None
+                   and s.is_down and not s.chord]
+        return max(presses) if presses else None
+
     def cursor(self) -> tuple[float, float]:
         return (self._cursor_x, self._cursor_y)
+
+
+def pointer_press_token():
+    """Current surface's pointer press for render-thread gesture lifetimes."""
+    from meltygui.core.melty import Melty
+    handler = Melty.event_handler
+    return handler.pointer_press_token() if handler is not None else None

@@ -11,6 +11,40 @@ from meltygui.core.windowing import glfw_utils, window_api as glfw, melty_window
 from meltygui.core.windowing.surface import Surface
 
 
+@pytest.mark.parametrize('cooperative', [False, True])
+def test_cooperative_resize_has_no_release_settling_delay(monkeypatch, cooperative):
+    from meltygui.core.windowing import titlebar
+    window = object()
+    monkeypatch.setattr(titlebar, '_last_stamped_size', None)
+    monkeypatch.setattr(titlebar, '_on_wayland', lambda: False)
+    monkeypatch.setattr(melty_windows, 'defer_refresh', lambda w: cooperative)
+    monkeypatch.setattr(titlebar.time, 'monotonic', lambda: 100.)
+    monkeypatch.setattr(glfw_utils, 'request_render', lambda: None)
+    monkeypatch.setattr(Melty, 'os_resize_time', -1000.)
+    titlebar.on_surface_resized(window, 800, 600)
+    assert Melty.os_resize_live() is (not cooperative)
+
+
+def test_native_resize_settling_belongs_to_its_surface(monkeypatch):
+    from meltygui.core.windowing.surface import Surface, MELTY_ATTRS, MODULE_GLOBALS
+    from meltygui.core.windowing import titlebar
+    first, second = Surface.__new__(Surface), Surface.__new__(Surface)
+    first._melty, first._mods = {'os_resize_time': 100.}, {(titlebar, '_last_stamped_size'): (800, 600)}
+    second._melty, second._mods = {}, {}  # Also exercises a live pre-hotswap surface.
+    monkeypatch.setattr(Melty, 'os_resize_time', -1000.)
+    monkeypatch.setattr(titlebar, '_last_stamped_size', None)
+    assert 'os_resize_time' in MELTY_ATTRS
+    assert '_last_stamped_size' in MODULE_GLOBALS[titlebar]
+    first._restore()
+    assert Melty.os_resize_time == 100.
+    assert titlebar._last_stamped_size == (800, 600)
+    second._restore()
+    assert Melty.os_resize_time == -1000.
+    assert titlebar._last_stamped_size is None
+    first._restore()
+    assert Melty.os_resize_time == 100.
+
+
 @pytest.fixture
 def refresh_windows(monkeypatch):
     monkeypatch.setattr(melty_windows, 'defer_refresh', lambda window: False)

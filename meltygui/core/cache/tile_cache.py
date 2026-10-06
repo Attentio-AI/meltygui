@@ -2264,17 +2264,21 @@ class TileCacheMasked:
                         getattr(note, "reason", None), bool(force)))
 
     def _refresh_resize_input_keys(self):
-        """Keep the active drag receiver and its cached ancestors live.
+        """Keep pointer gesture receivers and their cached ancestors live.
 
         A tile resize may freeze siblings, but an internal column/row drag
         still needs its body to consume input and push enclosing edges.
+        Press and release must also reach their receivers while another resize
+        is settling; otherwise direct replay swallows the new gesture's latch.
         Derive the set once per frame from delivered events and cache ancestry.
         """
         from meltygui.core.input.input_handler import EventAction
         keys = set()
         for events in Melty.events.values():
             for event in events.values():
-                if event.action not in (EventAction.DRAGGED, EventAction.DOUBLE_DRAGGED):
+                if event.action not in (EventAction.DOWN, EventAction.UP,
+                                        EventAction.DRAGGED, EventAction.DOUBLE_DRAGGED,
+                                        EventAction.DRAG_RELEASED, EventAction.DOUBLE_DRAG_RELEASED):
                     continue
                 key = event.tile_id
                 while key is not None and key not in keys:
