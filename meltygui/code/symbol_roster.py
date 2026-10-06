@@ -1876,13 +1876,47 @@ def local_key(table, scope, name, bindings):
     return None
 
 
+def _ignored_project_event(state, path):
+    """Match discovery's exclusions, while preserving explicitly used sources."""
+    from meltygui.text_index import _SKIP_DIRS
+    with state["lock"]:
+        if path in state["tables"] or path in state["live"]:
+            return False
+        records = list(state.get("projects", {}).values())
+        if any(path in record["observed"] for record in records):
+            return False
+        roots = [root for record in records
+                 for root in (getattr(record["project"], "root", None),
+                              *getattr(record["project"], "import_paths", ()))
+                 if root and path.startswith(root + os.sep)]
+    if not roots:
+        return False
+    # Explicit projects/import roots beneath an excluded directory still own
+    # their source (including new dependencies installed into a virtualenv).
+    # Apply exclusions only below the most specific root.
+    root = max(roots, key=len)
+    return any(part in _SKIP_DIRS for part in path[len(root):].split(os.sep)[1:-1])
+
+
 def _project_file_changed(path):
     from meltygui.code.fileref import _PROJECT_MARKERS
-    if os.path.basename(path) in _PROJECT_MARKERS:
+    marker = os.path.basename(path) in _PROJECT_MARKERS
+    if not marker and not str(path).endswith((".py", ".pyi", ".pth", "pyvenv.cfg")):
+        return
+    state = _state()
+    if marker:
         # Resolve the containing directory, not a marker symlink's target.
-        from meltygui.code.source_context import invalidate_ownership
         directory = _norm(os.path.dirname(path))
-        state = _state()
+        path = os.path.join(directory, os.path.basename(path))
+    else:
+        path = _norm(path)
+    # Recursive watches also see generated bundles and copied dependencies.
+    # They must not clear the source universe and wake every editor per file.
+    # Environment metadata still matters even inside an excluded virtualenv.
+    if (marker or path.endswith((".py", ".pyi"))) and _ignored_project_event(state, path):
+        return
+    if marker:
+        from meltygui.code.source_context import invalidate_ownership
         with state["lock"]:
             invalidate_ownership(directory)
             for record in state.get("projects", {}).values():
@@ -1890,10 +1924,6 @@ def _project_file_changed(path):
                 record["complete"] = False
             _gen_bump(state)
         return
-    if not str(path).endswith((".py", ".pyi", ".pth", "pyvenv.cfg")):
-        return
-    path = _norm(path)
-    state = _state()
     exists = os.path.exists(path)
     with state["lock"]:
         revisions = state.setdefault("path_generations", {})

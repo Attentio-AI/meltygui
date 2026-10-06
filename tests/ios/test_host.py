@@ -13,6 +13,7 @@ import sys
 import tempfile
 import types
 import unittest
+import uuid
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2] / "meltygui/platforms/ios"
@@ -77,6 +78,15 @@ class PackagingTests(unittest.TestCase):
             path.write_bytes(data)
             with self.assertRaises(ValueError):
                 bundle.validate_device_binary(path)
+
+    def test_each_build_gets_a_new_application_source_generation(self):
+        bundle.prepare(self.config, self.target, signing_allowed=False)
+        first = plistlib.loads((self.target / 'HostSettings.plist').read_bytes())
+        bundle.prepare(self.config, self.target, signing_allowed=False)
+        second = plistlib.loads((self.target / 'HostSettings.plist').read_bytes())
+        self.assertEqual(first['entry_module'], 'main')
+        self.assertEqual(second['entry_module'], 'main')
+        self.assertNotEqual(uuid.UUID(first['source_generation']), uuid.UUID(second['source_generation']))
 
     def test_packages_signed_framework_and_bidirectional_markers(self):
         package = self.packages / "nested"
@@ -178,6 +188,12 @@ class BootstrapTests(unittest.TestCase):
         self.original_cwd = Path.cwd()
         self.addCleanup(os.chdir, self.original_cwd)
         self.bootstrap = load("isolated_bootstrap", ROOT / "Python/melty_ios_bootstrap.py")
+        self.bundle = self.root / 'Melty.app'
+        (self.bundle / 'app').mkdir(parents=True)
+        (self.bundle / 'app/test_ios_application.py').write_text('value = 1\n')
+        (self.bundle / 'HostSettings.plist').write_bytes(plistlib.dumps({
+            'entry_module': 'test_ios_application', 'source_generation': uuid.uuid4().hex}))
+        self.bootstrap.__file__ = str(self.bundle / 'host/melty_ios_bootstrap.py')
         self.output = []
         self.native = types.SimpleNamespace(write_log=self.output.append, request_frame=mock.Mock(),
                                             set_keyboard_visible=mock.Mock(), set_safe_zone=mock.Mock(),
@@ -192,6 +208,9 @@ class BootstrapTests(unittest.TestCase):
     @contextlib.contextmanager
     def environment(self):
         with mock.patch.dict(sys.modules, {"_melty_ios": self.native}), \
+             mock.patch.object(sys, 'path', [*sys.path, str(self.bundle / 'app')]), \
+             mock.patch('meltygui.code.fileref._EDITABLE_ROOTS', []), \
+             mock.patch('meltygui.code.fileref._EDITABLE_SOURCE_CACHE', {}), \
              mock.patch("meltygui.core.runtime.native_app.start_native_application", self.launch), \
              mock.patch.dict(os.environ), \
              contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -199,6 +218,9 @@ class BootstrapTests(unittest.TestCase):
 
     def test_native_library_and_certificate_paths_follow_the_installed_container(self):
         installed = self.root / "new-container/Melty.app"
+        installed.parent.mkdir()
+        shutil.move(self.bundle, installed)
+        self.bundle = installed
         certificate = installed / "app_packages/certifi/cacert.pem"
         certificate.parent.mkdir(parents=True)
         certificate.write_text("bundled certificates")
@@ -209,6 +231,67 @@ class BootstrapTests(unittest.TestCase):
                              str(installed / "Frameworks/spatialindex_c.framework/spatialindex_c"))
             self.assertEqual(os.environ["DYLD_FRAMEWORK_PATH"], str(installed / "Frameworks"))
             self.assertEqual(os.environ["SSL_CERT_FILE"], str(certificate))
+
+    def test_app_imports_its_editable_copy_and_keeps_edits_until_the_next_build(self):
+        from meltygui.code.fileref import is_editable_source
+        original = self.bundle / 'app/test_ios_application.py'
+        with self.environment():
+            self.bootstrap.initialize(self.config)
+            spec = importlib.util.find_spec('test_ios_application')
+            source = Path(spec.origin)
+            self.assertTrue(source.is_relative_to(Path(self.config['application_support'])))
+            self.assertTrue(is_editable_source(source))
+            self.assertEqual(source.read_text(), 'value = 1\n')
+            source.write_text('value = 2\n')
+            (source.parent / 'local.py').write_text('local = True\n')
+            self.assertEqual(original.read_text(), 'value = 1\n')
+            self.bootstrap.close()
+
+        # A new install container with the SAME build must keep device edits.
+        moved = self.root / 'moved-container/Melty.app'
+        moved.parent.mkdir()
+        shutil.move(self.bundle, moved)
+        self.bundle = moved
+        self.bootstrap.__file__ = str(moved / 'host/melty_ios_bootstrap.py')
+        with self.environment():
+            self.bootstrap.initialize(self.config)
+            self.assertEqual(Path(importlib.util.find_spec('test_ios_application').origin), source)
+            self.assertEqual(source.read_text(), 'value = 2\n')
+            self.bootstrap.close()
+
+        # Rebuilding replaces the device copy, including files added locally.
+        (moved / 'app/test_ios_application.py').write_text('value = 3\n')
+        (moved / 'HostSettings.plist').write_bytes(plistlib.dumps({
+            'entry_module': 'test_ios_application', 'source_generation': uuid.uuid4().hex}))
+        with self.environment():
+            self.bootstrap.initialize(self.config)
+            rebuilt = Path(importlib.util.find_spec('test_ios_application').origin)
+            self.assertEqual(rebuilt.read_text(), 'value = 3\n')
+            self.assertFalse((rebuilt.parent / 'local.py').exists())
+            self.assertFalse(source.exists())
+
+    def test_failed_copy_keeps_the_previous_device_source(self):
+        with self.environment():
+            self.bootstrap.initialize(self.config)
+            source = Path(importlib.util.find_spec('test_ios_application').origin)
+            source.write_text('value = 2\n')
+            self.bootstrap.close()
+        (self.bundle / 'HostSettings.plist').write_bytes(plistlib.dumps({
+            'entry_module': 'test_ios_application', 'source_generation': uuid.uuid4().hex}))
+        with self.environment(), mock.patch('shutil.copytree', side_effect=OSError('disk full')):
+            with self.assertRaisesRegex(OSError, 'disk full'):
+                self.bootstrap.initialize(self.config)
+        self.assertEqual(source.read_text(), 'value = 2\n')
+
+    def test_native_search_path_can_use_a_symlinked_container(self):
+        alias = self.root / 'container-alias'
+        alias.symlink_to(self.bundle, target_is_directory=True)
+        with self.environment():
+            sys.path[-1] = str(alias / 'app')
+            self.bootstrap.initialize(self.config)
+            source = Path(importlib.util.find_spec('test_ios_application').origin)
+            self.assertTrue(source.is_relative_to(Path(self.config['application_support'])))
+            self.assertEqual(source.read_text(), 'value = 1\n')
 
     def test_renderer_absence_is_reported_before_importing_desktop_editor(self):
         self.config["renderer_available"] = False

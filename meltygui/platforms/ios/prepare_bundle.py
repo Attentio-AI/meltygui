@@ -10,6 +10,7 @@ import plistlib
 import shutil
 import struct
 import subprocess
+import uuid
 
 
 def validate_device_binary(path):
@@ -119,7 +120,11 @@ def prepare(config, bundle, *, identity=None, signing_allowed=True):
             if not source.is_file():
                 raise ValueError(f"Compile the Metal shaders before packaging: missing {source}")
             shutil.copy2(source, bundle / name)
-    (bundle / "HostSettings.plist").write_bytes(plistlib.dumps({"entry_module": config["entry_module"]}))
+    # Device source edits live for one build. A rebuild gets a fresh copy even
+    # when the app's version or source mtimes have not changed.
+    (bundle / "HostSettings.plist").write_bytes(plistlib.dumps({
+        "entry_module": config["entry_module"], "source_generation": uuid.uuid4().hex,
+    }))
 
     def sign(framework):
         if signing_allowed:

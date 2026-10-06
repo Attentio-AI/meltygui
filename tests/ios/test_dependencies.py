@@ -52,6 +52,44 @@ class DependencyTests(unittest.TestCase):
         wheel = self.wheel(name, version, requirements, extras=extras)
         return staging.install_wheel(wheel, self.packages)
 
+    def test_refresh_replaces_local_wheels_and_removes_deleted_source(self):
+        import json
+        import shutil
+        old = self.wheel(resources={'example/old.py': b'old'})
+        entry = staging.install_wheel(old, self.packages)
+        entry['source'] = str(self.root / 'checkout')
+        manifest = self.root / 'manifest.json'
+        manifest.write_text(json.dumps({'schema': 1, 'packages': [entry]}))
+        replacement = self.wheel(version='2.0', resources={'example/new.py': b'new'})
+        def build(args):
+            output = Path(args[args.index('--outdir') + 1])
+            output.mkdir()
+            shutil.copy2(replacement, output / replacement.name)
+        with mock.patch.object(staging, 'run', side_effect=build) as runner:
+            staging.refresh_local_packages(self.packages)
+        self.assertEqual(runner.call_args.args[0][-1], entry['source'])
+        self.assertFalse((self.packages / 'example/old.py').exists())
+        self.assertEqual((self.packages / 'example/new.py').read_bytes(), b'new')
+        updated, = json.loads(manifest.read_text())['packages']
+        self.assertEqual(updated['source'], entry['source'])
+        self.assertEqual(updated['version'], '2.0')
+        self.assertEqual(staging.digest(updated['wheel']), updated['sha256'])
+
+    def test_refresh_failure_keeps_previous_packages_and_manifest(self):
+        import json
+        import subprocess
+        old = self.wheel(resources={'example/old.py': b'old'})
+        entry = staging.install_wheel(old, self.packages)
+        entry['source'] = str(self.root / 'checkout')
+        manifest = self.root / 'manifest.json'
+        original = json.dumps({'schema': 1, 'packages': [entry]})
+        manifest.write_text(original)
+        with mock.patch.object(staging, 'run', side_effect=subprocess.CalledProcessError(1, 'build')):
+            with self.assertRaises(subprocess.CalledProcessError):
+                staging.refresh_local_packages(self.packages)
+        self.assertEqual(manifest.read_text(), original)
+        self.assertEqual((self.packages / 'example/old.py').read_bytes(), b'old')
+
     def test_installs_package_data_and_metadata_with_wheel_data_mapping(self):
         resources = {
             'example/__init__.py': b'VALUE = 1\n',

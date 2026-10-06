@@ -241,6 +241,52 @@ def copy_application(config, destination):
         raise ValueError(f'Application sources do not include entry {config["entry_module"]}')
 
 
+def refresh_local_packages(packages):
+    """Rebuild explicitly staged source wheels before a device run.
+
+    Reinstall the recorded device wheels as a set; never copy a desktop venv
+    or leave deleted source files behind. Legacy manifests have no sources.
+    """
+    packages = Path(packages)
+    manifest_path = packages.parent / 'manifest.json'
+    if not manifest_path.is_file():
+        return
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    if not any(item.get('source') for item in manifest['packages']):
+        return
+    with tempfile.TemporaryDirectory(prefix='refresh-', dir=packages.parent) as temporary:
+        temporary = Path(temporary)
+        staged = temporary / 'packages'
+        staged.mkdir()
+        refreshed = []
+        built = []
+        for item in manifest['packages']:
+            source = item.get('source')
+            if source:
+                output = temporary / canonicalize_name(item['name'])
+                run([sys.executable, '-m', 'build', '--wheel', '--outdir', output, source])
+                wheel, = output.glob('*.whl')
+            else:
+                wheel = Path(item['wheel'])
+                if digest(wheel) != item['sha256']:
+                    raise ValueError(f'Staged device wheel changed: {wheel}')
+            entry = install_wheel(wheel, staged)
+            if source:
+                destination = packages.parent / 'wheels' / wheel.name
+                built.append((wheel, destination))
+                entry.update(wheel=str(destination), source=source)
+            refreshed.append(entry)
+        validate_dependencies(staged)
+        for wheel, destination in built:
+            destination.parent.mkdir(exist_ok=True)
+            shutil.copy2(wheel, destination)
+        # All builds and validation completed before replacing the runnable set.
+        shutil.rmtree(packages)
+        shutil.move(str(staged), packages)
+        manifest['packages'] = refreshed
+        manifest_path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+
+
 def main():
     from meltygui.platforms.ios.application import read_application
     parser = argparse.ArgumentParser(description=__doc__)
@@ -259,6 +305,7 @@ def main():
     wheels = []
     local = output / 'wheels'
     local.mkdir(exist_ok=True)
+    package_sources = {}
     for source in args.package_source:
         with tempfile.TemporaryDirectory(prefix='build-', dir=local) as temporary:
             run([sys.executable, '-m', 'build', '--wheel', '--no-isolation', '--outdir', temporary, source])
@@ -266,6 +313,7 @@ def main():
             destination = local / wheel.name
             shutil.copy2(wheel, destination)
             wheels.append(destination)
+            package_sources[canonicalize_name(wheel_metadata(destination)["Name"])] = str(source.resolve())
     directories = args.wheel_dir or [BUILD / 'binding', BUILD / 'dependencies/numeric/wheelhouse',
                                     BUILD / 'dependencies/platform/wheels', BUILD / 'dependencies/rust/wheelhouse',
                                     BUILD / 'dependencies/crypto/wheelhouse']
@@ -278,6 +326,10 @@ def main():
         packages = Path(temporary) / 'packages'
         packages.mkdir()
         manifest = [install_wheel(wheel, packages) for wheel in wheels]
+        for item in manifest:
+            source = package_sources.get(canonicalize_name(item['name']))
+            if source:
+                item['source'] = source
         installed = validate_dependencies(packages)
         app = Path(temporary) / 'app'
         copy_application(application, app)

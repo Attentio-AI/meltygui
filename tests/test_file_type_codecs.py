@@ -318,3 +318,28 @@ def test_file_listing_does_not_claim_text_focus_on_touch(monkeypatch):
     monkeypatch.setattr(Melty, "popover_focused_ds", None)
     assert claim_keyboard(view)
     assert Melty.text_focused_ds is view
+
+
+def test_pause_flush_refuses_stale_bundle_save_and_saves_workspace(tmp_path, monkeypatch):
+    from meltygui.code import fileref
+    from meltygui.code.new_codecs import TypeCodec
+    from meltygui.editor.pending_save import PendingSave
+    from meltygui.core.runtime.app import _flush_pending_saves
+    bundle = tmp_path / 'Melty.app' / 'app' / 'editor.py'
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text('value = 1\n')
+    workspace = tmp_path / 'Documents' / 'file.py'
+    workspace.parent.mkdir()
+    workspace.write_text('value = 1\n')
+    monkeypatch.setattr(fileref.sys, 'platform', 'ios')
+    monkeypatch.setattr(fileref, '_EDITABLE_ROOTS', [bundle.parent, workspace.parent])
+    monkeypatch.setattr(fileref, '_EDITABLE_SOURCE_CACHE', {})
+    addresses = [Address(bundle), Address(workspace)]
+    for address in addresses:
+        address._allow_write = True
+    monkeypatch.setattr(PendingSave, 'pending_saves', {
+        address: (TypeCodec, {'data': 'value = 2\n'}) for address in addresses})
+    _flush_pending_saves()
+    assert bundle.read_text() == 'value = 1\n'
+    assert workspace.read_text() == 'value = 2'
+    assert PendingSave.pending_saves == {}

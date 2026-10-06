@@ -41,6 +41,7 @@ from meltygui.model.tile_model import Split
 
 import meltygui.core.input.mouse_cursor as mouse_cursor
 from meltygui.hdr_color import pack_color
+from meltygui.core.runtime.toggles import Tint
 from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.cache.tile_marks import snap_int
 from meltygui.core.cache.tile_marks import add_shadow
@@ -237,10 +238,12 @@ def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
     # hovered (or dragging) colour.
     touch = Core.melty.is_touch
     corner_size = 44.0 if touch else 14.0
-    corner_triangle_size = 22.0 if touch else 9.0
+    corner_triangle_size = 12.0 if touch else 9.0
     corner_triangle_inset = 4.0 if touch else 1.0
-    corner_color = (1.0, 1.0, 1.0, 0.35 if touch else 0.16)
-    corner_hover_color = (1.0, 1.0, 1.0, 0.55)
+    # Large touch grips use the surrounding UI's background tint; reserve
+    # the brighter tint for an active grip. Desktop chrome stays unchanged.
+    corner_color = (*Tint.checkbox_bg_hovered(), 0.8) if touch else (1.0, 1.0, 1.0, 0.16)
+    corner_hover_color = (*Tint.checkbox_text(), 0.45) if touch else (1.0, 1.0, 1.0, 0.55)
     # Change the tile lift here: how far each tile rises above the host
     # (its shadow spread) and the rounding of that shadow.
     tile_shadow_offset = 1.0
@@ -627,10 +630,7 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
         if right - left <= 2 * content_padding or bottom <= top:
             continue
         # Keep the 28px picker/toolbar usable when a row reaches its 40px minimum.
-        # Touch grips need a clear strip above/below content: enlarging only
-        # their hit boxes would steal taps from toolbar and editor controls.
-        vertical_padding = 44.0 if Core.melty.is_touch else content_padding
-        vertical_inset = min(vertical_padding, max(0.0, (bottom - top - 28.0) * 0.5))
+        vertical_inset = min(content_padding, max(0.0, (bottom - top - 28.0) * 0.5))
         imgui.set_cursor_screen_pos((left + content_padding, top + vertical_inset))
         content_rect = (left + content_padding, top + vertical_inset,
                         right - left - 2 * content_padding, bottom - top - 2 * vertical_inset)

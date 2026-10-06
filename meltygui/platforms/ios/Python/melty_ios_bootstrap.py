@@ -56,6 +56,43 @@ class _Log(io.TextIOBase):
         pass
 
 
+def _application_source(bundle, support):
+    """Run this build's app from real editable files outside the signed bundle.
+
+    Keep device edits on relaunch, including a moved install container. Only
+    the packaging generation resets them. Dependencies stay in app_packages;
+    inspect, source navigation and hotswap all see the app's actual import path.
+    """
+    import plistlib
+    import shutil
+    import tempfile
+    import uuid
+
+    settings = plistlib.loads((bundle / 'HostSettings.plist').read_bytes())
+    generation = uuid.UUID(settings['source_generation']).hex
+    root = Path(support).resolve() / 'meltygui' / 'app-source'
+    source = root / generation
+    if not source.is_dir():
+        root.mkdir(parents=True, exist_ok=True)
+        # Publish a complete tree. A failed copy leaves the previous build's
+        # edits intact and the next launch can retry safely.
+        with tempfile.TemporaryDirectory(prefix='.staging-', dir=root) as temporary:
+            staged = Path(temporary) / 'app'
+            shutil.copytree(bundle / 'app', staged)
+            staged.rename(source)
+        for previous in root.iterdir():
+            if previous != source and previous.is_dir():
+                shutil.rmtree(previous)
+    # Replace the host's app search root at the same precedence, before any app
+    # module is imported. Never leave bundled modules mixed with editable ones.
+    # NSURL/Python can spell the same container as /var or /private/var.
+    index = next(i for i, path in enumerate(sys.path)
+                 if Path(path).resolve() == bundle / 'app')
+    sys.path[index] = str(source)
+    importlib.invalidate_caches()
+    return source
+
+
 def initialize(config):
     """Create the application once on the native render thread.
 
@@ -83,6 +120,9 @@ def initialize(config):
         os.environ.setdefault("SSL_CERT_FILE", str(certificates))
     if not config["renderer_available"]:
         raise RuntimeError("The native host requires MeltyMetalRenderer and its shader library")
+    source = _application_source(bundle, config['application_support'])
+    from meltygui.core.runtime.app import _register_editable
+    _register_editable(source)
     from meltygui.core.runtime.native_app import start_native_application
     _app = start_native_application(dict(config), _host)
     print(f"{_app.config['app_id']}: embedded CPython {sys.version.split()[0]} initialized")

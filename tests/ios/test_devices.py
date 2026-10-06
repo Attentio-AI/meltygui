@@ -58,7 +58,8 @@ def test_run_stages_snapshot_builds_installs_and_stops_exact_app(tmp_path, monke
     def command(arguments, **kwargs):
         calls.append(arguments)
         if 'install' in arguments:
-            return {'installationResults': [{'installationURL': application_url}]}
+            return {'installedApplications': [{'bundleID': 'org.example.test',
+                                               'installationURL': application_url}]}
         if 'processes' in arguments:
             return {'runningProcesses': [
                 {'executable': application_url + 'Melty', 'processIdentifier': 42},
@@ -124,3 +125,20 @@ def test_device_command_decodes_unicode_under_ascii_locale(tmp_path, monkeypatch
                          "import sys; sys.stdout.buffer.write(bytes.fromhex('e28099'))"], **kwargs)
     monkeypatch.setattr(devices.subprocess, "run", run)
     assert devices.device_command(["list", "devices"]) == {"name": "Lukas’s iPhone"}
+
+
+def test_install_result_selects_the_requested_bundle():
+    result = {'installedApplications': [
+        {'bundleID': 'other.app', 'installationURL': 'file:///other.app/'},
+        {'bundleID': 'local.melty.codeeditor', 'installationURL': 'file:///Melty.app/'},
+    ]}
+    assert devices.installed_application_url(result, 'local.melty.codeeditor') == 'file:///Melty.app/'
+
+
+@pytest.mark.parametrize('result', [{}, {'installedApplications': []},
+    {'installedApplications': [{'bundleID': 'other.app', 'installationURL': 'file:///other.app/'}]},
+    {'installedApplications': [{'bundleID': 'local.melty.codeeditor'}]},
+])
+def test_install_result_reports_missing_app_metadata(result):
+    with pytest.raises(ValueError, match='installation URL for local.melty.codeeditor'):
+        devices.installed_application_url(result, 'local.melty.codeeditor')

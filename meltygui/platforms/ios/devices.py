@@ -111,14 +111,23 @@ def terminate_app(device, application_url, executable):
                             '--pid', str(process['processIdentifier'])], timeout=2)
 
 
+def installed_application_url(result, bundle_id):
+    """Read devicectl's successful install result for the requested app."""
+    matches = [app for app in result.get('installedApplications', [])
+               if app.get('bundleID') == bundle_id]
+    if len(matches) != 1 or not matches[0].get('installationURL'):
+        raise ValueError(f'Xcode did not return an installation URL for {bundle_id}.')
+    return matches[0]['installationURL']
+
+
 def run_application(request):
     from meltygui.platforms.ios.application import read_application
-    from meltygui.platforms.ios.stage_dependencies import copy_application
+    from meltygui.platforms.ios.stage_dependencies import copy_application, refresh_local_packages
     import fcntl
 
     root, build = Path(request['root']), Path(request['build'])
     device = request['device']
-    config = json.loads((build / 'host-build.json').read_text())
+    config = json.loads((build / 'host-build.json').read_text(encoding='utf-8'))
     app_dir = Path(config['app_dir']).resolve()
     if app_dir == build or not app_dir.is_relative_to(build):
         raise ValueError('Generate the iOS project with its staged app directory inside the iOS build directory.')
@@ -135,6 +144,9 @@ def run_application(request):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError('This iOS app is already running from another execution. Stop it first.') from None
+        if config.get('packages_dir'):
+            print('Refreshing local iOS packages…', flush=True)
+            refresh_local_packages(config['packages_dir'])
         with tempfile.TemporaryDirectory(prefix='run-', dir=build) as temporary:
             staged = Path(temporary) / 'app'
             copy_application(application, staged)
@@ -142,7 +154,7 @@ def run_application(request):
                 entry = (staged / request['module']).resolve()
                 if not entry.is_relative_to(staged):
                     raise ValueError('The entry module escapes the staged application.')
-                entry.write_text(request['text'])
+                entry.write_text(request['text'], encoding='utf-8')
             if app_dir.exists():
                 shutil.rmtree(app_dir)
             app_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -157,8 +169,7 @@ def run_application(request):
         info = plistlib.loads((bundle / 'Info.plist').read_bytes())
         print('Installing on device…', flush=True)
         installed = device_command(['device', 'install', 'app', '--device', device, str(bundle)], timeout=120)
-        installation, = installed['installationResults']
-        application_url = installation['installationURL']
+        application_url = installed_application_url(installed, info['CFBundleIdentifier'])
         previous = signal.getsignal(signal.SIGTERM)
 
         def stopped(signum, frame):

@@ -82,7 +82,10 @@ python -m meltygui.platforms.ios stage --application . \
 For the editor, add `--package-source /checkout/meltygui-pro`. For installed
 releases, supply their ordinary wheels with `--wheel-dir`. Staging produces
 `build/ios/app-bundle/{app,packages,manifest.json}` and includes no editable
-install, `.pth` file, desktop virtualenv or implicit sibling checkout.
+install, `.pth` file, desktop virtualenv or implicit sibling checkout. The manifest
+records explicit `--package-source` paths; device Run rebuilds those wheels before
+Xcode builds, so toolkit edits reach the phone too. Restage older bundles once
+with `--package-source` to enable this. Wheel-only dependencies stay pinned.
 
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
@@ -134,7 +137,13 @@ initialization are shared in `core/runtime/app.py`. Platform resources are
 released by their owning host.
 
 Documents/Projects is the editable workspace; Library/Application Support holds
-settings/sessions and Library/Caches holds disposable data. Clipboard access,
+settings/sessions and Library/Caches holds disposable data. The host imports the
+app's own sources and resources from a writable copy in
+`Library/Application Support/meltygui/app-source/<build generation>`. Source
+navigation and edits such as the header tint's `@glfw_window` use those files.
+Edits persist across device relaunches; each Mac rebuild gets a new generation,
+replaces the copy and discards the previous build's edits. Dependencies and the
+signed bundle remain read-only. Clipboard access,
 keyboard visibility, safe-zone updates and frame requests are native services.
 Input and frame dimensions use UIKit points; `scale` converts to Metal pixels.
 Keyboard viewport animation uses the presentation-layer bounds at native scale.

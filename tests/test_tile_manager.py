@@ -474,3 +474,49 @@ def test_join_retires_layouts_built_over_the_removed_tiles_edges():
     assert set(C._views(window, "x")) == {("row", "other")}
     assert set(C._specs(window, "x")) == {("row", "other")}
     assert C._views(window, "y") == {} and C._bands(window, "y") == {}
+
+
+@pytest.mark.parametrize('touch, size', [(False, 14.0), (True, 44.0)])
+def test_corner_targets_follow_input_policy(monkeypatch, touch, size):
+    import meltygui.core.layout.tile_manager_core as core
+    monkeypatch.setattr(core.Core.melty, 'style_manager', SimpleNamespace(hsv=(0.5, 0.3, 0.4)))
+    monkeypatch.setattr(core.Core.melty, 'is_touch', touch)
+    monkeypatch.setattr(core, 'tile_rect', lambda *a, **k: (0, 0, 300, 200))
+    monkeypatch.setattr(core, 'add_shadow', lambda *a, **k: None)
+    monkeypatch.setattr(core, 'hover_shown', lambda *a, **k: False)
+    monkeypatch.setattr(core.imgui, 'get_window_draw_list', lambda: SimpleNamespace(
+        add_triangle_filled=lambda *a: None))
+    grips = []
+    def gesture(*args):
+        grips.append(args[-1])
+        return False
+    monkeypatch.setattr(core, 'tile_corner_gesture', gesture)
+    tile = Tile(name='test')
+    core.draw_tile(tile, (), object(), tree=Split(children=[tile]),
+                   root_frame=(), tile_state=core.TileManagerState())
+    assert grips == [(0, 0, size, size), (300-size, 0, 300, size),
+                     (300-size, 200-size, 300, 200)]
+
+
+@pytest.mark.parametrize('touch', [False, True])
+def test_corner_drag_tolerance_and_join_release(monkeypatch, touch):
+    import meltygui.core.layout.tile_manager_core as core
+    monkeypatch.setattr(core.Core.melty, 'is_touch', touch)
+    source, target = Tile(name='source'), Tile(name='target')
+    tree = Split('x', [source, target], [{'x': 200.0}])
+    frame = ({'x': 0.0}, {'x': 400.0}, {'y': 0.0}, {'y': 300.0})
+    state = core.TileManagerState()
+    events = {'left_mouse_drag': SimpleNamespace(x=205, y=20, total_dx=10, total_dy=0)}
+    host = SimpleNamespace(closable=True, parent_window=None, abs_left=0, abs_top=0,
+                           on_action=lambda *a, **k: events)
+    def drag():
+        return core.tile_corner_gesture(source, frame, host, (0,), tree, frame,
+                                        state, 'ne', False, True, (156, 0, 200, 44))
+    assert not drag()
+    assert (state.gesture is None) == touch
+    events['left_mouse_drag'].total_dx = 20
+    assert not drag()
+    assert state.gesture['target'] is target
+    events.clear()
+    assert drag()
+    assert tree.children == [source]
