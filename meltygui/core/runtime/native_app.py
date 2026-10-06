@@ -103,13 +103,14 @@ class NativeApplication:
         from meltygui.core.melty import Melty
         from meltygui.core.runtime.toggles import Toggles
 
-        inset = float(Toggles.Mobile.Safezone) if Melty.is_touch else 0.0
-        if not math.isfinite(inset):
-            raise ValueError('Toggles.Mobile.Safezone must be a finite number of pixels')
-        inset = max(0.0, inset)
-        if inset != self._safe_zone:
-            self.host.set_safe_zone(inset)
-            self._safe_zone = inset
+        top = float(Toggles.Mobile.Safezone) if Melty.is_touch else 0.0
+        bottom = float(Toggles.Mobile.bottom_safezone) if Melty.is_touch else 0.0
+        if not math.isfinite(top) or not math.isfinite(bottom):
+            raise ValueError('Mobile safe zones must be finite numbers of UIKit points')
+        insets = (max(0.0, top), max(0.0, bottom))
+        if insets != self._safe_zone:
+            self.host.set_safe_zone(*insets)
+            self._safe_zone = insets
 
     def request_frame(self):
         self.host.request_frame()

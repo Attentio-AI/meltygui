@@ -73,3 +73,13 @@ def test_batched_rows_bypass_per_icon_views_and_share_repeated_paths(monkeypatch
         view.path_icon('/app', 0, i * 20, 18, 123, icons=state)
     assert state.requested == {Path('/app')}
     assert len(dl.text) == 40
+
+
+def test_link_label_without_custom_artwork_keeps_chain_glyph(monkeypatch):
+    from meltygui.state.path_icon_state import PathIconState
+    dl = DrawList()
+    monkeypatch.setattr(view.imgui, 'get_window_draw_list', lambda: dl)
+    monkeypatch.setattr(view.imgui, 'get_font_size', lambda: 16)
+    monkeypatch.setattr(view.imgui, 'calc_text_size', lambda text: (len(text) * 16, 16))
+    view.path_label(dl, '\uf0c1', 0, 0, 123, {0: '/app'}, icons=PathIconState())
+    assert [args[-1] for args in dl.text if args[-1]] == ['\uf0c1']

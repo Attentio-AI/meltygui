@@ -111,8 +111,8 @@ def test_tile_replay_is_atomic_and_rejects_renderer_or_input_replacement(monkeyp
     assert record.replay(tile, (10, 20, 240, 180), cache)
     assert cache.replay_resize_batch.call_args.args == ([
         ('body', (10, 20, 240, 180), 28),
-        ('picker', (10, 172, 164, 28), 0),
-        ('link', (178, 172, 72, 28), 0)],)
+        ('picker', (10, 172, 180, 28), 0),
+        ('link', (194, 172, 28, 28), 0)],)
     tile.input_value = {}
     assert not record.replay(tile, (10, 20, 240, 180), cache)
     tile.input_value = record.input_value
@@ -189,3 +189,55 @@ def test_batch_preflight_does_not_paint_or_stamp_any_member_on_miss(monkeypatch)
                                           (bad, (100, 0, 100, 100), 0)])
     cache._replay_resize_prepared.assert_not_called()
     assert not cache._frozen_served
+
+
+@pytest.mark.parametrize('before, after', [(300, 80), (80, 300)])
+def test_resize_replays_picker_across_icon_threshold(monkeypatch, before, after):
+    tile = LayoutTile(render_func=None)
+    record = TileResizeRecord(renderer_version(None), tile.input_value, (0, 0, before, 200),
+                              controls=['picker'], picker_width=180)
+    cache = SimpleNamespace(replay_resize_batch=Mock(return_value=True))
+    monkeypatch.setattr(Melty, 'push_clip', Mock())
+    monkeypatch.setattr(Melty, 'pop_clip', Mock())
+    monkeypatch.setattr(Melty, 'channels_split', False)
+    assert record.replay(tile, (0, 0, after, 200), cache)
+    assert cache.replay_resize_batch.call_args.args == ([('picker', (0, 172, min(after, 180), 28), 0)],)
+
+
+def test_picker_overlay_tracks_live_width_during_cached_replay(monkeypatch):
+    from meltygui.core.cache import tile_cache
+    from meltygui.core.rendering import view_identity
+    from meltygui.view.tile_view import draw_tile_picker_label, renderer_label
+    from meltygui import imgui
+    cache, ds, texture = resident()
+    def editor(value):
+        return False, value
+    editor.__header_defaults__ = {'display_name': 'Example editor', 'icon': '\uf0c1'}
+    ds._raw_input_value = editor
+    ds._kwargs = {'draw_overlay': draw_tile_picker_label}
+    ds.just_shadow = False
+    ds.abs_clip_rect = (40, 60, 540, 460)
+    ds.current_tint = (0.2, 0.3, 0.4)
+    dl, foreground = Mock(), Mock(vtx_buffer_size=0)
+    monkeypatch.setattr(imgui, 'get_window_draw_list', lambda: dl)
+    monkeypatch.setattr(imgui, 'get_overlay_draw_list', lambda: foreground)
+    monkeypatch.setattr(imgui, 'calc_text_size', lambda text: SimpleNamespace(x=len(text) * 10, y=16))
+    monkeypatch.setattr(imgui, 'get_font_size', lambda: 16)
+    monkeypatch.setattr(imgui, 'set_cursor_screen_pos', Mock())
+    monkeypatch.setattr(view_identity, 'place_in_parent_window', Mock())
+    monkeypatch.setattr(Melty, 'get_clip_rect', lambda: ds.abs_clip_rect)
+    monkeypatch.setattr(Melty, 'channels_split', False)
+    monkeypatch.setattr(Melty, '_overlay_channels_active', False)
+    monkeypatch.setattr(Melty, 'silence_invalidate', False)
+    for width in (300, 80, 60, 300):
+        foreground.reset_mock()
+        assert cache.replay_resize(ds, (40, 60, width, 28))
+        assert ds.misc['render_overlay'].error is None
+        labels = [call.args for call in foreground.add_text.call_args_list
+                  if call.args[-1] in ('\uf0c1', renderer_label(editor))]
+        assert len(labels) == 1
+        x, y, color, label = labels[0]
+        assert label == ('\uf0c1' if width < 190 else renderer_label(editor))
+        assert x == (40 + (width - 10) / 2 if width < 190 else 45) + 2 * Melty.ui_scale
+        assert y == 64.5 - Melty.ui_scale
+    dl.add_text.assert_not_called()

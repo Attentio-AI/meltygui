@@ -1,5 +1,6 @@
 import difflib
 import inspect
+import sys
 import time
 import threading
 import traceback
@@ -1056,10 +1057,17 @@ def render_func(*args, **o_kwargs):
         # draw_surface_root) and the result comes back a frame later
         # through returned_values. The child surface's draw call carries no
         # glfw_window, so it renders normally there.
-        if kwargs.get('glfw_window') and Melty.graphics_backend is not None:
+        if kwargs.get('glfw_window') and (sys.platform == 'ios' or Melty.graphics_backend is not None):
             # UIKit supplies one native surface. Dialogs use Melty's existing
             # managed windows inside it, retaining their normal open lifecycle.
-            kwargs = dict(kwargs, glfw_window=False, closable=True)
+            # Platform detection also covers calls before renderer setup.
+            # Native requests size their surface with window_size; managed
+            # windows need that geometry on the view instead. Seed it once so
+            # subsequent calls/replays preserve user resizing and saved state.
+            size = (kwargs.get('window_size') or draw_state.window_size
+                    or draw_state._initial_window_size or (600, 400))
+            initial_values = dict(width=size[0], height=size[1]) | initial_values
+            kwargs = dict(kwargs, glfw_window=False, closable=True, initial=initial_values)
             closable = True
         if closable or kwargs.get('glfw_window'):
             from meltygui.core.windowing.window_visibility import resolved_window_kwargs
@@ -1194,10 +1202,14 @@ def render_func(*args, **o_kwargs):
                     draw_state.dlt_count = 0
                 if closable:
                     Melty.root_draw_states[draw_state.id] = []
+                # A deferred dialog may close while returning its selection.
+                # Deliver that final result before the caller stops drawing
+                # the closed window (the native child path does the same).
+                return_value = Melty.returned_values.pop(tile_id, (False, None))
                 if return_extras:
-                    return False, None, draw_state
+                    return return_value[0], return_value[1], draw_state
 
-                return False, None
+                return return_value
             elif draw_state.closed and input_value == Melty.registered_windows:
                 draw_state.closed = False
 

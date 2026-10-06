@@ -118,26 +118,29 @@
     UIView *root = [[UIView alloc] initWithFrame:UIScreen.mainScreen.bounds];
     root.backgroundColor = UIColor.blackColor;
     self.view = root;
-    // The configurable top strip belongs to UIKit, outside the Metal canvas.
+    // The configurable top and bottom strips belong to UIKit, outside the Metal canvas.
     // Keyboard geometry and touches then use the same local content coordinates.
     UIView *container = [[UIView alloc] initWithFrame:CGRectZero];
     container.translatesAutoresizingMaskIntoConstraints = NO;
     [root addSubview:container];
     NSLayoutConstraint *safeZoneTop = [container.topAnchor constraintEqualToAnchor:root.topAnchor];
     safeZoneTop.priority = UILayoutPriorityRequired - 1;
+    NSLayoutConstraint *safeZoneBottom = [container.bottomAnchor constraintEqualToAnchor:root.bottomAnchor];
+    safeZoneBottom.priority = UILayoutPriorityRequired - 1;
     [NSLayoutConstraint activateConstraints:@[
         safeZoneTop,
         [container.topAnchor constraintGreaterThanOrEqualToAnchor:root.topAnchor],
         [container.heightAnchor constraintGreaterThanOrEqualToConstant:1],
         [container.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
         [container.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],
-        [container.bottomAnchor constraintEqualToAnchor:root.bottomAnchor],
+        safeZoneBottom,
+        [container.bottomAnchor constraintLessThanOrEqualToAnchor:root.bottomAnchor],
     ]];
     MeltyView *view = [[MeltyView alloc] initWithFrame:CGRectZero];
     view.translatesAutoresizingMaskIntoConstraints = NO;
     [container addSubview:view];
     UIKeyboardLayoutGuide *keyboard = container.keyboardLayoutGuide;
-    keyboard.usesBottomSafeArea = NO; // Restore the original full viewport when hidden.
+    keyboard.usesBottomSafeArea = NO; // Use the configured bottom inset when hidden.
     keyboard.followsUndockedKeyboard = YES;
     [NSLayoutConstraint activateConstraints:@[
         [view.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
@@ -178,8 +181,9 @@
         status.hidden = message.length == 0;
     } keyboard:^(BOOL visible) {
         if (visible) [weakView becomeFirstResponder]; else [weakView resignFirstResponder];
-    } safeZone:^(CGFloat inset) {
-        safeZoneTop.constant = inset;
+    } safeZone:^(CGFloat top, CGFloat bottom) {
+        safeZoneTop.constant = top;
+        safeZoneBottom.constant = -bottom;
         [weakRoot setNeedsLayout];
     }];
     view.host = self.host;

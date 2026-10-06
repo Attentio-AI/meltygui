@@ -489,6 +489,8 @@ class Toggles:
         # Top inset in logical UI pixels (UIKit points), below the Dynamic
         # Island/status area. Set to 0 for edge-to-edge content.
         Safezone = 64
+        # Bottom strip in UIKit points, above the home indicator.
+        bottom_safezone = 28
 
     @defaults(tint=(0.85, 0.75, 0.05))
     class ColorPicker:

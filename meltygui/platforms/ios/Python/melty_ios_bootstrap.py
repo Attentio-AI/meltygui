@@ -24,9 +24,9 @@ class Host:
     def set_keyboard_visible(self, visible):
         self._native.set_keyboard_visible(bool(visible))
 
-    def set_safe_zone(self, inset):
-        """Update the native top inset; subsequent frames report its real bounds."""
-        self._native.set_safe_zone(float(inset))
+    def set_safe_zone(self, top, bottom):
+        """Update native edge insets; subsequent frames report the real bounds."""
+        self._native.set_safe_zone(float(top), float(bottom))
 
     def get_clipboard_text(self):
         """Return UIKit's cached text without blocking the render thread."""

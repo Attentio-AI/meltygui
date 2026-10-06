@@ -9,7 +9,7 @@
     CAMetalLayer *_layer;
     CALayer *_viewport;
     void (^_keyboard)(BOOL);
-    void (^_safeZone)(CGFloat);
+    void (^_safeZone)(CGFloat, CGFloat);
     void (^_status)(NSString *);
     CADisplayLink *_link;
     id<MTLCommandQueue> _queue;
@@ -21,7 +21,7 @@
 }
 - (instancetype)initWithLayer:(CAMetalLayer *)layer viewport:(CALayer *)viewport
                        status:(void (^)(NSString *))status keyboard:(void (^)(BOOL))keyboard
-                     safeZone:(void (^)(CGFloat))safeZone {
+                     safeZone:(void (^)(CGFloat, CGFloat))safeZone {
     if ((self = [super init])) {
         _layer = layer; _viewport = viewport;
         _status = [status copy]; _keyboard = [keyboard copy]; _safeZone = [safeZone copy];
@@ -45,7 +45,7 @@
     return self;
 }
 - (void)start {
-    _status(@""); _safeZone(64);
+    _status(@""); _safeZone(64, 24);
     _link = [CADisplayLink displayLinkWithTarget:self selector:@selector(tick:)];
     _link.preferredFrameRateRange = CAFrameRateRangeMake(30,120,120);
     [_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
@@ -106,7 +106,7 @@
 - (void)enqueue:(melty::InputEvent)event {}
 - (void)requestFrame {}
 - (void)setKeyboardVisible:(BOOL)visible { _keyboard(visible); }
-- (void)setSafeZone:(CGFloat)inset { _safeZone(inset); }
+- (void)setSafeZone:(CGFloat)top bottom:(CGFloat)bottom { _safeZone(top, bottom); }
 - (NSString *)clipboardText { return @""; }
 - (void)setClipboardText:(NSString *)text {}
 - (void)writeLog:(NSString *)text { NSLog(@"%@", text); }

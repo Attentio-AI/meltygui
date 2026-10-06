@@ -150,7 +150,9 @@ Dependencies and the signed bundle remain read-only. Clipboard access,
 keyboard visibility, safe-zone updates and frame requests are native services.
 Input and frame dimensions use UIKit points; `scale` converts to Metal pixels.
 Keyboard viewport animation uses the presentation-layer bounds at native scale.
-`Toggles.Mobile.Safezone` controls the top inset. Idle rendering pauses; active
+`Toggles.Mobile.Safezone` controls the top inset (64 points by default);
+`Toggles.Mobile.bottom_safezone` controls the bottom home-indicator strip (28 points).
+Both persist with the normal settings and can be set to zero for edge-to-edge content. Idle rendering pauses; active
 rendering requests the available cadence up to 120 Hz.
 
 Project execution/debugging belongs to MeltyGUI Pro's `ProjectExecution` model.

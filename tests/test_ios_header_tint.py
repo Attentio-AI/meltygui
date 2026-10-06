@@ -52,7 +52,7 @@ class GPU:
     def mesh(self, *args): pass
 
 sys.modules['_melty_ios'] = SimpleNamespace(
-    request_frame=lambda: None, set_safe_zone=lambda value: None,
+    request_frame=lambda: None, set_safe_zone=lambda top, bottom: None,
     set_keyboard_visible=lambda value: None, get_clipboard_text=lambda: '',
     set_clipboard_text=lambda value: None, write_log=sys.__stdout__.write)
 sys.modules['_melty_metal'] = GPU()

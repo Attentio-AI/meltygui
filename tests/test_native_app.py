@@ -32,8 +32,8 @@ class Host:
     def set_keyboard_visible(self, visible):
         self.keyboard.append(visible)
 
-    def set_safe_zone(self, inset):
-        self.safe_zones.append(inset)
+    def set_safe_zone(self, top, bottom):
+        self.safe_zones.append((top, bottom))
 
     def get_clipboard_text(self):
         return self.clipboard
@@ -308,27 +308,35 @@ def test_safe_zone_updates_native_layout_only_when_setting_changes(native, monke
     from meltygui.core.runtime.toggles import Toggles
 
     monkeypatch.setattr(Toggles.Mobile, 'Safezone', 64)
+    monkeypatch.setattr(Toggles.Mobile, 'bottom_safezone', 24)
     native.surface.start()
-    assert native.host.safe_zones == [64.0]
+    assert native.host.safe_zones == [(64.0, 24.0)]
     for index in range(3):
         native.surface.frame(frame_info(index), [])
-    assert native.host.safe_zones == [64.0]
+    assert native.host.safe_zones == [(64.0, 24.0)]
     Toggles.Mobile.Safezone = 92
     native.surface.frame(frame_info(3), [])
-    assert native.host.safe_zones == [64.0, 92.0]
+    assert native.host.safe_zones == [(64.0, 24.0), (92.0, 24.0)]
     Toggles.Mobile.Safezone = -10
     native.surface.frame(frame_info(4), [])
-    assert native.host.safe_zones == [64.0, 92.0, 0.0]
+    assert native.host.safe_zones == [(64.0, 24.0), (92.0, 24.0), (0.0, 24.0)]
+    Toggles.Mobile.bottom_safezone = 16
+    native.surface.frame(frame_info(5), [])
+    assert native.host.safe_zones[-1] == (0.0, 16.0)
+    Toggles.Mobile.bottom_safezone = -5
+    native.surface.frame(frame_info(6), [])
+    assert native.host.safe_zones[-1] == (0.0, 0.0)
     native.surface.close()
     assert not Melty.is_touch
 
 
-def test_safe_zone_rejects_nonfinite_layout(native, monkeypatch):
+@pytest.mark.parametrize("setting", ["Safezone", "bottom_safezone"])
+def test_safe_zone_rejects_nonfinite_layout(native, monkeypatch, setting):
     from meltygui.core.runtime.toggles import Toggles
 
     native.surface.start()
     previous = list(native.host.safe_zones)
-    monkeypatch.setattr(Toggles.Mobile, 'Safezone', float('nan'))
+    monkeypatch.setattr(Toggles.Mobile, setting, float('nan'))
     with pytest.raises(ValueError, match='finite'):
         native.surface.frame(frame_info(), [])
     assert native.host.safe_zones == previous

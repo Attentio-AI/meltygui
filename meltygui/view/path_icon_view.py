@@ -99,7 +99,8 @@ def path_label(draw_list, label, x, y, color, paths, icons=None):
         x += imgui.calc_text_size(prefix)[0]
         width = imgui.calc_text_size(label[index])[0]
         size = min(18.0, width)
-        path_icon(path, x, y + (imgui.get_font_size() - size) / 2, size, color, key=f"label-icon:{index}", icons=icons)
+        path_icon(path, x, y + (imgui.get_font_size() - size) / 2, size, color,
+                  fallback=label[index], key=f"label-icon:{index}", icons=icons)
         x += width
         start = index + 1
     draw_list.add_text(x, y, color, label[start:])

@@ -91,7 +91,7 @@ def tree_distance(first, second):
 
 def selected_candidate(endpoint, parameter, endpoints, *, preview_auto=False):
     """Resolve one manual or Auto binding; never change a saved manual target."""
-    saved = bindings_for(endpoint).get(parameter)
+    saved = bindings_for(endpoint).get(parameter, AUTO)
     available = list(candidates(endpoint, parameter, endpoints))
     if saved == AUTO or preview_auto:
         if not available:
@@ -154,10 +154,8 @@ def set_binding(endpoint, parameter, identity):
         remembered = getattr(endpoint.tile, '_auto_link_sources', {})
         key = (view_identifier(endpoint.renderer), parameter)
         endpoint.tile._auto_link_sources = {**remembered, key: tuple(previous)}
-    if identity is None:
-        bindings.pop(parameter, None)
-    else:
-        bindings[parameter] = identity
+    # Missing bindings mean Auto; explicit None preserves Self contained.
+    bindings[parameter] = identity
     links[view_identifier(endpoint.renderer)] = bindings
     endpoint.tile.links = links
 

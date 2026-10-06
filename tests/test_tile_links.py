@@ -61,8 +61,8 @@ def test_annotation_contract_and_forward_annotations():
 def test_both_kinds_resolve_before_source_draws_and_keep_local_ownership(layout):
     endpoints = prepare_endpoints(layout)
     consumer, left, right = [endpoints[t.id] for t in layout.children]
-    local = resolve_parameters(consumer, endpoints)['selection']
-    assert resolve_parameters(consumer, endpoints)['source'] is None
+    local = consumer.states['selection']
+    assert resolve_parameters(consumer, endpoints)['source'] in (left.draw_state, right.draw_state)
     assert len(list(candidates(consumer, 'source', endpoints))) == 2
     for name in ('source', 'selection'):
         identity, expected = next(candidates(consumer, name, endpoints))
@@ -207,7 +207,7 @@ def test_link_status_keeps_toolbar_geometry_stable(layout, monkeypatch, width):
         tile_view.draw_tile_links(consumer, endpoints, width, 28)
     assert {call['width'] for call in calls} == {width}
     assert {call['height'] for call in calls} == {28}
-    assert all(call['display_label'].startswith('\uf0c1 ') for call in calls)
+    assert all(call['display_label'] == '\uf0c1' for call in calls)
     assert all(call['name'] == 'Links' for call in calls)
     assert all(call['trigger_caret'] == ('', '') for call in calls)
 
@@ -475,7 +475,7 @@ def test_link_buttons_keep_a_single_compact_row_and_leave_toolbar_space():
     content, editor, slots = tile_control_layout(960, 600, 2)
     assert content == 572
     assert editor == 180
-    assert slots == [(184, 0, 72)]
+    assert slots == [(184, 0, 28)]
     assert all(y == 0 for _, y, _ in slots)
 
 
@@ -635,13 +635,13 @@ def test_link_trigger_shows_source_icons_and_fallbacks(layout, monkeypatch):
     from meltygui.core.layout.tile_links import AUTO
     endpoints = prepare_endpoints(layout)
     consumer, source, _ = endpoints.values()
-    assert link_trigger_label(consumer, endpoints) == '\uf0c1 \uf1c0 \uf1c0'
+    assert link_trigger_label(consumer, endpoints) == '\uf0c1'
     set_binding(consumer, 'source', AUTO)
     monkeypatch.setattr(source_view, '__header_defaults__', {'icon': '\uf07c'})
-    assert link_trigger_label(consumer, endpoints) == '\uf0c1 \uf07c \uf1c0'
+    assert link_trigger_label(consumer, endpoints) == '\uf0c1'
     assert next(iter(tile_link_column(consumer, 'source', endpoints)['choices'])).startswith('\uf0d0 Auto')
     monkeypatch.setattr(source_view, '__header_defaults__', {})
-    assert link_trigger_label(consumer, endpoints) == '\uf0c1 \uf0c1 \uf1c0'
+    assert link_trigger_label(consumer, endpoints) == '\uf0c1'
 
 
 def test_auto_label_previews_target_when_not_selected(layout):
@@ -674,10 +674,10 @@ def test_link_icons_follow_the_source_path_and_keep_binding_identity(layout, mon
                         lambda *a, **kw: (calls.append(kw) or False, None))
     tile_view.draw_tile_links(consumer, endpoints, 80, 28)
     assert calls[-1]['row_paths'][('source', identity)] == '/projects/first'
-    assert calls[-1]['display_paths'][2] == '/projects/first'
+    assert calls[-1]['display_paths'][0] == '/projects/first'
     left.states['selection'].icon_path = '/projects/renamed'
     tile_view.draw_tile_links(consumer, endpoints, 80, 28)
-    assert calls[-1]['display_paths'][2] == '/projects/renamed'
+    assert calls[-1]['display_paths'][0] == '/projects/renamed'
     assert bindings_for(consumer)['source'] == identity
 
 
@@ -704,3 +704,21 @@ def test_explicit_state_link_survives_source_retirement(layout):
     column = tile_link_column(current[consumer.tile.id], 'selection', current)
     assert any('retained' in name for name in column['choices'])
 
+
+
+def test_default_auto_and_explicit_self_contained_survive_reload(layout):
+    from meltygui.core.layout.tile_links import AUTO
+    from meltygui.view.tile_view import tile_link_column
+    endpoints = prepare_endpoints(layout)
+    target = endpoints[layout.children[0].id]
+    assert not bindings_for(target)
+    assert tile_link_column(target, 'source', endpoints)['selected'] == AUTO
+    assert resolve_parameters(target, endpoints)['source'] is not None
+    assert resolve_parameters(target, endpoints)['selection'] is not target.states['selection']
+    for name in target.parameters:
+        set_binding(target, name, None)
+    restored = prepare_endpoints(loads(dumps(layout)))
+    target = restored[target.tile.id]
+    assert bindings_for(target) == {'source': None, 'selection': None}
+    assert tile_link_column(target, 'source', restored)['selected'] is None
+    assert resolve_parameters(target, restored) == {'source': None, 'selection': target.states['selection']}

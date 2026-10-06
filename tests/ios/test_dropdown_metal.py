@@ -20,7 +20,7 @@ class Host:
     def __init__(self): self.keyboard = []
     def request_frame(self): pass
     def set_keyboard_visible(self, visible): self.keyboard.append(visible)
-    def set_safe_zone(self, inset): pass
+    def set_safe_zone(self, top, bottom): pass
     def get_clipboard_text(self): return ''
     def set_clipboard_text(self, text): pass
 

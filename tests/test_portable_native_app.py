@@ -50,7 +50,7 @@ def test_portable_app_boots_draws_and_checkpoints_without_pro_or_desktop_graphic
             def mesh(self, *args): self.meshes += 1
 
         gpu = GPU()
-        host = SimpleNamespace(request_frame=lambda: None, set_safe_zone=lambda value: None,
+        host = SimpleNamespace(request_frame=lambda: None, set_safe_zone=lambda top, bottom: None,
                                set_keyboard_visible=lambda value: None)
         native = start_native_application({'entry_module': 'main'}, host,
                                           lambda: MetalRenderer(gpu))
@@ -75,6 +75,74 @@ def test_portable_app_boots_draws_and_checkpoints_without_pro_or_desktop_graphic
         native.settings.request_open()
         native.frame(dict(width=640, height=480, scale=1, now=11, presentation_time=11.01), [])
         assert not native.settings.open_requested
+        settings_window = next(ds for ds in Melty.draw_state_registry.values()
+                               if ds.name == 'Settings')
+        assert not settings_window.closed
+        assert (settings_window.width, settings_window.height) == (520, 640)
+        assert settings_window.frame_count > 0
+
+        # Use the same native request inside another managed window, including
+        # a grandchild. Exercise actual rendering, not just request routing.
+        from meltygui import render_func, draw_file_selector
+        from meltygui.core.windowing.window_visibility import WindowCallState
+        dialogs = [WindowCallState(), WindowCallState(), WindowCallState()]
+        opened = [True]
+        finish = [False]
+        received = []
+        @render_func(use_cache=False)
+        def leaf(input_value, draw_state):
+            if finish[0]:
+                draw_state.closed = True
+                return True, 'selected'
+            return False, input_value
+        @render_func(use_cache=False)
+        def child(input_value, draw_state):
+            if dialogs[1].needs_call(opened[0]):
+                changed, value = dialogs[1].draw(
+                    leaf, None, name='Grandchild', glfw_window=True,
+                    open_requested=opened[0], window_size=(180, 120))
+                if changed:
+                    received.append(value)
+            return False, input_value
+        @render_func(use_cache=False)
+        def parent(input_value, draw_state):
+            dialogs[0].draw(child, None, name='Child', glfw_window=True,
+                            open_requested=opened[0], window_size=(400, 300))
+            dialogs[2].draw(draw_file_selector, str(sandbox), name='Open file',
+                            glfw_window=True, open_requested=opened[0],
+                            window_size=(720, 640))
+            return False, input_value
+        native.body = lambda surface: parent(None, **root_view_kwargs('Parent'))
+        def frames(start, count=3):
+            for index in range(start, start + count):
+                native.frame(dict(width=1000, height=900, scale=1,
+                                  now=index/60, presentation_time=(index+1)/60), [])
+                opened[0] = False
+        frames(720)
+        states = {ds.name: ds for ds in Melty.draw_state_registry.values()
+                  if ds.name in ('Child', 'Grandchild', 'Open file')}
+        for name, size in [('Child', (400, 300)), ('Grandchild', (180, 120)),
+                           ('Open file', (720, 640))]:
+            ds = states[name]
+            assert (ds.width, ds.height) == size, (name, ds.width, ds.height)
+            assert ds.frame_count > 0 and not ds.closed
+            assert ds.parent_window is not None
+            assert ds._kwargs['glfw_window'] is False
+        assert states['Grandchild'].parent_window is states['Child']
+        # Initial geometry must not pin a resized window on the next call.
+        states['Child'].width = 430
+        states['Child'].height = 320
+        frames(723)
+        assert (states['Child'].width, states['Child'].height) == (430, 320)
+        finish[0] = True
+        frames(726)
+        assert states['Grandchild'].closed
+        assert received == ['selected']
+        finish[0] = False
+        opened[0] = True
+        frames(729)
+        assert not states['Grandchild'].closed
+        assert not Melty.surface_requests and not Melty.surface_windows
         native.suspend()
         assert (sandbox / 'Library/Application Support/melty-portable-counter/session.pkl').exists()
         native.close()

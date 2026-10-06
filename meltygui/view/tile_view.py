@@ -30,6 +30,37 @@ def renderer_tint(renderer):
     return None
 
 
+def draw_tile_picker_label(input_value, draw_state, draw_list):
+    """Paint live footer text outside cached pixels, including resize replay."""
+    from meltygui.core.runtime.toggles import Tint
+    from meltygui.core.melty import Melty
+    from meltygui.hdr_color import pack_color
+    from meltygui.view.dropdown_view import TRIGGER_TEXT_INSET
+
+    label = "Empty" if input_value is None else renderer_label(input_value)
+    # Match draw_dropdown's trigger and flat_button's optical text offsets,
+    # rather than centering against the taller footer allocation.
+    width = max(18, draw_state.width)
+    height = max(25, (draw_state._kwargs or {}).get("trigger_height", 25))
+    if imgui.calc_text_size(label).x + 30 > width:
+        label = (renderer_decoration(input_value).get("icon")
+                 if input_value is not None else None) or "\uf009"
+        x = draw_state.abs_left + (width - imgui.calc_text_size(label).x) / 2
+    else:
+        x = draw_state.abs_left + TRIGGER_TEXT_INSET
+    size = imgui.calc_text_size(label)
+    x += 2 * Melty.ui_scale
+    y = draw_state.abs_top + (height - size.y) / 2 - Melty.ui_scale
+    color = pack_color(*Tint.dd_text(requested_tint=draw_state.current_tint)[:3], 1)
+    draw_list.push_clip_rect(draw_state.abs_left, draw_state.abs_top,
+                             draw_state.abs_left + width,
+                             draw_state.abs_top + draw_state.height, True)
+    try:
+        draw_list.add_text(x, y, color, label)
+    finally:
+        draw_list.pop_clip_rect()
+
+
 def parameter_label(endpoint, parameter):
     """Show the exact parameter and required state type in the open picker."""
     from meltygui.state.view_reference import DrawStateSource
@@ -82,7 +113,7 @@ def tile_link_column(endpoint, parameter, endpoints):
     from meltygui.core.layout.tile_links import AUTO, bindings_for, candidates, selected_candidate
     from meltygui.state.view_reference import DrawStateSource
     annotation = endpoint.parameters[parameter]
-    saved = bindings_for(endpoint).get(parameter)
+    saved = bindings_for(endpoint).get(parameter, AUTO)
     available = list(candidates(endpoint, parameter, endpoints))
     selected = selected_candidate(endpoint, parameter, endpoints)
     fallback = f"\uf1c0 Self contained"
@@ -122,20 +153,8 @@ def tile_link_column(endpoint, parameter, endpoints):
 
 
 def link_trigger_label(endpoint, endpoints):
-    """One stable slot per parameter, showing the currently resolved source."""
-    from meltygui.core.layout.tile_links import bindings_for, selected_candidate, endpoint_for_binding
-    icons = [f"\uf0c1"]
-    for parameter in endpoint.parameters:
-        selected = selected_candidate(endpoint, parameter, endpoints)
-        if selected is not None:
-            source = endpoint_for_binding(endpoints, selected[0])
-            icon = renderer_decoration(source.renderer).get('icon') or f"\uf0c1"
-        elif bindings_for(endpoint).get(parameter) is None:
-            icon = f"\uf1c0"
-        else:
-            icon = f"\uf0c1"
-        icons.append(icon)
-    return " ".join(icons)
+    """A single chain glyph, replaced by a source's custom icon when present."""
+    return "\uf0c1"
 
 
 def draw_tile_links(endpoint, endpoints, width, height, resize_record=None):
@@ -168,12 +187,13 @@ def draw_tile_links(endpoint, endpoints, width, height, resize_record=None):
                          for column in columns)
     trigger_label = link_trigger_label(endpoint, endpoints)
     trigger_paths = {}
-    for index, parameter in enumerate(endpoint.parameters):
+    for parameter in endpoint.parameters:
         candidate = selected_candidate(endpoint, parameter, endpoints)
         if candidate:
             path = source_icon_path(endpoint_for_binding(endpoints, candidate[0]))
             if path:
-                trigger_paths[(index + 1) * 2] = path
+                trigger_paths[0] = path
+                break
     result = draw_dropdown(
         (presentation, trigger_label), collection=choices, name="Links", key=f"{endpoint.tile.id}:links",
         show_name=False, show_header=False, display_label=trigger_label,
@@ -192,7 +212,6 @@ def draw_tile_links(endpoint, endpoints, width, height, resize_record=None):
 
 def tile_control_layout(width, height, parameter_count, picker_width=180.0):
     """One compact footer: tile switcher followed by a single link button."""
-    icon_count = parameter_count
     parameter_count = int(bool(parameter_count))
     row_height = 28.0
     gap = min(4.0, width / (2 * max(1, parameter_count)))
@@ -200,7 +219,7 @@ def tile_control_layout(width, height, parameter_count, picker_width=180.0):
         return max(0.0, height - row_height), min(picker_width, width), []
     available = max(0.0, width - gap * parameter_count)
     # Fixed slots keep neighboring controls stationary when a link changes.
-    link_width = min(28.0 + 22.0 * icon_count, available / (parameter_count + 1))
+    link_width = min(28.0, available / (parameter_count + 1))
     editor_width = min(picker_width, max(0.0, available - parameter_count * link_width))
     slots = [(editor_width + gap + index * (link_width + gap), 0.0, link_width)
              for index in range(parameter_count)]
@@ -290,7 +309,8 @@ def draw_tile_content(input_value: Tile, width, height, multi_instance_renderers
         tile.render_func, collection=choices, name="Editor type", key=tile.id,
         show_name=False, width=min(picker_width, width), height=picker_height,
         show_header=False, row_tints=row_tints,
-        display_label=picker_label, trigger_caret=("", ""),
+        display_label="", trigger_caret=("", ""),
+        draw_overlay=draw_tile_picker_label,
         return_extras=resize_record is not None,
     )
     selected, renderer = result[:2]

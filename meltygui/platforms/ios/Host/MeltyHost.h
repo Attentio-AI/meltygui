@@ -8,7 +8,7 @@
                      viewport:(CALayer *)viewport
                        status:(void (^)(NSString *))status
                      keyboard:(void (^)(BOOL))keyboard
-                     safeZone:(void (^)(CGFloat))safeZone;
+                     safeZone:(void (^)(CGFloat, CGFloat))safeZone;
 - (void)start;
 - (void)setActive:(BOOL)active;
 - (void)close;
@@ -16,7 +16,7 @@
 - (void)enqueue:(melty::InputEvent)event;
 - (void)requestFrame;
 - (void)setKeyboardVisible:(BOOL)visible;
-- (void)setSafeZone:(CGFloat)inset;
+- (void)setSafeZone:(CGFloat)top bottom:(CGFloat)bottom;
 - (NSString *)clipboardText;
 - (void)setClipboardText:(NSString *)text;
 - (void)writeLog:(NSString *)text;

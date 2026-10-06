@@ -1,5 +1,6 @@
 """The menu bar paints in its parent while preserving popup state."""
 from test_fast_draw_dropdown import melty, _frames
+import pytest
 
 
 def test_menu_bar_has_no_tile_and_keeps_state(melty):
@@ -18,15 +19,20 @@ def test_menu_bar_has_no_tile_and_keeps_state(melty):
     assert melty.depth == 0 and not melty.draw_state_stack and not melty.unique_stack
 
 
-def test_menu_title_toggles_focus_without_wrapper(melty, monkeypatch):
+@pytest.mark.parametrize("is_touch", [False, True])
+def test_menu_title_toggles_focus_without_wrapper(melty, monkeypatch, is_touch):
     from meltygui.view.menu_view import draw_menu_bar
     from meltygui.view import header_view, dropdown_view
     menus = {"File": {"New": lambda: None}}
+    monkeypatch.setattr(melty, "is_touch", is_touch)
+    previous_focus = melty.text_focused_ds
     monkeypatch.setattr(header_view, "flat_button", lambda *args, **kwargs: True)
     monkeypatch.setattr(dropdown_view, "draw_dd_menu", lambda *args, **kwargs: (False, None, None))
     _, _, ds = _frames(melty, lambda: draw_menu_bar(menus, name="menu", return_extras=True), count=1)
     assert ds.misc["menu_bar_state"].open_title == "File"
-    assert melty.popover_focused_ds is ds and melty.text_focused_ds is ds
+    assert melty.popover_focused_ds is ds
+    assert melty.text_focused_ds is (previous_focus if is_touch else ds)
     _frames(melty, lambda: draw_menu_bar(menus, name="menu"), count=1)
     assert ds.misc["menu_bar_state"].open_title is None
     assert melty.popover_focused_ds is None
+    assert melty.text_focused_ds is previous_focus

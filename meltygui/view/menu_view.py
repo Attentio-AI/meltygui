@@ -75,8 +75,10 @@ def draw_menu_bar(input_value: dict, draw_state, name, unique, menu_bar_state: M
             state._prev_text_focus = Melty.text_focused_ds
         Melty.popover_focused_ds = draw_state
         Melty._popover_open_frame = Melty.frame_count      # grace the opening click
-        Melty.text_focused_ds = draw_state
-        Melty._text_focus_grant_frame = Melty.frame_count
+        # Touch menus must not summon the software keyboard on open.
+        if not Melty.is_touch:
+            Melty.text_focused_ds = draw_state
+            Melty._text_focus_grant_frame = Melty.frame_count
         state.open_title = title
         menu_state = _menu_state(state, title)
         _dd_close(menu_state)

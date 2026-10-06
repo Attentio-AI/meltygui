@@ -33,13 +33,13 @@ static PyObject *setKeyboardVisible(PyObject *, PyObject *args) {
 }
 
 static PyObject *setSafeZone(PyObject *, PyObject *args) {
-    double inset;
-    if (!PyArg_ParseTuple(args, "d", &inset)) return nullptr;
-    if (!std::isfinite(inset) || inset < 0) {
+    double top, bottom;
+    if (!PyArg_ParseTuple(args, "dd", &top, &bottom)) return nullptr;
+    if (!std::isfinite(top) || top < 0 || !std::isfinite(bottom) || bottom < 0) {
         PyErr_SetString(PyExc_ValueError, "safe zone must be a finite nonnegative number");
         return nullptr;
     }
-    [gHost setSafeZone:inset];
+    [gHost setSafeZone:top bottom:bottom];
     Py_RETURN_NONE;
 }
 
@@ -65,7 +65,7 @@ static PyMethodDef nativeMethods[] = {
     {"request_frame", requestFrame, METH_NOARGS, "Wake display pacing."},
     {"write_log", writeLog, METH_VARARGS, "Write to the on-device host log."},
     {"set_keyboard_visible", setKeyboardVisible, METH_VARARGS, "Show or hide text input."},
-    {"set_safe_zone", setSafeZone, METH_VARARGS, "Inset the native content below the screen top, in UIKit points."},
+    {"set_safe_zone", setSafeZone, METH_VARARGS, "Inset the native content from the screen top and bottom, in UIKit points."},
     {"get_clipboard_text", getClipboardText, METH_NOARGS, "Read the latest UIKit clipboard snapshot."},
     {"set_clipboard_text", setClipboardText, METH_VARARGS, "Copy text through UIKit asynchronously."},
     {nullptr, nullptr, 0, nullptr},
@@ -138,7 +138,7 @@ static const char *kindName(melty::InputKind kind) {
     PyObject *_bootstrap;
     void (^_status)(NSString *);
     void (^_keyboard)(BOOL);
-    void (^_safeZone)(CGFloat);
+    void (^_safeZone)(CGFloat, CGFloat);
     NSString *_logPath;
     std::mutex _clipboardMutex;
     NSString *_clipboardText;
@@ -151,7 +151,7 @@ static const char *kindName(melty::InputKind kind) {
                      viewport:(CALayer *)viewport
                        status:(void (^)(NSString *))status
                      keyboard:(void (^)(BOOL))keyboard
-                     safeZone:(void (^)(CGFloat))safeZone {
+                     safeZone:(void (^)(CGFloat, CGFloat))safeZone {
     if ((self = [super init])) {
         _layer = layer;
         _viewport = viewport;
@@ -362,8 +362,8 @@ static const char *kindName(melty::InputKind kind) {
     dispatch_async(dispatch_get_main_queue(), ^{ self->_keyboard(visible); });
 }
 
-- (void)setSafeZone:(CGFloat)inset {
-    dispatch_async(dispatch_get_main_queue(), ^{ self->_safeZone(inset); });
+- (void)setSafeZone:(CGFloat)top bottom:(CGFloat)bottom {
+    dispatch_async(dispatch_get_main_queue(), ^{ self->_safeZone(top, bottom); });
 }
 
 - (void)refreshClipboard {

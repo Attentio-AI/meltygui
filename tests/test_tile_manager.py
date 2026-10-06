@@ -68,6 +68,7 @@ def test_multi_instance_is_metadata_and_updates_in_place_on_hotswap(monkeypatch)
 
 def test_selection_stores_callable_and_propagates_editor_changes(monkeypatch):
     import meltygui.view.tile_view as tile_view
+    monkeypatch.setattr(tile_view.imgui, "calc_text_size", lambda text: SimpleNamespace(x=len(text) * 10, y=16))
 
     def editor(input_value, **kwargs):
         return True, input_value + " edited"
@@ -109,6 +110,7 @@ def test_toolbar_renderer_receives_bottom_row_beside_picker(monkeypatch, height)
         return False, input_value
 
     editor.__header_defaults__ = {"tile_toolbar": True}
+    monkeypatch.setattr(tile_view.imgui, "calc_text_size", lambda text: SimpleNamespace(x=150))
     monkeypatch.setattr(tile_view, "draw_dropdown", lambda *a, **kw: (False, editor))
     monkeypatch.setattr(tile_view.imgui, "get_cursor_screen_pos", lambda: (10, 20))
     monkeypatch.setattr(tile_view.imgui, "set_cursor_screen_pos", lambda pos: None)
@@ -520,3 +522,38 @@ def test_corner_drag_tolerance_and_join_release(monkeypatch, touch):
     events.clear()
     assert drag()
     assert tree.children == [source]
+
+
+@pytest.mark.parametrize('icon', ['\uf0c1', None])
+def test_tile_picker_switches_to_icon_and_restores_name(monkeypatch, icon):
+    import meltygui.view.tile_view as tile_view
+    from meltygui.core.melty import Melty
+    calls = []
+    def editor(input_value, **kwargs):
+        return False, input_value
+    editor.__header_defaults__ = {'display_name': 'Example editor', 'icon': icon}
+    monkeypatch.setattr(tile_view.imgui, 'calc_text_size', lambda text: SimpleNamespace(x=len(text) * 10, y=16))
+    monkeypatch.setattr(tile_view.imgui, 'get_cursor_screen_pos', lambda: (0, 0))
+    monkeypatch.setattr(tile_view.imgui, 'set_cursor_screen_pos', lambda pos: None)
+    monkeypatch.setattr(Melty, 'push_clip', lambda rect: None)
+    monkeypatch.setattr(Melty, 'pop_clip', lambda: None)
+    monkeypatch.setattr(tile_view, 'draw_dropdown', lambda *args, **kwargs: (calls.append(kwargs) or False, editor))
+    tile = Tile(render_func=editor)
+    for width in (400, 40, 400):
+        tile_view.draw_tile_content(tile, width, 200, multi_instance_renderers=(editor,))
+    assert all(call['display_label'] == '' for call in calls)
+    assert all(call['draw_overlay'] is tile_view.draw_tile_picker_label for call in calls)
+    from unittest.mock import Mock
+    monkeypatch.setattr(tile_view.imgui, 'get_font_size', lambda: 16)
+    ds = SimpleNamespace(width=400, height=28, abs_left=10, abs_top=20, current_tint=(0.2, 0.3, 0.4), _kwargs={})
+    dl = Mock()
+    full = tile_view.renderer_label(editor)
+    threshold = len(full) * 10 + 30
+    for width in (400, threshold - 1, 40, 60, threshold, 400):
+        ds.width = width
+        tile_view.draw_tile_picker_label(editor, ds, dl)
+        x, y, color, label = dl.add_text.call_args.args
+        assert label == ((icon or '\uf009') if width < threshold else full)
+        assert x == (10 + (width - 10) / 2 if width < threshold else 15) + 2 * Melty.ui_scale
+        assert y == 24.5 - Melty.ui_scale
+    assert tile_view.renderer_label(editor) in calls[1]['collection']

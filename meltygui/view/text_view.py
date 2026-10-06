@@ -3487,6 +3487,19 @@ def draw_text(input_value: str, height=None,
         if _line_usage_picker(_uh_line):
             left_mouse_down = None
 
+    # The view can be much taller than its text. Do not turn taps in that
+    # spare space into an end-of-buffer caret and summon the keyboard.
+    # Use displayed rows (after folding) and the scrolled origin;
+    # an empty buffer still has its first editable row.
+    if (left_mouse_down
+            and not origin_y <= left_mouse_down.y < origin_y + len(_line_starts(text)) * line_px):
+        left_mouse_down = None
+        if Melty.text_focused_ds is ds:
+            Melty.text_focused_ds = None
+            is_focused = False
+            ds.invalidate()
+            request_render()
+
     if left_mouse_down:
         if Toggles.TextEditor.text_focus_stack_trace and Melty.text_focused_ds is not ds:
             print(f"[focus-grant] click -> {ds.name} ({ds._tile_id})")
