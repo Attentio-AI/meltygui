@@ -163,9 +163,10 @@ def prepare(config, bundle, *, identity=None, signing_allowed=True):
                 if 'errSecInternalComponent' in detail:
                     raise ValueError(
                         f'macOS could not access the signing key for {framework.name}. '
-                        'Unlock the login keychain on the build Mac (Keychain Access, or '
-                        '`security unlock-keychain ~/Library/Keychains/login.keychain-db` '
-                        'in your own terminal), then retry Run. If it is already unlocked, '
+                        'Unlock the login keychain in the session that starts the build: '
+                        '`security unlock-keychain ~/Library/Keychains/login.keychain-db`. '
+                        'For SSH builds, unlock and build in the same SSH session. '
+                        'If it is already unlocked there, '
                         f'check that codesign is allowed to use the signing key. Details: {detail}'
                     ) from None
                 raise ValueError(f'Code signing failed for {framework.name}: {detail}') from None
