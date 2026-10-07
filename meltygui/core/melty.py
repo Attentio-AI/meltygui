@@ -3285,7 +3285,7 @@ class Melty:
         return px, y1
 
     @classmethod
-    def paint_selection(cls, draw_state, draw_list, rect=None):
+    def paint_selection(cls, draw_state, draw_list, rect=None, *, outline=True):
         """Paint shared selection styling in the owner's current overlay channel.
 
         ``rect`` is an absolute (x, y, width, height) for a lightweight row;
@@ -3305,9 +3305,10 @@ class Melty:
                 draw_list.add_rect_filled(x, y, x + width, y + height,
                                           pack_color(*rgb, Tint.select_bg_alpha),
                                           rounding=rounding)
-            draw_list.add_rect(x, y, x + width, y + height,
-                               pack_color(*rgb, Tint.select_outline_alpha),
-                               rounding=rounding, thickness=Tint.select_outline_thickness)
+            if outline:
+                draw_list.add_rect(x, y, x + width, y + height,
+                                   pack_color(*rgb, Tint.select_outline_alpha),
+                                   rounding=rounding, thickness=Tint.select_outline_thickness)
         finally:
             draw_list.pop_clip_rect()
 

@@ -584,8 +584,13 @@ def paint_file_rows_overlay(draw_state, draw_list, layout):
                                           pack_color(1.0, 1.0, 1.0, layout['hover_alpha']),
                                           rounding=layout['rounding'])
         if selected is not None and 0 <= selected < layout['row_count']:
+            # Selection spans the viewport with matching side margins. The
+            # content width reserves scrollbar space only for row contents.
+            selection_left = draw_state.abs_left + layout['left_offset']
+            selection_width = max(0, draw_state.width - 2 * layout['left_offset'])
             Melty.paint_selection(draw_state, draw_list,
-                                  (left, top + selected * row_height, width, row_height))
+                                  (selection_left, top + selected * row_height,
+                                   selection_width, row_height), outline=False)
     finally:
         draw_list.pop_clip_rect()
 

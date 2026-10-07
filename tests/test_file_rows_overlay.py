@@ -31,12 +31,12 @@ def test_row_feedback_tracks_live_size_move_and_scroll(monkeypatch):
     paint = Mock()
     monkeypatch.setattr(Melty, 'paint_selection', paint)
     paint_file_rows_overlay(ds, draw_list, layout)
-    paint.assert_called_with(ds, draw_list, (44, 90, 188, 20))
+    paint.assert_called_with(ds, draw_list, (44, 90, 192, 20), outline=False)
     ds.abs_left, ds.abs_top, ds.width = 60, 70, 340
     ds.scroll_offset = (3, 30)
     ds.abs_clip_rect = (60, 70, 400, 290)
     paint_file_rows_overlay(ds, draw_list, layout)
-    paint.assert_called_with(ds, draw_list, (61, 90, 328, 20))
+    paint.assert_called_with(ds, draw_list, (64, 90, 332, 20), outline=False)
     draw_list.push_clip_rect.assert_called_with(60, 70, 400, 290, True)
 
 
