@@ -200,12 +200,14 @@ def update_application(device, bundle_id, app_dir, receipt):
 
 def run_application(request):
     from meltygui.platforms.ios.application import read_application
+    from meltygui.platforms.ios.runtime import build_python
     from meltygui.platforms.ios.stage_dependencies import copy_application, refresh_local_packages
     import fcntl
 
     root, build = Path(request['root']), Path(request['build'])
     device = request['device']
     config = json.loads((build / 'host-build.json').read_text(encoding='utf-8'))
+    compiler, runtime = build_python(config)
     app_dir = Path(config['app_dir']).resolve()
     if app_dir == build or not app_dir.is_relative_to(build):
         raise ValueError('Generate the iOS project with its staged app directory inside the iOS build directory.')
@@ -253,7 +255,8 @@ def run_application(request):
         receipt_path = build / 'run-deployments.json'
         receipts = json.loads(receipt_path.read_text()) if receipt_path.is_file() else {}
         receipt = receipts.get(device, {})
-        inputs = native_inputs(build, config)
+        python_inputs = dict(project_python=compiler, python_runtime=runtime)
+        inputs = native_inputs(build, config) | python_inputs
         incremental = False
         if receipt.get('inputs') == inputs:
             installed = device_command(['device', 'info', 'apps', '--device', device])
@@ -265,7 +268,7 @@ def run_application(request):
         if not incremental:
             if config.get('packages_dir'):
                 print('Refreshing local iOS packages…', flush=True)
-                refresh_local_packages(config['packages_dir'])
+                refresh_local_packages(config['packages_dir'], python_version=runtime['full_version'])
             derived = build / 'run-products'
             print('Building iOS app…', flush=True)
             subprocess.run([xcrun(), 'xcodebuild', '-project', str(build / 'MeltyIOS.xcodeproj'),
@@ -278,7 +281,7 @@ def run_application(request):
             application_url = installed_application_url(installed, info['CFBundleIdentifier'])
             settings_path = bundle / 'HostSettings.plist'
             settings = plistlib.loads(settings_path.read_bytes()) if settings_path.is_file() else {}
-            receipt = dict(inputs=native_inputs(build, config), bundle_id=info['CFBundleIdentifier'],
+            receipt = dict(inputs=native_inputs(build, config) | python_inputs, bundle_id=info['CFBundleIdentifier'],
                            executable=info['CFBundleExecutable'], application_url=application_url,
                            generation=settings.get('source_generation'), app_files=application_stamps(app_dir))
             # Only a host with the writable update protocol can accept source-only runs.

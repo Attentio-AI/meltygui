@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble an application's locked CPython 3.13 iPhone package set.
+"""Assemble an application's locked iPhone package set for its project Python.
 
 Run with build/dependencies/tools/bin/python after the native build recipes.
 Downloads are hash pinned in dependencies.json. Local packages are built as
@@ -26,7 +26,7 @@ import zipfile
 from packaging.markers import default_environment
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
-from packaging.utils import canonicalize_name
+from packaging.utils import canonicalize_name, parse_wheel_filename
 from meltygui.platforms.ios.prepare_bundle import validate_device_binary
 
 from meltygui.platforms.ios import build_directory
@@ -95,8 +95,10 @@ def pure_wheel(pin, archive, output):
     return wheel
 
 
-def install_wheel(wheel, destination):
+def install_wheel(wheel, destination, *, python_version=None):
     """Install resources plus metadata, refusing code from another OS/CPU."""
+    if python_version and not compatible_wheel(wheel, python_version):
+        raise ValueError(f'Wheel {wheel} does not match iOS project Python {python_version}')
     with zipfile.ZipFile(wheel) as archive:
         metadata_path, = [name for name in archive.namelist() if name.endswith('.dist-info/METADATA')]
         metadata = email.message_from_bytes(archive.read(metadata_path))
@@ -122,17 +124,19 @@ def install_wheel(wheel, destination):
     return dict(name=metadata['Name'], version=metadata['Version'], wheel=str(wheel), sha256=digest(wheel))
 
 
-def device_environment():
+def device_environment(python_version=None):
+    full_version = python_version or '.'.join(map(str, sys.version_info[:3]))
+    version = '.'.join(full_version.split('.')[:2])
     return default_environment() | dict(sys_platform='ios', platform_system='iOS', platform_machine='arm64',
                                                platform_release='17.0', platform_version='17.0', os_name='posix',
                                                implementation_name='cpython', platform_python_implementation='CPython',
-                                               python_version='3.13', python_full_version='3.13.14',
-                                               implementation_version='3.13.14', extra='')
+                                               python_version=version, python_full_version=full_version,
+                                               implementation_version=full_version, extra='')
 
 
-def validate_dependencies(packages):
+def validate_dependencies(packages, *, python_version=None):
     installed = {canonicalize_name(d.metadata['Name']): d for d in distributions(path=[str(packages)])}
-    environment = device_environment()
+    environment = device_environment(python_version)
     for name, distribution in installed.items():
         supported = distribution.metadata.get('Requires-Python')
         if supported and not SpecifierSet(supported).contains(environment['python_full_version']):
@@ -161,7 +165,23 @@ def wheel_metadata(path):
         return email.message_from_bytes(archive.read(name))
 
 
-def resolve_wheels(requirements, wheels, pins, cache, offline=False):
+def compatible_wheel(path, python_version):
+    major, minor = map(int, python_version.split('.')[:2])
+    tag_version = f'{major}{minor}'
+    _, _, _, tags = parse_wheel_filename(Path(path).name)
+    for tag in tags:
+        if tag.platform != 'any' and not (tag.platform.startswith('ios_') and tag.platform.endswith('_arm64_iphoneos')):
+            continue
+        if tag.interpreter in (f'py{major}', f'py{tag_version}', f'cp{tag_version}') and tag.abi in ('none', 'abi3', f'cp{tag_version}'):
+            return True
+        if tag.abi == 'abi3' and tag.interpreter.startswith(f'cp{major}'):
+            minimum = tag.interpreter[len(f'cp{major}'):]
+            if minimum.isdigit() and int(minimum) <= minor:
+                return True
+    return False
+
+
+def resolve_wheels(requirements, wheels, pins, cache, offline=False, *, python_version=None):
     """Select the app's dependency closure from device wheels and pinned recipes.
 
     This is a locked build: incompatible constraints are an error, not a request
@@ -169,7 +189,10 @@ def resolve_wheels(requirements, wheels, pins, cache, offline=False):
     Unused recipes are neither downloaded nor shipped.
     """
     available = {}
+    environment = device_environment(python_version)
     for path in wheels:
+        if not compatible_wheel(path, environment['python_full_version']):
+            continue
         metadata = wheel_metadata(path)
         name = canonicalize_name(metadata['Name'])
         if name in available:
@@ -178,7 +201,6 @@ def resolve_wheels(requirements, wheels, pins, cache, offline=False):
     pins = {canonicalize_name(pin['name']): pin for pin in pins}
     pending = [(Requirement(value), '') for value in requirements]
     selected, inspected = {}, set()
-    environment = device_environment()
     while pending:
         requirement, parent_extra = pending.pop()
         if requirement.marker and not requirement.marker.evaluate(environment | {'extra': parent_extra}):
@@ -241,7 +263,7 @@ def copy_application(config, destination):
         raise ValueError(f'Application sources do not include entry {config["entry_module"]}')
 
 
-def refresh_local_packages(packages):
+def refresh_local_packages(packages, *, python_version=None):
     """Rebuild explicitly staged source wheels before a device run.
 
     Reinstall the recorded device wheels as a set; never copy a desktop venv
@@ -252,6 +274,7 @@ def refresh_local_packages(packages):
     if not manifest_path.is_file():
         return
     manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    python_version = python_version or manifest.get('python_full_version')
     if not any(item.get('source') for item in manifest['packages']):
         return
     with tempfile.TemporaryDirectory(prefix='refresh-', dir=packages.parent) as temporary:
@@ -270,13 +293,13 @@ def refresh_local_packages(packages):
                 wheel = Path(item['wheel'])
                 if digest(wheel) != item['sha256']:
                     raise ValueError(f'Staged device wheel changed: {wheel}')
-            entry = install_wheel(wheel, staged)
+            entry = install_wheel(wheel, staged, python_version=python_version)
             if source:
                 destination = packages.parent / 'wheels' / wheel.name
                 built.append((wheel, destination))
                 entry.update(wheel=str(destination), source=source)
             refreshed.append(entry)
-        validate_dependencies(staged)
+        validate_dependencies(staged, python_version=python_version)
         for wheel, destination in built:
             destination.parent.mkdir(exist_ok=True)
             shutil.copy2(wheel, destination)
@@ -289,8 +312,10 @@ def refresh_local_packages(packages):
 
 def main():
     from meltygui.platforms.ios.application import read_application
+    from meltygui.platforms.ios.runtime import project_python, python_info
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--application', type=Path, default=Path.cwd())
+    parser.add_argument('--project-python', type=Path, help='Project venv interpreter (default: APPLICATION/.venv/bin/python)')
     parser.add_argument('--output', type=Path, default=BUILD / 'app-bundle')
     parser.add_argument('--wheel-dir', type=Path, action='append', default=[])
     parser.add_argument('--package-source', type=Path, action='append', default=[])
@@ -298,6 +323,7 @@ def main():
     parser.add_argument('--offline', action='store_true')
     args = parser.parse_args()
     application = read_application(args.application)
+    runtime = python_info(project_python(application['root'], args.project_python))
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     pure = BUILD / 'dependencies/pure'
@@ -321,16 +347,17 @@ def main():
         files = sorted(directory.glob('*.whl'))
         wheels.extend(files)
     wheels = resolve_wheels(application['dependencies'], wheels,
-                            json.loads(args.lock.read_text())['packages'], pure, args.offline)
+                            json.loads(args.lock.read_text())['packages'], pure, args.offline,
+                            python_version=runtime['full_version'])
     with tempfile.TemporaryDirectory(prefix='staging-', dir=output) as temporary:
         packages = Path(temporary) / 'packages'
         packages.mkdir()
-        manifest = [install_wheel(wheel, packages) for wheel in wheels]
+        manifest = [install_wheel(wheel, packages, python_version=runtime['full_version']) for wheel in wheels]
         for item in manifest:
             source = package_sources.get(canonicalize_name(item['name']))
             if source:
                 item['source'] = source
-        installed = validate_dependencies(packages)
+        installed = validate_dependencies(packages, python_version=runtime['full_version'])
         app = Path(temporary) / 'app'
         copy_application(application, app)
         for name in ('app', 'packages'):
@@ -338,7 +365,8 @@ def main():
             if destination.exists():
                 shutil.rmtree(destination)
             shutil.move(str(Path(temporary) / name), destination)
-    (output / 'manifest.json').write_text(json.dumps({'schema': 1, 'packages': manifest}, indent=2) + '\n')
+    (output / 'manifest.json').write_text(json.dumps({'schema': 1, 'packages': manifest,
+        'python_full_version': runtime['full_version']}, indent=2) + '\n')
     print(f'Staged {len(installed)} distributions; complete iOS dependency closure verified: {output}')
 
 

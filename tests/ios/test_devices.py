@@ -4,7 +4,14 @@ from pathlib import Path
 import plistlib
 
 import pytest
-from meltygui.platforms.ios import devices
+from meltygui.platforms.ios import devices, runtime
+
+
+@pytest.fixture
+def selected_runtime(monkeypatch):
+    selected = {'version': '3.13', 'full_version': '3.13.14', 'magic': 'test'}
+    monkeypatch.setattr(runtime, 'build_python', lambda config: ('/project/.venv/bin/python', dict(selected)))
+    return selected
 
 
 def test_discovery_uses_device_names_and_stable_ids(monkeypatch):
@@ -31,7 +38,7 @@ def test_request_refuses_wrong_entry_and_missing_build(tmp_path, monkeypatch):
         devices.execution_request(tmp_path, {'cmd': 'echo hello'}, 'device-a')
 
 
-def test_run_stages_snapshot_builds_installs_and_stops_exact_app(tmp_path, monkeypatch):
+def test_run_stages_snapshot_builds_installs_and_stops_exact_app(tmp_path, monkeypatch, selected_runtime):
     monkeypatch.setattr(devices, 'xcrun', lambda: '/usr/bin/xcrun')
     monkeypatch.setattr(devices, 'xcode_environment', lambda: {})
     monkeypatch.setattr(devices, 'list_devices', lambda: [{'id': 'device-a', 'name': 'Work iPhone'}])
@@ -159,7 +166,7 @@ def test_setup_includes_unpaired_physical_devices_with_status(monkeypatch):
              transport='localNetwork', developer_mode='enabled')]
 
 
-def test_source_only_runs_skip_build_and_install_and_retry_failed_upload(tmp_path, monkeypatch):
+def test_source_only_runs_skip_build_and_install_and_retry_failed_upload(tmp_path, monkeypatch, selected_runtime):
     monkeypatch.setattr(devices, 'xcrun', lambda: '/usr/bin/xcrun')
     monkeypatch.setattr(devices, 'xcode_environment', lambda: {})
     monkeypatch.setattr(devices, 'list_devices', lambda: [{'id': 'phone'}])
@@ -209,6 +216,9 @@ def test_source_only_runs_skip_build_and_install_and_retry_failed_upload(tmp_pat
     revision[0] += 1
     devices.run_application(request)
     assert sum('install' in call for call in calls) == 2
+    selected_runtime['full_version'] = '3.13.15'
+    devices.run_application(request)
+    assert sum('install' in call for call in calls) == 3
 
 
 def test_native_stamps_detect_changes_and_deletions_without_build_outputs(tmp_path):

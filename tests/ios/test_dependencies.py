@@ -205,9 +205,9 @@ class DependencyTests(unittest.TestCase):
                                             platform_machine='x86_64', python_version='3.12')
         with mock.patch.object(staging, 'default_environment', return_value=host):
             with self.assertRaisesRegex(ValueError, 'application requires device'):
-                staging.validate_dependencies(self.packages)
+                staging.validate_dependencies(self.packages, python_version='3.13.14')
             self.install('device')
-            self.assertEqual(set(staging.validate_dependencies(self.packages)), {'application', 'device'})
+            self.assertEqual(set(staging.validate_dependencies(self.packages, python_version='3.13.14')), {'application', 'device'})
 
 
 class ProjectMarkerTests(unittest.TestCase):

@@ -6,10 +6,6 @@
 #include <cmath>
 #include <mutex>
 
-#if PY_MAJOR_VERSION != 3 || PY_MINOR_VERSION != 13
-#error "The iOS host requires CPython 3.13"
-#endif
-
 static __weak MeltyHost *gHost;
 PyMODINIT_FUNC PyInit__melty_metal(void);
 
@@ -272,7 +268,8 @@ static const char *kindName(melty::InputKind kind) {
     if (!PyStatus_Exception(status)) {
         status = PyConfig_SetBytesString(&config, &config.program_name, NSBundle.mainBundle.executablePath.UTF8String);
     }
-    for (NSString *relative in @[@"python/lib/python3.13", @"python/lib/python3.13/lib-dynload",
+    NSString *standardLibrary = [NSString stringWithFormat:@"python/lib/python%d.%d", PY_MAJOR_VERSION, PY_MINOR_VERSION];
+    for (NSString *relative in @[standardLibrary, [standardLibrary stringByAppendingPathComponent:@"lib-dynload"],
                                 @"host", @"app", @"app_packages"]) {
         if (PyStatus_Exception(status)) break;
         wchar_t *path = Py_DecodeLocale([[bundle stringByAppendingPathComponent:relative] fileSystemRepresentation], nullptr);

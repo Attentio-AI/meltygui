@@ -38,13 +38,24 @@ platform Python code. The editor likewise uses its existing `editor.py`.
 ## Device dependencies
 
 Use full Xcode with the iPhoneOS SDK and MetalToolchain. Supply an ARM64 device
-`Python.framework` and matching `lib/python3.13`. The tooling checks runtime
+`Python.framework` and standard library matching the project's venv Python
+major/minor version. The tooling checks runtime
 headers and Mach-O platform metadata, rejecting macOS/simulator extensions.
 Build artifacts default to `build/ios` in the calling directory; set
 `MELTY_IOS_BUILD_DIR` to share an explicit artifact location. Nothing writes into
 the installed toolkit.
 
-Run the recipes using an isolated **CPython 3.13** build environment with MeltyGUI installed plus
+The Python running staging, project generation and packaging does not have to
+match the device Python. The project interpreter defaults to `.venv/bin/python`;
+`stage` and `generate` accept `--project-python` for a different project venv.
+That interpreter selects dependency markers, the runtime version and bytecode
+format. It is also used directly for build-time compilation, without needing
+MeltyGUI installed in it. A desktop Python executable cannot run on an iPhone:
+provide an iOS framework, standard library and native wheels for its version.
+The existing pinned native build recipes and numeric wheel catalogue target
+3.13; other project versions require matching iOS artifacts, not those wheels.
+
+Run the native recipes using their documented build environment with MeltyGUI installed plus
 build, setuptools, setuptools-scm, wheel, hatchling, packaging, Cython 3.2.4 and
 CMake. Rust recipes require an isolated Cargo/Rustup installation with the
 `aarch64-apple-ios` target. `--help` lists each recipe's runtime/toolchain paths.
@@ -64,7 +75,8 @@ its polling observer and PyYAML-ft its Python implementation.
 
 `dependencies.json` is a catalogue of hash-pinned portable package recipes.
 Staging selects only the application's dependency closure, including extras and
-iOS/Python 3.13 markers. Unused recipes are not downloaded or shipped. Supply
+iOS/project-Python markers. Wheels for other Python versions are excluded.
+Unused recipes are not downloaded or shipped. Supply
 additional native wheels with `--wheel-dir`, a different locked catalogue with
 `--lock`, or source packages to build as ordinary wheels with `--package-source`.
 Conflicting versions and missing device dependencies fail explicitly.
@@ -107,13 +119,18 @@ importing that module; its normal decorators and `run()` then use the shared
 MeltyGUI lifecycle.
 
 The packaging phase precompiles the standard library, bootstrap and dependencies
-to unoptimized CPython 3.13 bytecode, retaining their sources for inspection.
+using the project venv's compiler, retaining their sources for inspection.
 These signed, read-only resources use unchecked hash-based caches, so installation
 timestamp changes do not invalidate them and imports do not reread source files.
 The writable application's sources are deliberately not precompiled; on-device
 edits always load from source. Invalid Python test fixtures/templates remain
-source-only. Packaging fails before modifying the bundle if the build interpreter
-is not CPython 3.13; regenerate the project from a matching build environment.
+source-only. All Python selection, compatibility checks and bytecode compilation
+happen on the build machine; there is no startup version reconciliation or
+bytecode repair. The native host derives its library paths from the framework's
+headers. A change to the project venv's Python version requires matching iOS
+artifacts and regenerating the project. Existing generated projects locate the
+venv above their staged app directory, so a different build-tool Python alone
+does not require regeneration.
 
 `ios-host.log` includes `[startup]` timings for native Metal setup, CPython
 initialization, bootstrap import, editable source preparation, Melty runtime

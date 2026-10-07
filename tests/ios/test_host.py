@@ -17,6 +17,8 @@ import uuid
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2] / "meltygui/platforms/ios"
+PYTHON_VERSION = "%d.%d" % sys.version_info[:2]
+PYTHON_ABI = PYTHON_VERSION.replace(".", "")
 
 
 def load(name, path):
@@ -37,31 +39,27 @@ def binary(platform=2, cpu=0x0100000C):
 
 class PackagingTests(unittest.TestCase):
     def setUp(self):
-        # Exercise packaging with this test interpreter's real compiler, even
-        # when the desktop suite runs on 3.12. Check the device guard separately.
-        if sys.version_info[:2] != (3, 13):
-            build_python = mock.patch.object(bundle, 'check_build_python')
-            build_python.start()
-            self.addCleanup(build_python.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name).resolve()
         self.runtime = self.root / "Python.framework"
         (self.runtime / "Headers").mkdir(parents=True)
-        (self.runtime / "Headers/patchlevel.h").write_text("#define PY_MAJOR_VERSION 3\n#define PY_MINOR_VERSION 13\n")
+        (self.runtime / "Headers/patchlevel.h").write_text(f"#define PY_MAJOR_VERSION {sys.version_info.major}\n#define PY_MINOR_VERSION {sys.version_info.minor}\n")
         (self.runtime / "Python").write_bytes(binary())
         self.library = self.root / "lib"
-        (self.library / "python3.13/encodings").mkdir(parents=True)
-        (self.library / "python3.13/encodings/__init__.py").touch()
-        (self.library / "python3.13/lib-dynload").mkdir()
+        (self.library / f"python{PYTHON_VERSION}/encodings").mkdir(parents=True)
+        (self.library / f"python{PYTHON_VERSION}/encodings/__init__.py").touch()
+        (self.library / f"python{PYTHON_VERSION}/lib-dynload").mkdir()
         self.app = self.root / "source app"
         self.app.mkdir()
+        (self.app / ".venv/bin").mkdir(parents=True)
+        (self.app / ".venv/bin/python").symlink_to(sys.executable)
         (self.app / "main.py").write_text("print('on device')\n")
         self.packages = self.root / "packages"
         self.packages.mkdir()
         self.target = self.root / "Melty.app"
         self.target.mkdir()
-        self.config = dict(python_lib=str(self.library), app_dir=str(self.app),
+        self.config = dict(python_lib=str(self.library), python_framework=str(self.runtime), app_dir=str(self.app),
                            packages_dir=str(self.packages), bootstrap_dir=str(ROOT / "Python"),
                            bundle_id="local.melty.counter", entry_module="main")
 
@@ -72,7 +70,7 @@ class PackagingTests(unittest.TestCase):
             bundle.prepare(self.config, self.target, signing_allowed=False)
         self.assertFalse((self.root / 'outside-cache').exists())
         self.assertTrue(list((self.target / 'host').rglob('*.pyc')))
-        self.assertTrue(list((self.target / 'python/lib/python3.13').rglob('*.pyc')))
+        self.assertTrue(list((self.target / f'python/lib/python{PYTHON_VERSION}').rglob('*.pyc')))
         self.assertFalse(list((self.target / 'app').rglob('*.pyc')))
 
         installed = self.root / 'installed.app'
@@ -120,16 +118,15 @@ class PackagingTests(unittest.TestCase):
         self.assertFalse(list((self.target / 'app_packages').rglob('invalid.*.pyc')))
         self.assertTrue(list((self.target / 'app_packages').rglob('valid.*.pyc')))
 
-    def test_wrong_compiler_fails_before_modifying_bundle(self):
+    def test_mismatched_runtime_fails_before_modifying_bundle(self):
         sentinel = self.target / 'host/keep.txt'
         sentinel.parent.mkdir()
         sentinel.write_text('previous build')
-        with mock.patch.object(bundle, 'check_build_python', side_effect=ValueError('CPython 3.13')):
-            with self.assertRaisesRegex(ValueError, 'CPython 3.13'):
-                bundle.prepare(self.config, self.target, signing_allowed=False)
+        (self.runtime / 'Headers/patchlevel.h').write_text('#define PY_MAJOR_VERSION 3\n#define PY_MINOR_VERSION 99\n')
+        with self.assertRaisesRegex(ValueError, 'matching the project venv'):
+            bundle.prepare(self.config, self.target, signing_allowed=False)
         self.assertEqual(sentinel.read_text(), 'previous build')
 
-    @unittest.skipUnless(sys.version_info[:2] == (3, 13), 'requires the device bytecode version')
     def test_optimized_build_python_produces_unoptimized_device_bytecode(self):
         (self.packages / 'cached.py').write_text('value = __debug__\n')
         program = ('import json, sys; from meltygui.platforms.ios.prepare_bundle import prepare; '
@@ -145,6 +142,45 @@ class PackagingTests(unittest.TestCase):
              mock.patch.object(sys, 'dont_write_bytecode', True):
             spec.loader.exec_module(module)
         self.assertIs(module.value, True)
+
+    def test_compiles_with_project_venv_when_build_python_differs(self):
+        from meltygui.platforms.ios.runtime import python_info
+        other_version = '3.13' if PYTHON_VERSION != '3.13' else '3.12'
+        other_python = shutil.which(f'python{other_version}')
+        if not other_python:
+            self.skipTest(f'CPython {other_version} is not installed')
+        venv = self.root / 'other project venv'
+        subprocess.run([other_python, '-m', 'venv', '--without-pip', str(venv)],
+                       check=True, close_fds=False, capture_output=True)
+        compiler = venv / 'bin/python'
+        info = python_info(compiler)
+        self.assertNotEqual(info['version'], PYTHON_VERSION)
+        (self.runtime / 'Headers/patchlevel.h').write_text(
+            f"#define PY_MAJOR_VERSION 3\n#define PY_MINOR_VERSION {other_version.split('.')[1]}\n")
+        (self.library / f'python{PYTHON_VERSION}').rename(self.library / f'python{other_version}')
+        self.config['project_python'] = str(compiler)
+        (self.packages / 'cached.py').write_text('value = 42\n')
+        bundle.prepare(self.config, self.target, signing_allowed=False)
+        caches = list((self.target / 'app_packages').rglob('*.pyc'))
+        self.assertEqual(len(caches), 1)
+        self.assertEqual(caches[0].read_bytes()[:4].hex(), info['magic'])
+        self.assertIn(info['cache_tag'], caches[0].name)
+        program = '''import importlib.util, sys
+spec = importlib.util.spec_from_file_location('cached', sys.argv[1])
+def no_compile(*args, **kwargs):
+    raise AssertionError('device should use precompiled bytecode')
+spec.loader.source_to_code = no_compile
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert module.value == 42
+'''
+        subprocess.run([str(compiler), '-I', '-B', '-c', program,
+                        str(self.target / 'app_packages/cached.py')], check=True, close_fds=False)
+
+    def test_rejects_native_modules_from_another_python(self):
+        (self.packages / '_wrong.cpython-399-iphoneos.so').write_bytes(binary())
+        with self.assertRaisesRegex(ValueError, 'does not match project CPython'):
+            bundle.prepare(self.config, self.target, signing_allowed=False)
 
     def test_rejects_arm64_simulator_and_macos(self):
         path = self.root / "extension.so"
@@ -178,11 +214,17 @@ class PackagingTests(unittest.TestCase):
     def test_packages_signed_framework_and_bidirectional_markers(self):
         package = self.packages / "nested"
         package.mkdir()
-        (package / "_native.cpython-313-iphoneos.so").write_bytes(binary())
-        with mock.patch.object(bundle.subprocess, "run") as sign:
+        (package / f"_native.cpython-{PYTHON_ABI}-iphoneos.so").write_bytes(binary())
+        real_run = subprocess.run
+        sign = mock.Mock()
+        def run(command, **kwargs):
+            if command[0] == '/usr/bin/codesign':
+                return sign(command, **kwargs)
+            return real_run(command, **kwargs)
+        with mock.patch.object(bundle.subprocess, "run", side_effect=run):
             modules = bundle.prepare(self.config, self.target, identity="test-identity")
         self.assertEqual(modules, {"nested._native"})
-        marker = self.target / "app_packages/nested/_native.cpython-313-iphoneos.fwork"
+        marker = self.target / f"app_packages/nested/_native.cpython-{PYTHON_ABI}-iphoneos.fwork"
         executable = self.target / marker.read_text().strip()
         self.assertEqual(executable.read_bytes(), binary())
         self.assertEqual(Path(str(executable) + ".origin").read_text().strip(), marker.relative_to(self.target).as_posix())
@@ -192,7 +234,7 @@ class PackagingTests(unittest.TestCase):
                                       "--timestamp=none", str(executable.parent)], check=True)
         self.assertFalse(list((self.target / "app_packages").rglob("*.so")))
         # Rebuilding removes stale extension frameworks without touching supplied ones.
-        (package / "_native.cpython-313-iphoneos.so").unlink()
+        (package / f"_native.cpython-{PYTHON_ABI}-iphoneos.so").unlink()
         supplied = self.target / "Frameworks/Python.framework"
         supplied.mkdir()
         bundle.prepare(self.config, self.target, signing_allowed=False)
@@ -206,7 +248,7 @@ class PackagingTests(unittest.TestCase):
 
     def test_excludes_checkout_artifacts_and_rejects_overlapping_paths(self):
         for directory in (".git", ".venv", "venv", "build", "dist", "__pycache__"):
-            (self.app / directory).mkdir()
+            (self.app / directory).mkdir(exist_ok=True)
             (self.app / directory / "should-not-ship").touch()
         bundle.prepare(self.config, self.target, signing_allowed=False)
         self.assertEqual({path.name for path in (self.target / "app").iterdir()}, {"main.py"})
@@ -224,15 +266,15 @@ class PackagingTests(unittest.TestCase):
             bundle.prepare(self.config, self.target, signing_allowed=False)
 
     def test_preserves_stdlib_and_package_names_that_match_checkout_artifacts(self):
-        (self.library / "python3.13/venv").mkdir()
-        (self.library / "python3.13/venv/__init__.py").write_text("# stdlib module\n")
+        (self.library / f"python{PYTHON_VERSION}/venv").mkdir()
+        (self.library / f"python{PYTHON_VERSION}/venv/__init__.py").write_text("# stdlib module\n")
         for name in ("build", "venv", "dist"):
             (self.packages / name).mkdir()
             (self.packages / name / "__init__.py").write_text(f"# package {name}\n")
         (self.app / "resources/build").mkdir(parents=True)
         (self.app / "resources/build/template.py").write_text("# application resource\n")
         bundle.prepare(self.config, self.target, signing_allowed=False)
-        self.assertEqual((self.target / "python/lib/python3.13/venv/__init__.py").read_text(), "# stdlib module\n")
+        self.assertEqual((self.target / f"python/lib/python{PYTHON_VERSION}/venv/__init__.py").read_text(), "# stdlib module\n")
         for name in ("build", "venv", "dist"):
             self.assertEqual((self.target / "app_packages" / name / "__init__.py").read_text(), f"# package {name}\n")
         self.assertEqual((self.target / "app/resources/build/template.py").read_text(), "# application resource\n")
@@ -241,6 +283,10 @@ class PackagingTests(unittest.TestCase):
         arguments = dict(python_framework=self.runtime, python_lib=self.library, app_dir=self.app,
                          output=self.root / "output", team="EXAMPLETEAM")
         project = generator.generate(**arguments)
+        config = json.loads((self.root / 'output/host-build.json').read_text())
+        self.assertEqual(config['project_python'], str(self.app / '.venv/bin/python'))
+        self.assertEqual(config['python_version'], PYTHON_VERSION)
+        self.assertEqual(config['python_magic'], importlib.util.MAGIC_NUMBER.hex())
         before = (project / "project.pbxproj").read_bytes()
         generator.generate(**arguments)
         self.assertEqual(before, (project / "project.pbxproj").read_bytes())
@@ -262,24 +308,9 @@ class PackagingTests(unittest.TestCase):
         self.assertIs(info["UIApplicationSceneManifest"]["UIApplicationSupportsMultipleScenes"], False)
 
     def test_generator_rejects_wrong_cpython_minor(self):
-        (self.runtime / "Headers/patchlevel.h").write_text("#define PY_MAJOR_VERSION 3\n#define PY_MINOR_VERSION 12\n")
-        with self.assertRaisesRegex(ValueError, "CPython 3.13"):
+        (self.runtime / "Headers/patchlevel.h").write_text("#define PY_MAJOR_VERSION 3\n#define PY_MINOR_VERSION 99\n")
+        with self.assertRaisesRegex(ValueError, "matching the project venv"):
             generator.generate(python_framework=self.runtime, python_lib=self.library, app_dir=self.app)
-
-
-class BuildPythonTests(unittest.TestCase):
-    def test_requires_matching_cpython_minor(self):
-        for version in ((3, 12), (3, 14)):
-            with mock.patch.object(sys, 'version_info', version):
-                with self.assertRaisesRegex(ValueError, 'CPython 3.13'):
-                    bundle.check_build_python()
-        with mock.patch.object(sys, 'version_info', (3, 13)), \
-             mock.patch.object(sys, 'implementation', types.SimpleNamespace(name='pypy')):
-            with self.assertRaisesRegex(ValueError, 'CPython 3.13'):
-                bundle.check_build_python()
-        with mock.patch.object(sys, 'version_info', (3, 13)), \
-             mock.patch.object(sys, 'implementation', types.SimpleNamespace(name='cpython')):
-            bundle.check_build_python()
 
 
 class BootstrapTests(unittest.TestCase):

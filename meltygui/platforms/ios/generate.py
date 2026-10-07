@@ -11,6 +11,7 @@ import re
 import sys
 
 from meltygui.platforms.ios.prepare_bundle import validate_device_binary
+from meltygui.platforms.ios.runtime import project_python as select_project_python, python_info, validate_runtime
 
 from meltygui.platforms.ios import build_directory
 
@@ -20,7 +21,8 @@ ROOT = Path(__file__).resolve().parent
 
 def generate(*, python_framework, python_lib, app_dir, packages_dir=None,
              output=BUILD, team="", bundle_id=None,
-             entry_module=None, application=None, renderer_sources=(), embed_frameworks=(), toolkit_dir=ROOT.parents[1]):
+             entry_module=None, application=None, project_python=None,
+             renderer_sources=(), embed_frameworks=(), toolkit_dir=ROOT.parents[1]):
     from meltygui.platforms.ios.application import read_application
     app_config = read_application(application or app_dir)
     bundle_id = bundle_id or app_config['bundle_id']
@@ -33,13 +35,10 @@ def generate(*, python_framework, python_lib, app_dir, packages_dir=None,
     toolkit_dir = Path(toolkit_dir).resolve()
     if python_framework.name != "Python.framework":
         raise ValueError("Pass the ARM64 iOS device slice's Python.framework")
-    header = (python_framework / "Headers/patchlevel.h").read_text()
-    for macro, expected in (("PY_MAJOR_VERSION", "3"), ("PY_MINOR_VERSION", "13")):
-        if not re.search(rf"^\s*#\s*define\s+{macro}\s+{expected}\s*$", header, re.MULTILINE):
-            raise ValueError("The native host requires CPython 3.13 headers and runtime")
+    project_python = select_project_python(app_config['root'], project_python)
+    runtime = python_info(project_python)
+    validate_runtime(runtime, python_framework, python_lib)
     validate_device_binary(python_framework / "Python")
-    if not (python_lib / "python3.13/encodings/__init__.py").is_file():
-        raise ValueError("--python-lib must contain the device python3.13 standard library")
     if not app_dir.is_dir() or (packages_dir is not None and not packages_dir.is_dir()):
         raise ValueError("Application and package inputs must be existing directories")
     if not re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", bundle_id):
@@ -154,6 +153,9 @@ def generate(*, python_framework, python_lib, app_dir, packages_dir=None,
     }, sort_keys=True))
     config_path.write_text(json.dumps({
         "python_lib": str(python_lib), "app_dir": str(app_dir),
+        "python_framework": str(python_framework), "python_version": runtime['version'],
+        "python_magic": runtime['magic'], "project_python": project_python,
+        "project_dir": str(app_config['root'].resolve()),
         "packages_dir": str(packages_dir) if packages_dir else None,
         "bootstrap_dir": str(ROOT / "Python"), "bundle_id": bundle_id, "entry_module": entry_module,
         "shaders_dir": str(shaders_dir),
@@ -166,6 +168,7 @@ def main():
     parser.add_argument("--python-framework", required=True, type=Path)
     parser.add_argument("--python-lib", required=True, type=Path)
     parser.add_argument("--application", type=Path, default=Path.cwd())
+    parser.add_argument("--project-python", type=Path, help="Project venv interpreter (default: APPLICATION/.venv/bin/python)")
     parser.add_argument("--app-dir", type=Path, default=BUILD / "app-bundle/app")
     parser.add_argument("--packages-dir", type=Path, default=BUILD / "app-bundle/packages")
     parser.add_argument("--output", type=Path, default=BUILD)

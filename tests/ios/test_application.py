@@ -26,6 +26,19 @@ def test_second_app_does_not_install_pro_or_unused_recipes(tmp_path):
     assert set(selected) == {toolkit, core}
 
 
+def test_selects_wheels_and_markers_for_the_project_python(tmp_path):
+    root = wheel(tmp_path, 'application', ['native', 'only314; python_version >= "3.14"'])
+    native = wheel(tmp_path, 'native')
+    cp313 = native.with_name('native-1.0-cp313-cp313-ios_17_0_arm64_iphoneos.whl')
+    native.rename(cp313)
+    cp314 = cp313.with_name('native-1.0-cp314-cp314-ios_17_0_arm64_iphoneos.whl')
+    cp314.write_bytes(cp313.read_bytes())
+    only314 = wheel(tmp_path, 'only314')
+    wheels = [root, cp313, cp314, only314]
+    assert set(resolve_wheels(['application'], wheels, [], tmp_path, python_version='3.13.11')) == {root, cp313}
+    assert set(resolve_wheels(['application'], wheels, [], tmp_path, python_version='3.14.0')) == {root, cp314, only314}
+
+
 def test_root_and_transitive_extras_are_resolved(tmp_path):
     root = wheel(tmp_path, 'application', ['child[feature]; extra == "full"'])
     child = wheel(tmp_path, 'child', ['feature; extra == "feature"'])
