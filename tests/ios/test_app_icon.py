@@ -19,7 +19,7 @@ def launcher(root, icon='icon.png', extra=''):
 
 
 def hdr_png(path):
-    # Independent fixture: 1000-nit PQ red with half alpha over reference white.
+    # Independent fixture: 1000-nit PQ red with half alpha, without a background.
     pixels = np.full((4, 8, 4), [49271, 0, 0, 32768], dtype='>u2')
     def chunk(kind, data):
         return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
@@ -41,12 +41,13 @@ def test_hdr_is_preferred_and_preserved_in_primary_icon(tmp_path, icon_project):
     assert 'AppIcon60x60' in info['CFBundleIcons']['CFBundlePrimaryIcon']['CFBundleIconFiles']
     assert 'AppIcon83.5x83.5' in info['CFBundleIcons~ipad']['CFBundlePrimaryIcon']['CFBundleIconFiles']
     rgb, alpha, cicp = read_png16(build / 'app-icon/AppIcon60x60@3x.png')
-    assert rgb.shape == (180, 180, 3) and alpha is None
+    assert rgb.shape == (180, 180, 3) and alpha.shape == (180, 180)
     assert cicp == bytes([9, 16, 0, 1])
     nits = pq_decode(rgb / 65535)
-    assert nits[90, 90, 0] == pytest.approx(601.5, abs=1)
-    assert nits[90, 90, 1] == pytest.approx(101.5, abs=1)
-    assert nits[0, 0, 0] == pytest.approx(203, abs=1)
+    assert nits[90, 90, 0] == pytest.approx(1000, abs=1)
+    assert nits[90, 90, 1] == pytest.approx(0, abs=1)
+    assert alpha[90, 90] == pytest.approx(32768, abs=1)
+    assert alpha[0, 0] == 0
     objects = plistlib.loads(project.read_bytes())['objects']
     for key in ('debug', 'release'):
         settings = objects[key]['buildSettings']
@@ -70,13 +71,13 @@ def test_noop_source_edits_and_icon_replacement(tmp_path, monkeypatch, icon_proj
     assert devices.native_inputs(build, {}) == before
     icon = build / 'app-icon/AppIcon60x60@3x.png'
     with Image.open(icon) as image:
-        assert image.mode == 'RGB' and image.getpixel((90, 90)) == (255, 0, 0)
-        assert image.getpixel((0, 0)) == (255, 255, 255)
+        assert image.mode == 'RGBA' and image.getpixel((90, 90)) == (255, 0, 0, 255)
+        assert image.getpixel((0, 0)) == (0, 0, 0, 0)
     Image.new('RGB', (120, 60), 'blue').save(tmp_path / 'icon.png')
     app_icon.sync_project_icon(tmp_path, build)
     assert devices.native_inputs(build, {}) != before
     with Image.open(icon) as image:
-        assert image.getpixel((90, 90)) == (0, 0, 255)
+        assert image.getpixel((90, 90)) == (0, 0, 255, 255)
     desktop.unlink()
     app_icon.sync_project_icon(tmp_path, build)
     assert not icon.exists()
@@ -116,3 +117,19 @@ def test_renamed_checkout_uses_launcher_exec_to_rebase_artwork(tmp_path):
     app_icon.prepare_icon(tmp_path, tmp_path / 'build')
     receipt = json.loads((tmp_path / 'build/app-icon.json').read_text())
     assert receipt['source'] == str(tmp_path / 'art/hdr.png') and receipt['hdr']
+
+
+def test_transparent_rgb_does_not_bleed_into_hdr_edges(tmp_path):
+    nits = np.zeros((4, 4, 3), dtype=np.float32)
+    nits[:, :2, 0] = 1000
+    nits[:, 2:, 1] = 10000  # Invisible green must not pollute the red edge.
+    alpha = np.zeros((4, 4), dtype=np.uint16)
+    alpha[:, :2] = 65535
+    path = tmp_path / 'edge.png'
+    app_icon.write_hdr_icon(path, nits, 16, bytes([9, 16, 0, 1]), alpha)
+    rgb, output_alpha, _ = read_png16(path)
+    decoded = pq_decode(rgb / 65535)
+    visible = output_alpha > 0
+    assert decoded[..., 1][visible].max() < .01
+    assert decoded[..., 0][visible].max() == pytest.approx(1000, abs=2)
+    assert output_alpha.min() == 0 and output_alpha.max() == 65535
