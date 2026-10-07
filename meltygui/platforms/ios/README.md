@@ -82,6 +82,8 @@ Pillow source builds first compile and cache a static ARM64 iPhone
 libjpeg-turbo library, and use zlib from the iPhoneOS SDK. JPEG and PNG support
 remain enabled. Target paths are supplied explicitly so a Mac/Homebrew codec
 cannot be accidentally linked into the device wheel.
+CFFI source builds use the matching ARM64 iPhone libffi development archive
+from BeeWare, with explicit target include/library paths and static linking.
 
 Run the native recipes using their documented build environment with MeltyGUI installed plus
 build, setuptools, setuptools-scm, wheel, hatchling, packaging, Cython 3.2.4 and

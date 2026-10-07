@@ -189,7 +189,7 @@ def test_failed_preparation_does_not_replace_project_config(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize('version', ['3.10', '3.11', '3.12'])
-@pytest.mark.parametrize('package', ['native', 'pillow'])
+@pytest.mark.parametrize('package', ['native', 'pillow', 'cffi'])
 def test_cross_build_uses_owned_venv_and_target_configuration(tmp_path, monkeypatch, version, package):
     source = tmp_path / 'source'
     source.mkdir()
@@ -219,14 +219,24 @@ def test_cross_build_uses_owned_venv_and_target_configuration(tmp_path, monkeypa
             pth.write_text('import _cross_venv\n')
         elif command[1] == '-c':
             assert pth.is_file()
+            if package == 'cffi':
+                assert env['CFLAGS'] == '-I/target/libffi/include'
             Path(command[-1]).write_text('["setuptools-rust"]')
         elif command[1:3] == ['-m', 'build']:
             assert pth.is_file()
             assert '--no-isolation' in command
             assert env['PATH'].split(os.pathsep)[0] == str(framework.parent / 'bin')
             assert env['CARGO_BUILD_TARGET'] == 'aarch64-apple-ios'
+            assert env['SDKROOT'] == '/iPhoneSDK'
+            assert env['CARGO_TARGET_AARCH64_APPLE_IOS_LINKER'] == '/Xcode/clang'
+            assert env['CC_aarch64_apple_ios'] == '/Xcode/clang'
+            assert '-isysroot /iPhoneSDK' in env['CFLAGS_aarch64_apple_ios']
+            assert 'link-arg=/iPhoneSDK' in env['RUSTFLAGS']
+            assert 'MACOSX_DEPLOYMENT_TARGET' not in env
+            assert 'CARGO_ENCODED_RUSTFLAGS' not in env
             assert env['PYO3_CROSS_PYTHON_VERSION'] == version
             assert f'version={version}\n' in Path(env['PYO3_CONFIG_FILE']).read_text()
+            assert f"ext_suffix=.cpython-{version.replace('.', '')}-iphoneos.so\n" in Path(env['PYO3_CONFIG_FILE']).read_text()
             if package == 'pillow':
                 assert env['JPEG_ROOT'] == '/target/jpeg'
                 assert env['ZLIB_ROOT'] == '/target/sdk/usr'
@@ -235,16 +245,23 @@ def test_cross_build_uses_owned_venv_and_target_configuration(tmp_path, monkeypa
                 assert 'platform-guessing=disable' in settings
             else:
                 assert '-C' not in command
+            if package == 'cffi':
+                assert env['LDFLAGS'] == '-L/target/libffi/lib'
             wheel(Path(command[command.index('--outdir') + 1]), version)
         else:
             pytest.fail(f'Unexpected build command: {command}')
 
     monkeypatch.setattr(provision, '_run', run)
+    monkeypatch.setattr(provision.subprocess, 'check_output', lambda command, **kwargs:
+                        '/iPhoneSDK\n' if command[-1] == '--show-sdk-path' else '/Xcode/clang\n')
     monkeypatch.setattr(provision, '_rust', lambda cache, env: env)
     monkeypatch.setattr(provision, '_pillow_environment', lambda source, cache, env:
                         dict(env, JPEG_ROOT='/target/jpeg', ZLIB_ROOT='/target/sdk/usr'))
+    monkeypatch.setattr(provision, '_cffi_environment', lambda source, cache, env:
+                        dict(env, CFLAGS='-I/target/libffi/include', LDFLAGS='-L/target/libffi/lib'))
     result = provision._build_source(f'{package}-1.0', source, compiler, info(version), framework,
-                                     platform_config, cache, {'PATH': '/usr/bin'})
+                                     platform_config, cache, dict(PATH='/usr/bin', SDKROOT='/MacSDK',
+                                         MACOSX_DEPLOYMENT_TARGET='11.0', CARGO_ENCODED_RUSTFLAGS='host flags'))
     assert result.is_file()
     assert not compiler.parent.exists(), 'The project venv must not be modified'
     assert sum(command[1] == str(platform_config / 'make_cross_venv.py') for command, env in calls) == 2
@@ -276,7 +293,9 @@ def test_pillow_builds_and_caches_device_jpeg_with_sdk_zlib(tmp_path, monkeypatc
         assert 'CPATH' not in env and 'CFLAGS' not in env
         assert 'WEBP_ROOT' not in env
         if '-S' in command:
+            assert '--fresh' in command
             assert '-DCMAKE_SYSTEM_NAME=iOS' in command
+            assert '-DCMAKE_SYSTEM_PROCESSOR=arm64' in command
             assert '-DCMAKE_OSX_ARCHITECTURES=arm64' in command
             assert '-DCMAKE_OSX_SYSROOT=/iPhone SDK' in command
             assert '-DENABLE_SHARED=OFF' in command
@@ -320,6 +339,51 @@ def test_build_failure_keeps_actionable_log(tmp_path):
                        env=dict(os.environ), log=log, directory=tmp_path)
     assert str(log) in str(error.value)
     assert 'undefined symbol: PyExample' in log.read_text()
+
+
+def test_build_failure_reports_early_cmake_error_from_this_attempt(tmp_path):
+    log = tmp_path / 'compile.log'
+    log.write_text('CMake Error: obsolete failure from a previous attempt\n')
+    program = ('print("CMake Error at CMakeLists.txt:108 (string):\\n  string no output variable specified"); '
+               'print("configuration progress\\n" * 80); raise SystemExit(1)')
+    with pytest.raises(RuntimeError) as error:
+        provision._run([sys.executable, '-c', program], env=dict(os.environ), log=log)
+    message = str(error.value)
+    assert 'string no output variable specified' in message
+    assert 'obsolete failure' not in message
+
+
+def test_cffi_uses_cached_iphone_headers_and_static_library(tmp_path, monkeypatch):
+    import shlex
+    archive = tmp_path / 'libffi.tar.gz'
+    with tarfile.open(archive, 'w:gz') as bundle:
+        for filename in ('include/ffi.h', 'include/ffi_arm64.h', 'include/ffitarget_arm64.h', 'lib/libffi.a'):
+            data = b'/* Copyright libffi authors. Test license. */\n'
+            member = tarfile.TarInfo(filename)
+            member.size = len(data)
+            bundle.addfile(member, io.BytesIO(data))
+    downloads = []
+    def download(url, path, checksum):
+        downloads.append(url)
+        assert 'iphoneos.arm64' in url
+        assert checksum == provision.LIBFFI_SHA256
+        return archive
+    monkeypatch.setattr(provision, '_download', download)
+    source = tmp_path / 'cffi'
+    source.mkdir()
+    (source / 'LICENSE').write_text('CFFI license\n')
+    cache = tmp_path / 'cache with spaces'
+    host = dict(CFLAGS='-I/opt/homebrew/include', LDFLAGS='-L/opt/homebrew/lib', PATH='/usr/bin')
+    result = provision._cffi_environment(source, cache, host)
+    prefix = cache / 'cffi-deps' / f'libffi-{provision.LIBFFI_VERSION}'
+    assert shlex.split(result['CFLAGS']) == ['-I' + str(prefix / 'include')]
+    assert shlex.split(result['LDFLAGS']) == ['-L' + str(prefix / 'lib')]
+    assert result['PKG_CONFIG'] == '/usr/bin/false'
+    assert host['CFLAGS'] == '-I/opt/homebrew/include'
+    assert (prefix / 'lib/libffi.a').is_file()
+    assert provision._cffi_environment(source, cache, host) == result
+    assert len(downloads) == 1
+    assert (source / 'LICENSE').read_text().count('Copyright libffi authors') == 1
 
 
 def test_old_python_acquires_compatible_alternative_to_catalogue_pin(tmp_path, monkeypatch):

@@ -38,6 +38,8 @@ ROOT = Path(__file__).resolve().parent
 SUPPORT = 'https://api.github.com/repos/beeware/Python-Apple-support'
 JPEG_VERSION = '3.1.4.1'
 JPEG_SHA256 = 'ecae8008e2cc9ade2f2c1bb9d5e6d4fb73e7c433866a056bd82980741571a022'
+LIBFFI_VERSION = '3.4.7-2'
+LIBFFI_SHA256 = '4b20898346fb5b0875f30596d98a62d418acc225ad0a518fdf440d8496ec6b71'
 
 
 def _json(url):
@@ -80,11 +82,21 @@ def _run(command, *, env, log, directory=None):
     log.parent.mkdir(parents=True, exist_ok=True)
     print(f"iOS: {shlex.join(command[-8:])} (log: {log})", flush=True)
     with log.open('a') as output:
+        start = output.tell()
         result = subprocess.run(command, env=env, close_fds=False, stdout=output, stderr=subprocess.STDOUT)
     if result.returncode:
         with log.open(errors='replace') as output:
-            tail = ''.join(deque(output, maxlen=35))
-        raise RuntimeError(f'iOS build failed (exit {result.returncode}); log: {log}\n{tail}')
+            output.seek(start)
+            tail, diagnostic = deque(maxlen=35), []
+            for line in output:
+                tail.append(line)
+                if (not diagnostic and ('error:' in line.lower() or 'cmake error' in line.lower())) or 0 < len(diagnostic) < 6:
+                    diagnostic.append(line)
+        detail = ''.join(tail)
+        first_error = ''.join(diagnostic)
+        if first_error and first_error not in detail:
+            detail = first_error + '\n[…]\n' + detail
+        raise RuntimeError(f'iOS build failed (exit {result.returncode}); log: {log}\n{detail}')
 
 
 def _thin_runtime(path):
@@ -273,8 +285,8 @@ def _numpy_wheel(requirement, info, wheelhouse):
     return _validate_wheel(_download(link, wheelhouse / filename, digest), info['full_version'])
 
 
-def _pillow_environment(source, cache, env):
-    """Supply Pillow's required JPEG/zlib libraries for the iPhone target."""
+def _target_library_environment(env):
+    """Keep native dependency discovery within the explicitly supplied target."""
     env = dict(env)
     # Pillow also consults environment paths and pkg-config before platform
     # guessing. Do not discover a Mac/Homebrew codec during a device build.
@@ -284,6 +296,36 @@ def _pillow_environment(source, cache, env):
                  'IMAGEQUANT_ROOT', 'JPEG2K_ROOT', 'LCMS_ROOT', 'RAQM_ROOT', 'TIFF_ROOT', 'WEBP_ROOT'):
         env.pop(name, None)
     env['PKG_CONFIG'] = '/usr/bin/false'
+    return env
+
+
+def _cffi_environment(source, cache, env):
+    """Use BeeWare's iPhone libffi, including its iOS closure support."""
+    env = _target_library_environment(env)
+    prefix = cache / 'cffi-deps' / f'libffi-{LIBFFI_VERSION}'
+    if not all((prefix / path).is_file() for path in
+               ('lib/libffi.a', 'include/ffi.h', 'include/ffi_arm64.h', 'include/ffitarget_arm64.h')):
+        archive = _download(
+            f'https://github.com/beeware/cpython-apple-source-deps/releases/download/libFFI-{LIBFFI_VERSION}/libffi-{LIBFFI_VERSION}-iphoneos.arm64.tar.gz',
+            cache / 'downloads' / f'libffi-{LIBFFI_VERSION}-iphoneos.arm64.tar.gz', LIBFFI_SHA256)
+        prefix.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive) as bundle:
+            bundle.extractall(prefix, filter='data')
+    env.update(CFLAGS=shlex.join(['-I' + str(prefix / 'include')]),
+               LDFLAGS=shlex.join(['-L' + str(prefix / 'lib')]))
+    license = source / 'LICENSE'
+    marker = f'\nBundled libffi {LIBFFI_VERSION}\n'
+    text = license.read_text()
+    if marker not in text:
+        # The support archive carries the upstream MIT notice in its header.
+        notice = (prefix / 'include/ffi_arm64.h').read_text().split('/*', 1)[1].split('*/', 1)[0]
+        license.write_text(text + marker + notice + '\n')
+    return env
+
+
+def _pillow_environment(source, cache, env):
+    """Supply Pillow's required JPEG/zlib libraries for the iPhone target."""
+    env = _target_library_environment(env)
     sdk = subprocess.check_output(['/usr/bin/xcrun', '--sdk', 'iphoneos', '--show-sdk-path'],
                                   env=env, close_fds=False, text=True).strip()
     env['SDKROOT'] = sdk
@@ -306,8 +348,8 @@ def _pillow_environment(source, cache, env):
         clang = subprocess.check_output(['/usr/bin/xcrun', '--sdk', 'iphoneos', '--find', 'clang'],
                                         env=env, close_fds=False, text=True).strip()
         native = output / 'native'
-        _run([cmake, '-S', jpeg, '-B', native, '-G', 'Unix Makefiles',
-              '-DCMAKE_SYSTEM_NAME=iOS', '-DCMAKE_OSX_ARCHITECTURES=arm64',
+        _run([cmake, '--fresh', '-S', jpeg, '-B', native, '-G', 'Unix Makefiles',
+              '-DCMAKE_SYSTEM_NAME=iOS', '-DCMAKE_SYSTEM_PROCESSOR=arm64', '-DCMAKE_OSX_ARCHITECTURES=arm64',
               f'-DCMAKE_OSX_SYSROOT={sdk}', '-DCMAKE_OSX_DEPLOYMENT_TARGET=17.0',
               f'-DCMAKE_C_COMPILER={clang}', '-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY',
               '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_POSITION_INDEPENDENT_CODE=ON',
@@ -354,6 +396,12 @@ def _build_source(name, source, compiler, info, framework, platform_config, cach
     _run([compiler, platform_config / 'make_cross_venv.py', build_env], env=env, log=output / 'build.log')
     build_env_vars = dict(env, IPHONEOS_DEPLOYMENT_TARGET='17.0',
                           PATH=os.pathsep.join((str(framework.parent / 'bin'), str(python.parent), env.get('PATH', ''))))
+    sdk = subprocess.check_output(['/usr/bin/xcrun', '--sdk', 'iphoneos', '--show-sdk-path'],
+                                  env=env, close_fds=False, text=True).strip()
+    build_env_vars['SDKROOT'] = sdk
+    build_env_vars.pop('MACOSX_DEPLOYMENT_TARGET', None)
+    if name.startswith('cffi-'):
+        build_env_vars = _cffi_environment(source, cache, build_env_vars)
     extra_file = output / 'backend-requirements.json'
     _run([python, '-c', 'import json,sys; from pathlib import Path; from build import ProjectBuilder; '
           'Path(sys.argv[2]).write_text(json.dumps(sorted(ProjectBuilder(sys.argv[1]).get_requires_for_build("wheel"))))',
@@ -366,13 +414,20 @@ def _build_source(name, source, compiler, info, framework, platform_config, cach
         requirements.extend(extra)
     if any('maturin' in r or 'setuptools-rust' in r for r in requirements):
         build_env_vars = _rust(cache, build_env_vars)
+        build_env_vars.pop('CARGO_ENCODED_RUSTFLAGS', None)
+        clang = subprocess.check_output(['/usr/bin/xcrun', '--sdk', 'iphoneos', '--find', 'clang'],
+                                        env=env, close_fds=False, text=True).strip()
         config = output / 'pyo3.cfg'
         config.write_text(f"implementation=CPython\nversion={info['version']}\nshared=true\n"
-                          'pointer_width=64\nsuppress_build_script_link_lines=true\n')
+                          'pointer_width=64\nsuppress_build_script_link_lines=true\n'
+                          f"ext_suffix=.cpython-{info['version'].replace('.', '')}-iphoneos.so\n")
         build_env_vars.update(PYO3_CONFIG_FILE=str(config), PYO3_CROSS='1',
                               PYO3_CROSS_PYTHON_VERSION=info['version'], CARGO_BUILD_TARGET='aarch64-apple-ios',
+                              CARGO_TARGET_AARCH64_APPLE_IOS_LINKER=clang, CC_aarch64_apple_ios=clang,
+                              CFLAGS_aarch64_apple_ios=shlex.join(['-target', 'arm64-apple-ios17.0', '-isysroot', sdk]),
                               RUSTFLAGS=shlex.join(['-C', f'link-arg=-F{framework.parent}',
-                                                   '-C', 'link-arg=-framework', '-C', 'link-arg=Python']))
+                                                   '-C', 'link-arg=-framework', '-C', 'link-arg=Python',
+                                                   '-C', 'link-arg=-isysroot', '-C', f'link-arg={sdk}']))
     settings = []
     if name.startswith('pillow-'):
         build_env_vars = _pillow_environment(source, cache, build_env_vars)
