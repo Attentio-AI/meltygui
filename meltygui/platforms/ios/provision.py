@@ -36,6 +36,8 @@ from meltygui.platforms.ios import stage_dependencies as staging
 
 ROOT = Path(__file__).resolve().parent
 SUPPORT = 'https://api.github.com/repos/beeware/Python-Apple-support'
+JPEG_VERSION = '3.1.4.1'
+JPEG_SHA256 = 'ecae8008e2cc9ade2f2c1bb9d5e6d4fb73e7c433866a056bd82980741571a022'
 
 
 def _json(url):
@@ -271,6 +273,69 @@ def _numpy_wheel(requirement, info, wheelhouse):
     return _validate_wheel(_download(link, wheelhouse / filename, digest), info['full_version'])
 
 
+def _pillow_environment(source, cache, env):
+    """Supply Pillow's required JPEG/zlib libraries for the iPhone target."""
+    env = dict(env)
+    # Pillow also consults environment paths and pkg-config before platform
+    # guessing. Do not discover a Mac/Homebrew codec during a device build.
+    for name in ('CFLAGS', 'CPPFLAGS', 'CXXFLAGS', 'LDFLAGS', 'CPATH', 'C_INCLUDE_PATH',
+                 'CPLUS_INCLUDE_PATH', 'LIBRARY_PATH', 'LD_RUN_PATH', 'INCLUDE', 'LIB',
+                 'AVIF_ROOT', 'FREETYPE_ROOT', 'HARFBUZZ_ROOT', 'FRIBIDI_ROOT',
+                 'IMAGEQUANT_ROOT', 'JPEG2K_ROOT', 'LCMS_ROOT', 'RAQM_ROOT', 'TIFF_ROOT', 'WEBP_ROOT'):
+        env.pop(name, None)
+    env['PKG_CONFIG'] = '/usr/bin/false'
+    sdk = subprocess.check_output(['/usr/bin/xcrun', '--sdk', 'iphoneos', '--show-sdk-path'],
+                                  env=env, close_fds=False, text=True).strip()
+    env['SDKROOT'] = sdk
+    output = cache / 'pillow-deps' / f'libjpeg-turbo-{JPEG_VERSION}'
+    prefix = output / 'install'
+    artifacts = ('lib/libjpeg.a', 'include/jpeglib.h', 'include/jmorecfg.h',
+                 'include/jconfig.h', 'include/jerror.h', 'LICENSE.md', 'README.ijg')
+    if not (output / 'ready').is_file() or not all((prefix / path).is_file() for path in artifacts):
+        print('iOS: building Pillow JPEG dependency for iPhone ARM64…', flush=True)
+        archive = _download(
+            f'https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/{JPEG_VERSION}/libjpeg-turbo-{JPEG_VERSION}.tar.gz',
+            cache / 'downloads' / f'libjpeg-turbo-{JPEG_VERSION}.tar.gz', JPEG_SHA256)
+        sources = output / 'source'
+        sources.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive) as bundle:
+            bundle.extractall(sources, filter='data')
+        jpeg = sources / f'libjpeg-turbo-{JPEG_VERSION}'
+        tools = _tools(cache, env)
+        cmake = tools.parent / 'cmake'
+        clang = subprocess.check_output(['/usr/bin/xcrun', '--sdk', 'iphoneos', '--find', 'clang'],
+                                        env=env, close_fds=False, text=True).strip()
+        native = output / 'native'
+        _run([cmake, '-S', jpeg, '-B', native, '-G', 'Unix Makefiles',
+              '-DCMAKE_SYSTEM_NAME=iOS', '-DCMAKE_OSX_ARCHITECTURES=arm64',
+              f'-DCMAKE_OSX_SYSROOT={sdk}', '-DCMAKE_OSX_DEPLOYMENT_TARGET=17.0',
+              f'-DCMAKE_C_COMPILER={clang}', '-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY',
+              '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_POSITION_INDEPENDENT_CODE=ON',
+              '-DCMAKE_C_VISIBILITY_PRESET=hidden', '-DENABLE_SHARED=OFF',
+              '-DENABLE_STATIC=ON', '-DWITH_TURBOJPEG=OFF'], env=env, log=output / 'build.log')
+        _run([cmake, '--build', native, '--target', 'jpeg-static', '--parallel', '2'],
+             env=env, log=output / 'build.log')
+        (prefix / 'include').mkdir(parents=True, exist_ok=True)
+        (prefix / 'lib').mkdir(exist_ok=True)
+        shutil.copy2(native / 'libjpeg.a', prefix / 'lib/libjpeg.a')
+        shutil.copy2(native / 'jconfig.h', prefix / 'include/jconfig.h')
+        for header in ('jpeglib.h', 'jmorecfg.h', 'jerror.h'):
+            shutil.copy2(jpeg / 'src' / header, prefix / 'include' / header)
+        for license in ('LICENSE.md', 'README.ijg'):
+            shutil.copy2(jpeg / license, prefix / license)
+        (output / 'ready').touch()
+    # Pillow packages LICENSE in its wheel, including these statically linked
+    # third-party notices. A retry must not append the notices twice.
+    license = source / 'LICENSE'
+    marker = f'\nBundled libjpeg-turbo {JPEG_VERSION}\n'
+    text = license.read_text()
+    if marker not in text:
+        license.write_text(text + marker + (prefix / 'LICENSE.md').read_text() + '\n' +
+                           (prefix / 'README.ijg').read_text())
+    env.update(JPEG_ROOT=str(prefix), ZLIB_ROOT=str(Path(sdk) / 'usr'))
+    return env
+
+
 def _build_source(name, source, compiler, info, framework, platform_config, cache, env):
     """Compile a source distribution using the support package's cross-venv."""
     output = cache / 'builds' / name
@@ -308,10 +373,16 @@ def _build_source(name, source, compiler, info, framework, platform_config, cach
                               PYO3_CROSS_PYTHON_VERSION=info['version'], CARGO_BUILD_TARGET='aarch64-apple-ios',
                               RUSTFLAGS=shlex.join(['-C', f'link-arg=-F{framework.parent}',
                                                    '-C', 'link-arg=-framework', '-C', 'link-arg=Python']))
+    settings = []
+    if name.startswith('pillow-'):
+        build_env_vars = _pillow_environment(source, cache, build_env_vars)
+        # Keep both required codecs enabled; use only the supplied target paths.
+        settings = ['-C', 'jpeg=enable', '-C', 'zlib=enable', '-C', 'platform-guessing=disable',
+                    '-C', 'raqm=disable', '-C', 'imagequant=disable']
     wheels = output / 'wheels'
     if wheels.exists():
         shutil.rmtree(wheels)
-    _run([python, '-m', 'build', '--wheel', '--no-isolation', '--outdir', wheels, source],
+    _run([python, '-m', 'build', '--wheel', '--no-isolation', *settings, '--outdir', wheels, source],
          env=build_env_vars, log=output / 'build.log')
     wheel, = wheels.glob('*.whl')
     return _validate_wheel(wheel, info['full_version'])

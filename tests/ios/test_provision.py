@@ -189,7 +189,8 @@ def test_failed_preparation_does_not_replace_project_config(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize('version', ['3.10', '3.11', '3.12'])
-def test_cross_build_uses_owned_venv_and_target_configuration(tmp_path, monkeypatch, version):
+@pytest.mark.parametrize('package', ['native', 'pillow'])
+def test_cross_build_uses_owned_venv_and_target_configuration(tmp_path, monkeypatch, version, package):
     source = tmp_path / 'source'
     source.mkdir()
     (source / 'pyproject.toml').write_text('[build-system]\nrequires = ["setuptools"]\n')
@@ -197,7 +198,7 @@ def test_cross_build_uses_owned_venv_and_target_configuration(tmp_path, monkeypa
     framework = tmp_path / 'support/ios-arm64/Python.framework'
     platform_config = framework.parent / 'platform-config/arm64-iphoneos'
     cache = tmp_path / 'cache'
-    owned = cache / 'builds/native-1.0/venv'
+    owned = cache / f'builds/{package}-1.0/venv'
     pth = owned / f'lib/python{version}/site-packages/_cross_venv.pth'
     calls = []
 
@@ -226,17 +227,90 @@ def test_cross_build_uses_owned_venv_and_target_configuration(tmp_path, monkeypa
             assert env['CARGO_BUILD_TARGET'] == 'aarch64-apple-ios'
             assert env['PYO3_CROSS_PYTHON_VERSION'] == version
             assert f'version={version}\n' in Path(env['PYO3_CONFIG_FILE']).read_text()
+            if package == 'pillow':
+                assert env['JPEG_ROOT'] == '/target/jpeg'
+                assert env['ZLIB_ROOT'] == '/target/sdk/usr'
+                settings = [command[index + 1] for index, value in enumerate(command) if value == '-C']
+                assert 'jpeg=enable' in settings and 'zlib=enable' in settings
+                assert 'platform-guessing=disable' in settings
+            else:
+                assert '-C' not in command
             wheel(Path(command[command.index('--outdir') + 1]), version)
         else:
             pytest.fail(f'Unexpected build command: {command}')
 
     monkeypatch.setattr(provision, '_run', run)
     monkeypatch.setattr(provision, '_rust', lambda cache, env: env)
-    result = provision._build_source('native-1.0', source, compiler, info(version), framework,
+    monkeypatch.setattr(provision, '_pillow_environment', lambda source, cache, env:
+                        dict(env, JPEG_ROOT='/target/jpeg', ZLIB_ROOT='/target/sdk/usr'))
+    result = provision._build_source(f'{package}-1.0', source, compiler, info(version), framework,
                                      platform_config, cache, {'PATH': '/usr/bin'})
     assert result.is_file()
     assert not compiler.parent.exists(), 'The project venv must not be modified'
     assert sum(command[1] == str(platform_config / 'make_cross_venv.py') for command, env in calls) == 2
+
+
+def test_pillow_builds_and_caches_device_jpeg_with_sdk_zlib(tmp_path, monkeypatch):
+    archive = tmp_path / 'jpeg.tar.gz'
+    with tarfile.open(archive, 'w:gz') as bundle:
+        for filename in ('src/jpeglib.h', 'src/jmorecfg.h', 'src/jerror.h', 'LICENSE.md', 'README.ijg'):
+            data = f'jpeg {filename}'.encode()
+            member = tarfile.TarInfo(f'libjpeg-turbo-{provision.JPEG_VERSION}/{filename}')
+            member.size = len(data)
+            bundle.addfile(member, io.BytesIO(data))
+    downloads, commands = [], []
+    def download(url, path, checksum):
+        downloads.append((url, checksum))
+        return archive
+    monkeypatch.setattr(provision, '_download', download)
+    monkeypatch.setattr(provision, '_tools', lambda *args: Path('/tools/bin/python'))
+    def capture(command, **kwargs):
+        assert command[:3] == ['/usr/bin/xcrun', '--sdk', 'iphoneos']
+        assert kwargs['close_fds'] is False
+        return '/iPhone SDK\n' if command[-1] == '--show-sdk-path' else '/Xcode/clang\n'
+    monkeypatch.setattr(provision.subprocess, 'check_output', capture)
+    def run(command, *, env, log):
+        command = list(map(str, command))
+        commands.append(command)
+        assert env['SDKROOT'] == '/iPhone SDK'
+        assert 'CPATH' not in env and 'CFLAGS' not in env
+        assert 'WEBP_ROOT' not in env
+        if '-S' in command:
+            assert '-DCMAKE_SYSTEM_NAME=iOS' in command
+            assert '-DCMAKE_OSX_ARCHITECTURES=arm64' in command
+            assert '-DCMAKE_OSX_SYSROOT=/iPhone SDK' in command
+            assert '-DENABLE_SHARED=OFF' in command
+            assert '-DENABLE_STATIC=ON' in command
+            assert '-DCMAKE_OSX_DEPLOYMENT_TARGET=17.0' in command
+        else:
+            assert command[command.index('--target') + 1] == 'jpeg-static'
+            native = Path(command[command.index('--build') + 1])
+            native.mkdir(parents=True, exist_ok=True)
+            (native / 'libjpeg.a').write_bytes(b'!<arch>\n')
+            (native / 'jconfig.h').write_text('#define JPEG_LIB_VERSION 62\n')
+    monkeypatch.setattr(provision, '_run', run)
+    source = tmp_path / 'pillow'
+    source.mkdir()
+    (source / 'LICENSE').write_text('Pillow license\n')
+    host_env = dict(PATH='/usr/bin', CPATH='/opt/homebrew/include', CFLAGS='-I/opt/homebrew/include',
+                    WEBP_ROOT='/opt/homebrew', PKG_CONFIG='/opt/homebrew/bin/pkg-config')
+    arguments = source, tmp_path / 'cache with spaces', host_env
+    env = provision._pillow_environment(*arguments)
+    prefix = Path(env['JPEG_ROOT'])
+    assert (prefix / 'lib/libjpeg.a').is_file()
+    assert (prefix / 'include/jerror.h').is_file()
+    assert env['ZLIB_ROOT'] == '/iPhone SDK/usr'
+    assert env['PKG_CONFIG'] == '/usr/bin/false'
+    assert host_env['CPATH'] == '/opt/homebrew/include'
+    assert 'jpeg README.ijg' in (source / 'LICENSE').read_text()
+    assert downloads[0][1] == provision.JPEG_SHA256
+    assert provision._pillow_environment(*arguments) == env
+    assert len(commands) == 2 and len(downloads) == 1
+    assert (source / 'LICENSE').read_text().count('Bundled libjpeg-turbo') == 1
+    (prefix / 'include/jerror.h').unlink()
+    provision._pillow_environment(*arguments)
+    assert len(commands) == 4
+    assert (prefix / 'include/jerror.h').is_file()
 
 
 def test_build_failure_keeps_actionable_log(tmp_path):

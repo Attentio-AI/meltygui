@@ -78,6 +78,11 @@ stop device Run. The commands below remain available for manual recipe builds;
 the older numeric/Rust catalogues target 3.13, while automatic preparation
 selects or compiles wheels for the project interpreter.
 
+Pillow source builds first compile and cache a static ARM64 iPhone
+libjpeg-turbo library, and use zlib from the iPhoneOS SDK. JPEG and PNG support
+remain enabled. Target paths are supplied explicitly so a Mac/Homebrew codec
+cannot be accidentally linked into the device wheel.
+
 Run the native recipes using their documented build environment with MeltyGUI installed plus
 build, setuptools, setuptools-scm, wheel, hatchling, packaging, Cython 3.2.4 and
 CMake. Rust recipes require an isolated Cargo/Rustup installation with the
