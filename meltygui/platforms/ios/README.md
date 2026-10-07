@@ -32,6 +32,30 @@ for a script app without project metadata. Development checkout paths are build
 inputs, never runtime import paths. The app's normal `meltygui.boot(app_id=...)`
 continues to choose its saved-session identity.
 
+The app's root `.desktop` launcher also supplies its iOS icon automatically, on
+project generation and before each device Run. No icon setting or resource glob
+is needed. Selection follows the folder icon resolver (matching launcher name
+first); `X-HDR-Icon` takes precedence over `Icon`. Absolute, project-relative and
+theme icon paths are supported. When a checkout moves to the Mac, stale absolute
+paths can be rebased against the project name or a launcher `Exec` executable
+that also exists in the new checkout.
+
+HDR artwork must be a 16-bit Rec.2020/PQ PNG with a cICP tag. It is resized in
+linear light, composited over 203-nit reference white if transparent, and written
+as opaque 16-bit PQ PNGs with cICP and content-light metadata. iPhone/iPad icon
+files are registered through `CFBundleIcons` and copied without PNG compression.
+This deliberately bypasses `actool`: Xcode's app-icon asset compilation converts
+PQ artwork to 8-bit sRGB. The built bundle preserves HDR; the system launcher
+controls how it displays those files. This path has not been validated for App
+Store submission or for HDR brightness on the Home Screen.
+
+Ordinary artwork is fitted without cropping onto an opaque white square. A
+declared icon that cannot be resolved or decoded produces an actionable error;
+a declared HDR icon never silently falls back to SDR. Apps without launcher
+icons continue to build. Icon edits/additions/removal trigger a native rebuild
+and reinstall; unchanged icons preserve source-only device updates. Generated
+artwork and its dependency receipt live in the app's iOS build directory.
+
 `examples/portable_counter` is a second app with no Pro dependency and no
 platform Python code. The editor likewise uses its existing `editor.py`.
 

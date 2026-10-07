@@ -54,11 +54,13 @@ def prepare_icon(root, build):
     root, build = Path(root).resolve(), Path(build).resolve()
     destination = build / 'app-icon'
     receipt = build / 'app-icon.json'
+    launchers = sorted(path.name for path in root.glob('*.desktop'))
     try:
         previous = json.loads(receipt.read_text())
     except (OSError, ValueError):
         previous = {}
     if (previous.get('root') == str(root) and previous.get('version') == 2
+            and previous.get('launchers') == launchers
             and all(stamp(Path(path)) == (tuple(value) if value else None)
                     for path, value in previous['dependencies'].items())
             and all(stamp(Path(path)) == tuple(value)
@@ -84,6 +86,8 @@ def prepare_icon(root, build):
             if hdr != (16, 9):
                 raise ValueError(f'{source}: HDR app icons require a 16-bit Rec.2020/PQ PNG')
             rgb, alpha, cicp = read_png16(source)
+            if cicp != bytes([9, 16, 0, 1]):
+                raise ValueError(f'{source}: HDR app icons require full-range RGB Rec.2020/PQ')
             nits = pq_decode(rgb.astype(np.float64) / 65535)
             if alpha is not None:
                 opacity = alpha[..., None].astype(np.float64) / 65535
@@ -121,9 +125,9 @@ def prepare_icon(root, build):
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     outputs.append(destination / 'Info.plist')
     receipt.touch(exist_ok=True)
-    receipt.write_text(json.dumps(dict(version=2, root=str(root), hdr=nits is not None,
+    receipt.write_text(json.dumps(dict(version=2, root=str(root), launchers=launchers, hdr=nits is not None,
         source=str(source) if source else None,
-        dependencies={str(path): stamp(path) for path in probe.dependencies},
+        dependencies={str(path): stamp(path) for path in probe.dependencies if path != root},
         outputs={str(path): stamp(path) for path in outputs}), indent=2) + '\n')
     return destination, [path for path in outputs if path.suffix == '.png']
 

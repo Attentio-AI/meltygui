@@ -231,7 +231,8 @@ assert module.value == 42
         info = plistlib.loads((executable.parent / "Info.plist").read_bytes())
         self.assertEqual(info["CFBundleExecutable"], "nested._native")
         sign.assert_called_once_with(["/usr/bin/codesign", "--force", "--sign", "test-identity",
-                                      "--timestamp=none", str(executable.parent)], check=True)
+                                      "--timestamp=none", str(executable.parent)], check=True,
+                                     close_fds=False, stderr=subprocess.PIPE, text=True)
         self.assertFalse(list((self.target / "app_packages").rglob("*.so")))
         # Rebuilding removes stale extension frameworks without touching supplied ones.
         (package / f"_native.cpython-{PYTHON_ABI}-iphoneos.so").unlink()
@@ -240,6 +241,19 @@ assert module.value == 42
         bundle.prepare(self.config, self.target, signing_allowed=False)
         self.assertFalse(executable.parent.exists())
         self.assertTrue(supplied.is_dir())
+
+    def test_signing_error_explains_locked_keychain_without_hiding_other_failures(self):
+        (self.packages / f"_native.cpython-{PYTHON_ABI}-iphoneos.so").write_bytes(binary())
+        real_run = subprocess.run
+        for detail, expected in [('errSecInternalComponent', 'Unlock the login keychain'),
+                                 ('invalid signing identity', 'invalid signing identity')]:
+            def run(command, **kwargs):
+                if command[0] == '/usr/bin/codesign':
+                    raise subprocess.CalledProcessError(1, command, stderr=detail)
+                return real_run(command, **kwargs)
+            with self.subTest(detail=detail), mock.patch.object(bundle.subprocess, 'run', side_effect=run):
+                with self.assertRaisesRegex(ValueError, expected):
+                    bundle.prepare(self.config, self.target, identity='test-identity')
 
     def test_never_packages_desktop_wheels(self):
         (self.packages / "desktop.so").write_bytes(binary(platform=1))

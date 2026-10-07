@@ -1,0 +1,118 @@
+"""Launcher discovery, HDR preservation and native-build invalidation."""
+import json
+import plistlib
+import struct
+import zlib
+
+import numpy as np
+from PIL import Image
+import pytest
+
+from meltygui.image_load import pq_decode, read_png16
+from meltygui.platforms.ios import app_icon, devices
+
+
+def launcher(root, icon='icon.png', extra=''):
+    path = root / f'{root.name}.desktop'
+    path.write_text(f'[Desktop Entry]\nType=Application\nIcon=./{icon}\n{extra}')
+    return path
+
+
+def hdr_png(path):
+    # Independent fixture: 1000-nit PQ red with half alpha over reference white.
+    pixels = np.full((4, 8, 4), [49271, 0, 0, 32768], dtype='>u2')
+    def chunk(kind, data):
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+    path.write_bytes(b'\x89PNG\r\n\x1a\n'
+                     + chunk(b'IHDR', struct.pack('>IIBBBBB', 8, 4, 16, 6, 0, 0, 0))
+                     + chunk(b'cICP', bytes([9, 16, 0, 1]))
+                     + chunk(b'IDAT', zlib.compress(b''.join(b'\0' + row.tobytes() for row in pixels)))
+                     + chunk(b'IEND', b''))
+
+
+def test_hdr_is_preferred_and_preserved_in_primary_icon(tmp_path, icon_project):
+    Image.new('RGB', (4, 4), 'blue').save(tmp_path / 'icon.png')
+    hdr_png(tmp_path / 'hdr.png')
+    launcher(tmp_path, extra='X-HDR-Icon=./hdr.png\n')
+    build = tmp_path / 'build'
+    project = icon_project(build)
+    app_icon.sync_project_icon(tmp_path, build)
+    info = plistlib.loads((build / 'app-icon/Info.plist').read_bytes())
+    assert 'AppIcon60x60' in info['CFBundleIcons']['CFBundlePrimaryIcon']['CFBundleIconFiles']
+    assert 'AppIcon83.5x83.5' in info['CFBundleIcons~ipad']['CFBundlePrimaryIcon']['CFBundleIconFiles']
+    rgb, alpha, cicp = read_png16(build / 'app-icon/AppIcon60x60@3x.png')
+    assert rgb.shape == (180, 180, 3) and alpha is None
+    assert cicp == bytes([9, 16, 0, 1])
+    nits = pq_decode(rgb / 65535)
+    assert nits[90, 90, 0] == pytest.approx(601.5, abs=1)
+    assert nits[90, 90, 1] == pytest.approx(101.5, abs=1)
+    assert nits[0, 0, 0] == pytest.approx(203, abs=1)
+    objects = plistlib.loads(project.read_bytes())['objects']
+    for key in ('debug', 'release'):
+        settings = objects[key]['buildSettings']
+        assert settings['COMPRESS_PNG_FILES'] == 'NO'
+        assert settings['DEVELOPMENT_TEAM'] == 'KEEP'
+        assert settings['INFOPLIST_FILE'] == str(build / 'app-icon/Info.plist')
+    phase, = [obj for obj in objects.values() if obj['isa'] == 'PBXResourcesBuildPhase']
+    assert len(phase['files']) == 14
+
+
+def test_noop_source_edits_and_icon_replacement(tmp_path, monkeypatch, icon_project):
+    Image.new('RGB', (120, 60), 'red').save(tmp_path / 'icon.png')
+    desktop = launcher(tmp_path)
+    build = tmp_path / 'build'
+    icon_project(build)
+    monkeypatch.setattr(devices, 'xcode_environment', lambda: {})
+    app_icon.sync_project_icon(tmp_path, build)
+    before = devices.native_inputs(build, {})
+    (tmp_path / 'new_source.py').write_text('pass\n')
+    app_icon.sync_project_icon(tmp_path, build)
+    assert devices.native_inputs(build, {}) == before
+    icon = build / 'app-icon/AppIcon60x60@3x.png'
+    with Image.open(icon) as image:
+        assert image.mode == 'RGB' and image.getpixel((90, 90)) == (255, 0, 0)
+        assert image.getpixel((0, 0)) == (255, 255, 255)
+    Image.new('RGB', (120, 60), 'blue').save(tmp_path / 'icon.png')
+    app_icon.sync_project_icon(tmp_path, build)
+    assert devices.native_inputs(build, {}) != before
+    with Image.open(icon) as image:
+        assert image.getpixel((90, 90)) == (0, 0, 255)
+    desktop.unlink()
+    app_icon.sync_project_icon(tmp_path, build)
+    assert not icon.exists()
+    assert 'CFBundleIcons' not in plistlib.loads((build / 'app-icon/Info.plist').read_bytes())
+
+
+def test_new_launcher_and_deleted_output_are_detected(tmp_path, icon_project):
+    build = tmp_path / 'build'
+    icon_project(build)
+    app_icon.sync_project_icon(tmp_path, build)
+    Image.new('RGB', (30, 30), 'green').save(tmp_path / 'icon.png')
+    launcher(tmp_path)
+    app_icon.sync_project_icon(tmp_path, build)
+    output = build / 'app-icon/AppIcon60x60@3x.png'
+    output.unlink()
+    app_icon.sync_project_icon(tmp_path, build)
+    assert output.is_file()
+
+
+def test_declared_hdr_never_silently_degrades_to_sdr(tmp_path):
+    Image.new('RGB', (8, 8), 'red').save(tmp_path / 'icon.png')
+    launcher(tmp_path, extra='X-HDR-Icon=./missing.png\n')
+    with pytest.raises(ValueError, match='could not be resolved'):
+        app_icon.prepare_icon(tmp_path, tmp_path / 'build')
+    launcher(tmp_path, extra='X-HDR-Icon=./icon.png\n')
+    with pytest.raises(ValueError, match='tagged 16-bit'):
+        app_icon.prepare_icon(tmp_path, tmp_path / 'build')
+
+
+def test_renamed_checkout_uses_launcher_exec_to_rebase_artwork(tmp_path):
+    (tmp_path / 'launch-app').write_text('#!/bin/sh\n')
+    (tmp_path / 'art').mkdir()
+    hdr_png(tmp_path / 'art/hdr.png')
+    (tmp_path / 'app.desktop').write_text('[Desktop Entry]\nType=Application\n'
+        'Exec=/old/project/launch-app %F\nIcon=/old/project/art/sdr.png\n'
+        'X-HDR-Icon=/old/project/art/hdr.png\n')
+    app_icon.prepare_icon(tmp_path, tmp_path / 'build')
+    receipt = json.loads((tmp_path / 'build/app-icon.json').read_text())
+    assert receipt['source'] == str(tmp_path / 'art/hdr.png') and receipt['hdr']

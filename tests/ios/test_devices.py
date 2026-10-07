@@ -8,10 +8,13 @@ from meltygui.platforms.ios import devices, provision
 
 
 @pytest.fixture
-def selected_runtime(monkeypatch):
+def selected_runtime(monkeypatch, icon_project):
     selected = {'version': '3.13', 'full_version': '3.13.14', 'magic': 'test'}
-    monkeypatch.setattr(provision, 'ensure_configuration',
-                        lambda root, build, config: (config, '/project/.venv/bin/python', dict(selected)))
+    def ensure(root, build, config):
+        if not (build / 'MeltyIOS.xcodeproj/project.pbxproj').is_file():
+            icon_project(build)
+        return config, '/project/.venv/bin/python', dict(selected)
+    monkeypatch.setattr(provision, 'ensure_configuration', ensure)
     return selected
 
 
@@ -172,7 +175,9 @@ def test_source_only_runs_skip_build_and_install_and_retry_failed_upload(tmp_pat
     monkeypatch.setattr(devices, 'xcode_environment', lambda: {})
     monkeypatch.setattr(devices, 'list_devices', lambda: [{'id': 'phone'}])
     revision = [1]
-    monkeypatch.setattr(devices, 'native_inputs', lambda *args: {'revision': revision[0]})
+    native_inputs = devices.native_inputs
+    monkeypatch.setattr(devices, 'native_inputs',
+                        lambda *args: native_inputs(*args) | {'revision': revision[0]})
     monkeypatch.setattr(devices, 'terminate_app', lambda *args: None)
     build = tmp_path / 'build'
     build.mkdir()
@@ -220,6 +225,16 @@ def test_source_only_runs_skip_build_and_install_and_retry_failed_upload(tmp_pat
     selected_runtime['full_version'] = '3.13.15'
     devices.run_application(request)
     assert sum('install' in call for call in calls) == 3
+    from PIL import Image
+    Image.new('RGB', (16, 16), 'red').save(tmp_path / 'icon.png')
+    (tmp_path / 'app.desktop').write_text('[Desktop Entry]\nType=Application\nIcon=./icon.png\n')
+    devices.run_application(request)
+    assert sum('install' in call for call in calls) == 4
+    devices.run_application(request)
+    assert sum('install' in call for call in calls) == 4
+    Image.new('RGB', (16, 16), 'blue').save(tmp_path / 'icon.png')
+    devices.run_application(request)
+    assert sum('install' in call for call in calls) == 5
 
 
 def test_native_stamps_detect_changes_and_deletions_without_build_outputs(tmp_path):

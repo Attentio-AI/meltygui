@@ -154,8 +154,21 @@ def prepare(config, bundle, *, identity=None, signing_allowed=True):
 
     def sign(framework):
         if signing_allowed:
-            subprocess.run(["/usr/bin/codesign", "--force", "--sign", identity,
-                            "--timestamp=none", str(framework)], check=True)
+            try:
+                subprocess.run(["/usr/bin/codesign", "--force", "--sign", identity,
+                                "--timestamp=none", str(framework)], check=True,
+                               close_fds=False, stderr=subprocess.PIPE, text=True)
+            except subprocess.CalledProcessError as error:
+                detail = (error.stderr or str(error)).strip()
+                if 'errSecInternalComponent' in detail:
+                    raise ValueError(
+                        f'macOS could not access the signing key for {framework.name}. '
+                        'Unlock the login keychain on the build Mac (Keychain Access, or '
+                        '`security unlock-keychain ~/Library/Keychains/login.keychain-db` '
+                        'in your own terminal), then retry Run. If it is already unlocked, '
+                        f'check that codesign is allowed to use the signing key. Details: {detail}'
+                    ) from None
+                raise ValueError(f'Code signing failed for {framework.name}: {detail}') from None
 
     # Linked dependencies must be embedded frameworks. Do not silently ship a
     # desktop NumPy/Pillow wheel or leave an unsigned vendored dylib in resources.
