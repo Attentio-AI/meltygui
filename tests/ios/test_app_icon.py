@@ -18,13 +18,15 @@ def launcher(root, icon='icon.png', extra=''):
     return path
 
 
-def hdr_png(path):
+def hdr_png(path, pixels=None):
     # Independent fixture: 1000-nit PQ red with half alpha, without a background.
-    pixels = np.full((4, 8, 4), [49271, 0, 0, 32768], dtype='>u2')
+    if pixels is None:
+        pixels = np.full((4, 8, 4), [49271, 0, 0, 32768], dtype='>u2')
+    pixels = pixels.astype('>u2')
     def chunk(kind, data):
         return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
     path.write_bytes(b'\x89PNG\r\n\x1a\n'
-                     + chunk(b'IHDR', struct.pack('>IIBBBBB', 8, 4, 16, 6, 0, 0, 0))
+                     + chunk(b'IHDR', struct.pack('>IIBBBBB', pixels.shape[1], pixels.shape[0], 16, 6, 0, 0, 0))
                      + chunk(b'cICP', bytes([9, 16, 0, 1]))
                      + chunk(b'IDAT', zlib.compress(b''.join(b'\0' + row.tobytes() for row in pixels)))
                      + chunk(b'IEND', b''))
@@ -133,3 +135,66 @@ def test_transparent_rgb_does_not_bleed_into_hdr_edges(tmp_path):
     assert decoded[..., 1][visible].max() < .01
     assert decoded[..., 0][visible].max() == pytest.approx(1000, abs=2)
     assert output_alpha.min() == 0 and output_alpha.max() == 65535
+
+
+@pytest.mark.parametrize('inset, expected', [(0, .8), (5, .8 / .9), (10, 1), (25, 1)])
+def test_auto_margin_counts_existing_padding(inset, expected):
+    alpha = np.zeros((100, 100), dtype=np.uint16)
+    alpha[inset:100 - inset, inset:100 - inset] = 32768
+    assert app_icon.foreground_scale(alpha) == pytest.approx(expected)
+
+
+def test_margin_estimate_ignores_faint_tails_and_specks():
+    alpha = np.full((100, 100), 200, dtype=np.uint16)
+    alpha[15:85, 15:85] = 32768
+    alpha[0, 0] = 65535
+    assert app_icon.foreground_scale(alpha) == 1
+    assert app_icon.foreground_scale(np.zeros((10, 20), dtype=np.uint8)) == 1
+
+
+def test_margin_respects_rectangular_and_off_center_compositions():
+    alpha = np.zeros((50, 100), dtype=np.uint8)
+    alpha[:, 10:90] = 255
+    assert app_icon.foreground_scale(alpha) == 1  # Center-fit supplies vertical padding.
+    alpha[:, 2:70] = 255
+    assert app_icon.foreground_scale(alpha) == pytest.approx(.4 / .48)
+
+
+@pytest.mark.parametrize('hdr', [False, True])
+def test_margin_toggle_changes_geometry_and_invalidates_cache(tmp_path, icon_project, monkeypatch, hdr):
+    # Five percent supplied by the source; generation must top this up, not
+    # blindly add another ten percent. Compare actual decoded alpha bounds.
+    if hdr:
+        pixels = np.full((100, 100, 4), [49271, 0, 0, 0], dtype=np.uint16)
+        pixels[5:95, 5:95, 3] = 65535
+        hdr_png(tmp_path / 'icon.png', pixels)
+    else:
+        pixels = np.full((100, 100, 4), [255, 0, 0, 0], dtype=np.uint8)
+        pixels[5:95, 5:95, 3] = 255
+        Image.fromarray(pixels).save(tmp_path / 'icon.png')
+    launcher(tmp_path)
+    build = tmp_path / 'build'
+    icon_project(build)
+    monkeypatch.setattr(devices, 'xcode_environment', lambda: {})
+    before = None
+    for enabled, inset in ((True, 18), (False, 9), (True, 18)):
+        monkeypatch.setattr(app_icon.Toggles.Mobile, 'icon_auto_margin', enabled)
+        app_icon.sync_project_icon(tmp_path, build)
+        current = devices.native_inputs(build, {})
+        assert current != before
+        app_icon.sync_project_icon(tmp_path, build)
+        assert devices.native_inputs(build, {}) == current
+        before = current
+        path = build / 'app-icon/AppIcon60x60@3x.png'
+        if hdr:
+            rgb, alpha, cicp = read_png16(path)
+            assert cicp == bytes([9, 16, 0, 1])
+            assert pq_decode(rgb[90, 90, 0] / 65535) == pytest.approx(1000, abs=1)
+        else:
+            with Image.open(path) as image:
+                alpha = np.asarray(image.getchannel('A'))
+                assert image.getpixel((90, 90)) == (255, 0, 0, 255)
+        ys, xs = np.nonzero(alpha > alpha.max() / 2)
+        assert (xs.min(), ys.min()) == pytest.approx((inset, inset), abs=1)
+        assert (xs.max(), ys.max()) == pytest.approx((179 - inset, 179 - inset), abs=1)
+        assert alpha[0, 0] == 0

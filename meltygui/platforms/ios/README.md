@@ -52,8 +52,15 @@ does not paint a background. This was checked with the iOS 27.2 Home Screen.
 This path has not been validated for App Store submission or for HDR brightness
 on the Home Screen.
 
-Ordinary artwork is fitted without cropping onto a transparent square. A
-declared icon that cannot be resolved or decoded produces an actionable error;
+Artwork is fitted without cropping onto a transparent square. By default,
+`Toggles.Mobile.icon_auto_margin` tops up the visible foreground's existing inset
+to 10% of the icon's width on each edge. The estimate ignores nearly invisible
+shadow tails and isolated specks; these pixels remain in the artwork. Sufficiently
+padded artwork keeps its original fit. HDR and SDR use the same geometry, with
+transparent padding. Disable the toggle to retain the original fit; changing it
+regenerates the icons on the next Run.
+
+A declared icon that cannot be resolved or decoded produces an actionable error;
 a declared HDR icon never silently falls back to SDR. Apps without launcher
 icons continue to build. Icon edits/additions/removal trigger a native rebuild
 and reinstall; unchanged icons preserve source-only device updates. Generated
