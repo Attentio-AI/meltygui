@@ -200,14 +200,13 @@ def update_application(device, bundle_id, app_dir, receipt):
 
 def run_application(request):
     from meltygui.platforms.ios.application import read_application
-    from meltygui.platforms.ios.runtime import build_python
+    from meltygui.platforms.ios.provision import ensure_configuration
     from meltygui.platforms.ios.stage_dependencies import copy_application, refresh_local_packages
     import fcntl
 
     root, build = Path(request['root']), Path(request['build'])
     device = request['device']
     config = json.loads((build / 'host-build.json').read_text(encoding='utf-8'))
-    compiler, runtime = build_python(config)
     app_dir = Path(config['app_dir']).resolve()
     if app_dir == build or not app_dir.is_relative_to(build):
         raise ValueError('Generate the iOS project with its staged app directory inside the iOS build directory.')
@@ -224,6 +223,7 @@ def run_application(request):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError('This iOS app is already running from another execution. Stop it first.') from None
+        config, compiler, runtime = ensure_configuration(root, build, config)
         snapshot_file = build / 'run-source-snapshot.json'
         snapshot = None
         with tempfile.TemporaryDirectory(prefix='run-', dir=build) as temporary:

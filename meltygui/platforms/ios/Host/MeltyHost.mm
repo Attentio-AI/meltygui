@@ -74,7 +74,16 @@ PyMODINIT_FUNC PyInit__melty_ios(void) { return PyModule_Create(&nativeModule); 
 
 static NSString *pythonError() {
     // Fetch first: invoking traceback while an exception is set is invalid.
+#if PY_VERSION_HEX >= 0x030C0000
     PyObject *exception = PyErr_GetRaisedException();
+#else
+    PyObject *type = nullptr, *exception = nullptr, *savedTraceback = nullptr;
+    PyErr_Fetch(&type, &exception, &savedTraceback);
+    PyErr_NormalizeException(&type, &exception, &savedTraceback);
+    if (exception && savedTraceback) PyException_SetTraceback(exception, savedTraceback);
+    Py_XDECREF(type);
+    Py_XDECREF(savedTraceback);
+#endif
     if (!exception) return @"Unknown Python failure";
     PyObject *traceback = PyImport_ImportModule("traceback");
     PyObject *parts = traceback ? PyObject_CallMethod(traceback, "format_exception", "O", exception) : nullptr;

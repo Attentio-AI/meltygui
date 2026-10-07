@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build pinned Melty ImGui bindings for CPython 3.13 on ARM64 iOS devices.
+"""Build pinned Melty ImGui bindings for the supplied CPython on ARM64 iOS devices.
 
 Run with a host Python containing Cython==3.2.4. This compiles the project's
 actual binding and ImGui sources; it does not link a second ImGui into the
@@ -29,6 +29,7 @@ import zipfile
 from meltygui.platforms.ios.prepare_bundle import validate_device_binary
 
 from meltygui.platforms.ios import build_directory
+from meltygui.platforms.ios.runtime import framework_version
 
 BUILD = build_directory()
 ROOT = Path(__file__).resolve().parent
@@ -119,10 +120,8 @@ def build(*, python_framework, output=BUILD / "binding", sdist=None,
     if jobs < 1:
         raise ValueError("--jobs must be positive")
     framework = Path(python_framework).resolve()
-    header = (framework / "Headers/patchlevel.h").read_text()
-    if not all(re.search(rf"^#define PY_{name}_VERSION\s+{value}\s*$", header, re.M)
-               for name, value in (("MAJOR", 3), ("MINOR", 13))):
-        raise ValueError("The device binding requires CPython 3.13 headers")
+    python_version = framework_version(framework)
+    python_abi = python_version.replace('.', '')
     validate_device_binary(framework / "Python")
     env = os.environ.copy()
     if developer_dir:
@@ -182,7 +181,7 @@ static_assert(offsetof(ImDrawVert, col) == 16, "ImGui color offset changed");
                     ignore=shutil.ignore_patterns("*.cpp", "*.h", "*.pyx", "*.pxd", "*.pxi",
                                                   "*.so", "*.pyc", "__pycache__"))
     for module in ("core", "internal"):
-        binary = package / f"{module}.cpython-313-iphoneos.so"
+        binary = package / f"{module}.cpython-{python_abi}-iphoneos.so"
         run([compiler, "-target", f"arm64-apple-ios{deployment_target}", "-isysroot", sdk,
              "-dynamiclib", *map(str, (compiled[item] for item in COMMON_SOURCES)),
              str(compiled[f"meltygui_imgui/{module}.cpp"]), str(compiled["melty_ios_abi.cpp"]),
@@ -195,7 +194,7 @@ static_assert(offsetof(ImDrawVert, col) == 16, "ImGui color offset changed");
         if not re.search(rf"\b_PyInit_{module}$", exports, re.M):
             raise RuntimeError(f"Missing Python module entry point in {binary}")
 
-    tag = "cp313-cp313-ios_" + deployment_target.replace(".", "_") + "_arm64_iphoneos"
+    tag = f"cp{python_abi}-cp{python_abi}-ios_" + deployment_target.replace(".", "_") + "_arm64_iphoneos"
     dist = packages / f"meltygui_imgui-{VERSION}.dist-info"
     dist.mkdir(exist_ok=True)
     (dist / "METADATA").write_bytes((source / "PKG-INFO").read_bytes())
@@ -208,7 +207,7 @@ static_assert(offsetof(ImDrawVert, col) == 16, "ImGui color offset changed");
     wheel = write_wheel(packages, output, tag)
     (output / "build-manifest.json").write_text(json.dumps({
         "source_url": SDIST_URL, "source_sha256": SDIST_SHA256,
-        "cython": CYTHON_VERSION, "python": "3.13", "target": f"arm64-apple-ios{deployment_target}",
+        "cython": CYTHON_VERSION, "python": python_version, "target": f"arm64-apple-ios{deployment_target}",
         "sdk": sdk, "compiler": run([compiler, "--version"], env=env),
         "wheel": str(wheel), "packages": str(packages),
         "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),

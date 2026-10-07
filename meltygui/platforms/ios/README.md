@@ -37,10 +37,13 @@ platform Python code. The editor likewise uses its existing `editor.py`.
 
 ## Device dependencies
 
-Use full Xcode with the iPhoneOS SDK and MetalToolchain. Supply an ARM64 device
-`Python.framework` and standard library matching the project's venv Python
-major/minor version. The tooling checks runtime
-headers and Mach-O platform metadata, rejecting macOS/simulator extensions.
+Use full Xcode with the iPhoneOS SDK and MetalToolchain. Before a configured
+app's device Run, MeltyGUI prepares missing or mismatched build inputs. It
+downloads the matching BeeWare iOS Python support package, or builds it from
+source when a release is unavailable. Missing native wheels are downloaded
+when compatible builds exist, otherwise compiled on the Mac and cached.
+Runtime headers and Mach-O platform metadata are checked, rejecting
+macOS/simulator extensions.
 Build artifacts default to `build/ios` in the calling directory; set
 `MELTY_IOS_BUILD_DIR` to share an explicit artifact location. Nothing writes into
 the installed toolkit.
@@ -50,10 +53,30 @@ match the device Python. The project interpreter defaults to `.venv/bin/python`;
 `stage` and `generate` accept `--project-python` for a different project venv.
 That interpreter selects dependency markers, the runtime version and bytecode
 format. It is also used directly for build-time compilation, without needing
-MeltyGUI installed in it. A desktop Python executable cannot run on an iPhone:
-provide an iOS framework, standard library and native wheels for its version.
-The existing pinned native build recipes and numeric wheel catalogue target
-3.13; other project versions require matching iOS artifacts, not those wheels.
+MeltyGUI installed in it. Its major/minor version selects the iOS runtime;
+the desktop executable itself is never bundled. This includes the BeeWare
+backports for Python 3.10, 3.11 and 3.12. The application's and dependencies'
+declared Python compatibility still applies.
+
+Prepared inputs live under `$XDG_CACHE_HOME/meltygui/ios` (default
+`~/.cache/meltygui/ios`), separated by Python version, SDK and build recipe
+metadata. Builds use owned Python and Rust environments, leaving the project
+venv intact. Later runs reuse valid inputs without downloading or compiling
+them. Concurrent preparations share a cache lock. Failed builds include the
+compiler's diagnostic and a persistent log path, and can be retried.
+
+To prepare an existing generated project ahead of Run:
+
+```sh
+python -m meltygui.platforms.ios prepare --application /path/to/app
+```
+
+The first preparation needs network access and may take time to build native
+dependencies. A package whose source cannot cross-compile still needs a
+compatible recipe or upstream fix; missing prebuilt wheels alone no longer
+stop device Run. The commands below remain available for manual recipe builds;
+the older numeric/Rust catalogues target 3.13, while automatic preparation
+selects or compiles wheels for the project interpreter.
 
 Run the native recipes using their documented build environment with MeltyGUI installed plus
 build, setuptools, setuptools-scm, wheel, hatchling, packaging, Cython 3.2.4 and
@@ -127,8 +150,9 @@ edits always load from source. Invalid Python test fixtures/templates remain
 source-only. All Python selection, compatibility checks and bytecode compilation
 happen on the build machine; there is no startup version reconciliation or
 bytecode repair. The native host derives its library paths from the framework's
-headers. A change to the project venv's Python version requires matching iOS
-artifacts and regenerating the project. Existing generated projects locate the
+headers. A change to the project venv's Python version automatically prepares
+matching iOS artifacts and regenerates the project, preserving signing and
+native source/framework settings. Existing generated projects locate the
 venv above their staged app directory, so a different build-tool Python alone
 does not require regeneration.
 

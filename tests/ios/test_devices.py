@@ -4,13 +4,14 @@ from pathlib import Path
 import plistlib
 
 import pytest
-from meltygui.platforms.ios import devices, runtime
+from meltygui.platforms.ios import devices, provision
 
 
 @pytest.fixture
 def selected_runtime(monkeypatch):
     selected = {'version': '3.13', 'full_version': '3.13.14', 'magic': 'test'}
-    monkeypatch.setattr(runtime, 'build_python', lambda config: ('/project/.venv/bin/python', dict(selected)))
+    monkeypatch.setattr(provision, 'ensure_configuration',
+                        lambda root, build, config: (config, '/project/.venv/bin/python', dict(selected)))
     return selected
 
 

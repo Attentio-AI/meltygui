@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Build cryptography 50.0.2 with static OpenSSL for CPython 3.13 on iPhone.
+"""Build cryptography 50.0.2 with static OpenSSL for the supplied iPhone CPython.
 
-Run with host Python 3.13. Requires Xcode and a Rust toolchain with the
+Requires Xcode and a Rust toolchain with the
 aarch64-apple-ios target. The default Rust homes are the isolated installations
 under build/dependencies/{cargo,rustup}. No global Python or Rust environment is
 modified. Source archives are pinned by SHA256 and Cargo uses the upstream lock.
@@ -30,6 +30,7 @@ from meltygui.platforms.ios.download_numeric_wheels import symbols, unpack, vali
 
 
 from meltygui.platforms.ios import build_directory
+from meltygui.platforms.ios.runtime import framework_version
 
 BUILD = build_directory()
 ROOT = Path(__file__).resolve().parent
@@ -126,8 +127,6 @@ print(json.dumps(versions))
 
 
 def build(args):
-    if sys.version_info[:2] != (3, 13):
-        raise ValueError("Use host Python 3.13 for the CPython 3.13 target")
     if not 1 <= args.jobs <= 2:
         raise ValueError("--jobs must be 1 or 2")
     output = args.output.resolve()
@@ -135,6 +134,8 @@ def build(args):
         (output / name).mkdir(parents=True, exist_ok=True)
     device = args.runtime.resolve()
     python_framework = device / "Python.framework"
+    python_version = framework_version(python_framework)
+    python_lib = args.python_lib or device / 'lib'
     if not (python_framework / "Headers/Python.h").is_file():
         raise FileNotFoundError(f"Missing device Python headers: {python_framework}")
     env = dict(os.environ, DEVELOPER_DIR=str(args.developer_dir.resolve()),
@@ -190,8 +191,8 @@ def build(args):
     # cryptography-cffi derives target include paths from this Unix-shaped
     # prefix. Both point at the actual iOS runtime, never host Python headers.
     cross_prefix = output / "python"
-    for relative, target in (("lib/python3.13", device / "lib/python3.13"),
-                             ("include/python3.13", python_framework / "Headers")):
+    for relative, target in ((f"lib/python{python_version}", python_lib / f"python{python_version}"),
+                             (f"include/python{python_version}", python_framework / "Headers")):
         link = cross_prefix / relative
         link.parent.mkdir(parents=True, exist_ok=True)
         if link.is_symlink() and link.resolve() != target.resolve():
@@ -199,12 +200,12 @@ def build(args):
         if not link.exists():
             link.symlink_to(target, target_is_directory=True)
     config = output / "pyo3-config.txt"
-    configuration = ("implementation=CPython\nversion=3.13\nshared=true\nabi3=true\n"
+    configuration = (f"implementation=CPython\nversion={python_version}\nshared=true\nabi3=true\n"
                      "pointer_width=64\nsuppress_build_script_link_lines=true\next_suffix=.abi3.so\n")
     if not config.exists() or config.read_text() != configuration:
         config.write_text(configuration)
-    env.update(PYO3_CONFIG_FILE=str(config), PYO3_CROSS="1", PYO3_CROSS_PYTHON_VERSION="3.13",
-               PYO3_CROSS_LIB_DIR=str(cross_prefix / "lib/python3.13"), PYO3_PYTHON=str(host_python),
+    env.update(PYO3_CONFIG_FILE=str(config), PYO3_CROSS="1", PYO3_CROSS_PYTHON_VERSION=python_version,
+               PYO3_CROSS_LIB_DIR=str(cross_prefix / f"lib/python{python_version}"), PYO3_PYTHON=str(host_python),
                OPENSSL_DIR=str(openssl), OPENSSL_STATIC="1", OPENSSL_NO_VENDOR="1",
                CARGO_TARGET_DIR=str(output / "target"), CARGO_BUILD_JOBS=str(args.jobs),
                CC_aarch64_apple_ios=clang, CARGO_TARGET_AARCH64_APPLE_IOS_LINKER=clang)
@@ -215,7 +216,7 @@ def build(args):
         "-C", "link-arg=-Wl,-headerpad_max_install_names"])
     print("Building cryptography against device Python.framework", flush=True)
     command = [output / "tools/bin/maturin", "build", "--release", "--locked",
-               "--target", "aarch64-apple-ios", "--interpreter", "python3.13",
+               "--target", "aarch64-apple-ios", "--interpreter", str(args.project_python or f"python{python_version}"),
                "--out", output / "wheelhouse", "--jobs", str(args.jobs)]
     if args.offline:
         command.append("--offline")
@@ -237,7 +238,7 @@ def build(args):
     if any(name.startswith(("_OPENSSL_", "_SSL_", "_EVP_", "_CRYPTO_"))
            for name in symbols(extensions[0], "-gUj")):
         raise ValueError("Static OpenSSL unexpectedly exports public symbols")
-    manifest = dict(schema=1, target=f"aarch64-apple-ios{args.deployment_target}", python="3.13",
+    manifest = dict(schema=1, target=f"aarch64-apple-ios{args.deployment_target}", python=python_version,
                     sdk=sdk, sources=provenance, build_requirements=list(BUILD_REQUIREMENTS),
                     rust=run(["rustc", "--version"], env=env),
                     source_patches=[dict(path="src/rust/cryptography-cffi/build.rs",
@@ -255,6 +256,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, default=BUILD / "dependencies/crypto")
     parser.add_argument("--runtime", type=Path, default=BUILD / "runtime/device")
+    parser.add_argument("--python-lib", type=Path)
+    parser.add_argument("--project-python", type=Path)
     parser.add_argument("--developer-dir", type=Path, default=Path("/Applications/Xcode-beta.app/Contents/Developer"))
     parser.add_argument("--cargo-home", type=Path, default=BUILD / "dependencies/cargo")
     parser.add_argument("--rustup-home", type=Path, default=BUILD / "dependencies/rustup")

@@ -181,12 +181,12 @@ def compatible_wheel(path, python_version):
     return False
 
 
-def resolve_wheels(requirements, wheels, pins, cache, offline=False, *, python_version=None):
+def resolve_wheels(requirements, wheels, pins, cache, offline=False, *, python_version=None, acquire_wheel=None):
     """Select the app's dependency closure from device wheels and pinned recipes.
 
-    This is a locked build: incompatible constraints are an error, not a request
-    to silently change package versions or install from the build host's venv.
-    Unused recipes are neither downloaded nor shipped.
+    Explicit wheels and manual staging keep their locked versions. Automatic
+    preparation may acquire a wheel when a catalogue pin cannot satisfy the
+    target Python or requirement. Never copy the build host's installed packages.
     """
     available = {}
     environment = device_environment(python_version)
@@ -210,10 +210,22 @@ def resolve_wheels(requirements, wheels, pins, cache, offline=False, *, python_v
             raise ValueError(f'Supply a built device wheel for direct dependency {requirement}')
         if name not in available:
             if name not in pins:
-                raise ValueError(f'No device wheel or pinned recipe for {requirement}')
-            pin = pins[name]
-            wheel = pure_wheel(pin, download(pin, cache, offline), cache)
-            available[name] = wheel, wheel_metadata(wheel)
+                if acquire_wheel is None:
+                    raise ValueError(f'No device wheel or pinned recipe for {requirement}')
+                wheel = acquire_wheel(requirement)
+            else:
+                pin = pins[name]
+                wheel = pure_wheel(pin, download(pin, cache, offline), cache)
+                metadata = wheel_metadata(wheel)
+                if acquire_wheel is not None and (
+                    not requirement.specifier.contains(metadata['Version']) or
+                    not SpecifierSet(metadata.get('Requires-Python') or '').contains(environment['python_full_version'])
+                ):
+                    wheel = acquire_wheel(requirement)
+            metadata = wheel_metadata(wheel)
+            if canonicalize_name(metadata['Name']) != name:
+                raise ValueError(f'Expected {name}, acquired {metadata["Name"]}')
+            available[name] = wheel, metadata
         wheel, metadata = available[name]
         if not requirement.specifier.contains(metadata['Version']):
             raise ValueError(f'{requirement} conflicts with supplied {name} {metadata["Version"]}')

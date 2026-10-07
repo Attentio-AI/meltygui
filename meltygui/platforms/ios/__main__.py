@@ -9,6 +9,7 @@ def main():
         'shaders': 'compile_shaders', 'build-imgui': 'build_imgui',
         'build-platform': 'build_platform_deps', 'build-rust': 'build_rust_deps',
         'build-crypto': 'build_crypto', 'numeric-wheels': 'download_numeric_wheels',
+        'prepare': 'provision',
     }
     if len(sys.argv) < 2 or sys.argv[1] not in commands:
         raise SystemExit('Choose an iOS command: ' + ', '.join(commands))

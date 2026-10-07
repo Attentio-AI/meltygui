@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build iPhone FreeType/libspatialindex frameworks and their Python wrappers.
 
-Run with a host Python 3.13 environment containing setuptools, setuptools-scm,
+Run with a build environment containing setuptools, setuptools-scm,
 wheel and CMake. Native libraries target ARM64 iphoneos only. The frameworks
 remain unsigned here; the application packaging phase must embed/sign them.
 """
@@ -168,7 +168,7 @@ def validate_loaders(python_stdlib, rtree_source, output, env):
     dyld = python_stdlib / "ctypes/macholib/dyld.py"
     for path in (util, dyld):
         if not path.is_file():
-            raise ValueError(f"CPython 3.13 device stdlib source is required: {path}")
+            raise ValueError(f"Device stdlib source is required: {path}")
     runner = '''import ctypes, importlib.util, json, os, platform, runpy, sys
 from pathlib import Path
 stdlib, finder, frameworks = map(Path, sys.argv[1:])
@@ -200,8 +200,6 @@ print(json.dumps({'freetype': found, 'spatialindex_c': rtree, 'device_execution'
 
 
 def build(args):
-    if sys.version_info[:2] != (3, 13):
-        raise ValueError("Use host Python 3.13 for the CPython 3.13 target wrapper wheels")
     if not 1 <= args.jobs <= 2:
         raise ValueError("--jobs must be 1 or 2")
     output = args.output.resolve()
@@ -244,7 +242,7 @@ def build(args):
     wheels = [python_wheel(name, sources[name], output, args.deployment_target, env)
               for name in ("rtree", "freetype-py")]
     discovery = validate_loaders(args.python_stdlib.resolve(), sources["rtree"], output, env)
-    manifest = dict(format_version=1, target=f"arm64-apple-ios{args.deployment_target}", python="3.13",
+    manifest = dict(format_version=1, target=f"arm64-apple-ios{args.deployment_target}", python=args.python_stdlib.name.removeprefix('python'),
                     sdk=sdk, sources=provenance, frameworks=frameworks, wheels=wheels,
                     build_tools={name: importlib.metadata.version(name)
                                  for name in ("setuptools", "setuptools-scm", "wheel")},
