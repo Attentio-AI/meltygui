@@ -37,6 +37,12 @@ def binary(platform=2, cpu=0x0100000C):
 
 class PackagingTests(unittest.TestCase):
     def setUp(self):
+        # Exercise packaging with this test interpreter's real compiler, even
+        # when the desktop suite runs on 3.12. Check the device guard separately.
+        if sys.version_info[:2] != (3, 13):
+            build_python = mock.patch.object(bundle, 'check_build_python')
+            build_python.start()
+            self.addCleanup(build_python.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name).resolve()
@@ -58,6 +64,87 @@ class PackagingTests(unittest.TestCase):
         self.config = dict(python_lib=str(self.library), app_dir=str(self.app),
                            packages_dir=str(self.packages), bootstrap_dir=str(ROOT / "Python"),
                            bundle_id="local.melty.counter", entry_module="main")
+
+    def test_precompiled_libraries_load_after_install_without_reading_source(self):
+        (self.packages / 'cached.py').write_text('def value():\n    return __debug__\n')
+        # Build-machine cache settings must not send bytecode outside the app.
+        with mock.patch.object(sys, 'pycache_prefix', str(self.root / 'outside-cache')):
+            bundle.prepare(self.config, self.target, signing_allowed=False)
+        self.assertFalse((self.root / 'outside-cache').exists())
+        self.assertTrue(list((self.target / 'host').rglob('*.pyc')))
+        self.assertTrue(list((self.target / 'python/lib/python3.13').rglob('*.pyc')))
+        self.assertFalse(list((self.target / 'app').rglob('*.pyc')))
+
+        installed = self.root / 'installed.app'
+        shutil.move(self.target, installed)
+        source = installed / 'app_packages/cached.py'
+        os.utime(source, (1000, 1000))  # Installation can change source metadata.
+        spec = importlib.util.spec_from_file_location('cached', source)
+        module = importlib.util.module_from_spec(spec)
+        get_data = spec.loader.get_data
+
+        def read_bytecode_only(path):
+            self.assertTrue(path.endswith('.pyc'), f'Unexpected source read: {path}')
+            return get_data(path)
+
+        with mock.patch.object(spec.loader, 'get_data', side_effect=read_bytecode_only), \
+             mock.patch.object(sys, 'dont_write_bytecode', True):
+            spec.loader.exec_module(module)
+        self.assertIs(module.value(), True)  # -O on the build host must not strip assertions.
+        self.assertEqual(module.__file__, str(source))
+        self.assertEqual(module.value.__code__.co_filename, str(source))
+        self.assertIn('def value', source.read_text())
+
+    def test_rebuild_replaces_bytecode_and_leaves_app_edits_uncached(self):
+        source = self.packages / 'cached.py'
+        source.write_text('value = 1\n')
+        bundle.prepare(self.config, self.target, signing_allowed=False)
+        source.write_text('value = 2\n')
+        bundle.prepare(self.config, self.target, signing_allowed=False)
+        with mock.patch.object(sys, 'dont_write_bytecode', True):
+            library = load('cached', self.target / 'app_packages/cached.py')
+            self.assertEqual(library.value, 2)
+            app_source = self.target / 'app/main.py'
+            for value in (1, 2):
+                app_source.write_text(f'value = {value}\n')
+                os.utime(app_source, (1000, 1000))
+                self.assertEqual(load('main', app_source).value, value)
+        self.assertFalse(list((self.target / 'app').rglob('*.pyc')))
+
+    def test_invalid_test_fixtures_remain_source_only(self):
+        (self.packages / 'invalid.py').write_text('def broken(\n')
+        (self.packages / 'valid.py').write_text('value = 1\n')
+        with contextlib.redirect_stdout(io.StringIO()):
+            bundle.prepare(self.config, self.target, signing_allowed=False)
+        self.assertEqual((self.target / 'app_packages/invalid.py').read_text(), 'def broken(\n')
+        self.assertFalse(list((self.target / 'app_packages').rglob('invalid.*.pyc')))
+        self.assertTrue(list((self.target / 'app_packages').rglob('valid.*.pyc')))
+
+    def test_wrong_compiler_fails_before_modifying_bundle(self):
+        sentinel = self.target / 'host/keep.txt'
+        sentinel.parent.mkdir()
+        sentinel.write_text('previous build')
+        with mock.patch.object(bundle, 'check_build_python', side_effect=ValueError('CPython 3.13')):
+            with self.assertRaisesRegex(ValueError, 'CPython 3.13'):
+                bundle.prepare(self.config, self.target, signing_allowed=False)
+        self.assertEqual(sentinel.read_text(), 'previous build')
+
+    @unittest.skipUnless(sys.version_info[:2] == (3, 13), 'requires the device bytecode version')
+    def test_optimized_build_python_produces_unoptimized_device_bytecode(self):
+        (self.packages / 'cached.py').write_text('value = __debug__\n')
+        program = ('import json, sys; from meltygui.platforms.ios.prepare_bundle import prepare; '
+                   'prepare(json.loads(sys.argv[1]), sys.argv[2], signing_allowed=False)')
+        result = subprocess.run([sys.executable, '-I', '-O', '-c', program,
+                                 json.dumps(self.config), str(self.target)],
+                                close_fds=False, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        source = self.target / 'app_packages/cached.py'
+        spec = importlib.util.spec_from_file_location('cached', source)
+        module = importlib.util.module_from_spec(spec)
+        with mock.patch.object(spec.loader, 'source_to_code', side_effect=AssertionError('cache miss')), \
+             mock.patch.object(sys, 'dont_write_bytecode', True):
+            spec.loader.exec_module(module)
+        self.assertIs(module.value, True)
 
     def test_rejects_arm64_simulator_and_macos(self):
         path = self.root / "extension.so"
@@ -178,6 +265,21 @@ class PackagingTests(unittest.TestCase):
         (self.runtime / "Headers/patchlevel.h").write_text("#define PY_MAJOR_VERSION 3\n#define PY_MINOR_VERSION 12\n")
         with self.assertRaisesRegex(ValueError, "CPython 3.13"):
             generator.generate(python_framework=self.runtime, python_lib=self.library, app_dir=self.app)
+
+
+class BuildPythonTests(unittest.TestCase):
+    def test_requires_matching_cpython_minor(self):
+        for version in ((3, 12), (3, 14)):
+            with mock.patch.object(sys, 'version_info', version):
+                with self.assertRaisesRegex(ValueError, 'CPython 3.13'):
+                    bundle.check_build_python()
+        with mock.patch.object(sys, 'version_info', (3, 13)), \
+             mock.patch.object(sys, 'implementation', types.SimpleNamespace(name='pypy')):
+            with self.assertRaisesRegex(ValueError, 'CPython 3.13'):
+                bundle.check_build_python()
+        with mock.patch.object(sys, 'version_info', (3, 13)), \
+             mock.patch.object(sys, 'implementation', types.SimpleNamespace(name='cpython')):
+            bundle.check_build_python()
 
 
 class BootstrapTests(unittest.TestCase):

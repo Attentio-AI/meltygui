@@ -243,6 +243,7 @@ static const char *kindName(melty::InputKind kind) {
 }
 
 - (BOOL)initializePython:(NSDictionary *)configuration {
+    const double started = CACurrentMediaTime();
     if (PyImport_AppendInittab("_melty_ios", PyInit__melty_ios) == -1 ||
         PyImport_AppendInittab("_melty_metal", PyInit__melty_metal) == -1) {
         [self fail:@"Unable to register the native Python host/Metal modules"];
@@ -290,6 +291,9 @@ static const char *kindName(melty::InputKind kind) {
         [self fail:failure];
         return NO;
     }
+    const double interpreterReady = CACurrentMediaTime();
+    [self writeLog:[NSString stringWithFormat:@"[startup] CPython initialization: %.1f ms\n",
+        (interpreterReady - started) * 1000]];
 
     _bootstrap = PyImport_ImportModule("melty_ios_bootstrap");
     if (!_bootstrap) {
@@ -297,6 +301,8 @@ static const char *kindName(melty::InputKind kind) {
         PyEval_SaveThread();
         return NO;
     }
+    [self writeLog:[NSString stringWithFormat:@"[startup] bootstrap import: %.1f ms\n",
+        (CACurrentMediaTime() - interpreterReady) * 1000]];
     NSData *data = [NSJSONSerialization dataWithJSONObject:configuration options:0 error:nil];
     PyObject *json = PyImport_ImportModule("json");
     NSString *string = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
@@ -305,7 +311,11 @@ static const char *kindName(melty::InputKind kind) {
         ? PyObject_CallMethod(_bootstrap, "initialize", "O", argument) : nullptr;
     _initialized = result != nullptr;
     if (!result) [self fail:pythonError()];
-    else dispatch_async(dispatch_get_main_queue(), ^{ self->_status(@""); });
+    else {
+        [self writeLog:[NSString stringWithFormat:@"[startup] Python + application ready: %.1f ms\n",
+            (CACurrentMediaTime() - started) * 1000]];
+        dispatch_async(dispatch_get_main_queue(), ^{ self->_status(@""); });
+    }
     Py_XDECREF(result);
     Py_XDECREF(argument);
     Py_XDECREF(json);
@@ -322,13 +332,19 @@ static const char *kindName(melty::InputKind kind) {
             [self fail:@"This device did not provide a usable Metal device/command queue"];
         } else {
             Class rendererClass = NSClassFromString(@"MeltyMetalRenderer");
+            const double rendererStarted = CACurrentMediaTime();
             if (rendererClass && [rendererClass conformsToProtocol:@protocol(MeltyRenderer)]) {
                 NSError *error = nil;
                 _renderer = [(id<MeltyRenderer>)[rendererClass alloc] initWithDevice:_device error:&error];
                 if (!_renderer) [self fail:error.localizedDescription ?: @"Metal adapter initialization failed"];
             }
+            const double rendererDuration = CACurrentMediaTime() - rendererStarted;
             NSDictionary *config = [self configuration];
-            if (config && !_failed) [self initializePython:config];
+            if (config && !_failed) {
+                [self writeLog:[NSString stringWithFormat:@"[startup] native Metal renderer: %.1f ms\n",
+                    rendererDuration * 1000]];
+                [self initializePython:config];
+            }
             _displayLink = [[CAMetalDisplayLink alloc] initWithMetalLayer:_layer];
             _displayLink.delegate = self;
             _displayLink.preferredFrameLatency = 1;

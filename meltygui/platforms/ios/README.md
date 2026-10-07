@@ -44,7 +44,7 @@ Build artifacts default to `build/ios` in the calling directory; set
 `MELTY_IOS_BUILD_DIR` to share an explicit artifact location. Nothing writes into
 the installed toolkit.
 
-Run the recipes using an isolated build Python with MeltyGUI installed plus
+Run the recipes using an isolated **CPython 3.13** build environment with MeltyGUI installed plus
 build, setuptools, setuptools-scm, wheel, hatchling, packaging, Cython 3.2.4 and
 CMake. Rust recipes require an isolated Cargo/Rustup installation with the
 `aarch64-apple-ios` target. `--help` lists each recipe's runtime/toolchain paths.
@@ -105,6 +105,23 @@ resources, and packages signed device extensions. Build metadata chooses the
 entry module and bundle identity. The host installs the native runtime before
 importing that module; its normal decorators and `run()` then use the shared
 MeltyGUI lifecycle.
+
+The packaging phase precompiles the standard library, bootstrap and dependencies
+to unoptimized CPython 3.13 bytecode, retaining their sources for inspection.
+These signed, read-only resources use unchecked hash-based caches, so installation
+timestamp changes do not invalidate them and imports do not reread source files.
+The writable application's sources are deliberately not precompiled; on-device
+edits always load from source. Invalid Python test fixtures/templates remain
+source-only. Packaging fails before modifying the bundle if the build interpreter
+is not CPython 3.13; regenerate the project from a matching build environment.
+
+`ios-host.log` includes `[startup]` timings for native Metal setup, CPython
+initialization, bootstrap import, editable source preparation, Melty runtime
+imports and application launch. The Python + application ready total includes
+interpreter initialization through app setup, but excludes native Metal setup
+and the first frame. The existing app `startup.log` records font/session setup
+and first-frame presentation. Compare launches of the same app/session on the
+same device, separating the first launch after installation from later launches.
 
 ## Run from the editor
 

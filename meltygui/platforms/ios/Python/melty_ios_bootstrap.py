@@ -6,6 +6,7 @@ import io
 import os
 from pathlib import Path
 import sys
+import time
 
 _app = None
 _host = None
@@ -162,6 +163,7 @@ def initialize(config):
     import _melty_ios
 
     sys.stdout = sys.stderr = _Log(_melty_ios)
+    started = time.perf_counter()
     _host = Host(_melty_ios)
     for key in ("documents", "workspace", "application_support", "cache"):
         Path(config[key]).mkdir(parents=True, exist_ok=True)
@@ -178,10 +180,15 @@ def initialize(config):
     if not config["renderer_available"]:
         raise RuntimeError("The native host requires MeltyMetalRenderer and its shader library")
     source = _application_source(bundle, config['application_support'])
+    source_ready = time.perf_counter()
+    print(f"[startup] environment + editable source: {(source_ready - started) * 1000:.1f} ms")
     from meltygui.core.runtime.app import _register_editable
     _register_editable(source)
     from meltygui.core.runtime.native_app import start_native_application
+    imports_ready = time.perf_counter()
+    print(f"[startup] Melty runtime imports: {(imports_ready - source_ready) * 1000:.1f} ms")
     _app = start_native_application(dict(config), _host)
+    print(f"[startup] application launch: {(time.perf_counter() - imports_ready) * 1000:.1f} ms")
     print(f"{_app.config['app_id']}: embedded CPython {sys.version.split()[0]} initialized")
 
 
