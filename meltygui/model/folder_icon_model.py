@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -74,13 +75,24 @@ def icon_roots():
     return [Path.home() / '.icons', data_home / 'icons', *(p / 'icons' for p in data_dirs)], data_dirs
 
 
-def resolve_icon(value, folder, probe):
+def resolve_icon(value, folder, probe, size=ICON_SIZE):
     """Absolute/project-relative artwork, then the desktop's theme and fallbacks."""
     value = re.sub(r'\\([sntr\\])', lambda m: {'s': ' ', 'n': '\n', 't': '\t', 'r': '\r', '\\': '\\'}[m[1]], value)
     path = Path(value)
     if path.is_absolute() or '/' in value:
         path = path if path.is_absolute() else folder / path
-        return path if probe.exists(path) else None
+        if probe.exists(path):
+            return path
+        # Launchers commonly contain absolute paths from the original checkout.
+        # Keep in-project artwork portable when that checkout moves to a Mac.
+        if path.is_absolute() and folder.name in path.parts[:-1]:
+            index = max(i for i, part in enumerate(path.parts[:-1]) if part == folder.name)
+            local = folder.joinpath(*path.parts[index + 1:])
+            if probe.exists(local):
+                return local
+        return None
+    if path.suffix and probe.exists(folder / path):
+        return folder / path
     roots, data_dirs = icon_roots()
     config_home = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
     settings = probe.config(config_home / 'gtk-3.0/settings.ini')
@@ -105,15 +117,15 @@ def resolve_icon(value, folder, probe):
 
         def distance(directory):
             try:
-                size = index.getint(directory, 'Size', fallback=ICON_SIZE)
+                nominal = index.getint(directory, 'Size', fallback=size)
                 scale = index.getint(directory, 'Scale', fallback=1)
                 kind = index.get(directory, 'Type', fallback='Threshold')
-                low = index.getint(directory, 'MinSize', fallback=size) if kind == 'Scalable' else size
-                high = index.getint(directory, 'MaxSize', fallback=size) if kind == 'Scalable' else size
+                low = index.getint(directory, 'MinSize', fallback=nominal) if kind == 'Scalable' else nominal
+                high = index.getint(directory, 'MaxSize', fallback=nominal) if kind == 'Scalable' else nominal
                 if kind == 'Threshold':
                     threshold = index.getint(directory, 'Threshold', fallback=2)
-                    low, high = size - threshold, size + threshold
-                return max(low * scale - ICON_SIZE, ICON_SIZE - high * scale, 0)
+                    low, high = nominal - threshold, nominal + threshold
+                return max(low * scale - size, size - high * scale, 0)
             except ValueError:
                 return 100000
 
@@ -152,11 +164,11 @@ class IconPixels:
     data: bytes
 
 
-def decode_icon(path):
+def decode_icon(path, size=ICON_SIZE):
     """CPU only. GdkPixbuf supplies SVG support without starting a GUI or shell."""
     def pixels(source):
         with Image.open(source) as image:
-            image.thumbnail((ICON_SIZE, ICON_SIZE), Image.Resampling.LANCZOS)
+            image.thumbnail((size, size), Image.Resampling.LANCZOS)
             image = image.convert('RGBA')
             return IconPixels(path, image.width, image.height, image.tobytes())
     if path.suffix.lower() != '.svg':
@@ -166,15 +178,14 @@ def decode_icon(path):
         raise ValueError('SVG icon decoder is unavailable')
     with tempfile.TemporaryDirectory(prefix='melty-folder-icon-') as directory:
         output = Path(directory) / 'icon.png'
-        subprocess.run([str(Path(executable).resolve()), '-s', str(ICON_SIZE), str(path), str(output)],
+        subprocess.run([str(Path(executable).resolve()), '-s', str(size), str(path), str(output)],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                        close_fds=False, timeout=5)
         return pixels(output)
 
 
-def load_folder_icon(folder):
-    """Choose the first usable Application icon; prefer a matching desktop filename."""
-    probe = Probe()
+def folder_icon_candidates(folder, probe, size=ICON_SIZE, *, prefer_hdr=False):
+    """Share launcher selection with packaging without decoding through an 8-bit preview."""
     probe.exists(folder)
     try:
         entries = sorted(folder.glob('*.desktop'), key=lambda p: (p.stem != folder.name, p.name))
@@ -187,13 +198,34 @@ def load_folder_icon(folder):
         if config.get('Desktop Entry', 'Hidden', fallback='false').lower() == 'true':
             continue
         value = config.get('Desktop Entry', 'Icon', fallback='').strip()
+        if prefer_hdr:
+            value = config.get('Desktop Entry', 'X-HDR-Icon', fallback='').strip() or value
         if not value:
             continue
-        path = resolve_icon(value, folder, probe)
+        path = resolve_icon(value, folder, probe, size)
+        if path is None and Path(value).is_absolute():
+            # The project can also be renamed when copied to the build Mac.
+            # Rebase only against an explicit launcher path whose executable
+            # exists in this project, never an arbitrary matching suffix.
+            try:
+                command = shlex.split(config.get('Desktop Entry', 'Exec', fallback=''))
+                executable = Path(command[0]) if command else None
+                if executable is not None and executable.is_absolute() and probe.exists(folder / executable.name):
+                    relative = Path(value).relative_to(executable.parent)
+                    path = resolve_icon('./' + str(relative), folder, probe, size)
+            except ValueError:
+                pass
+        yield desktop, value, path
+
+
+def load_folder_icon(folder, size=ICON_SIZE):
+    """Choose the first usable Application icon; prefer a matching desktop filename."""
+    probe = Probe()
+    for desktop, value, path in folder_icon_candidates(folder, probe, size):
         if path is None:
             continue
         try:
-            return decode_icon(path), probe.dependencies
+            return decode_icon(path, size), probe.dependencies
         except (OSError, ValueError, subprocess.SubprocessError, Image.DecompressionBombError):
             continue
     return None, probe.dependencies

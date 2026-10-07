@@ -199,6 +199,7 @@ def update_application(device, bundle_id, app_dir, receipt):
 
 
 def run_application(request):
+    from meltygui.platforms.ios.app_icon import sync_project_icon
     from meltygui.platforms.ios.application import read_application
     from meltygui.platforms.ios.provision import ensure_configuration
     from meltygui.platforms.ios.stage_dependencies import copy_application, refresh_local_packages
@@ -224,6 +225,7 @@ def run_application(request):
         except BlockingIOError:
             raise ValueError('This iOS app is already running from another execution. Stop it first.') from None
         config, compiler, runtime = ensure_configuration(root, build, config)
+        sync_project_icon(root, build)
         snapshot_file = build / 'run-source-snapshot.json'
         snapshot = None
         with tempfile.TemporaryDirectory(prefix='run-', dir=build) as temporary:

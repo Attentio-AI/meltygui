@@ -163,6 +163,8 @@ def generate(*, python_framework, python_lib, app_dir, packages_dir=None,
         "bootstrap_dir": str(ROOT / "Python"), "bundle_id": bundle_id, "entry_module": entry_module,
         "shaders_dir": str(shaders_dir),
     }, indent=2) + "\n")
+    from meltygui.platforms.ios.app_icon import sync_project_icon
+    sync_project_icon(app_config['root'], output)
     return project_dir
 
 
