@@ -491,6 +491,9 @@ class Toggles:
         Safezone = 64
         # Bottom strip in UIKit points, above the home indicator.
         bottom_safezone = 28
+        # During iOS icon generation, top up the artwork's existing transparent
+        # margin to 10%. Disable to retain its original fit. Applied on next Run.
+        icon_auto_margin = True
 
     @defaults(tint=(0.85, 0.75, 0.05))
     class ColorPicker:

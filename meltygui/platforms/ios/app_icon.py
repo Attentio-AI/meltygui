@@ -8,8 +8,9 @@ import struct
 import zlib
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
 
+from meltygui.core.runtime.toggles import Toggles
 from meltygui.image_load import png_pq_cicp, pq_decode, read_png16
 from meltygui.model.folder_icon_model import Probe, decode_icon, folder_icon_candidates, stamp
 
@@ -20,11 +21,36 @@ ICON_SIZES = {'20x20': (1, 2, 3), '29x29': (1, 2, 3), '40x40': (1, 2, 3),
 INFO_TEMPLATE = Path(__file__).parent / 'Host/Info.plist'
 
 
-def write_hdr_icon(path, nits, size, cicp, alpha=None):
+def foreground_scale(alpha):
+    """Top up the visible artwork's inset to 10%, retaining its composition."""
+    minimum_margin = .10
+    # Estimate bounds from meaningful opacity, ignoring faint shadow tails and
+    # at most 0.1% of opacity at either edge (e.g. an isolated stray pixel).
+    # This only measures the artwork; all original pixels remain in the output.
+    peak = float(alpha.max())
+    if peak == 0:
+        return 1.0
+    weights = np.where(alpha >= peak * .05, alpha, 0).astype(np.float64)
+    height, width = alpha.shape
+    extent = 0.0
+    for projection, length in ((weights.sum(axis=0), width), (weights.sum(axis=1), height)):
+        cumulative = projection.cumsum()
+        start, end = np.searchsorted(cumulative, cumulative[-1] * np.array([.001, .999]))
+        extent = max(extent, length / 2 - start, end + 1 - length / 2)
+    # Center-fitting a rectangular source already contributes margin on its
+    # shorter axis. Never enlarge artwork or crop away its existing padding.
+    return min(1.0, (0.5 - minimum_margin) * max(width, height) / extent)
+
+
+def icon_dimensions(width, height, size, artwork_scale):
+    factor = size * artwork_scale / max(width, height)
+    return max(1, round(width * factor)), max(1, round(height * factor))
+
+
+def write_hdr_icon(path, nits, size, cicp, alpha=None, *, artwork_scale=1.0):
     """Resample premultiplied linear light; emit straight-alpha 16-bit PQ RGBA."""
     height, width = nits.shape[:2]
-    factor = size / max(width, height)
-    dimensions = max(1, round(width * factor)), max(1, round(height * factor))
+    dimensions = icon_dimensions(width, height, size, artwork_scale)
     opacity = np.ones((height, width), dtype=np.float32) if alpha is None else alpha.astype(np.float32) / 65535
 
     def resize(channel):
@@ -68,7 +94,8 @@ def prepare_icon(root, build):
         previous = json.loads(receipt.read_text())
     except (OSError, ValueError):
         previous = {}
-    if (previous.get('root') == str(root) and previous.get('version') == 3
+    if (previous.get('root') == str(root) and previous.get('version') == 4
+            and previous.get('auto_margin') == Toggles.Mobile.icon_auto_margin
             and previous.get('launchers') == launchers
             and all(stamp(Path(path)) == (tuple(value) if value else None)
                     for path, value in previous['dependencies'].items())
@@ -112,15 +139,23 @@ def prepare_icon(root, build):
     destination.mkdir(parents=True)
     outputs = []
     if source is not None:
+        artwork_scale = 1.0
+        if Toggles.Mobile.icon_auto_margin:
+            if nits is not None:
+                opacity = alpha if alpha is not None else np.ones(nits.shape[:2], dtype=np.uint8)
+            else:
+                opacity = np.asarray(image.getchannel('A'))
+            artwork_scale = foreground_scale(opacity)
         for points, scales in ICON_SIZES.items():
             for scale in scales:
                 size = round(float(points.split('x')[0]) * scale)
                 suffix = f'@{scale}x' if scale != 1 else ''
                 path = destination / f'AppIcon{points}{suffix}.png'
                 if nits is not None:
-                    write_hdr_icon(path, nits, size, cicp, alpha)
+                    write_hdr_icon(path, nits, size, cicp, alpha, artwork_scale=artwork_scale)
                 else:
-                    resized = ImageOps.contain(image, (size, size), Image.Resampling.LANCZOS)
+                    dimensions = icon_dimensions(image.width, image.height, size, artwork_scale)
+                    resized = image.resize(dimensions, Image.Resampling.LANCZOS)
                     square = Image.new('RGBA', (size, size), (0, 0, 0, 0))
                     square.paste(resized, ((size - resized.width) // 2, (size - resized.height) // 2))
                     square.save(path)
@@ -132,7 +167,8 @@ def prepare_icon(root, build):
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     outputs.append(destination / 'Info.plist')
     receipt.touch(exist_ok=True)
-    receipt.write_text(json.dumps(dict(version=3, root=str(root), launchers=launchers, hdr=nits is not None,
+    receipt.write_text(json.dumps(dict(version=4, root=str(root), launchers=launchers, hdr=nits is not None,
+        auto_margin=Toggles.Mobile.icon_auto_margin,
         source=str(source) if source else None,
         dependencies={str(path): stamp(path) for path in probe.dependencies if path != root},
         outputs={str(path): stamp(path) for path in outputs}), indent=2) + '\n')
