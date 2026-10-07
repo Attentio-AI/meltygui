@@ -20,31 +20,40 @@ ICON_SIZES = {'20x20': (1, 2, 3), '29x29': (1, 2, 3), '40x40': (1, 2, 3),
 INFO_TEMPLATE = Path(__file__).parent / 'Host/Info.plist'
 
 
-def write_hdr_icon(path, nits, size, cicp):
-    """Resize in linear light, then encode opaque 16-bit PQ with HDR metadata."""
+def write_hdr_icon(path, nits, size, cicp, alpha=None):
+    """Resample premultiplied linear light; emit straight-alpha 16-bit PQ RGBA."""
     height, width = nits.shape[:2]
     factor = size / max(width, height)
     dimensions = max(1, round(width * factor)), max(1, round(height * factor))
-    resized = np.stack([np.asarray(Image.fromarray(nits[..., channel].astype(np.float32)).resize(
-        dimensions, Image.Resampling.LANCZOS)) for channel in range(3)], axis=-1)
-    # Ringing must not invent brighter highlights than the source.
-    resized = np.clip(resized, 0, max(203, float(nits.max())))
-    square = np.full((size, size, 3), 203.0, dtype=np.float32)
+    opacity = np.ones((height, width), dtype=np.float32) if alpha is None else alpha.astype(np.float32) / 65535
+
+    def resize(channel):
+        return np.asarray(Image.fromarray(channel.astype(np.float32)).resize(dimensions, Image.Resampling.LANCZOS))
+
+    resized_alpha = resize(opacity)
+    premultiplied = np.stack([resize(nits[..., channel] * opacity) for channel in range(3)], axis=-1)
+    # Filter premultiplied values to avoid pulling invisible RGB into edges;
+    # PNG stores straight alpha, so unpremultiply before PQ encoding.
+    resized = np.divide(premultiplied, resized_alpha[..., None], out=np.zeros_like(premultiplied),
+                        where=resized_alpha[..., None] > 1e-6)
+    resized = np.clip(resized, 0, float(nits.max()))
+    square = np.zeros((size, size, 3), dtype=np.float32)
+    square_alpha = np.zeros((size, size), dtype=np.float32)
     x, y = (size - dimensions[0]) // 2, (size - dimensions[1]) // 2
     square[y:y + dimensions[1], x:x + dimensions[0]] = resized
+    square_alpha[y:y + dimensions[1], x:x + dimensions[0]] = np.clip(resized_alpha, 0, 1)
     linear = np.clip(square / 10000, 0, 1) ** (2610 / 16384)
     encoded = ((3424 / 4096 + (2413 / 128) * linear) / (1 + (2392 / 128) * linear)) ** (2523 / 32)
-    codes = np.round(encoded * 65535).astype('>u2')
+    codes = np.round(np.concatenate([encoded, square_alpha[..., None]], axis=-1) * 65535).astype('>u2')
 
     def chunk(kind, data):
         return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
 
     rows = b''.join(b'\0' + row.tobytes() for row in codes)
-    # cLLi is expressed in ten-thousandths of a nit. Use the actual output's
-    # peak and conservative frame average, keeping values above SDR white.
-    light = struct.pack('>II', round(float(square.max()) * 10000),
-                        round(float(square.max(axis=-1).mean()) * 10000))
-    path.write_bytes(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 16, 2, 0, 0, 0))
+    visible = square * square_alpha[..., None]
+    light = struct.pack('>II', round(float(visible.max()) * 10000),
+                        round(float(visible.max(axis=-1).mean()) * 10000))
+    path.write_bytes(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 16, 6, 0, 0, 0))
                      + chunk(b'cICP', cicp) + chunk(b'cLLi', light)
                      + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
 
@@ -59,7 +68,7 @@ def prepare_icon(root, build):
         previous = json.loads(receipt.read_text())
     except (OSError, ValueError):
         previous = {}
-    if (previous.get('root') == str(root) and previous.get('version') == 2
+    if (previous.get('root') == str(root) and previous.get('version') == 3
             and previous.get('launchers') == launchers
             and all(stamp(Path(path)) == (tuple(value) if value else None)
                     for path, value in previous['dependencies'].items())
@@ -79,6 +88,7 @@ def prepare_icon(root, build):
     probe.exists(Path(__file__))
     info = plistlib.loads(INFO_TEMPLATE.read_bytes())
     nits = None
+    alpha = None
     image = None
     if source is not None:
         hdr = png_pq_cicp(source)
@@ -89,9 +99,6 @@ def prepare_icon(root, build):
             if cicp != bytes([9, 16, 0, 1]):
                 raise ValueError(f'{source}: HDR app icons require full-range RGB Rec.2020/PQ')
             nits = pq_decode(rgb.astype(np.float64) / 65535)
-            if alpha is not None:
-                opacity = alpha[..., None].astype(np.float64) / 65535
-                nits = nits * opacity + 203 * (1 - opacity)
         else:
             # A declared HDR icon must never silently fall through an SDR decoder.
             config = probe.config(desktop)
@@ -111,11 +118,11 @@ def prepare_icon(root, build):
                 suffix = f'@{scale}x' if scale != 1 else ''
                 path = destination / f'AppIcon{points}{suffix}.png'
                 if nits is not None:
-                    write_hdr_icon(path, nits, size, cicp)
+                    write_hdr_icon(path, nits, size, cicp, alpha)
                 else:
                     resized = ImageOps.contain(image, (size, size), Image.Resampling.LANCZOS)
-                    square = Image.new('RGB', (size, size), 'white')
-                    square.paste(resized, ((size - resized.width) // 2, (size - resized.height) // 2), resized)
+                    square = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+                    square.paste(resized, ((size - resized.width) // 2, (size - resized.height) // 2))
                     square.save(path)
                 outputs.append(path)
         phone = ['AppIcon20x20', 'AppIcon29x29', 'AppIcon40x40', 'AppIcon60x60']
@@ -125,7 +132,7 @@ def prepare_icon(root, build):
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     outputs.append(destination / 'Info.plist')
     receipt.touch(exist_ok=True)
-    receipt.write_text(json.dumps(dict(version=2, root=str(root), launchers=launchers, hdr=nits is not None,
+    receipt.write_text(json.dumps(dict(version=3, root=str(root), launchers=launchers, hdr=nits is not None,
         source=str(source) if source else None,
         dependencies={str(path): stamp(path) for path in probe.dependencies if path != root},
         outputs={str(path): stamp(path) for path in outputs}), indent=2) + '\n')
