@@ -16,7 +16,7 @@ import meltygui_imgui as imgui
 from meltygui.core.melty import Melty
 from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.rendering.core_decoration import no_save
-from meltygui.core.runtime.toggles import Tint
+from meltygui.core.runtime.toggles import Tint, Toggles
 from meltygui.hdr_color import pack_color
 
 # Render-thread CPU time attributes work to the callback, excluding pauses
@@ -240,7 +240,7 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
             draw_list.channels_set_current(Melty.max_layer - 1)
     # getattr also supports existing instances retained across a live update.
     warning_alpha = 0.0
-    if state.error is None and getattr(state, 'budget_warning', None):
+    if Toggles.show_overlay_warnings and state.error is None and getattr(state, 'budget_warning', None):
         age = max(0.0, time.monotonic() - state.budget_warning_at)
         warning_alpha = max(0.0, 1.0 - age / OVERLAY_WARNING_FADE_SECONDS)
         if warning_alpha > 0:

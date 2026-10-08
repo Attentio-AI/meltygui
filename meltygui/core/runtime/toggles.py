@@ -567,6 +567,7 @@ class Toggles:
 
     # [tint=(0.811, 0.59, 0.29)]
     dynamic_styles = False
+    show_overlay_warnings = True
     # [tint=(0.811, 0.59, 0.29)]
     dynamic_style_root = (0.12, 0.13, 0.15)
     # [tint=(0.811, 0.59, 0.29)]
