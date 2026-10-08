@@ -11,6 +11,8 @@
     <key>LSRequiresIPhoneOS</key><true/>
     <key>UIFileSharingEnabled</key><true/>
     <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Discover and connect to servers on your local network.</string>
     <key>CADisableMinimumFrameDurationOnPhone</key><true/>
     <key>UILaunchScreen</key><dict/>
     <key>UISupportedInterfaceOrientations</key><array>

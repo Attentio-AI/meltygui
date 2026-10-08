@@ -318,6 +318,7 @@ assert module.value == 42
         info = plistlib.loads((ROOT / "Host/Info.plist").read_bytes())
         self.assertIs(info["UIFileSharingEnabled"], True)
         self.assertIs(info["LSSupportsOpeningDocumentsInPlace"], True)
+        self.assertTrue(info["NSLocalNetworkUsageDescription"].strip())
         self.assertIs(info["CADisableMinimumFrameDurationOnPhone"], True)
         self.assertIs(info["UIApplicationSceneManifest"]["UIApplicationSupportsMultipleScenes"], False)
 
