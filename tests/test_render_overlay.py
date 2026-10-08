@@ -84,6 +84,61 @@ def test_budget_boundary(setup, monkeypatch, elapsed, warned):
     assert draw_list.add_text.called is warned
 
 
+def test_slow_warning_keeps_its_own_phase_timings(setup, monkeypatch):
+    draw_list, view = setup
+    def callback(draw_state):
+        overlay.overlay_checkpoint(draw_state, 'Navigation')
+        overlay.overlay_checkpoint(draw_state, 'Tabs')
+        overlay.overlay_checkpoint(draw_state, 'Tabs')
+    ds = view(callback)
+    clock = iter([0, .0001, .0004, .00055, .0006,
+                  1, 1.00001, 1.00002, 1.00003, 1.00004])
+    monkeypatch.setattr(overlay.time, 'thread_time', lambda: next(clock))
+    overlay.draw_overlay(ds)
+    state = ds.misc['render_overlay']
+    assert dict(state.warning_timings) == pytest.approx(
+        {'Navigation': .0001, 'Tabs': .00045, 'Other': .00005})
+    warning = state.budget_warning
+    assert 'Tabs: 0.450 ms' in warning
+    overlay.draw_overlay(ds)
+    assert state.budget_warning == warning
+    assert dict(state.warning_timings)['Tabs'] == pytest.approx(.00045)
+    assert state.phase_started is None
+    overlay.overlay_checkpoint(ds, 'Outside callback')
+    assert 'Outside callback' not in state.timings
+
+
+@pytest.mark.parametrize('width', [72, 200, 390])
+def test_warning_wraps_inside_visible_tile_and_reflows(setup, monkeypatch, width):
+    draw_list, view = setup
+    def measure(text):
+        lines = text.split('\n')
+        return max(map(len, lines)) * 6, len(lines) * 12
+    monkeypatch.setattr(overlay.imgui, 'calc_text_size', measure)
+    monkeypatch.setattr(overlay.imgui, 'get_font_size', lambda: 12)
+    ds = view(lambda: None)
+    ds.width, ds.height = 600, 600
+    ds.abs_clip_rect = (20, 30, 20 + width, 610)
+    clock = iter([0, .0006, 0, .0001])
+    monkeypatch.setattr(overlay.time, 'thread_time', lambda: next(clock))
+    overlay.draw_overlay(ds)
+    x, y, _, wrapped = draw_list.add_text.call_args.args
+    assert ('\n' in wrapped) == (measure(ds.misc['render_overlay'].budget_warning)[0] > width - 8)
+    assert all(measure(line)[0] <= width - 8 for line in wrapped.split('\n'))
+    assert 24 <= x and x + measure(wrapped)[0] <= 16 + width
+    assert 34 <= y and y + measure(wrapped)[1] <= 606
+    # A cached view can change width without a new slow callback.
+    ds.abs_clip_rect = (20, 30, 600, 610)
+    overlay.draw_overlay(ds)
+    if '\n' in wrapped:
+        assert draw_list.add_text.call_args.args[-1] != wrapped
+
+
+def test_warning_wraps_long_tokens_and_keeps_explicit_lines(monkeypatch):
+    monkeypatch.setattr(overlay.imgui, 'calc_text_size', lambda text: (len(text), 1))
+    assert overlay._wrap_warning('abcdefghij\nnext line', 4) == 'abcd\nefgh\nij\nnext\nline'
+
+
 def test_old_budget_failure_recovers_without_changing_callback(setup):
     _, view = setup
     callback = Mock()
@@ -222,6 +277,7 @@ def test_failed_overlay_discards_only_its_geometry(monkeypatch):
         before = ctypes.string_at(draw_list.vtx_buffer_data, start * imgui.VERTEX_SIZE)
         ds = SimpleNamespace(_kwargs={}, closed=False, just_shadow=False,
                              misc={}, misc_used=set(), _raw_input_value=None,
+                             abs_left=0, width=800,
                              abs_clip_rect=(0, 0, 800, 600), _abs_left=lambda: 0,
                              _abs_top=lambda: 0, header_height=0, current_tint=(0, 0, 0))
         end = []

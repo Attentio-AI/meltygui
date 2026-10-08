@@ -116,14 +116,15 @@ and clip. This avoids a render wrapper per row and keeps selection out of the
 cached body. File listings and project trees share their row-overlay painter.
 
 Callbacks must be very lightweight: taking **more than 0.5 ms of render-thread
-CPU time** disables that callback for the view. The budget uses `time.thread_time()`
-so scheduler pauses and work on other threads cannot permanently disable a cheap
-overlay. This excludes waits and is not a wall-clock latency guarantee; blocking
-I/O and resource preparation still belong outside overlays. Exceptions and invalid
-callbacks also draw an error instead. The first slow call must finish before it
-can be measured; its geometry is discarded, and subsequent frames skip it.
-Replacing the callback or hot-swapping its code retries it. Failure state is
-independent per view.
+CPU time** shows a warning while the callback keeps rendering. The budget uses
+`time.thread_time()` so scheduler pauses and work on other threads are excluded.
+This is not a wall-clock latency guarantee; blocking I/O and resource preparation
+still belong outside overlays. Warnings wrap within the visible view and fade
+over five seconds. A foreground callback can call `overlay_checkpoint(draw_state,
+"phase name")` after each phase; the warning retains that slow call's CPU breakdown,
+accumulating repeated labels. Checkpoints are inert outside the timed callback.
+Exceptions and invalid callbacks disable rendering for that view and discard the
+failed geometry. Replacing the callback or hot-swapping its code retries it.
 
 See [the runnable overlay example](../examples/render_overlay.py).
 
