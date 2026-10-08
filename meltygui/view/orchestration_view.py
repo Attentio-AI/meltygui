@@ -483,12 +483,12 @@ def draw_orchestrator(input_value=None, draw_state=None, style_manager=None,
                 tag = f"{Orchestrator._replay_index}/{len(orchestration.events)}"
             else:
                 override_count = len(getattr(orchestration, "overrides", None) or {})
-                tag = f"{orchestration.duration:g}s · {len(orchestration.events)} ev" \
-                    + (f" · {override_count} edited" if override_count else "")
+                tag = f"{orchestration.duration:g}s  {len(orchestration.events)} ev" \
+                    + (f"  {override_count} edited" if override_count else "")
                 if take_failure is not None:
-                    tag += " · failed"
+                    tag += "  failed"
                 elif take_success is not None:
-                    tag += " · ok"
+                    tag += "  ok"
             tag_width = imgui.calc_text_size(tag)[0]
             tag_left = rename_left - button_gap - tag_width
             if is_playing:

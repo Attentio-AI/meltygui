@@ -32,7 +32,7 @@ def notify_request(what, detail=""):
     never imports the SDK)."""
     if not enabled():
         return
-    text = what + (f" · {detail}" if detail else "")
+    text = what + (f"  {detail}" if detail else "")
     print(f"[anthropic] {time.strftime('%H:%M:%S')} {text}")
     try:
         from meltygui.core.diagnostics.notifications import notify

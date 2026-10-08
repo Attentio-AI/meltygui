@@ -387,7 +387,7 @@ def source_initials(label):
 def source_label(account_id, kind, accounts):
     """A tab's text: the provider, plus the account when the kind has several."""
     if len(accounts.of_kind(kind.name)) > 1:
-        return f'{kind.chat_label} · {accounts[account_id]["label"]}'
+        return f'{kind.chat_label}  {accounts[account_id]["label"]}'
     return kind.chat_label
 
 
@@ -530,10 +530,10 @@ def _draw_image(ref, x, y, max_width, box_height, caption_height, tint, *, name=
             rendered_size = (image_state.width, image_state.height)
             width, height = rendered_size
     elif entry is not None and entry.status == "failed":
-        caption = (caption + " · " if caption else "") + "could not decode: " + str(entry.error)
+        caption = (caption + "  " if caption else "") + "could not decode: " + str(entry.error)
     else:
         draw_list.add_rect_filled(x, y, x + width, y + height, _color(tint, 0.12), rounding=Melty.px(6))
-        caption = (caption + " · " if caption else "") + "decoding…"
+        caption = (caption + "  " if caption else "") + "decoding…"
     _title(caption or ref.label, x, y + height, max_width, caption_height, tint, brightness=0.7, ellipsis=True)
     return rendered_size
 
@@ -560,10 +560,10 @@ def transcript_entries(messages, state, key):
         if len(entries) == 1:
             preview = _message_preview(entries[0][1])
             if preview:
-                summary += " · " + preview
+                summary += "  " + preview
         failures = sum(_message_failed(message) for _, message in entries)
         if failures:
-            summary += f" · {failures} failed"
+            summary += f"  {failures} failed"
         group = Message("actionGroup", details={"label": summary})
         yield identifier, group
         if getattr(state, "action_groups", {}).get(key + ":" + identifier, False):

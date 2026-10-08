@@ -169,7 +169,7 @@ def usage_rows(payload):
                 label = (f"{minutes / 1440:g}d" if minutes % 1440 == 0 else
                          f"{minutes / 60:g}h" if minutes % 60 == 0 else f"{minutes:g}m")
             if len(buckets) > 1 or bucket_id != "codex":
-                label = f"{bucket.get('limitName') or bucket_id} · {label}"
+                label = f"{bucket.get('limitName') or bucket_id}  {label}"
             severity = ("exceeded" if percent >= 100 else "critical" if percent >= 90
                         else "warning" if percent >= 75 else "normal")
             resets = window.get("resetsAt")

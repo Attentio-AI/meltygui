@@ -610,7 +610,7 @@ def _collect(label, live_graph=False, reason=""):
     report = _write_report(label, lines) if Toggles.GC.reports else None
     # Toast: duration first (it is a lag entry), then what went - the top
     # three types by short name. Click → the report file in the editor.
-    tops = " · ".join(f"{tn.rsplit('.', 1)[-1]} {cnt:,}" for tn, cnt in hist[:3]) or "nothing"
+    tops = "  ".join(f"{tn.rsplit('.', 1)[-1]} {cnt:,}" for tn, cnt in hist[:3]) or "nothing"
     tint = (1.0, 0.25, 0.2) if ms >= 300 else (1.0, 0.65, 0.2)
     notify(f"gc: {label}  {ms:.0f}ms  [{thread}]  {total:,} objs ~{_fmt_bytes(nbytes)}: {tops}",
            tint=tint, tag="lag", stack=capture_stack(),

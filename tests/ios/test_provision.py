@@ -134,6 +134,31 @@ def test_missing_runtime_release_builds_from_source(tmp_path, monkeypatch):
     assert f'HOST_PYTHON={sys.executable}' in calls[1]
 
 
+def test_dependency_cache_adopts_completed_builds_and_survives_host_edits(tmp_path, monkeypatch):
+    selected = info('3.12')
+    base = tmp_path / 'cache'
+    previous = base / 'cpython-3.12/iphoneos-arm64-old-timestamp-key'
+    archive = support_archive(tmp_path, '3.12')
+    monkeypatch.setattr(provision, '_json', lambda url: [{'assets': [dict(name=archive.name, browser_download_url='https://example/runtime')]}])
+    monkeypatch.setattr(provision, '_download', lambda *a: archive)
+    framework, _, platform_config = provision.ensure_runtime(selected, sys.executable, previous, {})
+    existing = wheel(previous / 'wheels')
+    cache = provision.dependency_cache(base, selected)
+    assert cache == previous.resolve()
+    assert (base / 'cpython-3.12/iphoneos-arm64').is_symlink()
+    # Editing build/UI support code must not discard already valid device wheels.
+    support = tmp_path / 'ios-support'
+    support.mkdir()
+    (support / 'provision.py').write_text('updated progress reporting')
+    monkeypatch.setattr(provision, 'ROOT', support)
+    monkeypatch.setattr(provision, '_json', lambda *a: pytest.fail('Cached wheel must not query PyPI'))
+    monkeypatch.setattr(provision, '_build_source', lambda *a: pytest.fail('Cached wheel must not rebuild'))
+    assert provision.dependency_cache(base, selected) == cache
+    assert provision.acquire_wheel(Requirement('native==1.0'), sys.executable, selected,
+                                   framework, platform_config, cache, {}) == existing
+    assert provision.dependency_cache(base, info('3.13')) != cache
+
+
 @pytest.mark.parametrize('version', ['3.10', '3.11', '3.12'])
 def test_missing_wheel_builds_source_once_then_reuses_cache(tmp_path, monkeypatch, version):
     sdist = tmp_path / 'native.tar.gz'
@@ -288,8 +313,10 @@ def test_refresh_resolves_new_transitive_dependencies_atomically(tmp_path, monke
     # even though the old installed graph and source metadata stamps are valid.
     replacement = wheel(tmp_path / 'new-wheel', requirements=['paramiko>=3.5'])
     downloaded = []
+    local_builds = []
 
     def local_build(command, **kwargs):
+        local_builds.append(command)
         destination = Path(command[command.index('--outdir') + 1])
         destination.mkdir(parents=True, exist_ok=True)
         shutil.copy2(replacement, destination / replacement.name)
@@ -322,6 +349,7 @@ def test_refresh_resolves_new_transitive_dependencies_atomically(tmp_path, monke
         provision.ensure_configuration(tmp_path, build, repaired, cache_root=tmp_path / 'cache', refresh_local=True)
         provision.ensure_configuration(tmp_path, build, repaired, cache_root=tmp_path / 'cache')
         assert downloaded == ['paramiko', 'cryptography']  # Refresh preserves dependency stamps.
+        assert len(local_builds) == 2  # Failed refresh + repair; subsequent runs reuse both.
     assert staged_entry.read_text() == 'print("pending editor text")\n'
 
 
@@ -494,6 +522,43 @@ def test_build_failure_keeps_actionable_log(tmp_path):
                        env=dict(os.environ), log=log, directory=tmp_path)
     assert str(log) in str(error.value)
     assert 'undefined symbol: PyExample' in log.read_text()
+
+
+@pytest.mark.parametrize('nested_crypto', [False, True])
+def test_build_reports_progress_before_child_finishes(tmp_path, monkeypatch, nested_crypto):
+    import threading
+    from meltygui.platforms.ios import build_crypto
+    reported = threading.Event()
+    finished = tmp_path / 'finish'
+    log = tmp_path / 'compile.log'
+    failures = []
+
+    def output(*values, **kwargs):
+        if 'compilation-marker' in ' '.join(map(str, values)):
+            reported.set()
+
+    monkeypatch.setattr(provision, 'print', output, raising=False)
+    program = ('import time; from pathlib import Path; print("compilation-marker"); '
+               f'flag = Path({str(finished)!r}); deadline = time.monotonic() + 8\n'
+               'while not flag.exists() and time.monotonic() < deadline: time.sleep(.01)\n')
+
+    def compile():
+        try:
+            run = build_crypto.run if nested_crypto else provision._run
+            run([sys.executable, '-c', program], env=dict(os.environ), log=log, directory=tmp_path)
+        except BaseException as error:
+            failures.append(error)
+
+    worker = threading.Thread(target=compile, daemon=True)
+    worker.start()
+    try:
+        assert reported.wait(5), 'Tasks must see compiler output while the child is still running'
+        assert worker.is_alive()
+    finally:
+        finished.touch()
+        worker.join(5)
+    assert not worker.is_alive() and not failures
+    assert 'compilation-marker' in log.read_text()
 
 
 def test_build_failure_reports_early_cmake_error_from_this_attempt(tmp_path):

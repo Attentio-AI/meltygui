@@ -27,6 +27,9 @@ never library dependencies. Fix ownership, not just filenames; avoid catch-all m
 
 ## Render contract
 
+Never use the Unicode middle dot (U+00B7) in UI text, including labels, buttons,
+menus, and status messages. Separate details with spacing, parentheses, or clear wording.
+
 - First parameter: typed `input_value`. Return accurate `(changed, value)`; mutate
   mutable input in place, preserving identity and specialized types. Layout/style
   belongs in signatures or decorators.

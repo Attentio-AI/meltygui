@@ -225,14 +225,14 @@ def parse_usage(payload: dict) -> list[dict]:
                          "active": bool(entry.get("is_active")),
                          "detail": ""})
     else:
-        for key, label in (("five_hour", "Session (5 h)"), ("seven_day", "Week · all models")):
+        for key, label in (("five_hour", "Session (5 h)"), ("seven_day", "Week  all models")):
             block = payload.get(key)
             if isinstance(block, dict):
                 rows.append(_legacy_row(key, label, block))
         for key, block in payload.items():
             if (key.startswith("seven_day_") and isinstance(block, dict)
                     and key not in ("seven_day",)):
-                rows.append(_legacy_row(key, "Week · " + key[len("seven_day_"):].replace("_", " ").title(), block))
+                rows.append(_legacy_row(key, "Week  " + key[len("seven_day_"):].replace("_", " ").title(), block))
 
     spend = payload.get("spend")
     if isinstance(spend, dict) and (spend.get("used") or spend.get("limit")):
@@ -241,7 +241,7 @@ def parse_usage(payload: dict) -> list[dict]:
         detail = f"{used} of {limit}" if limit else used
         if not spend.get("enabled"):
             reason = (spend.get("disabled_reason") or "off").replace("_", " ")
-            detail += f" · off ({reason})"
+            detail += f"  off ({reason})"
         rows.append({"key": "spend", "label": "Extra usage",
                      "percent": _percent(spend.get("percent")),
                      "severity": spend.get("severity") or "normal",
@@ -256,7 +256,7 @@ def parse_usage(payload: dict) -> list[dict]:
             limit = _format_money(float(extra["monthly_limit"]) / scale, currency, places)
             detail = f"{used} of {limit}"
             if not extra.get("is_enabled"):
-                detail += f" · off ({(extra.get('disabled_reason') or 'off').replace('_', ' ')})"
+                detail += f"  off ({(extra.get('disabled_reason') or 'off').replace('_', ' ')})"
             rows.append({"key": "spend", "label": "Extra usage",
                          "percent": _percent(extra.get("utilization")),
                          "severity": "normal", "resets_at": None,
@@ -271,7 +271,7 @@ def summary(rows) -> str:
         if row["key"] == "spend":
             continue
         parts.append(f"{_short_label(row)} {row['percent']:.0f}%")
-    return " · ".join(parts)
+    return "  ".join(parts)
 
 
 def reset_text(resets_at, now=None) -> str:
@@ -332,11 +332,11 @@ def _limit_label(entry) -> str:
     if kind == "session":
         return "Session (5 h)"
     if kind == "weekly_all":
-        return "Week · all models"
+        return "Week  all models"
     if kind.startswith("weekly"):
-        return f"Week · {scope}" if scope else "Week"
+        return f"Week  {scope}" if scope else "Week"
     label = kind.replace("_", " ") or "limit"
-    return f"{label} · {scope}" if scope else label
+    return f"{label}  {scope}" if scope else label
 
 
 def _short_label(row) -> str:
@@ -425,7 +425,7 @@ class ClaudeCodeLogin:
             raise RuntimeError("claude (Claude Code) not found — install it or set Toggles.InternetAccounts.claude_code_bin")
         from meltygui.completion.providers.anthropic_requests import notify_request
         import meltygui.completion.providers.oauth_popup as oauth_popup
-        notify_request("claude auth login", f"Claude Code's own requests · {self.email}")
+        notify_request("claude auth login", f"Claude Code's own requests  {self.email}")
         # Claude Code opens the browser itself (xdg-open) - the shim on its
         # PATH turns that into the placed popup, then place_async parks it.
         env = oauth_popup.shim_env(os.environ)

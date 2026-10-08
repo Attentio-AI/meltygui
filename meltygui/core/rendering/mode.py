@@ -782,18 +782,18 @@ class Lens:
 # ── Lens kinds (generic over `name`) ──────────────────────────────────────────
 
 def draw_state_attr(name, default=None):
-    return Lens(f"Draw state · {name}", name, root=lambda ds: ds, path=(name,),
+    return Lens(f"Draw state  {name}", name, root=lambda ds: ds, path=(name,),
                 default=default, kind="Draw state", tint=(0.1, 0.1, 0.3))
 
 
 def instance_attr(name, default=None):
-    return Lens(f"Instance attr · {name}", name,
+    return Lens(f"Instance attr  {name}", name,
                 root=lambda ds: getattr(ds, "_raw_input_value", None),
                 path=(name,), default=default, kind="Instance")
 
 
 def class_var(name, default=None):
-    return Lens(f"Class variable · {name}", name, root=_owning_source, path=(name,),
+    return Lens(f"Class variable  {name}", name, root=_owning_source, path=(name,),
                 default=default, kind="Class variable",
                 chain=lambda root: _build_code_chain(root, (name,), default, "Class variable"))
 
@@ -805,7 +805,7 @@ def decoration(name, default=None, decorator="defaults"):
     tail = ("decorators", decorator, name)
     # A synthesized @defaults needs its import; ensure it in the same save write.
     imp = _DEFAULTS_IMPORT if decorator == "defaults" else None
-    return Lens(f"Decoration · {name}", name, root=_owning_source, path=tail,
+    return Lens(f"Decoration  {name}", name, root=_owning_source, path=tail,
                 default=default, kind="Decoration",
                 chain=lambda root: _build_code_chain(root, tail, default, "Decoration",
                                                      ensure_import=imp))
@@ -817,7 +817,7 @@ def code_comment(name, default=None):
     # above the class, so we load via class_to_address_incl_overrides, which
     # extends the span up to include it - otherwise it never round-trips.
     tail = ("__overrides__", name)
-    return Lens(f"Code comment · {name}", name, root=_owning_source, path=tail,
+    return Lens(f"Code comment  {name}", name, root=_owning_source, path=tail,
                 default=default, kind="Code comment",
                 chain=lambda root: _build_code_chain(root, tail, default, "Code comment",
                                                      prefix_class=False, include_overrides=True))
@@ -840,7 +840,7 @@ def caller_arg(name, default=None):
                 (address_to_call_parse, {'load': True}),
                 (focus, {'path': (name,), 'default': default, 'kind': "Caller"}),
                 (call_dict_to_save, {'save': True}))
-    return Lens(f"Caller arg · {name}", name,
+    return Lens(f"Caller arg  {name}", name,
                 root=lambda ds: getattr(ds, "_call_site", None),
                 path=(name,), default=default, kind="Caller", chain=chain)
 

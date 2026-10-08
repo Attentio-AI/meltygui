@@ -33,10 +33,10 @@ def turn_status(chat):
     requests = pending_requests(chat)
     if requests:
         if any(request.get("kind") != "approval" for request in requests):
-            return "Reply needed", "Response requested · Answer below", AMBER
-        return "Approval needed", "Approval requested · Review below", AMBER
+            return "Reply needed", "Response requested  Answer below", AMBER
+        return "Approval needed", "Approval requested  Review below", AMBER
     if getattr(chat, "error", None):
-        return "Error", "Turn needs attention · See error below", AMBER
+        return "Error", "Turn needs attention  See error below", AMBER
     if getattr(chat, "loading", False) or not getattr(chat, "loaded", True):
         return "", "Loading conversation…", MUTED
     if is_active(chat):
@@ -51,9 +51,9 @@ def turn_status(chat):
     if messages:
         last = next(reversed(messages.values()))
         finished = last.get("role") == "assistant" and last.get("status") == "completed"
-        return "Your turn", ("Your turn · Response finished" if finished else
-                             "Your turn · Ready for your message"), GREEN
-    return "", "Ready · Send a message to start", MUTED
+        return "Your turn", ("Your turn  Response finished" if finished else
+                             "Your turn  Ready for your message"), GREEN
+    return "", "Ready  Send a message to start", MUTED
 
 
 def token_badge(chat):
