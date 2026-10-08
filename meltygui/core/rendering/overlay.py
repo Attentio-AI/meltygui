@@ -270,8 +270,13 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
                     wrapped = _wrap_warning(budget_warning, width)
                     layout = state.warning_layout = (key, wrapped, imgui.calc_text_size(wrapped))
                 _, wrapped, (text_width, text_height) = layout
-                error_list.add_text(max(left + 4, right - text_width - 4),
-                                    max(top + 4, bottom - text_height - 4),
+                text_left = max(left + 4, right - text_width - 4)
+                text_top = max(top + 4, bottom - text_height - 4)
+                error_list.add_rect_filled(text_left - 4, text_top - 4,
+                                           min(right, text_left + text_width + 4),
+                                           min(bottom, text_top + text_height + 4),
+                                           pack_color(0.0, 0.0, 0.0, 0.9 * warning_alpha))
+                error_list.add_text(text_left, text_top,
                                     pack_color(1.0, 0.0, 0.0, warning_alpha), wrapped)
             else:
                 color = pack_color(*Tint.dd_text(draw_state.current_tint), 1.0)
