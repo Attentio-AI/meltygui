@@ -248,6 +248,9 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
 
     if style_manager is None:
         style_manager = Melty.style_manager
+    # Live overlays run outside the owner's style stack on cached frames.
+    # Resolve both fill and label against that owner without mutating globals.
+    button_tint = draw_state.current_tint if draw_state is not None and paint else None
     scale = Melty.ui_scale        # Melty.px inlined: ~170 calls a frame
     text = str(label).split("##")[0]
     ts = imgui.calc_text_size(text)
@@ -296,7 +299,8 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
                 bg = style_manager.make_color_rgb(
                     color[0], color[1], color[2],
                     value=tint_value + (hover_boost if hovered else 0.0),
-                    factor=factor, saturation_scale=saturation, alpha=1.0)
+                    factor=factor, saturation_scale=saturation, alpha=1.0,
+                    requested_tint=button_tint)
                 bg = clamp(bg[0], bg[1], bg[2], 0.0, max_bg_brightness)
                 dl.add_rect_filled(x, y, x + w, y + h,
                                    pack_color(bg[0], bg[1], bg[2], alpha),
@@ -321,7 +325,8 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
             tc = style_manager.make_color_rgb(
                 color[0], color[1], color[2],
                 value=text_value + (hover_text_boost if hovered else 0.0),
-                factor=factor, saturation_scale=text_saturation, alpha=1.0)
+                factor=factor, saturation_scale=text_saturation, alpha=1.0,
+                requested_tint=button_tint)
         # text_offset_x: left-align the label at a fixed inset instead of
         # centering — for buttons whose left edge hosts another element (the
         # editor tabs' tint swatch) that centered text would overlap.

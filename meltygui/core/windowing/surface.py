@@ -43,6 +43,7 @@ from types import SimpleNamespace
 import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
 import OpenGL.GL as gl
+from meltygui.core.conversion.dict_conversion import DictConversion
 
 from meltygui.core.melty import Melty
 import meltygui.core.input.mouse_cursor as mouse_cursor
@@ -109,6 +110,35 @@ def _capture_defaults():
                 _DEFAULTS[(mod, name)] = value
 
 
+class SurfaceState(DictConversion):
+    """A desktop root's content size, in window coordinates (not Retina pixels)."""
+
+    def __init__(self):
+        super().__init__()
+        self.size = None
+
+
+def root_surface_state(session, key, name):
+    """Keep native geometry beside the session's view state, keyed by root function.
+
+    Older sessions only saved the filling view's dimensions. Adopt those once,
+    before the default native size can clamp its persisted tile dividers.
+    """
+    state = session.surface_states.get(key)
+    if state is None:
+        state = session.surface_states[key] = SurfaceState()
+        roots = [ds for ds in session.draw_state_registry.values()
+                 if ds is not None and ds.name == name
+                 and ds.parent_window is None and not ds.nested_window]
+        if len(roots) == 1:
+            root = roots[0]
+            width = root.width
+            height = root.height + root.window_pos[1]
+            if width > 0 and height > 0:
+                state.size = (int(width), int(height))
+    return state
+
+
 class Surface:
     all: list = []          # open surfaces in creation order
     active = None
@@ -118,7 +148,7 @@ class Surface:
     session = None            # the AppSession app.py loaded (app_session.py), if any
 
     def __init__(self, name, body, *, width=1280, height=800, parent=None,
-                 draw_state=None, tint=None, on_close=None):
+                 draw_state=None, tint=None, on_close=None, state=None):
         """``name`` is the window's name AND its OS title (a child's `##suffix`
         is stripped from the title); ``width`` / ``height`` the content size —
         the universal meltygui names, as on `@window` and every view.
@@ -131,7 +161,10 @@ class Surface:
         self.name, self.body, self.parent, self.draw_state = name, body, parent, draw_state
         self.tint = tint
         self.on_close = on_close      # asked when an OS close lands; False keeps the window
+        self.state = state
         self.settings = None          # app_settings.AppSettings of a @glfw_window(settings=...) root: the chrome's cog
+        if state is not None and state.size is not None:
+            width, height = state.size
         width, height = int(width), int(height)
         self.title = _unique_title(name.split('##')[0])
         self.request = None         # the melty.surface_children entry of a child
@@ -444,6 +477,7 @@ class Surface:
                       f'mods_corner={id(self._mods[(titlebar, "_corner_gl")]):#x} active={Surface.active.title!r}',
                       flush=True)
             raise
+        self.remember_size()
         self.fps_counter.frame_finished(frame_started)
         self.frames += 1
         if self.frames == 2 and not Melty.cache.enabled:
@@ -452,6 +486,19 @@ class Surface:
     # --- geometry (children) ---------------------------------------------------------
     def content_size(self):
         return glfw.get_framebuffer_size(self.window)
+
+    def remember_size(self):
+        """Save observed content dimensions, excluding the native shadow margin."""
+        # A surface already open when this code is hotswapped has no owner yet;
+        # its saved root DrawState supplies the migration on the next launch.
+        state = getattr(self, 'state', None)
+        if state is None:
+            return
+        width, height = glfw.get_window_size(self.window)
+        inset = int(titlebar.window_inset()) if self.chrome else 0
+        width, height = width - 2 * inset, height - 2 * inset
+        if width > 0 and height > 0:
+            state.size = (width, height)
 
     # --- teardown --------------------------------------------------------------------
     def destroy(self):
@@ -467,6 +514,7 @@ class Surface:
         if self.parent is not None and self in self.parent.children:
             self.parent.children.remove(self)
         self.activate()
+        self.remember_size()
         from meltygui.core.cache.tile_cache import TileCacheMasked
         TileCacheMasked.window_caches.pop(Melty.cache, None)
         from meltygui.core.graphics.gl_state import GLState

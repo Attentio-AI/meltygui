@@ -25,6 +25,8 @@ def editor(input_value=None, state: EditorState = None):
 ```
 
 The loop starts after the main module finishes defining its windows.
+Desktop root windows restore their content size from the app session before
+the first layout pass; the decorator's `width` and `height` are initial defaults.
 Injected state persists across frames and sessions. Call render functions every
 frame, returning `(changed, value)`. For nested windows, pass `closable=True` and
 an `open_requested` event to the same call every frame. Use `glfw_window=True` to

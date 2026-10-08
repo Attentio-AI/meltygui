@@ -6,8 +6,8 @@ import sys
 import pytest
 
 
-@pytest.mark.parametrize("editable", [True, False])
-def test_touch_focus_uses_text_rows(tmp_path, editable):
+@pytest.mark.parametrize("editable, console_colors", [(True, False), (False, False), (False, True)])
+def test_touch_focus_uses_text_rows(tmp_path, editable, console_colors):
     program = r'''
 from pathlib import Path
 import sys
@@ -48,12 +48,15 @@ from meltygui.core.core_render import render_func
 from meltygui.core.melty import Melty
 from meltygui.view.text_view import draw_text
 editable = sys.argv[2] == 'True'
+console_colors = sys.argv[3] == 'True'
 state = dict(text='one\n\nthree')
 @glfw_window(name='Focus test', app_id='text-focus-test')
 @render_func(use_cache=False)
 def body(input_value):
+    state['raw'] = ('\x1b[31m' + state['text'] + '\x1b[0m') if console_colors else state['text']
     state['changed'], state['result'], state['ds'] = draw_text(
-        state['text'], name='text', width=380, height=360, editable=editable,
+        state['raw'], name='text', width=380, height=360,
+        editable=editable, console_colors=console_colors,
         show_header=False, with_header=None, with_footer=None, is_tree=False,
         show_widgets=False, autocomplete=False, syntax_highlight=False,
         show_file_header=False, show_jump_bar=False, return_extras=True)
@@ -78,6 +81,9 @@ def tap(row):
 
 for _ in range(8): frame()
 assert state['ds']._stack_trace is None, state['ds']._stack_trace
+if console_colors:
+    from meltygui.hdr_color import pack_color
+    assert pack_color(205 / 255, 49 / 255, 49 / 255, 1.0) in state['ds']._tok_color_memo[1]
 tap(6.5)
 assert Melty.text_focused_ds is None
 assert not any(keyboard), keyboard
@@ -100,9 +106,9 @@ if not editable:
                        (keys.KEY_ENTER, 0), (keys.KEY_TAB, 0),
                        (keys.KEY_SLASH, keys.MOD_CONTROL), (keys.KEY_I, keys.MOD_CONTROL)]:
         key(code, mods)
-        assert state['result'] == state['text'] and not state['changed']
+        assert state['result'] == state['raw'] and not state['changed']
     frame([dict(kind='text', text='cannot edit')])
-    assert state['result'] == state['text'] and not state['changed']
+    assert state['result'] == state['raw'] and not state['changed']
     assert not any(keyboard), keyboard
 caret = state['ds'].text_cursor_pos
 tap(6.5)
@@ -170,6 +176,6 @@ contact('end', y)
 assert Melty.text_focused_ds is None
 native.close()
 '''
-    result = subprocess.run([sys.executable, '-c', program, str(tmp_path), str(editable)],
+    result = subprocess.run([sys.executable, '-c', program, str(tmp_path), str(editable), str(console_colors)],
                             close_fds=False, text=True, capture_output=True, timeout=45)
     assert result.returncode == 0, result.stdout + result.stderr

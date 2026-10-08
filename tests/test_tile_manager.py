@@ -557,3 +557,96 @@ def test_tile_picker_switches_to_icon_and_restores_name(monkeypatch, icon):
         assert x == (10 + (width - 10) / 2 if width < threshold else 15) + 2 * Melty.ui_scale
         assert y == 24.5 - Melty.ui_scale
     assert tile_view.renderer_label(editor) in calls[1]['collection']
+
+
+@pytest.mark.parametrize('dynamic', [False, True])
+def test_tile_background_uses_view_tint_and_standard_adjustment(monkeypatch, dynamic):
+    from unittest.mock import Mock
+    import meltygui.core.layout.tile_manager_core as core
+    import meltygui.core.layout.tile_links as links
+    import meltygui.view.decoration_view as decoration
+    from meltygui.core.core_render import render_func
+    from meltygui.core.runtime.toggles import Toggles
+    from meltygui.core.melty import Melty
+
+    @render_func(tint=(0.8, 0.2, 0.1), bg_offset=-0.3, max_bg_value=0.2)
+    def view(input_value):
+        return False, input_value
+
+    tile = Tile(render_func=view)
+    ds = SimpleNamespace(current_tint=(0.3, 0.3, 0.3), _kwargs={},
+                         _frozen_bg_kwargs={'bg_depth': 3, 'bg_stack': ['captured']})
+    monkeypatch.setattr(links, 'prepare_endpoint', lambda *a: SimpleNamespace(draw_state=ds))
+    monkeypatch.setattr(core.Core.melty, 'is_touch', False)
+    monkeypatch.setattr(core, 'tile_rect', lambda *a, **k: (10, 20, 310, 220))
+    monkeypatch.setattr(core, 'add_shadow', lambda *a, **k: None)
+    monkeypatch.setattr(core, 'hover_shown', lambda *a, **k: False)
+    monkeypatch.setattr(Toggles, 'dynamic_styles', dynamic)
+    manager = Mock()
+    monkeypatch.setattr(Melty, 'style_manager', manager)
+    original_context = Melty.bg_depth, Melty.bg_stack
+    painter = Mock()
+    def paint(**kwargs):
+        assert Melty.bg_depth == 3 and Melty.bg_stack == ['captured']
+        painter(**kwargs)
+    monkeypatch.setattr(decoration, 'draw_bg', paint)
+    background = Mock()
+    monkeypatch.setattr(Melty, 'add_background', background)
+    dl = Mock()
+    monkeypatch.setattr(core.imgui, 'get_window_draw_list', lambda: dl)
+    core.draw_tile(tile, (), object())
+    if dynamic:
+        background.assert_called_once_with((0.8, 0.2, 0.1), rect=(10, 20, 300, 200),
+                                           corner_radius=4.0, draw_list=dl, draw_state=ds)
+        painter.assert_not_called()
+    else:
+        manager.push_tint_fields.assert_called_once_with(0.8, 0.2, 0.1)
+        kwargs = painter.call_args.kwargs
+        assert (kwargs['left'], kwargs['top'], kwargs['width'], kwargs['height']) == (10, 20, 300, 200)
+        assert kwargs['bg_offset'] == -0.3 and kwargs['max_bg_value'] == 0.2
+        assert not kwargs['outline'] and 'tint' not in kwargs
+        manager.pop_tint_fields.assert_called_once_with(manager.push_tint_fields.return_value)
+        assert (Melty.bg_depth, Melty.bg_stack) == original_context
+    view.tile_background = lambda tile: 123
+    core.draw_tile(tile, (), object())
+    dl.add_rect_filled.assert_called_once_with(10, 20, 310, 220, 123, 4.0)
+
+
+def test_tile_real_background_painter_emits_adjusted_red(monkeypatch):
+    from unittest.mock import Mock
+    from meltygui.core.core_render import render_func
+    from meltygui.core.melty import Melty
+    from meltygui.core.runtime.toggles import Toggles
+    from meltygui.core.styling.style_core import ImGuiStyleManager
+    from meltygui.hdr_color import unpack_color
+    from meltygui.view.decoration_view import draw_bg
+    import meltygui.core.layout.tile_links as links
+    from meltygui.core.layout.tile_manager_core import draw_tile_background
+
+    @render_func(tint=(0.795, 0.309, 0.326), show_bg=False)
+    def view(input_value):
+        return False, input_value
+
+    ds = SimpleNamespace(current_tint=(0.3, 0.3, 0.3), _kwargs={})
+    monkeypatch.setattr(links, 'prepare_endpoint', lambda *a: SimpleNamespace(draw_state=ds))
+    monkeypatch.setattr(Toggles, 'dynamic_styles', False)
+    manager = ImGuiStyleManager()
+    manager.push_tint_fields(0.3, 0.3, 0.3)
+    monkeypatch.setattr(Melty, 'style_manager', manager)
+    monkeypatch.setattr(Melty, 'bg_depth', 1)
+    monkeypatch.setattr(Melty, 'bg_stack', [(0.3, 0.3, 0.3)])
+    dl = Mock()
+    draw_tile_background(Tile(render_func=view), (), (10, 20, 310, 220), dl, 4)
+    dl.add_rect_filled.assert_called_once()
+    call = dl.add_rect_filled.call_args
+    assert call.args == (10, 20, 310, 220)
+    r, g, b, a = unpack_color(call.kwargs['col'])
+    assert r > g and r > b and a == pytest.approx(1)
+    assert manager.get_tint() == (0.3, 0.3, 0.3)
+    # The tile uses precisely the normal painter's adjusted color.
+    expected = Mock()
+    manager.push_tint_fields(0.795, 0.309, 0.326)
+    draw_bg(bypass=True, left=10, top=20, width=300, height=200,
+            rounding=4, outline=False, opacity=1, nested_bg=True,
+            style_manager=manager, draw_list=expected)
+    assert call == expected.add_rect_filled.call_args

@@ -226,8 +226,8 @@ def hover_shown(draw_state, rect, owns_gesture, view_id=None):
 
 def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
               tile_state=None, gap=4.0, leaf_frames=None):
-    """Paint one leaf — no background (``draw_split_dividers`` draws the
-    lines between tiles), a shadow lifting the tile off the host, and a
+    """Paint one leaf — its view's tint across the whole tile, a shadow
+    lifting the tile off the host, and a
     small triangle in each corner (brighter when hovered or dragged) that
     marks the split / join grip — and run the corner split gesture when
     ``tree`` / ``root_frame`` / ``tile_state`` are given (``draw_tiles``
@@ -265,6 +265,8 @@ def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
     fill = background(tile) if background is not None else None
     if fill is not None:
         draw_list.add_rect_filled(x0, y0, x1, y1, fill, tile_shadow_radius)
+    elif tile.render_func is not None:
+        draw_tile_background(tile, path, rect, draw_list, tile_shadow_radius)
 
     changed = False
     gesture = tile_state.gesture if tile_state is not None else None
@@ -287,6 +289,56 @@ def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
                 tile, frame, draw_state, path, tree, root_frame, tile_state,
                 name, on_left, on_top, grip) or changed
     return changed
+
+
+def draw_tile_background(tile, path, rect, draw_list, rounding):
+    """Extend the view's standard adjusted background across its tile."""
+    from meltygui.core.layout.tile_links import prepare_endpoint
+    ds = prepare_endpoint(tile, path).draw_state
+    paint_tile_background(ds, tile.render_func, rect, draw_list, rounding)
+
+
+def paint_tile_background(ds, renderer, rect, draw_list, rounding=0):
+    """Paint the same tile fill when an overlay must cover stale cached pixels."""
+    from meltygui.view.tile_view import renderer_decoration
+    from meltygui.view.decoration_view import draw_bg
+    from meltygui.core.runtime.toggles import Toggles
+    from meltygui.core.melty import Melty
+
+    options = dict(renderer_decoration(renderer))
+    options.update(ds._kwargs or {})
+    # current_tint is the inherited tint captured BEFORE the wrapper applies
+    # this view's decoration/overrides. Prefer the resolved view options.
+    tint = options.get('tint')
+    if tint is None:
+        tint = ds.current_tint
+    left, top, right, bottom = rect
+    if Toggles.dynamic_styles:
+        Melty.add_background(options.get('style', tint),
+                             rect=(left, top, right - left, bottom - top),
+                             corner_radius=rounding, draw_list=draw_list, draw_state=ds)
+        return
+    manager = Melty.style_manager
+    previous = manager.push_tint_fields(*tint) if tint is not None else None
+    old_depth, old_stack = Melty.bg_depth, Melty.bg_stack
+    frozen = getattr(ds, '_frozen_bg_kwargs', None) or {}
+    try:
+        # Reuse the view's captured depth/bleed context on cache and resize
+        # replay, as draw_freeze_bg does. New views use the host context.
+        Melty.bg_depth = frozen.get('bg_depth', old_depth)
+        Melty.bg_stack = frozen.get('bg_stack', old_stack)
+        draw_bg(bypass=True, left=left, top=top,
+                width=right - left, height=bottom - top, rounding=rounding,
+                outline=False, opacity=1.0, style_manager=manager, draw_list=draw_list,
+                bg_offset=options.get('bg_offset', 0),
+                nested_bg=options.get('bg_offset', 0) >= 0,
+                saturation=options.get('saturation', 1.0),
+                max_bg_depth=options.get('max_bg_depth'),
+                max_bg_value=options.get('max_bg_value'))
+    finally:
+        Melty.bg_depth, Melty.bg_stack = old_depth, old_stack
+        if previous is not None:
+            manager.pop_tint_fields(previous)
 
 
 def tile_corner_gesture(tile, frame, draw_state, path, tree, root_frame,

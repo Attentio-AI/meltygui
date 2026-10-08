@@ -50,6 +50,8 @@ class AppSession(DictConversion):
         # DictConversion lets app objects through the dict it hands over
         # and keeps between runs, like a studio model field.
         self.app_state = {}
+        # Native root sizes must be restored before their first layout pass.
+        self.surface_states = {}
         # Global search's pick counts / last query (model.global_search_store
         # .GlobalSearchStore), created by the search view on first use when
         # the app enabled it (meltygui.global_search). Declared here because

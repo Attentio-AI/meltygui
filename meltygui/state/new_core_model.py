@@ -153,7 +153,7 @@ class ContextMenuWindowState(DictConversion):
         return True
 
 
-@no_save("_breakpoint_gesture")
+@no_save("_breakpoint_gesture", "_console_cache")
 @exclude("restore_first_line", "restore_total_lines", "restore_text",
          "restore_gutter_digits", "restore_line_offset", "restore_fold_keys",
          "restore_gutter_rows", "restore_diff_collapsed", "restore_diff_rows",
@@ -171,6 +171,7 @@ class TextEditorState(DictConversion):
         self._completion_anchor = None
         self._signature_dismissed = None
         self._breakpoint_gesture = False
+        self._console_cache = None  # Derived ANSI parsing; rebuilt from the input buffer.
         # {def_name: bool} - whether that function's parameter window is
         # visible. The def widget reads/writes this bool DIRECTLY each
         # render (visibility IS this bool); persisted, so a fresh session

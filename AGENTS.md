@@ -87,3 +87,11 @@ agent desktop with separate session/save paths; follow `/home/lukas/AGENTS.md`.
 Report GPU/backend coverage and remaining coupling; never report git state ("not committed"). Test a noneditable wheel outside
 the checkout before release. Import through `meltygui`, without sys.path hacks or
 latent-descent dependencies. [Setup/checks](docs/DEVELOPMENT.md).
+
+## Change summaries
+
+After completing a bug fix or feature addition, include a concise Python
+pseudocode summary of the changes in the final response. Use a fenced `python`
+code block to show the key behavior or control flow, with brief comments explaining
+what changed; for bug fixes, make the corrected behavior clear. Keep the summary
+focused on the actual changes and identify it as pseudocode, not runnable code.

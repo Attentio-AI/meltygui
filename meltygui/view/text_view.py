@@ -23,6 +23,170 @@ import re
 import time
 
 
+# ANSI foreground palette. Background SGR codes are consumed without painting
+# a wash, so console output can sit directly on its containing panel.
+_CONSOLE_PALETTE = (
+    (0, 0, 0), (205, 49, 49), (13, 188, 121), (229, 229, 16),
+    (36, 114, 200), (188, 63, 188), (17, 168, 205), (229, 229, 229),
+    (102, 102, 102), (241, 76, 76), (35, 209, 139), (245, 245, 67),
+    (59, 142, 234), (214, 112, 214), (41, 184, 219), (255, 255, 255),
+)
+_CONSOLE_ESCAPE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|(?![\[\]])[@-_])"
+    r"|\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*|)$")
+
+
+
+# Console tokens share the Python editor's palette; ANSI RGB overrides it.
+_CONSOLE_LOG_COLORS = {
+    'text': 'default', 'timestamp': 'line_no',
+    'number': 'number', 'field': 'builtin_pseudo',
+}
+_CONSOLE_TRACE_FRAME = re.compile(r'^(\s*File )(".*?")(, line )(\d+)(, in )?(.*?)(\n?)$')
+
+_CONSOLE_LOG_TOKEN = re.compile(
+    r"(?P<timestamp>\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}:\d{2}"
+    r"(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b)"
+    r"|(?P<number>(?<![\w.])[-+]?(?:0[xX][0-9a-fA-F]+|\d+(?:\.\d+)?"
+    r"(?:[eE][-+]?\d+)?)(?!\w))"
+    r"|(?P<field>\b[A-Za-z_]\w*(?=\s*=))")
+
+
+def _console_log_spans(text, ansi_spans):
+    """Color plain timestamps/numbers/fields, then overlay explicit ANSI colors."""
+    from meltygui.editor.text_editor import tokenize
+    tokens = []
+    in_traceback = False
+    source_expected = False
+    for line in text.splitlines(keepends=True):
+        frame = _CONSOLE_TRACE_FRAME.match(line)
+        if frame:
+            in_traceback = source_expected = True
+            keys = ('default', 'string', 'default', 'number', 'default', 'def_name', 'default')
+            tokens.extend((part, key) for part, key in zip(frame.groups(), keys) if part)
+            continue
+        if line.lstrip().startswith('Traceback ('):
+            in_traceback = True
+            source_expected = False
+            tokens.append((line, 'comment'))
+            continue
+        if in_traceback and source_expected and line.startswith(('    ', '\t')):
+            # Use the editor's actual lexer, including strings, builtins,
+            # f-strings and keywords, rather than approximating Python.
+            tokens.extend(tokenize(line))
+            continue
+        if in_traceback and re.match(r'^[\w.]+(?:Error|Exception|Interrupt|Exit|Warning)?(?::|\n|$)', line):
+            name, separator, message = line.partition(':')
+            tokens.append((name, 'builtin'))
+            if separator:
+                tokens.append((separator + message, 'default'))
+            in_traceback = source_expected = False
+            continue
+        if line.strip():
+            source_expected = False
+        previous = 0
+        for match in _CONSOLE_LOG_TOKEN.finditer(line):
+            if match.start() > previous:
+                tokens.append((line[previous:match.start()], 'default'))
+            tokens.append((match.group(), _CONSOLE_LOG_COLORS[match.lastgroup]))
+            previous = match.end()
+        if previous < len(line):
+            tokens.append((line[previous:], 'default'))
+    spans = []
+    offset = 0
+    for token, color in _console_color_tokens(tokens, 0, ansi_spans):
+        end = offset + len(token)
+        if spans and spans[-1][2] == color:
+            spans[-1] = (spans[-1][0], end, color)
+        else:
+            spans.append((offset, end, color))
+        offset = end
+    return spans
+
+
+def _console_index_color(index):
+    if index < 16:
+        return _CONSOLE_PALETTE[index]
+    if index < 232:
+        value = index - 16
+        levels = (0, 95, 135, 175, 215, 255)
+        return (levels[value // 36], levels[value // 6 % 6], levels[value % 6])
+    return (8 + 10 * (index - 232),) * 3
+
+
+def _console_text(source):
+    """Return visible text and (start, end, RGB-or-default) foreground spans.
+
+    Parse the whole buffer so SGR state crosses lines and streamed chunks.
+    Incomplete trailing escapes stay hidden until the next update completes them.
+    This is a text log, not a terminal emulator: cursor commands are ignored.
+    """
+    parts, spans = [], []
+    foreground = 'default'
+    offset = previous = 0
+    for match in _CONSOLE_ESCAPE.finditer(source):
+        part = source[previous:match.start()]
+        if part:
+            parts.append(part)
+            spans.append((offset, offset + len(part), foreground))
+            offset += len(part)
+        escape = match.group()
+        if escape.startswith('\x1b[') and escape.endswith('m'):
+            try:
+                codes = [int(value or 0) for value in escape[2:-1].split(';')]
+            except ValueError:
+                codes = []
+            i = 0
+            while i < len(codes):
+                code = codes[i]
+                i += 1
+                if code in (0, 39):
+                    foreground = 'default'
+                elif 30 <= code <= 37:
+                    foreground = _CONSOLE_PALETTE[code - 30]
+                elif 90 <= code <= 97:
+                    foreground = _CONSOLE_PALETTE[code - 90 + 8]
+                elif code in (38, 48, 58) and i < len(codes):
+                    mode = codes[i]
+                    i += 1
+                    count = 1 if mode == 5 else 3 if mode == 2 else 0
+                    values = codes[i:i + count]
+                    i += count
+                    if count and len(values) == count and all(0 <= v <= 255 for v in values):
+                        if code == 38:
+                            foreground = (_console_index_color(values[0]) if mode == 5
+                                          else tuple(values))
+        previous = match.end()
+    part = source[previous:]
+    if part:
+        parts.append(part)
+        spans.append((offset, offset + len(part), foreground))
+    return ''.join(parts), spans
+
+
+def _console_color_tokens(tokens, start, spans):
+    """Split visible tokens at color boundaries without changing text geometry."""
+    result = []
+    span_index = bisect.bisect_right(spans, (start, float('inf'))) - 1
+    span_index = max(0, span_index)
+    for token, key in tokens:
+        token_start = start
+        end = start + len(token)
+        while start < end:
+            while span_index < len(spans) and spans[span_index][1] <= start:
+                span_index += 1
+            if span_index == len(spans):
+                result.append((token[start - token_start:], key))
+                break
+            _, b, color = spans[span_index]
+            stop = min(end, b)
+            result.append((token[start - token_start:stop - token_start],
+                           key if key == 'clipped' or color == 'default' else color))
+            start = stop
+        start = end
+    return result
+
+
 def draw_icon_selector_plain(input_value, width=20, height=20, name=None,
                              tint=None, text_tint=None, editor_ds=None, **kwargs):
     """Inline Font Awesome icon picker without the @render_func wrapper — the
@@ -1083,7 +1247,7 @@ def draw_text(input_value: str, height=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
               live_store=None, debugger_state=None,
               import_fixes=None,
-              syntax_highlight=True, syntax_language="python", text_tint=None, is_diff=False, line_numbers=None,
+              syntax_highlight=True, syntax_language="python", console_colors=False, text_tint=None, is_diff=False, line_numbers=None,
               completion_source=None, show_jump_bar=True, show_file_header=True,
               manual_search=False, fold_ranges=None, scope_collapse=True,
               default_collapsed_lines=None,
@@ -1102,6 +1266,11 @@ def draw_text(input_value: str, height=None,
     open the software keyboard for this view. Selection uses normal saved state.
     Touch contacts focus on completed taps; swipes scroll without moving the
     caret. Mouse presses and drags still place the caret and select text.
+    `console_colors=True` highlights log timestamps, numbers and field names,
+    with explicit ANSI colors taking priority. It displays SGR foreground colors (16,
+    256 and RGB), hiding escape sequences from layout, search and copy. It
+    overrides syntax highlighting and editing; returns the original raw input.
+    Background colors and other terminal controls are ignored.
     `draw_breakpoints=False` hides/disables breakpoint markers over the line numbers.
     Markers use the file's metadata `breakpoints` mapping, keyed by the current
     whole-file code_dict/code_tree source-site keys. The codec supplies that
@@ -1128,6 +1297,18 @@ def draw_text(input_value: str, height=None,
     through that world's tables / its own detached table, never the
     studio's hold for the file; either also lets the file path come from
     `file_key` when there is no `jump_to`."""
+    # Console mode is read-only: selection/copy address the visible text, while
+    # the caller retains the original escape-bearing output buffer.
+    console_source = input_value
+    console_spans = None
+    if console_colors and isinstance(input_value, str):
+        cache = text_editor_state._console_cache
+        if cache is None or cache[0] is not input_value:
+            visible, spans = _console_text(input_value)
+            spans = _console_log_spans(visible, spans)
+            cache = text_editor_state._console_cache = (input_value, visible, spans)
+        input_value, console_spans = cache[1:]
+        editable = syntax_highlight = False
     if touch_clicked:
         left_mouse_down = touch_clicked
     from meltygui.editor.text_editor import COLORS
@@ -2575,7 +2756,7 @@ def draw_text(input_value: str, height=None,
                 _bc0 = max(0, (_bc0 // _step - 1) * _step)
                 _bc1 = (_bc1 // _step + 2) * _step
                 band = (_bc0, _bc1, _long_cols)
-        key = (text, v0, v1, syntax_highlight, syntax_language, id(token_views) if token_views else 0, band,
+        key = (text, v0, v1, console_source if console_colors else None, syntax_highlight, syntax_language, id(token_views) if token_views else 0, band,
                getattr(ds, '_lv_trail_gen', 0))
         if getattr(ds, '_win_key', None) == key:
             return ds._win_data
@@ -2693,6 +2874,8 @@ def draw_text(input_value: str, height=None,
             else:
                 win_text = text[start_off:end_off]
                 toks = [(win_text, 'default')] if win_text else []
+            if console_spans is not None:
+                toks = _console_color_tokens(toks, start_off, console_spans)
             vcols = None
             ds._lv_trail_cells = {}
             ds._lv_gap_map = {}
@@ -6185,7 +6368,9 @@ def draw_text(input_value: str, height=None,
         if _tok_colors is not None:
             color = _tok_colors[_ti]
         else:
-            color = _plain_color if _plain_color is not None else COLORS[color_key]
+            color = (pack_color(*(v / 255 for v in color_key), 1.0)
+                     if isinstance(color_key, tuple) else
+                     _plain_color if _plain_color is not None else COLORS[color_key])
             # Inside a color-carrying override comment, the comment text AND the
             # merged color-tuple token (color3 - the token's `(r, g, b)` text)
             # wear the comment's adjusted color; other value types (numbers,
@@ -8124,4 +8309,5 @@ def draw_text(input_value: str, height=None,
     # text (original_input IS the display text while a fold is collapsed -
     # returning it would drop every fold line if the wrapper propagates
     # the unchanged).
-    return False, (_fold_full if _fold_segments else original_input)
+    return False, (console_source if console_colors else
+                   _fold_full if _fold_segments else original_input)

@@ -425,7 +425,8 @@ def glfw_window(fn=None, *, name=None, width=1280, height=800, app_id=None, app_
     each frame; views it draws at root level fill the window.
 
     ``name`` (default: the function's name) is the window's name AND its
-    OS title — one per window; ``width`` / ``height`` its content size.
+    OS title — one per window; ``width`` / ``height`` its initial content size.
+    Desktop roots restore their saved content size before their first frame.
     ``app_name`` names the PROCESS (what a system monitor or `pkill -x`
     sees instead of `python`; 15 bytes on Linux): the first window
     registered with one names it, and a different name on a later window
@@ -704,7 +705,7 @@ def run():
     _wait_imports()
     _init_melty()
     from meltygui.core.melty import Melty
-    from meltygui.core.windowing.surface import Surface
+    from meltygui.core.windowing.surface import Surface, root_surface_state
     from meltygui.core.runtime.extensions import call
     if _ROOTS:
         call('root_ready', _ROOTS[0][1]['name'])
@@ -715,7 +716,9 @@ def run():
         # kwargs from _draw_root and sits on the default ground.
         ground_tint = None if hasattr(fn, '__render_func__') else view_kwargs.get('tint')
         surface = Surface(kw['name'], _searchable_body(_root_body(fn, kw['name'], view_kwargs, config=kw), kw),
-                          width=kw['width'], height=kw['height'], tint=ground_tint, on_close=kw.get('on_close'))
+                          width=kw['width'], height=kw['height'], tint=ground_tint, on_close=kw.get('on_close'),
+                          state=root_surface_state(Surface.session,
+                                                   f'{fn.__module__}.{fn.__qualname__}', kw['name']))
         surface.settings = kw.get('settings')
     mark(f'{len(Surface.all)} window(s) created')
     # Input recording (MELTY_RECORD_INPUT / Toggles.InputRecording.record_on_launch):

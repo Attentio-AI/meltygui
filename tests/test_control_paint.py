@@ -42,7 +42,7 @@ def test_overlay_button_background_keeps_its_owner(monkeypatch):
     monkeypatch.setattr(header_view.imgui, 'get_mouse_pos', lambda: (0, 0))
     background = Mock()
     monkeypatch.setattr(Melty, 'add_background', background)
-    owner, other = object(), object()
+    owner, other = SimpleNamespace(current_tint=(.2, .4, .6)), object()
     monkeypatch.setattr(Melty, 'draw_state_stack', [other])
     dl = Mock()
     header_view.flat_button('project', owner, None, width=200, height=30,
@@ -51,3 +51,23 @@ def test_overlay_button_background_keeps_its_owner(monkeypatch):
     assert background.call_args.kwargs['draw_state'] is owner
     assert background.call_args.kwargs['draw_list'] is dl
     assert background.call_args.kwargs['rect'] == (10, 20, 200, 30)
+
+
+def test_overlay_button_color_matches_body_after_style_scope_changes(monkeypatch):
+    from meltygui.core.runtime.toggles import Toggles
+    from meltygui.core.styling.style_core import ImGuiStyleManager
+    monkeypatch.setattr(Toggles, 'dynamic_styles', False)
+    monkeypatch.setattr(header_view.imgui, 'calc_text_size', lambda text: SimpleNamespace(x=30, y=16))
+    monkeypatch.setattr(header_view.imgui, 'get_mouse_pos', lambda: (0, 0))
+    manager = ImGuiStyleManager()
+    owner = SimpleNamespace(current_tint=(.2, .4, .8))
+    colors = []
+    for ambient in (owner.current_tint, (.3, .3, .3), (.8, .2, .1)):
+        manager.current_rgb = ambient
+        dl = Mock()
+        header_view.flat_button('project', owner, None, width=200, height=30,
+                                pos=(10, 20), hovered=False, layout=False,
+                                draw_list=dl, style_manager=manager)
+        colors.append((dl.add_rect_filled.call_args, dl.add_text.call_args))
+        assert manager.current_rgb == ambient
+    assert colors[0] == colors[1] == colors[2]

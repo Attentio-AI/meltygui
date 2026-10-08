@@ -138,7 +138,8 @@ class ImGuiStyleManager:
         imgui_color = pack_color(modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
         return imgui_color
 
-    def make_color_rgb(self, r, g, b, saturation_scale=0.4, alpha=1.0, factor=0.3, value=0.5):
+    def make_color_rgb(self, r, g, b, saturation_scale=0.4, alpha=1.0, factor=0.3, value=0.5,
+                       requested_tint=None):
         """
         Create an ImGui color from RGB values with optional saturation and alpha adjustments.
         Args:
@@ -160,12 +161,15 @@ class ImGuiStyleManager:
         # Pure function of the current tint and the arguments - memoize:
         # flat_button / tabs / dock rows call this twice per widget per
         # frame with a handful of distinct values (two hsv round trips each).
-        key = (self.current_rgb, r, g, b, saturation_scale, alpha, factor, value)
+        # Overlay controls retain their owner's tint even after its render
+        # scope has unwound. Ordinary callers still inherit the active scope.
+        tint = self.current_rgb if requested_tint is None else tuple(requested_tint[:3])
+        key = (tint, r, g, b, saturation_scale, alpha, factor, value)
         hit = _MAKE_COLOR_RGB_MEMO.get(key)
         if hit is not None:
             return hit
 
-        modified_rgb = self.make_custom(*self.current_rgb, value, saturation_scale=saturation_scale, alpha=alpha)
+        modified_rgb = self.make_custom(*tint, value, saturation_scale=saturation_scale, alpha=alpha)
         # Apply alpha blending with the original color
         modified_rgb = mix(r, g, b, modified_rgb[0], modified_rgb[1], modified_rgb[2], factor)
 
