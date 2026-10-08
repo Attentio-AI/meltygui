@@ -206,7 +206,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
                           alpha=1.0 if kwargs.get("show_button_bg", True) else 0.0,
                           shadow=shadow, text_value=trigger_text_value, text_pad=trigger_pad,
                           text_offset_x=trigger_text_offset, event="left_mouse_down",
-                          text_color=trigger_text_color, **trigger_color)
+                          text_color=trigger_text_color, paint=kwargs.get("paint_trigger", True), **trigger_color)
     if display_paths:
         from meltygui.view.path_icon_view import path_label
         label_x = trigger_left + (trigger_text_offset if trigger_text_offset is not None
@@ -214,7 +214,15 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         color = pack_color(*Tint.dd_text(requested_tint=draw_state.current_tint)[:3], 1)
         path_label(imgui.get_window_draw_list(), drop_down_display_str, label_x,
                    trigger_top + (trigger_h - imgui.get_font_size()) / 2, color, display_paths, icons=icon_state)
-    if trigger_path:
+    if trigger_path and not kwargs.get("paint_trigger", True):
+        from meltygui.model.folder_icon_model import PathIcon
+        from meltygui.model.file_location_model import file_path
+        presentation = trigger_path if isinstance(trigger_path, PathIcon) else PathIcon(trigger_path)
+        if presentation.is_dir and not presentation.custom_icon:
+            path = file_path(presentation.path)
+            icon_state.requested.add(path)
+            icon_state.folders.get(path)
+    if trigger_path and kwargs.get("paint_trigger", True):
         from meltygui.view.path_icon_view import path_icon
         color = pack_color(*Tint.dd_text(requested_tint=draw_state.current_tint)[:3], 1)
         imgui.get_window_draw_list().add_text(trigger_left + TRIGGER_TEXT_INSET,

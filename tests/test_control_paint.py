@@ -32,3 +32,22 @@ def test_tint_icon_without_paint_keeps_picker_input(monkeypatch):
                                            icon=f'\uf15b', paint=False) == (False, value)
     assert not dl.method_calls
     assert ds.on_action.call_args.kwargs['rect'] == (10, 20, 27, 37)
+
+
+def test_overlay_button_background_keeps_its_owner(monkeypatch):
+    from meltygui.core.runtime.toggles import Toggles
+    from meltygui.core.styling.style_core import ImGuiStyleManager
+    monkeypatch.setattr(Toggles, 'dynamic_styles', True)
+    monkeypatch.setattr(header_view.imgui, 'calc_text_size', lambda text: SimpleNamespace(x=30, y=16))
+    monkeypatch.setattr(header_view.imgui, 'get_mouse_pos', lambda: (0, 0))
+    background = Mock()
+    monkeypatch.setattr(Melty, 'add_background', background)
+    owner, other = object(), object()
+    monkeypatch.setattr(Melty, 'draw_state_stack', [other])
+    dl = Mock()
+    header_view.flat_button('project', owner, None, width=200, height=30,
+                            pos=(10, 20), hovered=False, layout=False,
+                            draw_list=dl, style_manager=ImGuiStyleManager())
+    assert background.call_args.kwargs['draw_state'] is owner
+    assert background.call_args.kwargs['draw_list'] is dl
+    assert background.call_args.kwargs['rect'] == (10, 20, 200, 30)

@@ -285,8 +285,12 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
                 if bg_style is None:
                     strength = tint_value + (hover_boost if hovered else 0.0)
                     bg_style = Style(tuple(c * strength for c in color[:3]) + (alpha,))
+                # Overlay replay may run under another view's render stack.
+                # Keep this inline background attached to the button's owner
+                # so deferred styling inherits the same tint as its body.
                 Melty.add_background(bg_style, rect=(x, y, w, h),
-                                     corner_radius=rounding, draw_list=dl)
+                                     corner_radius=rounding, draw_list=dl,
+                                     draw_state=draw_state)
             else:
                 clamp = _brightness_clamp
                 bg = style_manager.make_color_rgb(
