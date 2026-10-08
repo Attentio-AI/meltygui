@@ -246,7 +246,7 @@ def request(location, operation='stat', *, refresh=False):
             return
         if not refresh and state.get('error') and time.monotonic() - state.get('checked', 0) < 2:
             return
-        if not refresh and operation in state:
+        if not refresh and operation in state and not (operation == 'data' and state.get('stale')):
             return
         state['loading'] = True
 

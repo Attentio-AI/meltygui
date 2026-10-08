@@ -135,46 +135,6 @@ def three_way_merge(base, mine, theirs):
 
 @window(view_func=RenderFuncs.draw_type, disable_scroll=False)
 class PendingSave:
-    _reloads = {}
-
-    @classmethod
-    def file_status(cls, address, codec, observer=None):
-        state = codec.file_status(address, observer)
-        reload = cls._reloads.get(address.path)
-        if (reload is not None and state.get('read_id') != reload[0]
-                and not state.get('loading') and not state.get('error')):
-            cls._reloads.pop(address.path, None)
-            if cls._pending_gen[address.path] == reload[1]:
-                cls.discard_entry_for(address)
-                codec.clear_draft(address)
-                state.pop('save_error', None)
-            else:
-                state['save_error'] = 'New edits were made while loading; your draft was retained.'
-        return state
-
-    @classmethod
-    def refresh_file(cls, address, codec, *, discard=False):
-        state = cls.file_status(address, codec)
-        if not state:
-            return
-        if cls.entry_for(address) is not None and not discard:
-            state['save_error'] = 'Save or resolve pending edits before refreshing.'
-            return
-        if discard:
-            cls._reloads[address.path] = state.get('read_id'), cls._pending_gen[address.path]
-        codec.refresh_file(address)
-
-    @classmethod
-    def save_file(cls, address, *, force=False):
-        pending = cls.entry_for(address)
-        if pending is None:
-            return
-        queued, codec, kwargs = pending
-        if is_remote(queued.path):
-            cls.save_remote(queued, codec, {**kwargs, 'force': force})
-        else:
-            cls.apply_all_saves()
-
     @classmethod
     def remote_text(cls, path):
         from meltygui.model.ssh_file_model import read_bytes, recovered_edit, entry, request
@@ -199,12 +159,13 @@ class PendingSave:
         import threading
         from meltygui.core.melty import Melty
         from meltygui.code.new_codecs import SaveConflict
-        from meltygui.model.ssh_file_model import entry, stamp, clear_recovery, save_recovery, flush_recovery
+        from meltygui.model.ssh_file_model import entry, stamp, clear_recovery, save_recovery, flush_recovery, _wake
         state = entry(address.path)
         if state.get('saving'):
             return
         state['saving'] = True
         state.pop('save_error', None)
+        _wake(address.path)
         generation = cls._pending_gen[address.path]
 
         def work():
@@ -218,6 +179,8 @@ class PendingSave:
                 state['saving'] = False
                 if isinstance(result, SaveConflict):
                     state['save_error'] = str(result)
+                    from meltygui.core.diagnostics.notifications import notify
+                    notify(f"Save deferred: {address.path.name}: {result}", tint=(1.0, 0.8, 0.3))
                 else:
                     new_stamp = stamp(state['data_stat'])
                     address._remote_stamp = new_stamp
@@ -232,6 +195,7 @@ class PendingSave:
                         if current:
                             save_recovery(address, current[1]['data'])
                 cls._wake_file_watchers(address.path)
+                _wake(address.path)
                 from meltygui.core.windowing.glfw_utils import request_render
                 request_render()
             Melty.post_to_render(adopt)
