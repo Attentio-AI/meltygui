@@ -300,6 +300,13 @@ def refresh_local_packages(packages, *, python_version=None):
     python_version = python_version or manifest.get('python_full_version')
     if not any(item.get('source') for item in manifest['packages']):
         return
+    from meltygui.platforms.ios.devices import input_stamps
+    source_inputs = {item['name']: input_stamps([item['source']])
+                     for item in manifest['packages'] if item.get('source')}
+    changed = {item['name'] for item in manifest['packages'] if item.get('source')
+               and item.get('source_inputs') != source_inputs[item['name']]}
+    if not changed:
+        return
     with tempfile.TemporaryDirectory(prefix='refresh-', dir=packages.parent) as temporary:
         temporary = Path(temporary)
         staged = temporary / 'packages'
@@ -308,7 +315,7 @@ def refresh_local_packages(packages, *, python_version=None):
         built = []
         for item in manifest['packages']:
             source = item.get('source')
-            if source:
+            if source and item['name'] in changed:
                 source_stamp = source_metadata_stamp(source)
                 output = temporary / canonicalize_name(item['name'])
                 run([sys.executable, '-m', 'build', '--wheel', '--outdir', output, source])
@@ -318,10 +325,14 @@ def refresh_local_packages(packages, *, python_version=None):
                 if digest(wheel) != item['sha256']:
                     raise ValueError(f'Staged device wheel changed: {wheel}')
             entry = install_wheel(wheel, staged, python_version=python_version)
-            if source:
+            if source and item['name'] in changed:
                 destination = packages.parent / 'wheels' / wheel.name
                 built.append((wheel, destination))
                 entry.update(wheel=str(destination), source=source, source_metadata=source_stamp)
+            elif source:
+                entry.update(source=source, source_metadata=item.get('source_metadata'))
+            if source:
+                entry['source_inputs'] = source_inputs[item['name']]
             refreshed.append(entry)
         validate_dependencies(staged, python_version=python_version)
         for wheel, destination in built:
