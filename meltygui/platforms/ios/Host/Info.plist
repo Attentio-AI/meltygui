@@ -13,6 +13,7 @@
     <key>LSSupportsOpeningDocumentsInPlace</key><true/>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Discover and connect to servers on your local network.</string>
+    <key>NSBonjourServices</key><array><string>_melty-access._tcp</string></array>
     <key>CADisableMinimumFrameDurationOnPhone</key><true/>
     <key>UILaunchScreen</key><dict/>
     <key>UISupportedInterfaceOrientations</key><array>

@@ -613,7 +613,7 @@ def ensure_configuration(root, build, config, *, cache_root=None):
     """Repair missing/version-mismatched build inputs and update the Xcode project."""
     from meltygui.platforms.ios.application import read_application
     from meltygui.platforms.ios.devices import xcode_environment, input_stamps
-    from meltygui.platforms.ios.generate import generate
+    from meltygui.platforms.ios.generate import generate, generation_inputs
 
     compiler = runtime.configured_python(config | {'project_dir': str(root)})
     info = runtime.python_info(compiler)
@@ -634,7 +634,15 @@ def ensure_configuration(root, build, config, *, cache_root=None):
     except (ValueError, OSError, StopIteration):
         ready = False
     if ready:
-        return config, compiler, info
+        if config.get('generation_inputs') == generation_inputs():
+            return config, compiler, info
+        # Native host APIs/frameworks can change while Python inputs stay ready.
+        # Regenerate locally so an existing project picks up those changes too.
+        generate(application=root, app_dir=config['app_dir'], packages_dir=config['packages_dir'],
+                 python_framework=framework, python_lib=config['python_lib'], project_python=compiler,
+                 output=build, bundle_id=config['bundle_id'], entry_module=config['entry_module'],
+                 **_generation_options(build, config))
+        return json.loads((build / 'host-build.json').read_text()), compiler, info
 
     env = xcode_environment()
     if not env.get('DEVELOPER_DIR'):

@@ -173,7 +173,21 @@ def test_device_preparation_replaces_old_runtime_and_preserves_signing(tmp_path,
     assert updated['python_version'] == '3.12'
     assert updated['generator']['team'] == 'ORIGINALTEAM'
     assert (Path(updated['packages_dir']) / 'native-1.0.dist-info/WHEEL').is_file()
+    project = build / 'MeltyIOS.xcodeproj/project.pbxproj'
+    before = project.stat().st_mtime_ns
     provision.ensure_configuration(tmp_path, build, updated, cache_root=tmp_path / 'cache')
+    assert project.stat().st_mtime_ns == before
+    # An older prepared app picks up new system frameworks without rebuilding wheels.
+    old = dict(updated)
+    old.pop('generation_inputs')
+    objects = plistlib.loads(project.read_bytes())
+    for obj in objects['objects'].values():
+        if obj.get('path', '').endswith('/Network.framework'):
+            obj['path'] = obj['path'].replace('Network.framework', 'Old.framework')
+    project.write_bytes(plistlib.dumps(objects))
+    refreshed, _, _ = provision.ensure_configuration(tmp_path, build, old, cache_root=tmp_path / 'cache')
+    assert refreshed['generation_inputs'] == generate.generation_inputs()
+    assert b'/Network.framework' in project.read_bytes()
     assert calls == ['3.12']
 
 

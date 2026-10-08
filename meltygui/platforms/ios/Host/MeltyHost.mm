@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cmath>
 #include <mutex>
+#include "LocalNetworkAccess.h"
 
 static __weak MeltyHost *gHost;
 PyMODINIT_FUNC PyInit__melty_metal(void);
@@ -58,6 +59,9 @@ static PyObject *setClipboardText(PyObject *, PyObject *args) {
 }
 
 static PyMethodDef nativeMethods[] = {
+    {"request_local_network_access", requestLocalNetworkAccess, METH_NOARGS, "Begin a cancellable local-network permission request."},
+    {"local_network_access_status", localNetworkAccessStatus, METH_O, "Read a local-network request's current status."},
+    {"open_app_settings", openAppSettings, METH_NOARGS, "Open this app's iOS settings."},
     {"request_frame", requestFrame, METH_NOARGS, "Wake display pacing."},
     {"write_log", writeLog, METH_VARARGS, "Write to the on-device host log."},
     {"set_keyboard_visible", setKeyboardVisible, METH_VARARGS, "Show or hide text input."},

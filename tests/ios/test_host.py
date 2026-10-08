@@ -305,6 +305,8 @@ assert module.value == 42
         generator.generate(**arguments)
         self.assertEqual(before, (project / "project.pbxproj").read_bytes())
         objects = plistlib.loads(before)["objects"]
+        self.assertTrue(any(obj.get('path', '').endswith('/Network.framework')
+                            for obj in objects.values()))
         import shlex
         phase, = [obj for obj in objects.values() if obj['isa'] == 'PBXShellScriptBuildPhase']
         self.assertIn(shlex.quote(sys.executable) + ' -m meltygui.platforms.ios.compile_shaders', phase['shellScript'])
@@ -319,6 +321,7 @@ assert module.value == 42
         self.assertIs(info["UIFileSharingEnabled"], True)
         self.assertIs(info["LSSupportsOpeningDocumentsInPlace"], True)
         self.assertTrue(info["NSLocalNetworkUsageDescription"].strip())
+        self.assertIn('_melty-access._tcp', info['NSBonjourServices'])
         self.assertIs(info["CADisableMinimumFrameDurationOnPhone"], True)
         self.assertIs(info["UIApplicationSceneManifest"]["UIApplicationSupportsMultipleScenes"], False)
 

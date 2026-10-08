@@ -19,6 +19,13 @@ BUILD = build_directory()
 ROOT = Path(__file__).resolve().parent
 
 
+def generation_inputs():
+    """Project structure changes require regeneration, not dependency rebuilding."""
+    stat = Path(__file__).stat()
+    return {'generator': [stat.st_mtime_ns, stat.st_size],
+            'sources': sorted(path.name for path in (ROOT / 'Host').glob('*.mm'))}
+
+
 def generate(*, python_framework, python_lib, app_dir, packages_dir=None,
              output=BUILD, team="", bundle_id=None,
              entry_module=None, application=None, project_python=None,
@@ -75,7 +82,7 @@ def generate(*, python_framework, python_lib, app_dir, packages_dir=None,
     header_refs = [file(path, "sourcecode.c.h") for path in sorted((ROOT / "Host").glob("*.h*"))]
     linked_refs = [file(path, "wrapper.framework") for path in frameworks]
     system_refs = [file(f"System/Library/Frameworks/{name}.framework", "wrapper.framework", "SDKROOT")
-                   for name in ("UIKit", "Foundation", "CoreGraphics", "Metal", "QuartzCore")]
+                   for name in ("UIKit", "Foundation", "CoreGraphics", "Metal", "QuartzCore", "Network")]
     product = add("product", "PBXFileReference", explicitFileType="wrapper.application",
                   path="Melty.app", sourceTree="BUILT_PRODUCTS_DIR")
     products = add("products", "PBXGroup", children=[product], name="Products", sourceTree="<group>")
@@ -156,6 +163,7 @@ def generate(*, python_framework, python_lib, app_dir, packages_dir=None,
         "python_framework": str(python_framework), "python_version": runtime['version'],
         "python_magic": runtime['magic'], "project_python": project_python,
         "project_dir": str(app_config['root'].resolve()),
+        "generation_inputs": generation_inputs(),
         "generator": {"team": team, "toolkit_dir": str(toolkit_dir),
                       "renderer_sources": [str(Path(path).resolve()) for path in renderer_sources],
                       "embed_frameworks": [str(Path(path).resolve()) for path in embed_frameworks]},
