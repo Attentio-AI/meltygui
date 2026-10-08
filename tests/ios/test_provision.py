@@ -175,6 +175,27 @@ def test_compatible_published_wheel_does_not_compile(tmp_path, monkeypatch):
                                    tmp_path, tmp_path, tmp_path / 'cache', {}) == published
 
 
+@pytest.mark.parametrize('preferred,expected', [(None, '2.0'), ('1.0', '1.0'), ('0.1-bulbasaur', '2.0')])
+def test_release_selection_skips_legacy_labels_and_keeps_normalized_entries(tmp_path, monkeypatch, preferred, expected):
+    published = {version: wheel(tmp_path, release=version) for version in ('1.0', '2.0')}
+
+    def entry(version, **extra):
+        return [dict(filename=f'native-{version}-py3-none-any.whl', url=version,
+                     packagetype='bdist_wheel', requires_python='>=3.10', digests={'sha256': 'test'}, **extra)]
+
+    monkeypatch.setattr(provision, '_json', lambda url: {'releases': {
+        '0.1-bulbasaur': entry('0.1-bulbasaur'),
+        'v1.0': entry('1.0'), 'v2.0': entry('2.0'),
+        '3.0rc1': entry('3.0rc1'), '4.0': entry('4.0', yanked=True),
+        '5.0': [],
+    }})
+    monkeypatch.setattr(provision, '_download', lambda url, *args: published[url])
+    monkeypatch.setattr(provision, '_build_source', lambda *a: pytest.fail('A valid wheel is available'))
+    selected = provision.acquire_wheel(Requirement('native>=1'), sys.executable, info('3.12'),
+                                       tmp_path, tmp_path, tmp_path / 'cache', {}, preferred)
+    assert selected == published[expected]
+
+
 def configuration(tmp_path, monkeypatch):
     (tmp_path / '.venv/bin').mkdir(parents=True)
     (tmp_path / '.venv/bin/python').symlink_to(sys.executable)

@@ -28,7 +28,7 @@ import zipfile
 from packaging.specifiers import SpecifierSet
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name, parse_wheel_filename
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 
 from meltygui.platforms.ios import runtime
 from meltygui.platforms.ios.prepare_bundle import validate_device_binary
@@ -503,13 +503,22 @@ def acquire_wheel(requirement, compiler, info, framework, platform_config, cache
         wheel, = output.glob('*.whl')
     else:
         metadata = _json(f'https://pypi.org/pypi/{name}/json')
-        versions = sorted((Version(v) for v, files in metadata['releases'].items()
-                           if files and not Version(v).is_prerelease and requirement.specifier.contains(v)), reverse=True)
-        if preferred and Version(preferred) in versions:
-            versions.remove(Version(preferred))
-            versions.insert(0, Version(preferred))
-        for version in versions:
-            files = [f for f in metadata['releases'][str(version)] if not f.get('yanked') and
+        releases = []
+        for label, files in metadata['releases'].items():
+            try:
+                version = Version(label)
+            except InvalidVersion:
+                continue  # PyPI retains historical, non-PEP-440 release labels.
+            if files and not version.is_prerelease and requirement.specifier.contains(version):
+                releases.append((version, files))
+        try:
+            preferred_version = Version(preferred) if preferred else None
+        except InvalidVersion:
+            preferred_version = None
+        releases.sort(key=lambda item: (item[0] == preferred_version, item[0]), reverse=True)
+        for version, release_files in releases:
+            # Preserve the catalogue entry: normalizing a version can change its key.
+            files = [f for f in release_files if not f.get('yanked') and
                      SpecifierSet(f.get('requires_python') or '').contains(info['full_version'])]
             candidates = [f for f in files if f['filename'].endswith('.whl') and
                           staging.compatible_wheel(f['filename'], info['full_version'])]
