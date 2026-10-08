@@ -10,7 +10,7 @@ from meltygui.platforms.ios import devices, provision
 @pytest.fixture
 def selected_runtime(monkeypatch, icon_project):
     selected = {'version': '3.13', 'full_version': '3.13.14', 'magic': 'test'}
-    def ensure(root, build, config):
+    def ensure(root, build, config, *, refresh_local=False):
         if not (build / 'MeltyIOS.xcodeproj/project.pbxproj').is_file():
             icon_project(build)
         return config, '/project/.venv/bin/python', dict(selected)
@@ -51,13 +51,23 @@ def test_run_stages_snapshot_builds_installs_and_stops_exact_app(tmp_path, monke
     source = tmp_path / 'main.py'
     source.write_text('print("saved")')
     (build / 'host-build.json').write_text(json.dumps(dict(
-        app_dir=str(build / 'app-bundle/app'), entry_module='main')))
+        app_dir=str(build / 'app-bundle/app'), entry_module='main', packages_dir=str(build / 'packages'))))
     bundle = build / 'run-products/Build/Products/Debug-iphoneos/Melty.app'
     bundle.mkdir(parents=True)
     (bundle / 'Info.plist').write_bytes(plistlib.dumps(dict(
         CFBundleIdentifier='org.example.test', CFBundleExecutable='Melty')))
     application_url = 'file:///device/Applications/unique/Melty.app/'
     calls = []
+    preparations = []
+    prepare = provision.ensure_configuration
+
+    def ensure(root, output, config, *, refresh_local=False):
+        preparations.append(refresh_local)
+        if refresh_local:
+            assert (Path(config['app_dir']) / 'main.py').read_text() == 'print("pending")'
+        return prepare(root, output, config, refresh_local=refresh_local)
+
+    monkeypatch.setattr(provision, 'ensure_configuration', ensure)
 
     def run(arguments, **kwargs):
         assert kwargs.get('close_fds') is False
@@ -86,6 +96,7 @@ def test_run_stages_snapshot_builds_installs_and_stops_exact_app(tmp_path, monke
     assert source.read_text() == 'print("saved")'
     assert (build / 'app-bundle/app/main.py').read_text() == 'print("pending")'
     assert any('xcodebuild' in call for call in calls)
+    assert preparations == [False, True, False, True]
     terminated = [call[-1] for call in calls if 'terminate' in call]
     assert terminated == ['42', '42']
 

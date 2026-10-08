@@ -81,13 +81,14 @@ def support_archive(root, version):
     return archive
 
 
-def wheel(root, version='3.12', name='native', release='1.0'):
+def wheel(root, version='3.12', name='native', release='1.0', requirements=()):
     abi = version.replace('.', '')
     path = root / f'{name}-{release}-cp{abi}-cp{abi}-ios_17_0_arm64_iphoneos.whl'
     root.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, 'w') as archive:
         archive.writestr(f'{name}-{release}.dist-info/METADATA',
-                         f'Metadata-Version: 2.3\nName: {name}\nVersion: {release}\nRequires-Python: >=3.10\n')
+                         f'Metadata-Version: 2.3\nName: {name}\nVersion: {release}\nRequires-Python: >=3.10\n' +
+                         ''.join(f'Requires-Dist: {requirement}\n' for requirement in requirements))
         archive.writestr(f'{name}-{release}.dist-info/WHEEL',
                          f'Wheel-Version: 1.0\nTag: cp{abi}-cp{abi}-ios_17_0_arm64_iphoneos\n')
         archive.writestr(f'{name}/_native.cpython-{abi}-iphoneos.so', binary())
@@ -224,6 +225,84 @@ def test_device_preparation_replaces_old_runtime_and_preserves_signing(tmp_path,
     assert b'/Network.framework' in project.read_bytes()
     assert calls == ['3.12']
 
+    # Reuse is valid only while editable packages' dependency metadata matches.
+    source = tmp_path / 'editable-native'
+    source.mkdir()
+    project_metadata = source / 'pyproject.toml'
+    project_metadata.write_text('[project]\nname = "native"\ndependencies = []\n')
+    manifest_path = Path(updated['packages_dir']).parent / 'manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    manifest['packages'][0].update(source=str(source), source_metadata=provision.staging.source_metadata_stamp(source))
+    manifest_path.write_text(json.dumps(manifest))
+    provision.ensure_configuration(tmp_path, build, updated, cache_root=tmp_path / 'cache')
+    assert calls == ['3.12']
+    project_metadata.write_text('[project]\nname = "native"\ndependencies = ["paramiko>=3.5"]\n')
+    def rebuild(*args):
+        raise RuntimeError('dependency rebuild requested')
+    monkeypatch.setattr(provision, 'ensure_runtime', rebuild)
+    with pytest.raises(RuntimeError, match='dependency rebuild requested'):
+        provision.ensure_configuration(tmp_path, build, updated, cache_root=tmp_path / 'cache')
+
+
+@pytest.mark.parametrize('download_fails', [False, True])
+def test_refresh_resolves_new_transitive_dependencies_atomically(tmp_path, monkeypatch, download_fails):
+    import shutil
+    build, config = configuration(tmp_path, monkeypatch)
+    archive = support_archive(tmp_path, '3.12')
+    monkeypatch.setattr(provision, '_json', lambda url: [{'assets': [dict(name=archive.name, browser_download_url='https://example/runtime')]}])
+    monkeypatch.setattr(provision, '_download', lambda *a: archive)
+    monkeypatch.setattr(provision, 'acquire_wheel', lambda *a: wheel(tmp_path / 'old-wheel'))
+    updated, _, _ = provision.ensure_configuration(tmp_path, build, config, cache_root=tmp_path / 'cache')
+    packages = Path(updated['packages_dir'])
+    manifest_path = packages.parent / 'manifest.json'
+    source = tmp_path / 'checkout'
+    source.mkdir()
+    (source / 'pyproject.toml').write_text('[project]\nname = "native"\nversion = "1.0"\n')
+    manifest = json.loads(manifest_path.read_text())
+    manifest['packages'][0].update(source=str(source), source_metadata=provision.staging.source_metadata_stamp(source))
+    manifest_path.write_text(json.dumps(manifest))
+    previous_manifest = manifest_path.read_bytes()
+    previous_config = (build / 'host-build.json').read_bytes()
+    # Simulate a rebuilt local wheel whose metadata now introduces Paramiko,
+    # even though the old installed graph and source metadata stamps are valid.
+    replacement = wheel(tmp_path / 'new-wheel', requirements=['paramiko>=3.5'])
+    downloaded = []
+
+    def local_build(command, **kwargs):
+        destination = Path(command[command.index('--outdir') + 1])
+        destination.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(replacement, destination / replacement.name)
+
+    def acquire(requirement, *args):
+        downloaded.append(requirement.name)
+        if download_fails:
+            raise RuntimeError('device dependency download failed')
+        if requirement.name == 'paramiko':
+            return wheel(tmp_path / 'dependencies', name='paramiko', release='3.5', requirements=['cryptography>=3.3'])
+        assert requirement.name == 'cryptography'
+        return wheel(tmp_path / 'dependencies', name='cryptography', release='3.3')
+
+    monkeypatch.setattr(provision.staging, 'run', local_build)
+    monkeypatch.setattr(provision, '_run', local_build)
+    monkeypatch.setattr(provision, '_tools', lambda *a: Path(sys.executable))
+    monkeypatch.setattr(provision, 'acquire_wheel', acquire)
+    staged_entry = Path(updated['app_dir']) / 'main.py'
+    staged_entry.write_text('print("pending editor text")\n')
+    if download_fails:
+        with pytest.raises(RuntimeError, match='device dependency download failed'):
+            provision.ensure_configuration(tmp_path, build, updated, cache_root=tmp_path / 'cache', refresh_local=True)
+        assert manifest_path.read_bytes() == previous_manifest
+        assert (build / 'host-build.json').read_bytes() == previous_config
+        assert set(provision.staging.validate_dependencies(packages)) == {'native'}
+    else:
+        repaired, _, _ = provision.ensure_configuration(tmp_path, build, updated, cache_root=tmp_path / 'cache', refresh_local=True)
+        assert downloaded == ['paramiko', 'cryptography']
+        assert set(provision.staging.validate_dependencies(repaired['packages_dir'])) == {'native', 'paramiko', 'cryptography'}
+        provision.ensure_configuration(tmp_path, build, repaired, cache_root=tmp_path / 'cache', refresh_local=True)
+        provision.ensure_configuration(tmp_path, build, repaired, cache_root=tmp_path / 'cache')
+        assert downloaded == ['paramiko', 'cryptography']  # Refresh preserves dependency stamps.
+    assert staged_entry.read_text() == 'print("pending editor text")\n'
+
 
 def test_failed_preparation_does_not_replace_project_config(tmp_path, monkeypatch):
     build, config = configuration(tmp_path, monkeypatch)
@@ -237,7 +316,7 @@ def test_failed_preparation_does_not_replace_project_config(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize('version', ['3.10', '3.11', '3.12'])
-@pytest.mark.parametrize('package', ['native', 'pillow', 'cffi'])
+@pytest.mark.parametrize('package', ['native', 'pillow', 'cffi', 'pynacl'])
 def test_cross_build_uses_owned_venv_and_target_configuration(tmp_path, monkeypatch, version, package):
     source = tmp_path / 'source'
     source.mkdir()
@@ -269,6 +348,8 @@ def test_cross_build_uses_owned_venv_and_target_configuration(tmp_path, monkeypa
             assert pth.is_file()
             if package == 'cffi':
                 assert env['CFLAGS'] == '-I/target/libffi/include'
+            if package == 'pynacl':
+                assert env['SODIUM_INSTALL'] == 'system'
             Path(command[-1]).write_text('["setuptools-rust"]')
         elif command[1:3] == ['-m', 'build']:
             assert pth.is_file()
@@ -295,6 +376,9 @@ def test_cross_build_uses_owned_venv_and_target_configuration(tmp_path, monkeypa
                 assert '-C' not in command
             if package == 'cffi':
                 assert env['LDFLAGS'] == '-L/target/libffi/lib'
+            if package == 'pynacl':
+                assert env['SODIUM_INSTALL'] == 'system'
+                assert env['LDFLAGS'] == '-L/target/sodium/lib'
             wheel(Path(command[command.index('--outdir') + 1]), version)
         else:
             pytest.fail(f'Unexpected build command: {command}')
@@ -307,6 +391,8 @@ def test_cross_build_uses_owned_venv_and_target_configuration(tmp_path, monkeypa
                         dict(env, JPEG_ROOT='/target/jpeg', ZLIB_ROOT='/target/sdk/usr'))
     monkeypatch.setattr(provision, '_cffi_environment', lambda source, cache, env:
                         dict(env, CFLAGS='-I/target/libffi/include', LDFLAGS='-L/target/libffi/lib'))
+    monkeypatch.setattr(provision, '_pynacl_environment', lambda source, cache, env:
+                        dict(env, SODIUM_INSTALL='system', LDFLAGS='-L/target/sodium/lib'))
     result = provision._build_source(f'{package}-1.0', source, compiler, info(version), framework,
                                      platform_config, cache, dict(PATH='/usr/bin', SDKROOT='/MacSDK',
                                          MACOSX_DEPLOYMENT_TARGET='11.0', CARGO_ENCODED_RUSTFLAGS='host flags'))

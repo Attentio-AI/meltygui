@@ -633,7 +633,7 @@ def _source_records(config):
     return json.loads(manifest.read_text()).get('packages', []) if manifest and manifest.is_file() else []
 
 
-def ensure_configuration(root, build, config, *, cache_root=None):
+def ensure_configuration(root, build, config, *, cache_root=None, refresh_local=False):
     """Repair missing/version-mismatched build inputs and update the Xcode project."""
     from meltygui.platforms.ios.application import read_application
     from meltygui.platforms.ios.devices import xcode_environment, input_stamps
@@ -653,8 +653,17 @@ def ensure_configuration(root, build, config, *, cache_root=None):
         validate_device_binary(Path(framework) / 'Python')
         ready = _package_inputs(config.get('packages_dir'), info, application['dependencies'])
         if ready:
+            ready = all(item.get('source_metadata') == staging.source_metadata_stamp(item['source'])
+                        for item in _source_records(config) if item.get('source'))
+        if ready:
             ready = all((Path(path) / Path(path).stem).is_file()
                         for path in _generation_options(build, config).get('embed_frameworks', []))
+        if ready and refresh_local:
+            print('Refreshing local iOS packages…', flush=True)
+            # A rebuilt wheel may introduce new dependencies. Refresh is atomic;
+            # failed validation leaves the old bundle intact, then preparation
+            # below resolves the rebuilt packages' complete device graph.
+            staging.refresh_local_packages(config['packages_dir'], python_version=info['full_version'])
     except (ValueError, OSError, StopIteration):
         ready = False
     if ready:
@@ -731,6 +740,7 @@ def ensure_configuration(root, build, config, *, cache_root=None):
                 entry = staging.install_wheel(wheel, staged, python_version=info['full_version'])
                 if canonicalize_name(entry['name']) in sources:
                     entry['source'] = sources[canonicalize_name(entry['name'])]
+                    entry['source_metadata'] = staging.source_metadata_stamp(entry['source'])
                 entries.append(entry)
             staging.validate_dependencies(staged, python_version=info['full_version'])
             (Path(temporary) / 'manifest.json').write_text(json.dumps(dict(schema=1, packages=entries,

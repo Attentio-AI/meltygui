@@ -202,7 +202,7 @@ def run_application(request):
     from meltygui.platforms.ios.app_icon import sync_project_icon
     from meltygui.platforms.ios.application import read_application
     from meltygui.platforms.ios.provision import ensure_configuration
-    from meltygui.platforms.ios.stage_dependencies import copy_application, refresh_local_packages
+    from meltygui.platforms.ios.stage_dependencies import copy_application
     import fcntl
 
     root, build = Path(request['root']), Path(request['build'])
@@ -269,8 +269,7 @@ def run_application(request):
             incremental = update_application(device, receipt['bundle_id'], app_dir, receipt)
         if not incremental:
             if config.get('packages_dir'):
-                print('Refreshing local iOS packages…', flush=True)
-                refresh_local_packages(config['packages_dir'], python_version=runtime['full_version'])
+                config, compiler, runtime = ensure_configuration(root, build, config, refresh_local=True)
             derived = build / 'run-products'
             print('Building iOS app…', flush=True)
             subprocess.run([xcrun(), 'xcodebuild', '-project', str(build / 'MeltyIOS.xcodeproj'),

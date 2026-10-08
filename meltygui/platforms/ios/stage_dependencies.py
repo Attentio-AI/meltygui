@@ -275,6 +275,17 @@ def copy_application(config, destination):
         raise ValueError(f'Application sources do not include entry {config["entry_module"]}')
 
 
+def source_metadata_stamp(source):
+    """Dependency edits in local packages invalidate their staged wheel metadata."""
+    result = {}
+    for name in ('pyproject.toml', 'setup.cfg', 'setup.py'):
+        path = Path(source) / name
+        if path.is_file():
+            stat = path.stat()
+            result[name] = [stat.st_mtime_ns, stat.st_size]
+    return result
+
+
 def refresh_local_packages(packages, *, python_version=None):
     """Rebuild explicitly staged source wheels before a device run.
 
@@ -298,6 +309,7 @@ def refresh_local_packages(packages, *, python_version=None):
         for item in manifest['packages']:
             source = item.get('source')
             if source:
+                source_stamp = source_metadata_stamp(source)
                 output = temporary / canonicalize_name(item['name'])
                 run([sys.executable, '-m', 'build', '--wheel', '--outdir', output, source])
                 wheel, = output.glob('*.whl')
@@ -309,7 +321,7 @@ def refresh_local_packages(packages, *, python_version=None):
             if source:
                 destination = packages.parent / 'wheels' / wheel.name
                 built.append((wheel, destination))
-                entry.update(wheel=str(destination), source=source)
+                entry.update(wheel=str(destination), source=source, source_metadata=source_stamp)
             refreshed.append(entry)
         validate_dependencies(staged, python_version=python_version)
         for wheel, destination in built:
