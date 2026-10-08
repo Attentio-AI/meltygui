@@ -5,6 +5,7 @@ Repeated rows pass their view's batched ``icon_state`` to ``path_icon``;
 ``draw_path_icon`` remains the standalone control for an isolated icon.
 """
 from pathlib import Path
+from meltygui.model.file_location_model import file_path
 from meltygui import imgui
 from meltygui.core.core_render import render_func
 from meltygui.core.files.path_icons import cleanup_path_icon, sync_icon_watches, dispatch_icon_loads
@@ -21,7 +22,7 @@ def draw_path_icon(input_value: str, draw_state, icon_state: PathIconState = Non
                    custom_icon=None, alpha=1.0, paint=True):
     """Desktop artwork takes the same slot as a glyph; explicit metadata wins."""
     icon_state.ensure_owned_resources()
-    path = Path(input_value).expanduser()
+    path = file_path(input_value).expanduser()
     folders = {path} if is_dir and not custom_icon else set()
     icon_state.folders.consume(folders)
     sync_icon_watches(draw_state, icon_state, icon_state.folders.watch_directories())
@@ -63,7 +64,7 @@ def path_icon(path, x, y, size, color, *, is_dir=True, fallback=None, custom_ico
     if isinstance(path, PathIcon):
         path, is_dir, custom_icon = path.path, path.is_dir, path.custom_icon
     if icons is not None:
-        path = path if isinstance(path, Path) else Path(path)
+        path = path if isinstance(path, Path) else file_path(path)
         if is_dir and not custom_icon:
             icons.requested.add(path)
             texture = icons.folders.get(path)
@@ -81,8 +82,8 @@ def path_icon(path, x, y, size, color, *, is_dir=True, fallback=None, custom_ico
                        width=size, height=size, paint=draw_list is None, return_extras=True)
         if draw_list is not None:
             state = result[2].misc.get('icon_state')
-            texture = state.folders.get(Path(path)) if state is not None else None
-            paint_path_icon(draw_list, Path(path), texture, x, y, size, color,
+            texture = state.folders.get(file_path(path)) if state is not None else None
+            paint_path_icon(draw_list, file_path(path), texture, x, y, size, color,
                             is_dir, fallback, custom_icon)
     finally:
         imgui.set_cursor_screen_pos(cursor)

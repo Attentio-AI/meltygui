@@ -1,3 +1,4 @@
+from meltygui.model.file_location_model import file_path, is_remote
 import difflib
 from meltygui.core.diagnostics.notifications import lag_traced
 
@@ -134,6 +135,109 @@ def three_way_merge(base, mine, theirs):
 
 @window(view_func=RenderFuncs.draw_type, disable_scroll=False)
 class PendingSave:
+    _reloads = {}
+
+    @classmethod
+    def file_status(cls, address, codec, observer=None):
+        state = codec.file_status(address, observer)
+        reload = cls._reloads.get(address.path)
+        if (reload is not None and state.get('read_id') != reload[0]
+                and not state.get('loading') and not state.get('error')):
+            cls._reloads.pop(address.path, None)
+            if cls._pending_gen[address.path] == reload[1]:
+                cls.discard_entry_for(address)
+                codec.clear_draft(address)
+                state.pop('save_error', None)
+            else:
+                state['save_error'] = 'New edits were made while loading; your draft was retained.'
+        return state
+
+    @classmethod
+    def refresh_file(cls, address, codec, *, discard=False):
+        state = cls.file_status(address, codec)
+        if not state:
+            return
+        if cls.entry_for(address) is not None and not discard:
+            state['save_error'] = 'Save or resolve pending edits before refreshing.'
+            return
+        if discard:
+            cls._reloads[address.path] = state.get('read_id'), cls._pending_gen[address.path]
+        codec.refresh_file(address)
+
+    @classmethod
+    def save_file(cls, address, *, force=False):
+        pending = cls.entry_for(address)
+        if pending is None:
+            return
+        queued, codec, kwargs = pending
+        if is_remote(queued.path):
+            cls.save_remote(queued, codec, {**kwargs, 'force': force})
+        else:
+            cls.apply_all_saves()
+
+    @classmethod
+    def remote_text(cls, path):
+        from meltygui.model.ssh_file_model import read_bytes, recovered_edit, entry, request
+        for address, (_, kwargs) in list(cls.pending_saves.items()):
+            if str(address.path) == str(path) and address.start is None:
+                return kwargs.get('data')
+        recovery = recovered_edit(path)
+        if recovery is not None:
+            return recovery['text']
+        if entry(path).get('stale'):
+            request(path, 'data', refresh=True)
+        try:
+            raw = read_bytes(path)
+            return raw.decode('utf-8')
+        except UnicodeDecodeError:
+            return raw.decode('latin-1')
+        except OSError:
+            return None
+
+    @classmethod
+    def save_remote(cls, address, codec, kwargs):
+        import threading
+        from meltygui.core.melty import Melty
+        from meltygui.code.new_codecs import SaveConflict
+        from meltygui.model.ssh_file_model import entry, stamp, clear_recovery, save_recovery, flush_recovery
+        state = entry(address.path)
+        if state.get('saving'):
+            return
+        state['saving'] = True
+        state.pop('save_error', None)
+        generation = cls._pending_gen[address.path]
+
+        def work():
+            flush_recovery()
+            try:
+                result = codec.save(address=address, **kwargs)
+            except Exception as error:
+                result = SaveConflict(str(error))
+
+            def adopt():
+                state['saving'] = False
+                if isinstance(result, SaveConflict):
+                    state['save_error'] = str(result)
+                else:
+                    new_stamp = stamp(state['data_stat'])
+                    address._remote_stamp = new_stamp
+                    for pending_address in list(cls.pending_saves):
+                        if pending_address.path == address.path:
+                            pending_address._remote_stamp = new_stamp
+                    if cls._pending_gen[address.path] == generation:
+                        cls.pending_saves.pop(address, None)
+                        clear_recovery(address.path)
+                    else:
+                        current = cls.pending_saves.get(address)
+                        if current:
+                            save_recovery(address, current[1]['data'])
+                cls._wake_file_watchers(address.path)
+                from meltygui.core.windowing.glfw_utils import request_render
+                request_render()
+            Melty.post_to_render(adopt)
+
+        threading.Thread(target=work, name='ssh-save', daemon=True).start()
+
     # Non-view models subscribe to the same edit edge as draw-state consumers.
     _listeners = set()
 
@@ -187,7 +291,8 @@ class PendingSave:
         (queued_address, codec, kwargs) or None."""
         hit = cls.pending_saves.get(address)
         if hit is not None:
-            return address, hit[0], hit[1]
+            queued = next(key for key in cls.pending_saves if key == address)
+            return queued, hit[0], hit[1]
         src = getattr(address, "source", None)
         if src is None:
             return None
@@ -294,9 +399,17 @@ class PendingSave:
     @classmethod
     @lag_traced("queue_save", 30)
     def queue_save(cls, address, codec, wake=True, **kwargs):
+        if is_remote(address.path):
+            from meltygui.model.ssh_file_model import is_renaming
+            if is_renaming(address.path):
+                raise ValueError('The remote file is being renamed; retry the edit when it finishes.')
         prev = cls.pending_saves.get(address)
         cls.pending_saves[address] = codec, kwargs
         cls._pending_gen[address.path] += 1
+        if is_remote(address.path):
+            from meltygui.model.ssh_file_model import save_recovery, _wake
+            save_recovery(address, kwargs.get("data"))
+            _wake(address.path)
         # Compare against what this span last queued (or its load-time
         # original on first queue) for the delta this edit actually introduces.
         prev_data = (prev[1].get("data") if prev is not None
@@ -405,11 +518,13 @@ class PendingSave:
         Returns None if the file can't be read."""
         from meltygui.core.melty import Melty
         from pathlib import Path as _P
+        if is_remote(path):
+            return cls.remote_text(path)
         disk = Melty.read_code(path, canonical_file=canonical_file)
         if disk is None or not cls.pending_saves:
             return disk
         try:
-            rp = _P(path) if canonical_file else _P(path).resolve()
+            rp = file_path(path) if canonical_file else file_path(path).resolve()
         except OSError:
             return disk
         edits = []
@@ -421,7 +536,7 @@ class PendingSave:
                 continue        # no-op entry - must not splice stale text over
                                 # an externally-changed disk (see pending_text_for)
             try:
-                if _P(addr.path).resolve() != rp:
+                if file_path(addr.path).resolve() != rp:
                     continue
             except Exception:
                 continue
@@ -542,7 +657,7 @@ class PendingSave:
         is iterated by frame code."""
         from pathlib import Path as _P
         try:
-            rp = _P(path).resolve()
+            rp = file_path(path).resolve()
         except OSError:
             return
         for addr in [a for a, (codec, kw) in cls.pending_saves.items()
@@ -583,6 +698,10 @@ class PendingSave:
         # read-only) - neither is retryable, so don't re-queue it.
         survivors = {}
         for address, (codec, kwargs) in sorted(cls.pending_saves.items(), key=_order):
+            if is_remote(address.path):
+                cls.save_remote(address, codec, kwargs)
+                survivors[address] = (codec, kwargs)
+                continue
             result = codec.save(address=address, **kwargs)
             if isinstance(result, SaveConflict):
                 survivors[address] = (codec, kwargs)
@@ -605,6 +724,8 @@ class PendingSave:
         text, which already contains the external edits, so diffing it against
         disk would hide the incoming side. Newline-normalized to '\\n'.
         Returns None when no text is available at all."""
+        if is_remote(path):
+            return cls.remote_text(path)
         from pathlib import Path as _P
         from meltygui.core.melty import Melty
         from meltygui.editor.external_changes import ExternalChanges
@@ -616,7 +737,7 @@ class PendingSave:
             base = Melty.read_code(path)
         base_n = None if base is None else _norm(base)
         try:
-            rp = _P(path).resolve()
+            rp = file_path(path).resolve()
         except OSError:
             return base_n
         edits = []
@@ -634,7 +755,7 @@ class PendingSave:
             if addr.start is not None and data == cls.originals.get(addr):
                 continue
             try:
-                if _P(addr.path).resolve() != rp:
+                if file_path(addr.path).resolve() != rp:
                     continue
             except Exception:
                 continue
@@ -700,7 +821,7 @@ class PendingSave:
         drifted = set()
         for p in cls.unmerged_drift_paths():
             try:
-                drifted.add(_P(p).resolve())
+                drifted.add(file_path(p).resolve())
             except OSError:
                 continue
         if not drifted:
@@ -710,7 +831,7 @@ class PendingSave:
             if not isinstance(data, str) or data == cls.originals.get(addr):
                 continue
             try:
-                if _P(addr.path).resolve() in drifted:
+                if file_path(addr.path).resolve() in drifted:
                     return True
             except Exception:
                 continue
@@ -787,7 +908,7 @@ class PendingSave:
         baseline = ExternalChanges.originals.get(path)
         if baseline is None:
             return None
-        name = _P(path).name
+        name = file_path(path).name
         disk = Melty.read_code(path)
         if disk is None:
             return f"SKIPPED {name}: deleted or unreadable"
@@ -810,7 +931,7 @@ class PendingSave:
         # change, or live and disk silently diverge (found the hard way:
         # reverting a hotswapped smoke edit left the old text live).
         try:
-            rp = _P(path).resolve()
+            rp = file_path(path).resolve()
         except OSError:
             return f"SKIPPED {name}: unresolvable path"
 
@@ -824,7 +945,7 @@ class PendingSave:
             if data == cls.originals.get(addr):
                 continue                    # no-op entry - nothing at stake
             try:
-                if _P(addr.path).resolve() != rp:
+                if file_path(addr.path).resolve() != rp:
                     continue
             except Exception:
                 continue

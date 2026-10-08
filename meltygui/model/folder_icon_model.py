@@ -289,7 +289,8 @@ class FolderIcons:
 
     def retain(self, folders):
         self._ensure_tracking()
-        requested = set(folders)
+        from meltygui.model.file_location_model import FileLocation
+        requested = {path for path in folders if FileLocation.parse(path).local_path is not None}
         if requested != self.requested:
             self._watch_directories = None
         self.requested = requested

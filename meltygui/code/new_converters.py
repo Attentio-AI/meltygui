@@ -82,6 +82,7 @@ from collections import defaultdict
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from meltygui.model.file_location_model import FileLocation, file_path
 
 import meltygui_imgui as imgui
 import libcst as cst
@@ -670,6 +671,7 @@ class CodeState(DictConversion):
         self.address = None
         self.file_mtime = None
         self.file_size = None
+        self.file_revision = None
         self._pending_save = False
         # Set when the codec REFUSED a save (SaveConflict: the on-disk span
         # changed during the debounced write). While set, a stale file is a
@@ -1983,8 +1985,8 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             # codec_for_path = registered codec, else content sniff: text
             # files edit via TextFileCodec, anything else gets the read-only
             # binary summary - a real path never lands on "No codec".
-            if codec is None and (isinstance(input_value, Path) or type(input_value) is str):
-                codec = codec_for_path(Path(str(input_value)))
+            if codec is None and (isinstance(input_value, (Path, FileLocation)) or type(input_value) is str):
+                codec = codec_for_path(file_path(input_value))
 
         if codec is None:
             imgui.text(f"No codec for type: {type(input_value).__name__}")
@@ -2000,6 +2002,18 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                     codec=getattr(codec, '__name__', type(codec).__name__)):
             address = codec.resolve_address(input_value, draw_state, code_state=code_state)
         code_state.address = address
+        file_status = codec.file_status(address, draw_state) if address is not None else {}
+        if file_status:
+            from meltygui.view.pending_file_view import draw_file_status
+            draw_file_status(address, codec, draw_state)
+            available = 'data' in file_status or PendingSave.pending_text_for(address) is not None
+            if not available:
+                imgui.text_wrapped(str(file_status.get('error') or 'Loading file…'))
+                return False, input_value
+            revision = file_status.get('read_id')
+            if revision != code_state.file_revision or code_state.text_cache is UNSET:
+                load = True
+                code_state.file_revision = revision
         top_line_height = 30
         external_change = False
         imgui.same_line(spacing=0)
@@ -2008,9 +2022,9 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             # A refused file used to be a blank view; name the reason.
             from meltygui.code.fileref import writable_file_refusal
             why = None
-            if isinstance(input_value, (Path, str)):
+            if isinstance(input_value, (Path, FileLocation, str)):
                 why = writable_file_refusal(input_value) or (
-                    None if Path(str(input_value)).is_file() else "not a file")
+                    None if file_path(input_value).is_file() else "not a file")
             imgui.text_colored(f"Not editable: {input_value}" + (f" — {why}" if why else ""),
                                0.9, 0.6, 0.5, 0.9)
             return False, None
@@ -2049,14 +2063,14 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         recompile_status(code_state, draw_state)
         external_load_status(code_state, draw_state)
 
-        file_stale = code_state.is_file_stale()
+        file_stale = not file_status and code_state.is_file_stale()
         keep_mine = False
         # A sibling in-process editor of the same file (the cache's str_host
         # in the structured tab, another tab, a lens save) syncs through
         # this FILE: its write is not an external change. Reload quietly: no
         # "loaded from disk" stamp (which also fade-invalidates every update for
         # seconds). Only a write we did NOT produce gets the indication.
-        self_write = file_stale and FileWatch.is_self_write(address.path)
+        self_write = file_stale and codec.is_self_write(address)
         # On a pending local edit, a verified IN-PROCESS write (is_self_write
         # hash-checks the actual disk content) is absorbed, not conflicted. This
         # is usually our own write's mtime bump observed before the runner's
@@ -2147,7 +2161,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 # as the disk-load path drove it. get_self_write_text returns
                 # None if an external write has disk raced in - fall through to
                 # the manual branch below rather than auto-loading stale text.
-                mem_text = FileWatch.get_self_write_text(address.path)
+                mem_text = codec.saved_text(address)
                 if mem_text is not None:
                     code_state.text_cache = codec.load(address, source_text=mem_text)
                     code_state.mark_file_current()
@@ -2264,7 +2278,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             Melty.pending_placeholder_frame = Melty.frame_count
         if code_state.text_cache is not UNSET and code_state.text_cache is not None:
 
-            child_kwargs['jump_to'] = address
+            child_kwargs['jump_to'] = address if code_buttons else None
             # The Index button's click rides through to the chain: code_module_to_gp
             # runs jedi and attaches the index straight to the gp it builds.
             child_kwargs['run_jedi'] = run_jedi

@@ -4,6 +4,11 @@ import os
 import threading
 import types
 from collections.abc import MutableMapping
+from meltygui.model.file_location_model import file_path, is_remote
+
+
+def _source_path(path):
+    return str(file_path(path)) if is_remote(path) else os.path.abspath(path)
 
 
 def same_source_version(path, original, current, disk_mtime=None):
@@ -41,7 +46,7 @@ class CodeIdentityMap(MutableMapping):
 
 class SourceSnapshot:
     def __init__(self, path, text, disk_mtime=None):
-        self.path = os.path.abspath(path)
+        self.path = _source_path(path)
         self.text = text
         self.disk_mtime = disk_mtime if disk_mtime is not None else getattr(text, '_disk_mtime', None)
         self.code_tree = self.index = self.compiled = None
@@ -76,7 +81,7 @@ class SourceSnapshot:
         return snapshot
 
     def matches(self, path, text=None):
-        if path is None or os.path.abspath(path) != self.path:
+        if path is None or _source_path(path) != self.path:
             return False
         return text is None or same_source_version(self.path, self.text, text, self.disk_mtime)
 
@@ -112,6 +117,9 @@ class SourceSnapshot:
 
     def request_index(self, on_ready):
         """One model-owned worker per version; deliver completion on the render thread."""
+        from meltygui.model.file_location_model import is_remote
+        if is_remote(self.path):
+            return  # Cross-file source analysis needs a host-side index.
         self._ensure_index_runtime()
         if self.index_ready:
             return

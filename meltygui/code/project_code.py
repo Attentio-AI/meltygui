@@ -25,6 +25,7 @@ _sync_spans.
 """
 
 from pathlib import Path
+from meltygui.model.file_location_model import file_path, is_remote
 
 from meltygui.code.fileref import Address
 
@@ -115,7 +116,7 @@ class FileCode:
     only when an edit queues or FileWatch pops the disk cache."""
 
     def __init__(self, path):
-        self.path = Path(path)
+        self.path = file_path(path)
         self._memo = None          # ((gen, disk_gen), composed_text)
         self._lines_memo = None    # (composed_text_obj, split lines)
         self._ast_memo = None      # (composed_text_obj, ast tree | None)
@@ -140,6 +141,8 @@ class FileCode:
         and sync-frame advances). None when unreadable."""
         from meltygui.code.symbol_roster import disk_generation
         from meltygui.editor.pending_save import PendingSave
+        if is_remote(self.path):
+            return PendingSave.remote_text(self.path)
         sig = (_pending_generation(self.path), disk_generation())
         memo = self._memo
         if memo is not None and memo[0] == sig:
@@ -223,7 +226,26 @@ class FileCode:
         text = self.text()
         return 0 if text is None else text.count("\n") + 1
 
-    def write_text(self, new_text):
+    def status(self, observer=None):
+        from meltygui.code.new_codecs import codec_for_path, TextFileCodec
+        from meltygui.editor.pending_save import PendingSave
+        return PendingSave.file_status(Address(self.path), codec_for_path(self.path) or TextFileCodec, observer)
+
+    def text_for_edit(self):
+        """Current text, or empty for a confirmed absent file. Never mask I/O errors."""
+        text = self.text()
+        if text is not None:
+            return text
+        status = self.status()
+        if status:
+            if isinstance(status.get('error'), FileNotFoundError):
+                return ''
+            raise OSError(str(status.get('error') or 'File is loading; retry when it is available.'))
+        if not self.path.exists():
+            return ''
+        raise OSError(f'Cannot read {self.path}')
+
+    def write_text(self, new_text, *, create=False):
         """Queue `new_text` as the file's pending truth (whole-file entry,
         the editor-keystroke shape). Records the disk baseline on the first
         queue (no-op detection + merge base) and arms the flush-time conflict
@@ -233,6 +255,15 @@ class FileCode:
         from meltygui.code.new_codecs import codec_for_path
         from meltygui.code.new_codecs import _span_fingerprint
         from meltygui.editor.pending_save import PendingSave
+        if is_remote(self.path):
+            address = Address(self.path)
+            codec = codec_for_path(self.path)
+            codec.prepare_write(address, create=create)
+            PendingSave.queue_save(address, codec, data=new_text)
+            self._memo = None
+            return True
+        if create and not self.path.exists():
+            self.path.touch(exist_ok=False)
         codec = codec_for_path(self.path)
         if codec is None or not codec.editable:
             print(f"[project_code] refusing write: no editable codec for "
@@ -260,7 +291,7 @@ class _ProjectCode:
 
     def _key(self, path):
         try:
-            return str(Path(path).resolve())
+            return str(file_path(path).resolve())
         except OSError:
             return str(path)
 
@@ -272,7 +303,7 @@ class _ProjectCode:
         return file_code
 
     def __contains__(self, path):
-        return Path(self._key(path)).is_file()
+        return file_path(self._key(path)).is_file()
 
 
 project_code = _ProjectCode()

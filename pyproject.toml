@@ -18,7 +18,7 @@ dependencies = [
     "numpy>=1.26", "libcst>=1.4", "jedi>=0.19", "Pygments>=2.18", "freetype-py>=2.4",
     "watchdog>=4", "pillow>=10", "rtree>=1.2", "packaging>=24", "tomlkit>=0.13",
     "httpx>=0.27", "anthropic>=0.40", "pyte>=0.8", "psutil>=6; sys_platform != 'ios'", "rich>=13",
-    "symspellpy>=6.7", "mcp>=2.0", "uvicorn>=0.30",
+    "symspellpy>=6.7", "mcp>=2.0", "uvicorn>=0.30", "paramiko>=3.5; sys_platform != 'ios'",
 ]
 
 [project.optional-dependencies]

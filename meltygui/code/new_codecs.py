@@ -19,6 +19,7 @@ from meltygui.code.fileref import _evict_linecache
 from meltygui.code.fileref import shift_sibling_linenos
 from meltygui.code.fileref import is_editable_source
 from meltygui.code.fileref import is_writable_file
+from meltygui.code.fileref import writable_file_refusal
 from meltygui.code.chain_converters import _ensure_import_lines
 from meltygui.code.chain_converters import _resolve_call_address
 from meltygui.code.chain_converters import _split_span_at_call
@@ -293,14 +294,54 @@ class Codec:
     # Small badge accents; the surrounding file icon keeps the user's tint.
     extension_badges = {}
 
+    @staticmethod
+    def file_status(address, observer=None):
+        """Nonblocking availability of this file, independent of its renderer.
+
+        Empty state means synchronous storage. Async codecs publish revisions;
+        consumers subscribe to changes and retain their value while unavailable.
+        """
+        from meltygui.model.file_location_model import is_remote
+        if not is_remote(address.path):
+            return {}
+        from meltygui.model.ssh_file_model import entry, request, subscribe
+        if observer is not None:
+            subscribe(address.path, observer)
+        request(address.path, 'data')
+        return entry(address.path)
+
+    @staticmethod
+    def refresh_file(address):
+        from meltygui.model.ssh_file_model import request
+        request(address.path, 'data', refresh=True)
+
+    @staticmethod
+    def clear_draft(address):
+        from meltygui.model.ssh_file_model import clear_recovery
+        clear_recovery(address.path)
+
+    @staticmethod
+    def is_self_write(address):
+        from meltygui.model.file_location_model import is_remote
+        return not is_remote(address.path) and FileWatch.is_self_write(address.path)
+
+    @staticmethod
+    def saved_text(address):
+        from meltygui.model.file_location_model import is_remote
+        if is_remote(address.path):
+            return None
+        return FileWatch.get_self_write_text(address.path)
+
     @classmethod
     def badge_for_path(cls, path):
-        return cls.extension_badges.get(Path(path).suffix.lower())
+        from meltygui.model.file_location_model import file_path
+        return cls.extension_badges.get(file_path(path).suffix.lower())
 
     @classmethod
     def icon_for_path(cls, path):
         """File glyph without loading or inspecting the file's contents."""
-        return cls.extension_icons.get(Path(path).suffix.lower(), cls.icon)
+        from meltygui.model.file_location_model import file_path
+        return cls.extension_icons.get(file_path(path).suffix.lower(), cls.icon)
 
     @staticmethod
     def show_code_buttons(address):
@@ -1080,11 +1121,82 @@ class TextFileCodec(TypeCodec):
     @staticmethod
     def show_code_buttons(address):
         # One codec serves any text extension - only .py is runnable/importable.
-        return address is not None and address.path.suffix.lower() == ".py"
+        from meltygui.model.file_location_model import is_remote
+        return address is not None and not is_remote(address.path) and address.path.suffix.lower() == ".py"
+
+    @classmethod
+    def load(cls, address, source_text=None, **kwargs):
+        from meltygui.model.file_location_model import is_remote
+        if not is_remote(address.path):
+            return super().load(address, source_text=source_text, **kwargs)
+        from meltygui.editor.pending_save import PendingSave
+        from meltygui.model.ssh_file_model import entry, stamp, recovered_edit
+        pending = PendingSave.pending_text_for(address) if kwargs.get('pending', True) else None
+        if pending is not None:
+            queued = PendingSave.entry_for(address)
+            if queued is not None:
+                address._remote_stamp = queued[0]._remote_stamp
+                address._remote_encoding = getattr(queued[0], '_remote_encoding', 'utf-8')
+                address._remote_newline = getattr(queued[0], '_remote_newline', '\n')
+            return pending
+        recovery = recovered_edit(address.path) if kwargs.get("pending", True) else None
+        if recovery is not None:
+            address._remote_stamp = tuple(recovery['expected']) if recovery['expected'] is not None else None
+            address._remote_encoding = recovery['encoding']
+            address._remote_newline = recovery.get('newline', '\n')
+            PendingSave.queue_save(address=address, codec=cls, data=recovery['text'])
+            return recovery['text']
+        raw = address.path.read_bytes()
+        if b'\0' in raw:
+            raise ValueError('Remote binary editing is not supported')
+        address._remote_stamp = stamp(entry(address.path)['data_stat'])
+        address._remote_encoding = 'utf-8'
+        address._remote_newline = _detect_newline(raw)
+        try:
+            return raw.decode('utf-8')
+        except UnicodeDecodeError:
+            address._remote_encoding = 'latin-1'
+            return raw.decode('latin-1')
+
+    @classmethod
+    def prepare_write(cls, address, *, create=False):
+        state = cls.file_status(address)
+        if create and isinstance(state.get('error'), FileNotFoundError):
+            address._remote_stamp = None
+            address._remote_encoding = 'utf-8'
+            address._remote_newline = '\n'
+            return
+        cls.load(address)
+
+    @staticmethod
+    def save(address, data, force=False, **kwargs):
+        from meltygui.model.file_location_model import is_remote
+        if not is_remote(address.path):
+            return TypeCodec.save(address, data, force=force, **kwargs)
+        from meltygui.model.ssh_file_model import write_bytes
+        try:
+            normalized = data.replace('\r\n', '\n').replace('\r', '\n')
+            encoded = normalized.replace('\n', getattr(address, '_remote_newline', '\n')).encode(address._remote_encoding)
+            write_bytes(address.path, encoded,
+                        address._remote_stamp, force=force)
+        except (OSError, ValueError) as error:
+            return SaveConflict(str(error))
+        return True
 
     @staticmethod
     def resolve_address(input_value, draw_state=None, **kwargs):
-        path = Path(str(input_value))
+        from meltygui.model.file_location_model import file_path, is_remote
+        path = file_path(input_value)
+        if is_remote(path):
+            if writable_file_refusal(path):
+                return None
+            cached = draw_state.misc.get('ssh_address') if draw_state is not None else None
+            if cached is None or cached.path != path:
+                cached = Address(path, source=input_value, watcher_ds=draw_state)
+                cached._allow_write = True
+                if draw_state is not None:
+                    draw_state.misc['ssh_address'] = cached
+            return cached
         # Whole-file text editing follows the gentler gate: folder windows
         # mount dirs outside the project, so anywhere under $HOME works (for
         # library installs) - not just the project tree.
@@ -1260,6 +1372,9 @@ def codec_for_path(path):
     file whose bytes don't decode as the extension promises (an empty or
     corrupt .png) falls through to the sniff instead of being routed to a
     load() that can only throw."""
+    from meltygui.model.file_location_model import is_remote
+    if is_remote(path):
+        return TextFileCodec
     if isinstance(path, str) and len(path) > 255:
         return None
 

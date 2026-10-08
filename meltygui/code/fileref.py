@@ -66,6 +66,9 @@ def add_editable_root(path) -> Path | None:
     or the PROJECT ROOT of a file `path` (see project_root_of). Idempotent;
     a library install (site-packages, a venv) is never registered. Returns
     the root registered, or None when refused."""
+    from meltygui.model.file_location_model import is_remote
+    if is_remote(path):
+        return None
     try:
         p = Path(path).expanduser().resolve()
     except (OSError, ValueError):
@@ -156,6 +159,10 @@ def writable_file_refusal(path) -> str | None:
     gate exists to prevent. (It used to require $HOME instead of write
     permission, and a refused file showed as a tab that never loaded.)
     A path that does not exist yet is judged by its directory."""
+    from meltygui.model.file_location_model import file_path, is_remote
+    if is_remote(path):
+        hit = _LIBRARY_PARTS & set(file_path(path).parts)
+        return f'inside a library install ({sorted(hit)[0]}/)' if hit else None
     try:
         p = Path(path).resolve()
     except (OSError, ValueError) as e:
@@ -206,7 +213,8 @@ class Address:
     end = None
 
     def __init__(self, path, start=None, end=None, source=None, watcher_ds=None):
-        self.path = Path(path).resolve()
+        from meltygui.model.file_location_model import file_path
+        self.path = file_path(path).resolve()
         self.start = start
         self.end = end
         self.source = source

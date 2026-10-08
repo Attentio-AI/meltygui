@@ -17,7 +17,8 @@ def file_icon_for_path(path):
     # File browsers also work before any editor has initialized the codecs.
     from meltygui.code import new_codecs
 
-    codec = extension_to_codec.get(Path(path).suffix.lower())
+    from meltygui.model.file_location_model import file_path
+    codec = extension_to_codec.get(file_path(path).suffix.lower())
     return codec.icon_for_path(path) if codec is not None else None
 
 
@@ -36,5 +37,6 @@ def file_badge_for_path(path):
     from pathlib import Path
     from meltygui.code import new_codecs
 
-    codec = extension_to_codec.get(Path(path).suffix.lower())
+    from meltygui.model.file_location_model import file_path
+    codec = extension_to_codec.get(file_path(path).suffix.lower())
     return codec.badge_for_path(path) if codec is not None else None

@@ -6,6 +6,7 @@ coordinates when disk snapshots and edits pass through them.
 import os
 import shutil
 from pathlib import Path
+from meltygui.model.file_location_model import file_path, FileLocation, is_remote
 
 from meltygui.core.conversion.bubbling import install_bubbling
 
@@ -264,6 +265,9 @@ def initialize_file_metadata(vis, root):
 def list_directory(directory, show_hidden=False):
     """The rows of `directory`: [(Path, is_dir)] — folders first, then files,
     each case-insensitive by name. An unreadable directory lists empty."""
+    if is_remote(directory):
+        from meltygui.model.ssh_file_model import list_directory as remote_rows
+        return remote_rows(directory, show_hidden)
     try:
         entries = list(os.scandir(directory))
     except OSError:
@@ -283,7 +287,41 @@ def list_directory(directory, show_hidden=False):
 
 
 def _dir_mtime_ns(directory):
+    if is_remote(directory):
+        from meltygui.model.ssh_file_model import entry, request
+        request(directory, 'rows')
+        state = entry(directory)
+        return id(state.get('rows'))
     try:
         return os.stat(directory).st_mtime_ns
     except OSError:
         return -1
+
+
+def directory_status(directory, observer=None):
+    """Availability and display identity of a directory; never blocks for I/O."""
+    if not directory:
+        return {'available': False, 'path': directory}
+    path = file_path(directory)
+    if is_remote(path):
+        from meltygui.model.ssh_file_model import entry, request, subscribe
+        if observer is not None:
+            subscribe(path, observer)
+        request(path, 'rows')
+        state = entry(path)
+        return {'available': True, 'path': str(path),
+                'refreshable': True, 'message': str(state.get('error') or ('Loading folder…' if 'rows' not in state else ''))}
+    return {'available': path.is_dir(), 'path': str(path)}
+
+
+def refresh_directories(directories):
+    from meltygui.model.ssh_file_model import request
+    for path in directories:
+        if is_remote(path):
+            request(path, 'rows', refresh=True)
+
+
+def watch_directories(directories):
+    """Only filesystem watch targets; transports publish their own changes."""
+    return {str(FileLocation.parse(path).watch_directory) for path in directories
+            if FileLocation.parse(path).watch_directory is not None}
