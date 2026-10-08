@@ -307,6 +307,9 @@ assert module.value == 42
         objects = plistlib.loads(before)["objects"]
         self.assertTrue(any(obj.get('path', '').endswith('/Network.framework')
                             for obj in objects.values()))
+        for framework in ('Security', 'UniformTypeIdentifiers'):
+            self.assertTrue(any(obj.get('path', '').endswith(f'/{framework}.framework')
+                                for obj in objects.values()))
         import shlex
         phase, = [obj for obj in objects.values() if obj['isa'] == 'PBXShellScriptBuildPhase']
         self.assertIn(shlex.quote(sys.executable) + ' -m meltygui.platforms.ios.compile_shaders', phase['shellScript'])
