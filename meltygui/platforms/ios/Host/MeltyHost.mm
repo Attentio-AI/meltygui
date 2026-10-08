@@ -6,6 +6,7 @@
 #include <cmath>
 #include <mutex>
 #include "LocalNetworkAccess.h"
+#include "SSHAuthentication.h"
 
 static __weak MeltyHost *gHost;
 PyMODINIT_FUNC PyInit__melty_metal(void);
@@ -59,6 +60,9 @@ static PyObject *setClipboardText(PyObject *, PyObject *args) {
 }
 
 static PyMethodDef nativeMethods[] = {
+    {"configure_ssh", configureSSH, METH_VARARGS, "Configure SSH using secure native inputs and Keychain."},
+    {"ssh_configuration_status", sshConfigurationStatus, METH_O, "Read non-secret SSH configuration status."},
+    {"ssh_credentials", sshCredentials, METH_VARARGS, "Read SSH credentials from this device's Keychain."},
     {"request_local_network_access", requestLocalNetworkAccess, METH_NOARGS, "Begin a cancellable local-network permission request."},
     {"local_network_access_status", localNetworkAccessStatus, METH_O, "Read a local-network request's current status."},
     {"open_app_settings", openAppSettings, METH_NOARGS, "Open this app's iOS settings."},

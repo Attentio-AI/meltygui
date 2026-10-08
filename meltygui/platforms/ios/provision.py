@@ -378,6 +378,27 @@ def _pillow_environment(source, cache, env):
     return env
 
 
+def _pynacl_environment(source, cache, env):
+    """Link PyNaCl against its bundled libsodium, built for iPhone ARM64."""
+    env = _target_library_environment(env)
+    output = cache / 'pynacl-deps' / source.name
+    prefix = output / 'install'
+    if not all((prefix / path).is_file() for path in ('lib/libsodium.a', 'include/sodium.h')):
+        output.mkdir(parents=True, exist_ok=True)
+        clang = subprocess.check_output(['/usr/bin/xcrun', '--sdk', 'iphoneos', '--find', 'clang'],
+                                        env=env, close_fds=False, text=True).strip()
+        flags = shlex.join(['-target', 'arm64-apple-ios17.0', '-isysroot', env['SDKROOT'], '-O2', '-fPIC'])
+        native = dict(env, CC=clang, CFLAGS=flags, LDFLAGS=flags)
+        _run(['/bin/sh', source / 'src/libsodium/configure', '--host=aarch64-apple-darwin',
+              '--disable-shared', '--enable-static', '--with-pic', f'--prefix={prefix}'],
+             env=native, log=output / 'build.log', directory=output)
+        _run(['/usr/bin/make', '-j2'], env=native, log=output / 'build.log', directory=output)
+        _run(['/usr/bin/make', 'install'], env=native, log=output / 'build.log', directory=output)
+    env.update(SODIUM_INSTALL='system', CFLAGS=shlex.join(['-I' + str(prefix / 'include')]),
+               LDFLAGS=shlex.join(['-L' + str(prefix / 'lib')]))
+    return env
+
+
 def _build_source(name, source, compiler, info, framework, platform_config, cache, env):
     """Compile a source distribution using the support package's cross-venv."""
     output = cache / 'builds' / name
@@ -402,6 +423,8 @@ def _build_source(name, source, compiler, info, framework, platform_config, cach
     build_env_vars.pop('MACOSX_DEPLOYMENT_TARGET', None)
     if name.startswith('cffi-'):
         build_env_vars = _cffi_environment(source, cache, build_env_vars)
+    if name.startswith('pynacl-'):
+        build_env_vars = _pynacl_environment(source, cache, build_env_vars)
     extra_file = output / 'backend-requirements.json'
     _run([python, '-c', 'import json,sys; from pathlib import Path; from build import ProjectBuilder; '
           'Path(sys.argv[2]).write_text(json.dumps(sorted(ProjectBuilder(sys.argv[1]).get_requires_for_build("wheel"))))',

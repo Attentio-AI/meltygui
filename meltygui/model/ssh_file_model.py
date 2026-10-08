@@ -1,4 +1,4 @@
-"""SSH roots and SFTP operations. OpenSSH owns authentication and host verification.
+"""SSH roots and SFTP operations; OpenSSH on desktop, direct SSH on iOS.
 
 The cache is shared file data, not view state. Each worker owns and closes its
 connection. No socket, worker or cached listing is serialized into settings.
@@ -20,6 +20,7 @@ import atexit
 import hashlib
 import json
 import weakref
+import sys
 
 from meltygui.model.file_location_model import FileLocation
 
@@ -111,6 +112,16 @@ class _SFTPChannel:
 @contextmanager
 def sftp(location):
     from paramiko import SFTPClient
+    if sys.platform == 'ios':
+        from meltygui.model.ssh_auth_model import connect
+        connection = connect(location)
+        try:
+            client = connection.open_sftp()
+            client.get_channel().settimeout(20)
+            yield client
+        finally:
+            connection.close()
+        return
     channel = _SFTPChannel(location)
     try:
         client = SFTPClient(channel)

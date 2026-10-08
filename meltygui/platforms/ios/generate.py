@@ -82,7 +82,7 @@ def generate(*, python_framework, python_lib, app_dir, packages_dir=None,
     header_refs = [file(path, "sourcecode.c.h") for path in sorted((ROOT / "Host").glob("*.h*"))]
     linked_refs = [file(path, "wrapper.framework") for path in frameworks]
     system_refs = [file(f"System/Library/Frameworks/{name}.framework", "wrapper.framework", "SDKROOT")
-                   for name in ("UIKit", "Foundation", "CoreGraphics", "Metal", "QuartzCore", "Network")]
+                   for name in ("UIKit", "Foundation", "CoreGraphics", "Metal", "QuartzCore", "Network", "Security", "UniformTypeIdentifiers")]
     product = add("product", "PBXFileReference", explicitFileType="wrapper.application",
                   path="Melty.app", sourceTree="BUILT_PRODUCTS_DIR")
     products = add("products", "PBXGroup", children=[product], name="Products", sourceTree="<group>")
