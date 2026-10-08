@@ -207,6 +207,10 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
                     state.error = f'{type(error).__name__}: {error}'
                 elapsed = time.thread_time() - started
                 state.phase_started = None
+            # Plain return data lets independently hot-swapped app callbacks
+            # report detail without importing newly added toolkit functions.
+            if foreground and isinstance(result, dict) and 'overlay_timings' in result:
+                state.timings.update(result['overlay_timings'])
             if state.error is None and elapsed > OVERLAY_BUDGET_SECONDS:
                 state.budget_warning_at = time.monotonic()
                 stamp = time.strftime('%H:%M:%S')
@@ -214,7 +218,7 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
                 if state.timings:
                     state.timings['Other'] = max(0.0, elapsed - sum(state.timings.values()))
                     state.warning_timings = tuple(sorted(state.timings.items(), key=lambda pair: -pair[1]))
-                    state.budget_warning += '\n' + '  '.join(
+                    state.budget_warning += '\n' + '\n'.join(
                         f'{label}: {seconds * 1000:.3f} ms' for label, seconds in state.warning_timings)
                 else:
                     state.warning_timings = ()
