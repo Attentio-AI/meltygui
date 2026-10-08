@@ -222,9 +222,13 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
                 discard_geometry(draw_list, vertex_start)
         if state.error is not None and foreground:
             color = pack_color(*Tint.dd_text(draw_state.current_tint), 1.0)
-            draw_list.add_text(draw_state._abs_left() + 4,
+            left, right = draw_state.abs_left, draw_state.abs_left + draw_state.width
+            if clip is not None:
+                left, right = max(left, clip[0]), min(right, clip[2])
+            draw_list.add_text(left + 4,
                                draw_state._abs_top() + draw_state.header_height + 4,
-                               color, f'Overlay disabled: {state.error}')
+                               color, _wrap_warning(f'Overlay disabled: {state.error}',
+                                                    max(1.0, right - left - 8)))
     finally:
         if clip is not None:
             draw_list.pop_clip_rect()
@@ -267,9 +271,13 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
                                     pack_color(1.0, 0.0, 0.0, warning_alpha), wrapped)
             else:
                 color = pack_color(*Tint.dd_text(draw_state.current_tint), 1.0)
-                error_list.add_text(draw_state.abs_left + 4,
+                left, right = draw_state.abs_left, draw_state.abs_left + draw_state.width
+                if clip is not None:
+                    left, right = max(left, clip[0]), min(right, clip[2])
+                error_list.add_text(left + 4,
                                     draw_state.abs_top + draw_state.header_height + 4,
-                                    color, f'Background disabled: {state.error}')
+                                    color, _wrap_warning(f'Background disabled: {state.error}',
+                                                         max(1.0, right - left - 8)))
         finally:
             if clip is not None:
                 error_list.pop_clip_rect()

@@ -277,6 +277,7 @@ def test_failed_overlay_discards_only_its_geometry(monkeypatch):
         before = ctypes.string_at(draw_list.vtx_buffer_data, start * imgui.VERTEX_SIZE)
         ds = SimpleNamespace(_kwargs={}, closed=False, just_shadow=False,
                              misc={}, misc_used=set(), _raw_input_value=None,
+                             abs_left=0, width=800,
                              abs_clip_rect=(0, 0, 800, 600), _abs_left=lambda: 0,
                              _abs_top=lambda: 0, header_height=0, current_tint=(0, 0, 0))
         end = []
