@@ -383,7 +383,7 @@ def _pynacl_environment(source, cache, env):
     env = _target_library_environment(env)
     output = cache / 'pynacl-deps' / source.name
     prefix = output / 'install'
-    if not all((prefix / path).is_file() for path in ('lib/libsodium.a', 'include/sodium.h')):
+    if not (output / 'ready').is_file() or not all((prefix / path).is_file() for path in ('lib/libsodium.a', 'include/sodium.h')):
         output.mkdir(parents=True, exist_ok=True)
         clang = subprocess.check_output(['/usr/bin/xcrun', '--sdk', 'iphoneos', '--find', 'clang'],
                                         env=env, close_fds=False, text=True).strip()
@@ -394,6 +394,7 @@ def _pynacl_environment(source, cache, env):
              env=native, log=output / 'build.log', directory=output)
         _run(['/usr/bin/make', '-j2'], env=native, log=output / 'build.log', directory=output)
         _run(['/usr/bin/make', 'install'], env=native, log=output / 'build.log', directory=output)
+        (output / 'ready').write_text('iphoneos-arm64\n')
     env.update(SODIUM_INSTALL='system', CFLAGS=shlex.join(['-I' + str(prefix / 'include')]),
                LDFLAGS=shlex.join(['-L' + str(prefix / 'lib')]))
     return env

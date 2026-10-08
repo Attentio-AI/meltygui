@@ -16,6 +16,40 @@ from packaging.requirements import Requirement
 from meltygui.platforms.ios import provision, runtime, devices, generate
 
 
+def test_pynacl_builds_and_reuses_static_device_sodium(tmp_path, monkeypatch):
+    import shlex
+    source = tmp_path / 'PyNaCl-1.6.2'
+    cache = tmp_path / 'cache'
+    commands = []
+    monkeypatch.setattr(provision.subprocess, 'check_output', lambda *a, **kw: '/Xcode/clang\n')
+
+    def run(command, *, env, log, directory):
+        command = list(map(str, command))
+        commands.append(command)
+        assert env['CC'] == '/Xcode/clang'
+        assert shlex.split(env['CFLAGS'])[:4] == ['-target', 'arm64-apple-ios17.0', '-isysroot', '/iPhone SDK']
+        assert 'CPATH' not in env and env['PKG_CONFIG'] == '/usr/bin/false'
+        if command[-1] == 'install':
+            for path in ('lib/libsodium.a', 'include/sodium.h'):
+                target = directory / 'install' / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text('device artifact')
+
+    monkeypatch.setattr(provision, '_run', run)
+    host = dict(SDKROOT='/iPhone SDK', CPATH='/opt/homebrew/include', LDFLAGS='-L/host/lib')
+    result = provision._pynacl_environment(source, cache, host)
+    assert '--host=aarch64-apple-darwin' in commands[0]
+    assert '--disable-shared' in commands[0]
+    assert len(commands) == 3
+    assert result['SODIUM_INSTALL'] == 'system'
+    assert '/host/lib' not in result['LDFLAGS'] and 'homebrew' not in result['CFLAGS']
+    assert provision._pynacl_environment(source, cache, host) == result
+    assert len(commands) == 3
+    (cache / 'pynacl-deps' / source.name / 'install/lib/libsodium.a').unlink()
+    provision._pynacl_environment(source, cache, host)
+    assert len(commands) == 6
+
+
 def binary():
     command = struct.pack('<6I', 0x32, 24, 2, 17 << 16, 17 << 16, 0)
     return struct.pack('<8I', 0xFEEDFACF, 0x0100000C, 0, 6, 1, len(command), 0, 0) + command
