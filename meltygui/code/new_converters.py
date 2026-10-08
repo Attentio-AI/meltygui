@@ -2004,8 +2004,6 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         code_state.address = address
         file_status = codec.file_status(address, draw_state) if address is not None else {}
         if file_status:
-            from meltygui.view.pending_file_view import draw_file_status
-            draw_file_status(address, codec, draw_state)
             available = 'data' in file_status or PendingSave.pending_text_for(address) is not None
             if not available:
                 imgui.text_wrapped(str(file_status.get('error') or 'Loading file…'))

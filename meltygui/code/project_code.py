@@ -228,8 +228,8 @@ class FileCode:
 
     def status(self, observer=None):
         from meltygui.code.new_codecs import codec_for_path, TextFileCodec
-        from meltygui.editor.pending_save import PendingSave
-        return PendingSave.file_status(Address(self.path), codec_for_path(self.path) or TextFileCodec, observer)
+        codec = codec_for_path(self.path) or TextFileCodec
+        return codec.file_status(Address(self.path), observer)
 
     def text_for_edit(self):
         """Current text, or empty for a confirmed absent file. Never mask I/O errors."""

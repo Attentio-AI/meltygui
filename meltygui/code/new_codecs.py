@@ -311,16 +311,6 @@ class Codec:
         return entry(address.path)
 
     @staticmethod
-    def refresh_file(address):
-        from meltygui.model.ssh_file_model import request
-        request(address.path, 'data', refresh=True)
-
-    @staticmethod
-    def clear_draft(address):
-        from meltygui.model.ssh_file_model import clear_recovery
-        clear_recovery(address.path)
-
-    @staticmethod
     def is_self_write(address):
         from meltygui.model.file_location_model import is_remote
         return not is_remote(address.path) and FileWatch.is_self_write(address.path)
@@ -510,7 +500,7 @@ class TypeCodec(Codec):
         # disk content, and skip the disk read below. An explicit source_text
         # (a verified reload copy of exact disk content) still takes the slice
         # path below. See PendingSave.pending_text_for.
-        if source_text is None:
+        if source_text is None and kwargs.get("pending", True):
             from meltygui.editor.pending_save import PendingSave
             pending = PendingSave.pending_text_for(address)
             if pending is not None:
@@ -548,7 +538,7 @@ class TypeCodec(Codec):
         # surface. Span loads skip it - the baseline's line numbering can't
         # be trusted for a post-drift span address; self-writes skip it
         # - the disk already IS the studio's own text.
-        if source_text is None and address.start is None \
+        if source_text is None and kwargs.get("pending", True) and address.start is None \
                 and not FileWatch.is_self_write(address.path):
             from meltygui.editor.external_changes import ExternalChanges
             try:

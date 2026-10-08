@@ -224,7 +224,7 @@ def draw_changed_file_header(path, tint, draw_state, view_id, width, height=23.0
 
 
 @render_func()
-def draw_pending_saves():
+def draw_pending_saves(draw_state=None):
     from meltygui.editor.pending_save import PendingSave
     from meltygui.editor.pending_save import _pending_diff_memo
     from meltygui.editor.pending_save import _render_diff_blocks
@@ -257,6 +257,10 @@ def draw_pending_saves():
         if _k not in PendingSave.pending_saves:
             _pending_diff_memo.pop(_k, None)
     for address, (codec, kwargs) in list(PendingSave.pending_saves.items()):
+        status = codec.file_status(address, draw_state)
+        message = 'Saving…' if status.get('saving') else status.get('save_error')
+        if message:
+            imgui.text_wrapped(f"{address.path.name}: {message}")
         if address in PendingSave.originals:
             original_data = PendingSave.originals[address]
             new_data = kwargs.get("data")
@@ -309,16 +313,16 @@ def draw_pending_saves():
             RenderFuncs.draw_text(diff_str, show_name=True, name=name,
                                   is_diff=True, line_numbers=line_numbers)
         else:
-            # Baseline against DISK, never the pending cache: a plain
-            # codec.load answers with the queued edit itself, and stamping the
-            # edit as its own "original" reclassifies the entry as a no-op
-            # (dropped on the next disk write, invisible in this diff) and
-            # poisons the merge base. source_text pins the load to disk.
-            from meltygui.core.melty import Melty
-            disk_text = Melty.read_code(address.path) if address.path is not None else None
-            PendingSave.originals[address] = codec.load(
-                address=address, **{**kwargs, "source_text": disk_text})
-            imgui.text("No original data to compare against for address: {}".format(address))
+            # Ask the codec for saved data without rebasing the queued address
+            # or reading the pending edit back as its own original.
+            from copy import copy
+            try:
+                PendingSave.originals[address] = codec.load(
+                    address=copy(address), **{**kwargs, "pending": False})
+            except FileNotFoundError:
+                PendingSave.originals[address] = ""
+            except OSError as error:
+                imgui.text_wrapped(f"{address.path.name}: {error}")
 
 
 def paint_breadcrumbs(draw_state, path, click=None, crumb_height=24.0, left_pad=6.0,
