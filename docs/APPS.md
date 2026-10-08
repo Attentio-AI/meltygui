@@ -123,6 +123,9 @@ still belong outside overlays. Warnings wrap within the visible view and fade
 over five seconds. A foreground callback can call `overlay_checkpoint(draw_state,
 "phase name")` after each phase; the warning retains that slow call's CPU breakdown,
 accumulating repeated labels. Checkpoints are inert outside the timed callback.
+A callback can instead return `{'overlay_timings': {'phase name': seconds, ...}}`.
+This plain-data form needs no checkpoint import when app and toolkit definitions
+are hot-swapped independently; those timings are displayed on the same warning.
 Exceptions and invalid callbacks disable rendering for that view and discard the
 failed geometry. Replacing the callback or hot-swapping its code retries it.
 

@@ -108,6 +108,24 @@ def test_slow_warning_keeps_its_own_phase_timings(setup, monkeypatch):
     assert 'Outside callback' not in state.timings
 
 
+def test_returned_timings_reach_warning_without_checkpoint_import(setup, monkeypatch):
+    draw_list, view = setup
+    monkeypatch.delattr(overlay, 'overlay_checkpoint')
+    result = {'overlay_timings': {'Navigation arrows': .0001, 'Tab icons': .0005}}
+    ds = view(lambda: result)
+    clock = iter([0, .000624, 1, 1.00001])
+    monkeypatch.setattr(overlay.time, 'thread_time', lambda: next(clock))
+    overlay.draw_overlay(ds)
+    state = ds.misc['render_overlay']
+    assert state.error is None
+    assert state.warning_timings[0] == ('Tab icons', .0005)
+    assert 'Tab icons: 0.500 ms' in draw_list.add_text.call_args.args[-1]
+    warning = state.budget_warning
+    result['overlay_timings'] = {'Tab icons': .000001}
+    overlay.draw_overlay(ds)
+    assert state.budget_warning == warning
+
+
 @pytest.mark.parametrize('width', [72, 200, 390])
 def test_warning_wraps_inside_visible_tile_and_reflows(setup, monkeypatch, width):
     draw_list, view = setup
