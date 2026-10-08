@@ -27,7 +27,8 @@ OVERLAY_WARNING_FADE_SECONDS = 5.0
 _STATE_KEY = 'render_overlay'
 
 
-@no_save('callback', 'owner', 'code', 'names', 'error', 'budget_warning', 'budget_warning_at')
+@no_save('callback', 'owner', 'code', 'names', 'error', 'budget_warning', 'budget_warning_at',
+         'phase_started', 'timings', 'warning_timings', 'warning_layout')
 class OverlayState(DictConversion):
     def __init__(self):
         super().__init__()
@@ -38,6 +39,50 @@ class OverlayState(DictConversion):
         self.error = None
         self.budget_warning = None
         self.budget_warning_at = 0.0
+        self.phase_started = None
+        self.timings = {}
+        self.warning_timings = ()
+        self.warning_layout = None
+
+
+def overlay_checkpoint(draw_state, label):
+    """Attribute CPU since the previous checkpoint to a foreground-overlay phase.
+
+    Repeated labels accumulate; the budget warning retains the slow call's
+    breakdown. Outside a timed overlay this is a no-op, including body paints.
+    """
+    state = draw_state.misc.get(_STATE_KEY)
+    if state is None or getattr(state, 'phase_started', None) is None:
+        return
+    now = time.thread_time()
+    state.timings[label] = state.timings.get(label, 0.0) + now - state.phase_started
+    state.phase_started = now
+
+
+def _wrap_warning(text, width):
+    """Wrap draw-list text, splitting long callback names as well as words."""
+    lines = []
+    for paragraph in text.split('\n'):
+        line = ''
+        for word in paragraph.split():
+            candidate = f'{line} {word}' if line else word
+            if line and imgui.calc_text_size(candidate)[0] > width:
+                lines.append(line)
+                line = word
+            else:
+                line = candidate
+            while len(line) > 1 and imgui.calc_text_size(line)[0] > width:
+                low, high = 1, len(line)
+                while low < high:
+                    mid = (low + high + 1) // 2
+                    if imgui.calc_text_size(line[:mid])[0] <= width:
+                        low = mid
+                    else:
+                        high = mid - 1
+                lines.append(line[:low])
+                line = line[low:]
+        lines.append(line)
+    return '\n'.join(lines)
 
 
 @contextmanager
@@ -147,8 +192,10 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
                       'draw_state': draw_state, 'draw_list': draw_list}
             arguments = {name: values[name] for name in state.names}
             vertex_start = draw_list.vtx_buffer_size
+            state.timings = {}
             with _live_actions(draw_state):
                 started = time.thread_time()
+                state.phase_started = started
                 try:
                     result = callback(**arguments)
                     if not foreground and result is not None:
@@ -159,10 +206,18 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
                 except Exception as error:
                     state.error = f'{type(error).__name__}: {error}'
                 elapsed = time.thread_time() - started
+                state.phase_started = None
             if state.error is None and elapsed > OVERLAY_BUDGET_SECONDS:
                 state.budget_warning_at = time.monotonic()
                 stamp = time.strftime('%H:%M:%S')
                 state.budget_warning = f'[{stamp}] {option}: {elapsed * 1000:.3f} ms CPU exceeds 0.5 ms CPU budget'
+                if state.timings:
+                    state.timings['Other'] = max(0.0, elapsed - sum(state.timings.values()))
+                    state.warning_timings = tuple(sorted(state.timings.items(), key=lambda pair: -pair[1]))
+                    state.budget_warning += '\n' + '  '.join(
+                        f'{label}: {seconds * 1000:.3f} ms' for label, seconds in state.warning_timings)
+                else:
+                    state.warning_timings = ()
             if state.error is not None:
                 discard_geometry(draw_list, vertex_start)
         if state.error is not None and foreground:
@@ -195,10 +250,21 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
             error_list.push_clip_rect(*clip, True)
         try:
             if budget_warning is not None:
-                text_width, text_height = imgui.calc_text_size(budget_warning)
-                error_list.add_text(draw_state.abs_left + draw_state.width - text_width - 4,
-                                    draw_state.abs_top + draw_state.height - text_height - 4,
-                                    pack_color(1.0, 0.0, 0.0, warning_alpha), budget_warning)
+                left, top = draw_state.abs_left, draw_state.abs_top
+                right, bottom = left + draw_state.width, top + draw_state.height
+                if clip is not None:
+                    left, top = max(left, clip[0]), max(top, clip[1])
+                    right, bottom = min(right, clip[2]), min(bottom, clip[3])
+                width = max(1.0, right - left - 8)
+                key = (budget_warning, width, imgui.get_font_size())
+                layout = getattr(state, 'warning_layout', None)
+                if layout is None or layout[0] != key:
+                    wrapped = _wrap_warning(budget_warning, width)
+                    layout = state.warning_layout = (key, wrapped, imgui.calc_text_size(wrapped))
+                _, wrapped, (text_width, text_height) = layout
+                error_list.add_text(max(left + 4, right - text_width - 4),
+                                    max(top + 4, bottom - text_height - 4),
+                                    pack_color(1.0, 0.0, 0.0, warning_alpha), wrapped)
             else:
                 color = pack_color(*Tint.dd_text(draw_state.current_tint), 1.0)
                 error_list.add_text(draw_state.abs_left + 4,
