@@ -4,8 +4,8 @@ Call process_inputs(info, events) once before imgui.new_frame(). Melty then
 calls pump() as usual before resolving subscriptions. UIKit points remain
 logical coordinates; display_fb_scale alone carries the device pixel scale.
 
-This is primary-touch and committed-text support. Gesture recognition, Pencil
-predictions and UITextInput composition/selection are separate host work.
+Primary contacts feed the shared tap/scroll recognizer. Pencil predictions and
+UITextInput composition/selection are separate host work.
 """
 from collections import deque
 import math
@@ -111,7 +111,7 @@ class IOSInput:
             window.hovered = True
             self.melty._pointer_inside = True
             self._touch_pressed = True
-            self.handler.feed_down('left_mouse', *window.cursor_pos, t=event['_time'])
+            self.handler.feed_touch('begin', *window.cursor_pos, t=event['_time'])
             window.emit('cursor_enter', True)
             window.emit('mouse_button', codes.MOUSE_BUTTON_LEFT, codes.PRESS, self._modifiers)
         elif identity not in window.touches:
@@ -121,16 +121,17 @@ class IOSInput:
             if identity != window.primary_touch:
                 return
             self._move(event)
+            self.handler.feed_touch('move', *window.cursor_pos, t=event['_time'])
         else:
             del window.touches[identity]
             if identity != window.primary_touch:
                 return
             if kind == 'touch_end':
                 self._move(event)
-                self.handler.feed_up('left_mouse', *window.cursor_pos, t=event['_time'])
+                self.handler.feed_touch('end', *window.cursor_pos, t=event['_time'])
                 window.emit('mouse_button', codes.MOUSE_BUTTON_LEFT, codes.RELEASE, self._modifiers)
             else:
-                self.handler.feed_cancel('left_mouse')
+                self.handler.feed_touch('cancel')
                 self._touch_pressed = False
                 self._pointer_cancelled = True
             window.buttons[codes.MOUSE_BUTTON_LEFT] = codes.RELEASE
@@ -265,7 +266,22 @@ class IOSInput:
     def pump(self):
         """Refresh held-input recency; queued native edges were already fed."""
         self._set_modifiers(self._modifiers)
-        self._refresh_touch_targets()
+        touch = self.handler._touch_input
+        origin = next(((x, y) for kind, x, y, _ in touch.events if kind == 'begin'), None) if touch else None
+        if origin is None:
+            self._refresh_touch_targets()
+        else:
+            # A fast swipe can begin and leave a pane between two frames.
+            # Resolve its capture at contact-down, not the final sample.
+            pointer = self.io.mouse_pos
+            hover_ids = getattr(self.melty, 'bvh_hover_ids', None)
+            self.io.mouse_pos = origin
+            self.melty.bvh_hover_ids = {id(view) for view in self.melty.bvh_query(*origin)}
+            try:
+                self._refresh_touch_targets()
+            finally:
+                self.io.mouse_pos = pointer
+                self.melty.bvh_hover_ids = hover_ids
         if self.window.primary_touch is not None or self.melty._keys_down:
             self._stamp()
 
@@ -352,7 +368,7 @@ class IOSInput:
         # Committed text is retained across suspension. Hardware edges from
         # before the cancellation must not resurrect a held key after resume.
         self._edit_pending = deque(event for event in self._edit_pending if event['kind'] != 'key')
-        self.handler.feed_cancel('left_mouse')
+        self.handler.feed_touch('cancel')
         for name in self._key_inputs.values():
             self.handler.feed_cancel(name)
         self._key_inputs.clear()

@@ -119,6 +119,55 @@ tap(6.5)
 assert Melty.text_focused_ds is None
 tap(0.5)
 assert Melty.text_focused_ds is state['ds']
+# An overflowing cached text pane must scroll before it ever owns focus.
+Melty.text_focused_ds = None
+state['text'] = '\n'.join(f'line {i}' for i in range(80))
+state['ds'].invalidate()
+for _ in range(8): frame()
+ds = state['ds']
+x, y = ds.abs_left + 120, ds.abs_top + 150
+def contact(kind, at_y):
+    frame([dict(kind='touch_' + kind, touch_id=1, x=x, y=at_y)])
+contact('begin', y)
+assert Melty.text_focused_ds is None
+contact('move', y - 45.5)
+assert Melty.text_focused_ds is None
+assert abs(ds.scroll_offset[1] - 45.5) < .01, ds.scroll_offset
+contact('end', y - 55.5)
+assert Melty.text_focused_ds is None
+assert ds.scroll_offset[1] > 45.5, ds.scroll_offset
+assert not keyboard[-1], keyboard
+# A new stationary contact stops the coast and focuses only on release.
+contact('begin', y)
+stopped = ds.scroll_offset[1]
+for _ in range(3): frame()
+assert ds.scroll_offset[1] == stopped
+assert Melty.text_focused_ds is None
+contact('end', y)
+assert Melty.text_focused_ds is ds
+assert keyboard[-1] is editable
+# Scrolling an already focused editor preserves its caret and selection.
+caret = ds.text_cursor_pos
+selection = ds.text_selection_start, ds.text_selection_end
+contact('begin', y)
+contact('move', y - 30)
+contact('end', y - 30)
+assert ds.text_cursor_pos == caret
+assert (ds.text_selection_start, ds.text_selection_end) == selection
+assert Melty.text_focused_ds is ds
+# Horizontal touch motion uses logical pixels too, without selecting text.
+Melty.text_focused_ds = None
+native.input.handler.feed_touch('cancel')
+state['text'] = 'long line ' * 80
+ds.invalidate()
+for _ in range(8): frame()
+x, y = ds.abs_left + 160, ds.abs_top + 10
+contact('begin', y)
+x -= 37.5
+contact('move', y)
+assert abs(ds.text_h_scroll - 37.5) < .01, ds.text_h_scroll
+contact('end', y)
+assert Melty.text_focused_ds is None
 native.close()
 '''
     result = subprocess.run([sys.executable, '-c', program, str(tmp_path), str(editable)],

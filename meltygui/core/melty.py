@@ -2989,7 +2989,10 @@ class Melty:
         event_keys_str = [str(k) for k in event_keys]
         concat_names = "_".join(event_keys_str)
 
-        cls.on_scroll_buffer.append("scroll_y_changed" in cls.events_by_type and "view_scroll" in concat_names)
+        cls.on_scroll_buffer.append(
+            (any(name in cls.events_by_type for name in ("scroll_y_changed", "touch_scroll_changed"))
+             and "view_scroll" in concat_names)
+            or "touch_scroll_x_changed" in cls.events_by_type)
         cls.on_scroll = any(cls.on_scroll_buffer)
 
 

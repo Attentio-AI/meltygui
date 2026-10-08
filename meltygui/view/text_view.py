@@ -1069,6 +1069,8 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
 @window
 def draw_text(input_value: str, height=None,
               left_mouse_down=False,
+              touch_clicked=False,
+              touch_scroll_x_changed=False,
               left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="", 
               ctrl_b_down=False, ctrl_shift_b_down=False,
@@ -1098,6 +1100,8 @@ def draw_text(input_value: str, height=None,
     """`editable=False` keeps caret navigation, selection and copy while disabling
     text edits, completion and inline editing widgets. Native touch hosts do not
     open the software keyboard for this view. Selection uses normal saved state.
+    Touch contacts focus on completed taps; swipes scroll without moving the
+    caret. Mouse presses and drags still place the caret and select text.
     `draw_breakpoints=False` hides/disables breakpoint markers over the line numbers.
     Markers use the file's metadata `breakpoints` mapping, keyed by the current
     whole-file code_dict/code_tree source-site keys. The codec supplies that
@@ -1124,6 +1128,8 @@ def draw_text(input_value: str, height=None,
     through that world's tables / its own detached table, never the
     studio's hold for the file; either also lets the file path come from
     `file_key` when there is no `jump_to`."""
+    if touch_clicked:
+        left_mouse_down = touch_clicked
     from meltygui.editor.text_editor import COLORS
     from meltygui.editor.text_editor import DEFAULT_TOKEN_VIEWS
     from meltygui.editor.text_editor import GENERIC_ICON
@@ -2861,8 +2867,9 @@ def draw_text(input_value: str, height=None,
     # scroll_offset (the framework skips writing it while button 2 is down,
     # so our edits aren't clobbered mid-drag). Horizontal uses our own
     # text_h_scroll since the framework only manages vertical scroll.
+    if touch_scroll_x_changed:
+        ds.text_h_scroll -= touch_scroll_x_changed.value
     if horizontal_scroll_drag:
-        ds.text_h_scroll -= horizontal_scroll_drag.dx
         ds.text_h_scroll -= horizontal_scroll_drag.dx
         sx, sy = ds.scroll_offset
         ds.scroll_offset = (sx, sy - horizontal_scroll_drag.dy)
@@ -3528,7 +3535,7 @@ def draw_text(input_value: str, height=None,
         # within parens, or Ctrl+P (see the signature-help block).
         ds._ac_sig_request_paren = -1
         ds.text_cursor_blink_time = time.time()
-        click_pos = _xy_to_char_index(text, io.mouse_pos.x, io.mouse_pos.y,
+        click_pos = _xy_to_char_index(text, left_mouse_down.x, left_mouse_down.y,
                                       origin_x, origin_y, line_px, vcols=_get_vcols())
 
         now = time.time()

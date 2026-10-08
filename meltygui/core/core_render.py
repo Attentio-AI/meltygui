@@ -5492,6 +5492,7 @@ def render_func(*args, **o_kwargs):
         scroll_y_changed = None
         if needs_scroll:
             scroll_y_changed = draw_state.on_action("scroll_y_changed", view_id="view_scroll", priority_delta=10)
+            touch_scroll_changed = draw_state.on_action("touch_scroll_changed", view_id="view_scroll", priority_delta=10)
             scroll_delta = 0
 
             if scroll_y_changed is not None:
@@ -5516,10 +5517,15 @@ def render_func(*args, **o_kwargs):
                     draw_state.abs_clipped_height)
             else:
                 scroll_speed = Toggles.ScrollSettings.scroll_speed
-            new_offset_y = ceil(current_y + scroll_delta * direction * scroll_speed)
-
+            new_offset_y = (ceil(current_y + scroll_delta * direction * scroll_speed)
+                            if scroll_y_changed is not None else current_y)
             if scroll_y_changed:
                 Melty.last_scroll_time = time.time()
+            if touch_scroll_changed is not None:
+                # Finger deltas are logical pixels, not wheel notches. Preserve
+                # fractional motion and bypass wheel acceleration/rounding.
+                new_offset_y = current_y - touch_scroll_changed.value
+                scroll_y_changed = touch_scroll_changed
 
             min_scroll_y = 0
             max_scroll_y = max(0, draw_state.abs_content_height -

@@ -104,6 +104,19 @@ def test_first_contact_rehits_body_without_a_hover_frame(body_input):
     body_input.overlay.channels_merge.assert_called_once()
 
 
+def test_fast_swipe_rehits_origin_even_when_it_leaves_before_the_frame(body_input):
+    native, hits = body_input.native, body_input.hits
+    target = body_input.view('pane', x=0, suffix='scroll', events=('touch_scroll_changed',))
+    hits.append(target)
+    native.adapter.process_inputs(frame_info(), [touch('begin', x=20, y=30),
+                                                touch('move', x=220, y=10),
+                                                touch('end', x=220, y=10)])
+    native.adapter.pump()
+    event = native.handler.process_frame()[0]['pane_scroll']['touch_scroll_changed']
+    assert event.value == -20
+    assert native.io.mouse_pos == (220, 10)
+
+
 def test_new_contact_removes_old_named_body_target_and_keeps_wrapper(body_input):
     native, hits = body_input.native, body_input.hits
     old = body_input.view('old', fast=True)

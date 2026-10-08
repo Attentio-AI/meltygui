@@ -347,7 +347,7 @@ def test_keyboard_shrink_requests_one_focused_caret_reveal_before_draw(native, m
     surface.start()
     invalidations, reveals = [], []
     preserved = object()
-    focused = SimpleNamespace(misc={'existing-state': preserved}, invalidate=lambda: invalidations.append(
+    focused = SimpleNamespace(_kwargs={}, misc={'existing-state': preserved}, invalidate=lambda: invalidations.append(
         surface.window_backend.get_window_size(surface.window)))
     monkeypatch.setattr(Melty, 'text_focused_ds', focused)
     draw = surface._draw_frame
@@ -375,7 +375,7 @@ def test_rotation_reveals_focused_caret_when_either_axis_shrinks(native, monkeyp
     surface = native.surface
     surface.start()
     invalidations = []
-    focused = SimpleNamespace(misc={}, invalidate=lambda: invalidations.append(True))
+    focused = SimpleNamespace(_kwargs={}, misc={}, invalidate=lambda: invalidations.append(True))
     monkeypatch.setattr(Melty, 'text_focused_ds', focused)
 
     surface.frame(frame_info() | dict(width=300, height=600), [])
@@ -405,7 +405,7 @@ def test_zero_size_layout_and_recovery_do_not_request_caret_reveal(native, monke
     surface = native.surface
     surface.start()
     invalidations = []
-    focused = SimpleNamespace(misc={}, invalidate=lambda: invalidations.append(True))
+    focused = SimpleNamespace(_kwargs={}, misc={}, invalidate=lambda: invalidations.append(True))
     monkeypatch.setattr(Melty, 'text_focused_ds', focused)
     surface.frame(frame_info(), [])
     width, height = zero_size
@@ -473,7 +473,9 @@ def test_suspend_cancels_input_checkpoints_once_and_resume_wakes(native):
     surface.frame(frame_info(), [dict(kind='touch_begin', touch_id=1, x=10, y=10),
                                 dict(kind='key', key=codes.KEY_S, action=codes.PRESS,
                                      modifiers=codes.MOD_SUPER)])
-    assert surface.input.handler.is_down('left_mouse')
+    # This harness replaces drawing/dispatch. Native contact edges are queued
+    # until the shared dispatcher can choose between a tap and a scroll.
+    assert surface.input.handler._touch_input.events
     assert Melty._keys_down
     surface.input.update_keyboard(True)
     native.calls.clear()
@@ -482,6 +484,8 @@ def test_suspend_cancels_input_checkpoints_once_and_resume_wakes(native):
     assert surface.suspended and not surface.window.focused
     assert native.host.keyboard[-1] is False
     assert not surface.input.handler.is_down('left_mouse')
+    assert not surface.input.handler._touch_input.events
+    assert not surface.input.handler._touch_input.active
     assert not surface.window.touches and not Melty._keys_down
     assert native.calls == ['save-source', 'save-session', 'save-settings', 'save-overrides']
     assert surface.frame(frame_info(1), []) is False

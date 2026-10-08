@@ -362,6 +362,28 @@ class InputHandler:
         self._drag_cursor: dict[str, Any] = {}
         self.cursor_shape = None
 
+    @property
+    def _touch_input(self):
+        # Keep per-input state in the existing store, including in handlers
+        # already alive when this definition is hotswapped in place.
+        return self._states.get('touch')
+
+    def feed_touch(self, kind, x=0.0, y=0.0, t=None):
+        """Feed a primary contact in logical pixels; never emulate mouse first.
+
+        Backends retain contact identity and call cancel on suspension/loss.
+        Routing waits for process_frame's current cached-view hit test.
+        """
+        from meltygui.core.input.touch_input import TouchInput
+        if self._touch_input is None:
+            self._states['touch'] = TouchInput()
+        if kind == 'cancel':
+            self._touch_input.cancel(self)
+        elif kind in ('begin', 'move', 'end'):
+            self._touch_input.events.append((kind, x, y, time.perf_counter() if t is None else t))
+        else:
+            raise ValueError(f'Unknown touch phase: {kind}')
+
     def _reconcile_held(self, t: float):
         """Drop any press the handler still holds that the platform says is
         UP. is_down only ever clears through feed_up, and a RELEASE can be
@@ -791,7 +813,6 @@ class InputHandler:
         result: dict[Any, dict[str, InputEvent]] = {}
         result_by_type: dict[Any, dict[str, InputEvent]] = {}
         t = time.perf_counter()
-        self._reconcile_held(t)
 
         # Build current hover dict with priorities
         current_hovered: dict[Any, tuple[int, frozenset]] = {
@@ -884,6 +905,13 @@ class InputHandler:
         from meltygui.core.melty import Melty
         from meltygui.core.windowing.glfw_utils import request_render
         get_latest_mouse = Melty.get_latest_mouse
+
+        if self._touch_input is not None:
+            if self._touch_input.dispatch(self, key_index, add_event, t, on_pointer_down):
+                request_render()
+        # Native contacts may have queued their release for this dispatch.
+        # Consume it before the missed-mouse-release probe can synthesize one.
+        self._reconcile_held(t)
 
         drag_capture = self._drag_capture
         drag_activated = self._drag_activated
