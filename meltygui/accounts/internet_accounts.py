@@ -353,7 +353,7 @@ class AnthropicKind(AccountKind):
         source = self._source(account)
         if source is None:
             return ("needs_login", "not signed in")
-        return ("ready", f"{source} · verified" if account.get("_validated") else source)
+        return ("ready", f"{source}  verified" if account.get("_validated") else source)
 
     # -- Claude plan usage (through Claude Code's login) ----------------------
     # The plan's rate-limit windows (session, weekly all-models, weekly
@@ -662,7 +662,7 @@ class AnthropicKind(AccountKind):
             same_day = fetched[:3] == time.localtime()[:3]
             stamp = "as of " + time.strftime("%H:%M:%S" if same_day else "%m-%d %H:%M", fetched)
             if account.get("_usage_loading"):
-                stamp += " · refreshing…"
+                stamp += "  refreshing…"
             out.append(("stamp", stamp))
         return out
 
@@ -690,13 +690,13 @@ class AnthropicKind(AccountKind):
             client.models.list(limit=1)
             client.close()
             account["_validated"] = True
-            account["_status"] = ("ready", f"{source} · verified")
+            account["_status"] = ("ready", f"{source}  verified")
         except ImportError:
             account["_status"] = ("error", "anthropic package not installed")
         except Exception as error:
             account["_validated"] = False
             message = getattr(error, "message", None) or str(error)
-            account["_status"] = ("error", f"{source} · {message[:90]}")
+            account["_status"] = ("error", f"{source}  {message[:90]}")
         accounts_changed()
 
     # -- browser sign-in ---------------------------------------------------
@@ -880,7 +880,7 @@ class CodexKind(AccountKind):
             return ("needs_login", "not signed in")
         if identity.get("type") != "chatgpt":
             return ("warning", "ChatGPT sign-in required for plan usage")
-        return ("ready", " · ".join(filter(None, (
+        return ("ready", "  ".join(filter(None, (
             identity.get("email") or "ChatGPT", identity.get("planType")))))
 
     def probe(self, account):
@@ -1025,7 +1025,7 @@ class CodexKind(AccountKind):
             if fetched:
                 stamp = "as of " + time.strftime("%m-%d %H:%M:%S", time.localtime(fetched))
                 if account.get("_usage_loading"):
-                    stamp += " · refreshing…"
+                    stamp += "  refreshing…"
                 out.append(("stamp", stamp))
         out.append(("note", "Shared with Codex desktop / CLI" if account["id"] == "codex"
                     else "Separate Codex account"))
@@ -1136,7 +1136,7 @@ class OllamaKind(AccountKind):
                 models = ollama.list_models(client)
         except Exception as error:
             account["_models"] = []
-            return ("error", f"{host} · {str(error)[:60]}")
+            return ("error", f"{host}  {str(error)[:60]}")
         account["_models"] = models
         try:
             account["_gpus"] = ollama.gpu_inventory()   # best-effort GPU names for the device menu
@@ -1148,10 +1148,10 @@ class OllamaKind(AccountKind):
                            for key in ("coder", "codellama", "starcoder", "codestral", "deepseek-coder"))]
         text = f"{len(models)} models"
         if loaded:
-            text += f" · {len(loaded)} loaded on " + ", ".join(
+            text += f"  {len(loaded)} loaded on " + ", ".join(
                 sorted({model['where'] or '?' for model in loaded}))
         if not fim_like:
-            text += " · no FIM model (pull qwen2.5-coder)"
+            text += "  no FIM model (pull qwen2.5-coder)"
         return ("ready", text)
 
     def actions(self, account):

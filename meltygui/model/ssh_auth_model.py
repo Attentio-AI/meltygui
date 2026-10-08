@@ -29,7 +29,10 @@ def credentials(location):
 
 
 def known_hosts_path():
-    return Path.home() / '.ssh' / 'known_hosts'
+    # The direct client's trust store belongs to the app. In particular, an
+    # iOS container's top-level directory is not a writable desktop home.
+    from meltygui.core.runtime.paths import config_root
+    return config_root() / 'ssh' / 'known_hosts'
 
 
 def host_key_name(location):

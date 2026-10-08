@@ -71,7 +71,7 @@ def draw_chat_queue(proxy, selected, chat, draw_state, state, key, width, tint):
     changed = False
     x, y = imgui.get_cursor_screen_pos()
     paused = chat.get("queue_paused", False)
-    label = f"{len(queued)} queued" + (" · paused" if paused else " · sends after this turn")
+    label = f"{len(queued)} queued" + ("  paused" if paused else "  sends after this turn")
     _title(label, x, y, max(1, width - Melty.px(90)), Melty.px(28), tint, brightness=0.7, ellipsis=True)
     if paused and _button(draw_state, key + ":resume", "Resume", x + width - Melty.px(85), y,
                           Melty.px(85), tint, height=Melty.px(28), enabled=not chat.get("locked", False), ui_scale=Melty.ui_scale):
@@ -508,7 +508,7 @@ def draw_messages(messages, draw_state, state, key, width, height,
                     elif isinstance(value, Reference):
                         # Never paint data URLs / encoded image data as text.
                         name = value.get("name") or value.get("path") or ""
-                        _title(value.label + (" · " + str(name) if name else "") + " (preview pending)",
+                        _title(value.label + ("  " + str(name) if name else "") + " (preview pending)",
                                left, text_y, leaf_width, header_height, tint)
                     elif isinstance(value, str) and prose and not isinstance(value, CodeString):
                         # Selection: a drag on a leaf starts it, the drag's
@@ -1253,10 +1253,10 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
             models = chat_models(kind, proxy, meta.get("model", ""))
             if inherits_defaults:
                 default_model = defaults.get("model") or getattr(proxy, "default_model", None)
-                models = {"Default · " + (default_model or "Codex model"): "default", **models}
+                models = {"Default  " + (default_model or "Codex model"): "default", **models}
                 access = ("Full access" if defaults.get("sandbox_mode") == "danger-full-access"
                           and defaults.get("approval_policy") == "never" else "Configured access")
-                permissions = {"Default · " + access: "default", **permissions}
+                permissions = {"Default  " + access: "default", **permissions}
             new_chat = is_new_chat(chat)
             if new_chat:
                 # New drafts may choose any available source, including ones
@@ -1275,7 +1275,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
                     if getattr(source_proxy, "inherits_defaults", False):
                         source_defaults = source_proxy.defaults_for(chat["project"])
                         default_model = source_defaults.get("model") or getattr(source_proxy, "default_model", None)
-                        options = {"Default · " + (default_model or "Codex model"): "default", **options}
+                        options = {"Default  " + (default_model or "Codex model"): "default", **options}
                     grouped_models[source_label(source_id, source_kind, accounts)] = {
                         label: (source_id, model) for label, model in options.items()}
                 model_choices = grouped_models
@@ -1516,7 +1516,7 @@ def _message_label(message, expanded):
         else:
             name = message["details"].get("tool") or message["details"].get("name")
             if name:
-                label += " · " + str(name)
+                label += "  " + str(name)
     return label
 
 

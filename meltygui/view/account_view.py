@@ -466,7 +466,7 @@ def draw_internet_accounts(
                     info_x = name_x + imgui.calc_text_size(name_fit)[0] + px(10)
                     info = _format_gb(model["size"])
                     if model["loaded"]:
-                        info += f" · loaded on {model['where'] or '?'}"
+                        info += f"  loaded on {model['where'] or '?'}"
                     info_fit = _ellipsize(info, strip_left - button_gap - px(4) - info_x)
                     if info_fit:
                         draw_list.add_text(info_x, text_y,
@@ -477,7 +477,7 @@ def draw_internet_accounts(
     if visible(footer_y, footer_y + row_height):
         note = hint[0] or f"{ACCOUNTS_PATH}"
         if store.error:
-            note += f"   ·   {store.error}"
+            note += f"  {store.error}"
         draw_list.add_text(row_left, footer_y + (row_height - line_height) / 2.0,
                            _color_u32((0.6, 0.62, 0.7), 0.6),
                            _ellipsize(note, row_right - row_left))

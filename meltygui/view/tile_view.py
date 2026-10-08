@@ -94,7 +94,7 @@ def source_label(identity, endpoints, available):
     duplicates = sum(source_display_name(endpoints[tile_id]) == label
                      for tile_id in {item[0] for item, _value in available})
     if duplicates > 1:
-        label += f" · {source.tile.id}"
+        label += f"  {source.tile.id}"
     if identity[2] is not None and sum(item[0] == identity[0] for item, _value in available) > 1:
         label += f" / {identity[2]}"
     return label
@@ -125,7 +125,7 @@ def tile_link_column(endpoint, parameter, endpoints):
     for identity, _value in available:
         label = source_label(identity, endpoints, available)
         if label in choices or label in ("Source unavailable", fallback):
-            label += f" · {identity[0]}"
+            label += f"  {identity[0]}"
         choices[label] = identity
     if selected is None and saved is not None and saved != AUTO:
         choices["Source unavailable"] = tuple(saved)

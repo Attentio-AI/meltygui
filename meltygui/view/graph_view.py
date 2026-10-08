@@ -496,7 +496,7 @@ def render_import_graph(input_value=None, draw_state=None,
     elif graph is not None:
         status = f"{graph.file_count} files, {graph.edge_count} imports"
         if state.selected:
-            status += f"  ·  {Path(state.selected).name}"
+            status += f"  {Path(state.selected).name}"
     else:
         status = "no graph yet — build one"
     dl.add_text(status_x, status_y, pack_color(0.75, 0.78, 0.82, 1.0), status)

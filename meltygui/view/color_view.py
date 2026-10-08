@@ -610,7 +610,7 @@ def _draw_wide_picker(input_value, draw_state, gl_state, info):
         return True, None
     imgui.same_line()
     gamut = "sRGB" if all(0.0 <= c <= 1.0 for c in (r, g, b)) else ("P3" if exposure <= 1.0 else "P3 HDR")
-    imgui.text_colored(f"{exposure:.2f}× white · {gamut}", *Tint.subtle_text())
+    imgui.text_colored(f"{exposure:.2f}× white  {gamut}", *Tint.subtle_text())
     if info:
         imgui.dummy(0, 2)
         imgui.text_colored(str(info), 1.0, 1.0, 1.0, 0.45)
@@ -816,7 +816,7 @@ def _draw_extended_picker(input_value, draw_state, gl_state, info):
                    if has_alpha else f"#{ri:02x}{gi:02x}{bi:02x}")
     else:
         gamut = "sRGB" if x <= 0.0 else "P3"
-        readout = f"{exposure:.2f}× white · " + (gamut if exposure <= 1.0 else gamut + " HDR")
+        readout = f"{exposure:.2f}× white  " + (gamut if exposure <= 1.0 else gamut + " HDR")
     imgui.text_colored(readout, *Tint.subtle_text())
     if info:
         imgui.dummy(0, 2)

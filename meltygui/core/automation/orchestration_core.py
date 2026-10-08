@@ -541,7 +541,7 @@ def group_events(events, cues=()):
             first, last = events[i], events[end - 1]
             rows.append((i, end, "move",
                          f"move ({first[2]:.0f}, {first[3]:.0f}) → ({last[2]:.0f}, {last[3]:.0f})",
-                         f"{end - i}× · {last[0] - first[0]:.1f}s"))
+                         f"{end - i}×  {last[0] - first[0]:.1f}s"))
             i = end
         elif kind == "down":
             input_id = event[2]
@@ -559,7 +559,7 @@ def group_events(events, cues=()):
                     rows.append((i, end + 1, "drag",
                                  f"drag {input_id} ({event[3]:.0f}, {event[4]:.0f})"
                                  f" → ({up[3]:.0f}, {up[4]:.0f})",
-                                 f"{move_count} moves · {up[0] - dt:.1f}s"))
+                                 f"{move_count} moves  {up[0] - dt:.1f}s"))
                 i = end + 1
             else:
                 rows.append((i, i + 1, "down",
@@ -1589,7 +1589,7 @@ class Orchestrator:
                                # the gesture's own duration: the servo paces its travel on it
                                "drag_duration": max(0.0, events[up_index][0] - first_move) / speed}
                 cls._remap = (task, task.run(), up_index, cue_index)
-                cls.status = (f"replaying {cls._replay_index}/{len(events)} · "
+                cls.status = (f"replaying {cls._replay_index}/{len(events)}  "
                               + ("checking gates" if task.gates_only else str(task)))
                 return
             if cls._cue_cursor < len(cues) \
@@ -2002,7 +2002,7 @@ class Orchestrator:
         cls._replay_index = down_index
         cls._remap_shift = None
         cls._remap = (task, task.run(), up_index, cue_index)
-        cls.status = (f"correcting: {cue_get(cue, 'kind')} {cue_get(cue, 'name')} · "
+        cls.status = (f"correcting: {cue_get(cue, 'kind')} {cue_get(cue, 'name')}  "
                       f"preconditions")
         request_render()
         return True

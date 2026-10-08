@@ -1320,7 +1320,7 @@ def focus(input_value, path=(), default=None, kind=None, draw_state=None, unique
     else:
         target = None
     base = kind or str(draw_state.name)
-    label = f"{base} · {target}" if target else base
+    label = f"{base}  {target}" if target else base
 
     imgui.same_line()
     imgui.text(label)

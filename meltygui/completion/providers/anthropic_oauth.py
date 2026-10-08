@@ -105,7 +105,7 @@ def summary(info) -> str:
     carries no other label — the kind header names the service)."""
     who = info.get("email") or "signed in"
     if not info.get("refreshable"):
-        who += " · no refresh"
+        who += "  no refresh"
     return who
 
 

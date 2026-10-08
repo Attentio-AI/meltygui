@@ -114,8 +114,8 @@ def _run(panel_state, tool, args):
     panel_state._result.update(answer)
     panel_state._error = error
     panel_state._json = json.dumps(answer, indent=1, default=str)
-    panel_state._stamp = (f"{elapsed_ms:.2f} ms   ·   {len(panel_state._json)} B"
-                          f"   ·   frame {Melty.frame_count}")
+    panel_state._stamp = (f"{elapsed_ms:.2f} ms  {len(panel_state._json)} B"
+                          f"  frame {Melty.frame_count}")
 
 
 # disable_scroll=False: the window is a scrolling box of panes, and the

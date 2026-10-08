@@ -10,7 +10,7 @@ class TurnStatusTests(unittest.TestCase):
         self.assertEqual(turn_status(chat)[0], 'Working')
         chat['running'] = False
         self.assertFalse(is_working(chat))
-        self.assertEqual(turn_status(chat)[1], 'Your turn · Response finished')
+        self.assertEqual(turn_status(chat)[1], 'Your turn  Response finished')
 
     def test_request_overrides_running_and_clears_when_answered(self):
         chat = Chat({'running': True, 'requests': {'q': {'kind': 'input'}}})

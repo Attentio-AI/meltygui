@@ -224,4 +224,4 @@ def image_label(ref, entry=None):
         parts.append("%d×%d" % entry.size)
         if entry.hdr:
             parts.append(f"HDR, peak {entry.peak_nits:.0f} nits")
-    return " · ".join(parts)
+    return "  ".join(parts)

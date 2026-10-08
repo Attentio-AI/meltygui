@@ -491,7 +491,7 @@ def _draw_voxels(input_value: object = None, gl_state: GLState = None, selectabl
             elif nf_on and dim == along_d:
                 chop_name = (dim_names[chop_d]
                              if chop_d < len(dim_names) else f"dim{chop_d}")
-                label = f"{label} · {chop_name}"        # along the blocks
+                label = f"{label}  {chop_name}"        # along the blocks
             display.append((label, int(tex.shape[_AXIS_POS[axis]])))
         axis_display = tuple(display)
     else:

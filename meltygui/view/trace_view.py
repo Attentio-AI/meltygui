@@ -624,10 +624,10 @@ def draw_crash_reports(
         panel_state.app = picked_app                   # @live setattr: repaints the tile
         changed = True
         request_render()
-    count_note = (f"{len(entries)} report{'s' if len(entries) != 1 else ''}   ·   "
+    count_note = (f"{len(entries)} report{'s' if len(entries) != 1 else ''}  "
                   f"{store.directory()}")
     if store.error:
-        count_note += f"   ·   {store.error}"
+        count_note += f"  {store.error}"
     draw_list.add_text(row_left, toolbar_top + (toolbar_height - line_height) / 2.0,
                        _color_u32(meta_color, 0.8), _ellipsize(count_note, filter_left - px(10) - row_left))
 
@@ -722,7 +722,7 @@ def draw_crash_reports(
             # ── right: time of day (the section header carries the date),
             # thread, commit - right-aligned, never clipped by the thread ──
             when = time.localtime(entry["mtime"])
-            meta = (f"{entry['app']}  ·  {when.tm_hour % 12 or 12}:{when.tm_min:02d}"
+            meta = (f"{entry['app']}  {when.tm_hour % 12 or 12}:{when.tm_min:02d}"
                     f"{'AM' if when.tm_hour < 12 else 'PM'} + {when.tm_sec}s")
             meta_right = trash_left - px(6)
             # ── left: the raising FILE first, then its FUNCTION on a pill in
@@ -844,10 +844,10 @@ def draw_crash_reports(
         footer_top = trace_top + trace_height
         footer = entry["thread"] or ""
         if entry["pid"]:
-            footer += f"{'  ·  ' if footer else ''}pid {entry['pid']}"
+            footer += f"{'  ' if footer else ''}pid {entry['pid']}"
         if entry["commit"]:
             sha, _, branch = entry["commit"].partition(" ")
-            footer += f"{'  ·  ' if footer else ''}{sha[:8]}{(' ' + branch) if branch else ''}"
+            footer += f"{'  ' if footer else ''}{sha[:8]}{(' ' + branch) if branch else ''}"
         if footer and visible(footer_top, footer_top + footer_height):
             footer_fit = _ellipsize(footer, row_right - row_left - 2 * px(8))
             footer_size = imgui.calc_text_size(footer_fit)
