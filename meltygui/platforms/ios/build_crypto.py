@@ -55,6 +55,9 @@ def digest(path):
 
 
 def run(command, *, env, log=None, directory=None):
+    if log is not None:
+        from meltygui.platforms.ios.provision import _run
+        return _run(command, env=env, log=log, directory=directory)
     command = list(map(str, command))
     executable = shutil.which(command[0], path=env.get("PATH"))
     if executable is None:
@@ -65,16 +68,7 @@ def run(command, *, env, log=None, directory=None):
         # directory before replacing itself with the actual build executable.
         runner = "import os,sys; os.chdir(sys.argv[1]); os.execve(sys.argv[2],sys.argv[2:],os.environ)"
         command = [sys.executable, "-c", runner, str(directory), *command]
-    if log is None:
-        return subprocess.check_output(command, env=env, close_fds=False, text=True).strip()
-    with Path(log).open("w") as stream:
-        stream.write("Arguments: " + json.dumps(command) + "\n")
-        stream.flush()
-        result = subprocess.run(command, env=env, close_fds=False,
-                                stdout=stream, stderr=subprocess.STDOUT)
-    if result.returncode:
-        tail = "\n".join(Path(log).read_text().splitlines()[-40:])
-        raise RuntimeError(f"Build failed; see {log}\n{tail}")
+    return subprocess.check_output(command, env=env, close_fds=False, text=True).strip()
 
 
 def source_tree(name, output, offline):

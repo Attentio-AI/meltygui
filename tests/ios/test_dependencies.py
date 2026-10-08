@@ -74,6 +74,11 @@ class DependencyTests(unittest.TestCase):
         self.assertEqual(updated['source'], entry['source'])
         self.assertEqual(updated['version'], '2.0')
         self.assertEqual(staging.digest(updated['wheel']), updated['sha256'])
+        self.assertIn('source_inputs', updated)
+        before = manifest.read_bytes()
+        with mock.patch.object(staging, 'run', side_effect=AssertionError('Unchanged sources must not rebuild')):
+            staging.refresh_local_packages(self.packages)
+        self.assertEqual(manifest.read_bytes(), before)
 
     def test_refresh_failure_keeps_previous_packages_and_manifest(self):
         import json

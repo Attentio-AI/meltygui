@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import tomllib
 import urllib.error
 import urllib.request
@@ -80,11 +81,39 @@ def _run(command, *, env, log, directory=None):
                    str(directory), *command]
     log = Path(log)
     log.parent.mkdir(parents=True, exist_ok=True)
-    print(f"iOS: {shlex.join(command[-8:])} (log: {log})", flush=True)
+    stage = log.parent.name if log.stem == 'build' else log.stem
+    print(f"iOS: {stage} (log: {log})", flush=True)
     with log.open('a') as output:
+        output.write('Arguments: ' + shlex.join(command) + '\n')
+        output.flush()
         start = output.tell()
-        result = subprocess.run(command, env=env, close_fds=False, stdout=output, stderr=subprocess.STDOUT)
-    if result.returncode:
+        began = last_progress = time.monotonic()
+        with log.open(errors='replace') as progress, subprocess.Popen(
+                command, env=dict(env, PYTHONUNBUFFERED='1'), close_fds=False,
+                stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT) as process:
+            progress.seek(start)
+            try:
+                while True:
+                    try:
+                        code = process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        code = None
+                    # Keep the full compiler log on disk and show a bounded live
+                    # tail in Tasks. File output also avoids pipe backpressure.
+                    lines = deque(progress, maxlen=8)
+                    now = time.monotonic()
+                    if lines:
+                        print(''.join(lines).rstrip(), flush=True)
+                        last_progress = now
+                    elif code is None and now - last_progress >= 10:
+                        print(f'iOS: {stage} still running ({int(now - began)}s)', flush=True)
+                        last_progress = now
+                    if code is not None:
+                        break
+            except BaseException:
+                process.terminate()
+                raise
+    if code:
         with log.open(errors='replace') as output:
             output.seek(start)
             tail, diagnostic = deque(maxlen=35), []
@@ -96,7 +125,7 @@ def _run(command, *, env, log, directory=None):
         first_error = ''.join(diagnostic)
         if first_error and first_error not in detail:
             detail = first_error + '\n[…]\n' + detail
-        raise RuntimeError(f'iOS build failed (exit {result.returncode}); log: {log}\n{detail}')
+        raise RuntimeError(f'iOS build failed (exit {code}); log: {log}\n{detail}')
 
 
 def _thin_runtime(path):
@@ -642,6 +671,31 @@ def _source_records(config):
     return json.loads(manifest.read_text()).get('packages', []) if manifest and manifest.is_file() else []
 
 
+def dependency_cache(base, info):
+    """One persistent device cache per Python ABI, independent of app/host edits."""
+    parent = Path(base) / f"cpython-{info['version']}"
+    cache = parent / 'iphoneos-arm64'
+    parent.mkdir(parents=True, exist_ok=True)
+    if not cache.exists():
+        # Adopt an existing cache in place: venvs and Cargo artifacts contain
+        # absolute paths. Moving them would discard the builds we want to keep.
+        for previous in sorted(parent.glob('iphoneos-arm64-*'), key=lambda p: p.stat().st_mtime_ns, reverse=True):
+            try:
+                output = previous / 'runtime'
+                ready = json.loads((output / 'ready.json').read_text())
+                runtime.validate_runtime(info, output / ready['framework'], output / ready['library'])
+                validate_device_binary(output / ready['framework'] / 'Python')
+            except (OSError, ValueError, KeyError):
+                continue
+            try:
+                cache.symlink_to(previous.name, target_is_directory=True)
+            except FileExistsError:
+                pass  # Another preparation selected the shared cache first.
+            break
+    cache.mkdir(parents=True, exist_ok=True)
+    return cache.resolve()
+
+
 def ensure_configuration(root, build, config, *, cache_root=None, refresh_local=False):
     """Repair missing/version-mismatched build inputs and update the Xcode project."""
     from meltygui.platforms.ios.application import read_application
@@ -691,15 +745,8 @@ def ensure_configuration(root, build, config, *, cache_root=None, refresh_local=
         result = subprocess.run(['/usr/bin/xcode-select', '-p'], close_fds=False,
                                 capture_output=True, text=True, check=True)
         env['DEVELOPER_DIR'] = result.stdout.strip()
-    result = subprocess.run(['/usr/bin/xcrun', '--sdk', 'iphoneos', '--show-sdk-version'], env=env,
-                            close_fds=False, capture_output=True, text=True, check=True)
-    signature = dict(sdk=result.stdout.strip(), developer=env['DEVELOPER_DIR'],
-                     magic=info['magic'], recipes=input_stamps([ROOT]))
-    # Hash only small file-metadata records, not source contents for staleness.
-    key = hashlib.sha256(json.dumps(signature, sort_keys=True).encode()).hexdigest()[:16]
     base = Path(cache_root) if cache_root else Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'meltygui/ios'
-    cache = base / f"cpython-{info['version']}" / f'iphoneos-arm64-{key}'
-    cache.mkdir(parents=True, exist_ok=True)
+    cache = dependency_cache(base, info)
     print(f"iOS: preparing Python {info['version']} build inputs; cache: {cache}", flush=True)
     with (cache / '.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -719,11 +766,19 @@ def ensure_configuration(root, build, config, *, cache_root=None, refresh_local=
                 except PackageNotFoundError:
                     pass
         tools = None
+        source_inputs = {}
 
         def acquire(requirement):
             nonlocal tools
             name = canonicalize_name(requirement.name)
             if name in sources:
+                source_inputs[name] = input_stamps([sources[name]])
+                previous = next((item for item in records if canonicalize_name(item['name']) == name), None)
+                if previous and previous.get('source_inputs') == source_inputs[name]:
+                    cached = Path(previous['wheel'])
+                    if (cached.is_file() and requirement.specifier.contains(previous['version'])
+                            and staging.digest(cached) == previous['sha256']):
+                        return _validate_wheel(cached, info['full_version'])
                 tools = tools or _tools(cache, env)
                 destination = build / 'ios-local-wheels' / name
                 if destination.exists():
@@ -750,6 +805,7 @@ def ensure_configuration(root, build, config, *, cache_root=None, refresh_local=
                 if canonicalize_name(entry['name']) in sources:
                     entry['source'] = sources[canonicalize_name(entry['name'])]
                     entry['source_metadata'] = staging.source_metadata_stamp(entry['source'])
+                    entry['source_inputs'] = source_inputs[canonicalize_name(entry['name'])]
                 entries.append(entry)
             staging.validate_dependencies(staged, python_version=info['full_version'])
             (Path(temporary) / 'manifest.json').write_text(json.dumps(dict(schema=1, packages=entries,
