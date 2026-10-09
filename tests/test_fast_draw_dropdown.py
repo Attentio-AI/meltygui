@@ -105,3 +105,21 @@ def test_breadcrumbs_draw_a_fast_dropdown_per_crumb(melty, tmp_path):
     rows = strip["memos"][len(parts) - 1]["rows"]
     assert sorted(rows.values()) == sorted(str(path) for path in target.parent.iterdir())
     assert rows[last_drop_down.selected_path[0]] == str(target)
+
+
+@pytest.mark.parametrize("label", ["Run Current File", "SSH Remote machine"])
+def test_narrow_trigger_clips_one_pixel_inside_button_edge(melty, monkeypatch, label):
+    from meltygui.view import dropdown_view
+    original = dropdown_view.flat_button
+    seen = {}
+
+    def capture(text, *args, **kwargs):
+        seen.update(text=text, pos=imgui.get_cursor_screen_pos(), **kwargs)
+        return original(text, *args, **kwargs)
+
+    monkeypatch.setattr(dropdown_view, 'flat_button', capture)
+    _frames(melty, lambda: dropdown_view.fast_draw_dropdown(
+        1, collection={label: 1}, name="narrow", width=60,
+        trigger_caret=('', ''), show_header=False))
+    assert seen['text'] == label
+    assert seen['text_clip_rect'][2] == seen['pos'][0] + seen['width'] - 1

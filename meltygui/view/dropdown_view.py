@@ -158,20 +158,12 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     trigger_align = "center" if compact else text_align
     trigger_w = max(15 if compact else 18, _slot_w)
 
-    # The label must FIT the fixed trigger width in pixels - a long label
-    # overflows the button rect and the measured item rect disagrees with
-    # the drawn size, the same disagreement the width comment above calls
-    # out as height jitter. Ellipsis-trim via a text width, not a
-    # character count (glyph widths vary wildly with font/monospace).
+    # Keep the full label; the trigger clips its text to the available width.
     _label_px = max(4.0, trigger_w - trigger_pad * 2)
     if compact:
-        # Show the VALUE itself (not the label/key). For a name->glyph dropdown
-        # the trigger must hug the glyph, not become the picked value's name.
-        drop_down_display_str = _dd_fit_label(
-            str(input_value if input_value is not None else current), _label_px)
+        drop_down_display_str = str(input_value if input_value is not None else current)
     else:
-        # An empty caret (trigger_caret=("", "")) leaves the bare label.
-        drop_down_display_str = _dd_fit_label(f"{caret} {str(current)}" if caret else str(current), _label_px)
+        drop_down_display_str = f"{caret} {current}" if caret else str(current)
 
     # A caller's trigger_height taller than the 25 px slot also moves the popover anchor down.
     trigger_h = (getattr(draw_state, "content_height", 0) or 25) if compact else max(25, kwargs.get("trigger_height", 25))
@@ -184,36 +176,43 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         trigger_text_value = 1.023 * (1.0 - min(max(float(_ttb), 0.0), 1.0))
     trigger_path = kwargs.get("display_path")
     if trigger_path:
-        drop_down_display_str = _dd_fit_label(str(current), max(4, _label_px - 43))
+        drop_down_display_str = str(current)
     trigger_left, trigger_top = imgui.get_cursor_screen_pos()
     # Draw-list trigger: the click is claimed through this dropdown's own
     # draw_state (no nested render_func). It fires on press, as the old button did.
     # An embedded tint colours the trigger; otherwise flat_button's default hue applies.
     embedded_tint = _dd_obj_tint(input_value)
     trigger_color = {} if embedded_tint is None else {"color": embedded_tint}
-    label_width = imgui.calc_text_size(drop_down_display_str.split("##")[0]).x
+    label_width = min(_label_px, imgui.calc_text_size(drop_down_display_str.split("##")[0]).x)
     if trigger_align == "left":
         trigger_text_offset = TRIGGER_TEXT_INSET
     elif trigger_align == "right":
         trigger_text_offset = trigger_w - label_width - TRIGGER_TEXT_INSET
     else:
-        trigger_text_offset = None
+        trigger_text_offset = (trigger_w - label_width) / 2
     if trigger_path:
         trigger_text_offset = TRIGGER_TEXT_INSET + 43
+    text_clip_rect = (trigger_left + trigger_text_offset, trigger_top,
+                      trigger_left + trigger_w - 1, trigger_top + trigger_h)
     display_paths = kwargs.get("display_paths")
     clicked = flat_button("" if display_paths else drop_down_display_str, draw_state, view_id=f"{name}_dd_trigger{unique}",
                           width=trigger_w, height=trigger_h,
                           alpha=1.0 if kwargs.get("show_button_bg", True) else 0.0,
                           shadow=shadow, text_value=trigger_text_value, text_pad=trigger_pad,
-                          text_offset_x=trigger_text_offset, event="left_mouse_down",
+                          text_offset_x=trigger_text_offset, text_clip_rect=text_clip_rect, event="left_mouse_down",
                           text_color=trigger_text_color, paint=kwargs.get("paint_trigger", True), **trigger_color)
     if display_paths:
         from meltygui.view.path_icon_view import path_label
         label_x = trigger_left + (trigger_text_offset if trigger_text_offset is not None
                                   else (trigger_w - label_width) / 2)
         color = pack_color(*Tint.dd_text(requested_tint=draw_state.current_tint)[:3], 1)
-        path_label(imgui.get_window_draw_list(), drop_down_display_str, label_x,
-                   trigger_top + (trigger_h - imgui.get_font_size()) / 2, color, display_paths, icons=icon_state)
+        dl = imgui.get_window_draw_list()
+        dl.push_clip_rect(*text_clip_rect, True)
+        try:
+            path_label(dl, drop_down_display_str, label_x,
+                       trigger_top + (trigger_h - imgui.get_font_size()) / 2, color, display_paths, icons=icon_state)
+        finally:
+            dl.pop_clip_rect()
     if trigger_path and not kwargs.get("paint_trigger", True):
         from meltygui.model.folder_icon_model import PathIcon
         from meltygui.model.file_location_model import file_path
@@ -815,18 +814,6 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
 
 
 
-def _dd_fit_label(s, px):
-    """`s` ellipsis-trimmed to render within `px` (imgui text metrics), so a
-    fixed-width trigger never draws wider than its own button rect."""
-    if px <= 0:
-        return ""
-    if imgui.calc_text_size(s)[0] <= px:
-        return s
-    while s and imgui.calc_text_size(s + "...")[0] > px:
-        s = s[:-1]
-    return s + "..."
-
-
 def _dd_obj_tint(obj, fallback=None):
     """An object's embedded tint (a 3+-tuple `.tint`, e.g. on a Lora), else
     `fallback`. Used to colour each row by its value and the trigger by the
@@ -1142,17 +1129,16 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
         # use_cache=False (the layer-band masking note there).
         _cp, _cl, _ccode = code_row
         _ty = y + (h - line_h) * 0.5
-        # rstrip: dedup keys may carry invisible trailing whitespace - never a
-        # visible counter. Elipsize past the
-        # label cap so a deep scope name can't eat the code column.
+        # Dedup keys may carry invisible trailing whitespace. Clip long scope
+        # names at the label cap so they cannot eat the code column.
         _lbl = str(label).rstrip()
-        if imgui.calc_text_size(_lbl)[0] > Toggles.Dropdown.code_label_max_width:
-            while _lbl and imgui.calc_text_size(_lbl + "…")[0] > Toggles.Dropdown.code_label_max_width:
-                _lbl = _lbl[:-1]
-            _lbl += "…"
-        dl.add_text(x + left_pad, _ty,
-                    pack_color(color[0], color[1], color[2], 0.9),
-                    _lbl)
+        dl.push_clip_rect(x + left_pad, y,
+                          x + left_pad + Toggles.Dropdown.code_label_max_width, y + h, True)
+        try:
+            dl.add_text(x + left_pad, _ty,
+                        pack_color(color[0], color[1], color[2], 0.9), _lbl)
+        finally:
+            dl.pop_clip_rect()
         # Shared column (widest label in the menu, capped, precomputed by
         # draw_dd_menu) so every row's editor starts at the same x - with the
         # static 5-digit gutter inside draw_text, code aligns line to line.

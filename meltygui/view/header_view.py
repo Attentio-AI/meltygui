@@ -218,7 +218,7 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
                 factor=1.0, saturation=1.2, text_saturation=0.8, alpha=1.0,
                 corner_radius=6.0, text_pad=15, hover_boost=0.05,
                 hover_text_boost=2.2, max_bg_brightness=0.25,
-                event="left_mouse_clicked", text_offset_x=None,
+                event="left_mouse_clicked", text_offset_x=None, text_clip_rect=None,
                 style_manager=None, layout=True, draw_list=None,
                 shadow=True, shadow_offset=2.0, text_color=None, pos=None,
                 hovered=None, style=None, paint=True, tooltip=None, **kwargs):
@@ -333,8 +333,14 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
         # Optical-centering nudges (same as the fast dock / `button`): glyphs sit
         # low-left of their geometric cell, so shift right and up a hair.
         tx = x + text_offset_x if text_offset_x is not None else x + (w - ts.x) * 0.5
-        dl.add_text(tx + 2.0 * scale, y + (h - ts.y) * 0.5 - scale,
-                    pack_color(tc[0], tc[1], tc[2], 1.0), text)
+        if text_clip_rect is not None:
+            dl.push_clip_rect(*text_clip_rect, True)
+        try:
+            dl.add_text(tx + 2.0 * scale, y + (h - ts.y) * 0.5 - scale,
+                        pack_color(tc[0], tc[1], tc[2], 1.0), text)
+        finally:
+            if text_clip_rect is not None:
+                dl.pop_clip_rect()
     if hovered and tooltip:
         imgui.set_tooltip(tooltip)
     # layout=False: draw-only — no dummy (nothing submitted to the window
