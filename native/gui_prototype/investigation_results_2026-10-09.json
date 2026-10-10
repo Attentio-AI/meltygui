@@ -1,0 +1,5509 @@
+{
+  "date": "2026-10-09",
+  "cpu": "AMD Ryzen 9 7950X",
+  "renderer": "NVIDIA GeForce RTX 4090",
+  "display_hz": 120,
+  "runs": [
+    {
+      "variant": "python",
+      "rows": 100,
+      "warm": 12,
+      "frames": 40,
+      "backend": "wayland",
+      "viewport": true,
+      "profiled": false,
+      "renderer": "NVIDIA GeForce RTX 4090/PCIe/SSE2",
+      "framebuffer_size": [
+        1256,
+        1056
+      ],
+      "results": [
+        {
+          "scenario": "hot",
+          "median_ms": 8.330026,
+          "p95_ms": 9.106734,
+          "samples": [
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.281445,
+              "raster_passes": null,
+              "wall_ms": 8.321676
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.301726,
+              "raster_passes": null,
+              "wall_ms": 8.336506
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.287986,
+              "raster_passes": null,
+              "wall_ms": 8.323546
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.330496,
+              "raster_passes": null,
+              "wall_ms": 8.369996
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.256675,
+              "raster_passes": null,
+              "wall_ms": 8.301396
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 11.493108,
+              "raster_passes": null,
+              "wall_ms": 11.535759
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 5.094013,
+              "raster_passes": null,
+              "wall_ms": 5.134473
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.193984,
+              "raster_passes": null,
+              "wall_ms": 8.234885
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.365127,
+              "raster_passes": null,
+              "wall_ms": 8.404417
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.325796,
+              "raster_passes": null,
+              "wall_ms": 8.364466
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.185754,
+              "raster_passes": null,
+              "wall_ms": 8.219025
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.569249,
+              "raster_passes": null,
+              "wall_ms": 8.611929
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 14.050455,
+              "raster_passes": null,
+              "wall_ms": 14.102075
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 2.766198,
+              "raster_passes": null,
+              "wall_ms": 2.799539
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 7.777811,
+              "raster_passes": null,
+              "wall_ms": 7.816631
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.349426,
+              "raster_passes": null,
+              "wall_ms": 8.388216
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.230665,
+              "raster_passes": null,
+              "wall_ms": 8.264776
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.309086,
+              "raster_passes": null,
+              "wall_ms": 8.344556
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.387777,
+              "raster_passes": null,
+              "wall_ms": 8.426157
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.271535,
+              "raster_passes": null,
+              "wall_ms": 8.307566
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.848721,
+              "raster_passes": null,
+              "wall_ms": 8.886551
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 7.75172,
+              "raster_passes": null,
+              "wall_ms": 7.795751
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.200155,
+              "raster_passes": null,
+              "wall_ms": 8.243415
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.401157,
+              "raster_passes": null,
+              "wall_ms": 8.457087
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.320526,
+              "raster_passes": null,
+              "wall_ms": 8.364866
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 9.059483,
+              "raster_passes": null,
+              "wall_ms": 9.106734
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 7.583708,
+              "raster_passes": null,
+              "wall_ms": 7.634829
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.160765,
+              "raster_passes": null,
+              "wall_ms": 8.200685
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.330006,
+              "raster_passes": null,
+              "wall_ms": 8.366716
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.215775,
+              "raster_passes": null,
+              "wall_ms": 8.259045
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.76676,
+              "raster_passes": null,
+              "wall_ms": 8.812991
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 7.85353,
+              "raster_passes": null,
+              "wall_ms": 7.893262
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.270295,
+              "raster_passes": null,
+              "wall_ms": 8.303535
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.337756,
+              "raster_passes": null,
+              "wall_ms": 8.374467
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.196875,
+              "raster_passes": null,
+              "wall_ms": 8.227515
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.348766,
+              "raster_passes": null,
+              "wall_ms": 8.378126
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.242785,
+              "raster_passes": null,
+              "wall_ms": 8.274375
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.364676,
+              "raster_passes": null,
+              "wall_ms": 8.396977
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.345226,
+              "raster_passes": null,
+              "wall_ms": 8.380036
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.254165,
+              "raster_passes": null,
+              "wall_ms": 8.289596
+            }
+          ]
+        },
+        {
+          "scenario": "redraw",
+          "median_ms": 87.3739695,
+          "p95_ms": 91.001211,
+          "samples": [
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 92.144891,
+              "raster_passes": null,
+              "wall_ms": 92.198302
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 87.17676,
+              "raster_passes": null,
+              "wall_ms": 87.241901
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 88.000689,
+              "raster_passes": null,
+              "wall_ms": 88.053919
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 87.911628,
+              "raster_passes": null,
+              "wall_ms": 87.964459
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 86.265952,
+              "raster_passes": null,
+              "wall_ms": 86.315772
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 85.744506,
+              "raster_passes": null,
+              "wall_ms": 85.791036
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 86.581045,
+              "raster_passes": null,
+              "wall_ms": 86.629265
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 85.095089,
+              "raster_passes": null,
+              "wall_ms": 85.1461
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 84.646875,
+              "raster_passes": null,
+              "wall_ms": 84.695925
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 83.017808,
+              "raster_passes": null,
+              "wall_ms": 83.068348
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 86.948539,
+              "raster_passes": null,
+              "wall_ms": 86.996169
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 88.301943,
+              "raster_passes": null,
+              "wall_ms": 88.362573
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 85.391002,
+              "raster_passes": null,
+              "wall_ms": 85.440433
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 85.646505,
+              "raster_passes": null,
+              "wall_ms": 85.695295
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 88.202212,
+              "raster_passes": null,
+              "wall_ms": 88.250952
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 89.783888,
+              "raster_passes": null,
+              "wall_ms": 89.838989
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 90.284753,
+              "raster_passes": null,
+              "wall_ms": 90.362414
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 87.164741,
+              "raster_passes": null,
+              "wall_ms": 87.223332
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 86.157761,
+              "raster_passes": null,
+              "wall_ms": 86.212021
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 87.632666,
+              "raster_passes": null,
+              "wall_ms": 87.684497
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 87.03178,
+              "raster_passes": null,
+              "wall_ms": 87.08728
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 86.993269,
+              "raster_passes": null,
+              "wall_ms": 87.04743
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 87.504264,
+              "raster_passes": null,
+              "wall_ms": 87.557855
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 90.94591,
+              "raster_passes": null,
+              "wall_ms": 91.001211
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 89.042951,
+              "raster_passes": null,
+              "wall_ms": 89.097361
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 89.96128,
+              "raster_passes": null,
+              "wall_ms": 90.017221
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 88.677697,
+              "raster_passes": null,
+              "wall_ms": 88.723888
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 87.314694,
+              "raster_passes": null,
+              "wall_ms": 87.365174
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 92.325176,
+              "raster_passes": null,
+              "wall_ms": 92.385326
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 87.94309,
+              "raster_passes": null,
+              "wall_ms": 87.99603
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 84.751546,
+              "raster_passes": null,
+              "wall_ms": 84.802597
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 86.876249,
+              "raster_passes": null,
+              "wall_ms": 86.9291
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 86.324473,
+              "raster_passes": null,
+              "wall_ms": 86.379073
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 88.210772,
+              "raster_passes": null,
+              "wall_ms": 88.260773
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 90.063762,
+              "raster_passes": null,
+              "wall_ms": 90.112912
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 88.073251,
+              "raster_passes": null,
+              "wall_ms": 88.128301
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 87.327654,
+              "raster_passes": null,
+              "wall_ms": 87.382765
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 90.913941,
+              "raster_passes": null,
+              "wall_ms": 90.965771
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 87.225293,
+              "raster_passes": null,
+              "wall_ms": 87.274214
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 85.534686,
+              "raster_passes": null,
+              "wall_ms": 85.584356
+            }
+          ]
+        }
+      ],
+      "status": "completed"
+    },
+    {
+      "variant": "python",
+      "rows": 25,
+      "warm": 12,
+      "frames": 40,
+      "backend": "wayland",
+      "viewport": false,
+      "profiled": false,
+      "renderer": "NVIDIA GeForce RTX 4090/PCIe/SSE2",
+      "framebuffer_size": [
+        1256,
+        1056
+      ],
+      "results": [
+        {
+          "scenario": "hot",
+          "median_ms": 8.316449500000001,
+          "p95_ms": 9.560108,
+          "samples": [
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 13.70868,
+              "raster_passes": null,
+              "wall_ms": 13.74776
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 2.906219,
+              "raster_passes": null,
+              "wall_ms": 2.94153
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.270264,
+              "raster_passes": null,
+              "wall_ms": 8.319975
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.239094,
+              "raster_passes": null,
+              "wall_ms": 8.286135
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.318655,
+              "raster_passes": null,
+              "wall_ms": 8.359175
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 11.692439,
+              "raster_passes": null,
+              "wall_ms": 11.72888
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 4.955541,
+              "raster_passes": null,
+              "wall_ms": 4.997111
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.174184,
+              "raster_passes": null,
+              "wall_ms": 8.214124
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.418696,
+              "raster_passes": null,
+              "wall_ms": 8.452756
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.257255,
+              "raster_passes": null,
+              "wall_ms": 8.300825
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.209004,
+              "raster_passes": null,
+              "wall_ms": 8.258304
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.347945,
+              "raster_passes": null,
+              "wall_ms": 8.393566
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.497917,
+              "raster_passes": null,
+              "wall_ms": 8.541297
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.351516,
+              "raster_passes": null,
+              "wall_ms": 8.388566
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.033752,
+              "raster_passes": null,
+              "wall_ms": 8.081812
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.429326,
+              "raster_passes": null,
+              "wall_ms": 8.472647
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.114653,
+              "raster_passes": null,
+              "wall_ms": 8.162043
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.344855,
+              "raster_passes": null,
+              "wall_ms": 8.398286
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.240364,
+              "raster_passes": null,
+              "wall_ms": 8.291335
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.245104,
+              "raster_passes": null,
+              "wall_ms": 8.289474
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 9.292505,
+              "raster_passes": null,
+              "wall_ms": 9.335936
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 7.289414,
+              "raster_passes": null,
+              "wall_ms": 7.334334
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.433276,
+              "raster_passes": null,
+              "wall_ms": 8.480907
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.246224,
+              "raster_passes": null,
+              "wall_ms": 8.301265
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.329775,
+              "raster_passes": null,
+              "wall_ms": 8.378185
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.450146,
+              "raster_passes": null,
+              "wall_ms": 8.495717
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 7.974822,
+              "raster_passes": null,
+              "wall_ms": 8.013432
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.286755,
+              "raster_passes": null,
+              "wall_ms": 8.322775
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.428836,
+              "raster_passes": null,
+              "wall_ms": 8.467276
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.172263,
+              "raster_passes": null,
+              "wall_ms": 8.225304
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 9.515797,
+              "raster_passes": null,
+              "wall_ms": 9.560108
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 7.063512,
+              "raster_passes": null,
+              "wall_ms": 7.106153
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.264044,
+              "raster_passes": null,
+              "wall_ms": 8.312924
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.417646,
+              "raster_passes": null,
+              "wall_ms": 8.462537
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.186554,
+              "raster_passes": null,
+              "wall_ms": 8.232144
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.246844,
+              "raster_passes": null,
+              "wall_ms": 8.298775
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.579678,
+              "raster_passes": null,
+              "wall_ms": 8.636698
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.042252,
+              "raster_passes": null,
+              "wall_ms": 8.103383
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.472776,
+              "raster_passes": null,
+              "wall_ms": 8.530367
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 7.963371,
+              "raster_passes": null,
+              "wall_ms": 8.018502
+            }
+          ]
+        },
+        {
+          "scenario": "redraw",
+          "median_ms": 25.053741,
+          "p95_ms": 26.411999,
+          "samples": [
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 26.150717,
+              "raster_passes": null,
+              "wall_ms": 26.196947
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 26.49093,
+              "raster_passes": null,
+              "wall_ms": 26.536072
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.49064,
+              "raster_passes": null,
+              "wall_ms": 24.53369
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.367249,
+              "raster_passes": null,
+              "wall_ms": 24.408299
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.552951,
+              "raster_passes": null,
+              "wall_ms": 24.594652
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.575011,
+              "raster_passes": null,
+              "wall_ms": 24.617231
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.261218,
+              "raster_passes": null,
+              "wall_ms": 24.310539
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 23.954645,
+              "raster_passes": null,
+              "wall_ms": 23.992765
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.129537,
+              "raster_passes": null,
+              "wall_ms": 24.166987
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.107496,
+              "raster_passes": null,
+              "wall_ms": 24.145347
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.606731,
+              "raster_passes": null,
+              "wall_ms": 24.645921
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.802284,
+              "raster_passes": null,
+              "wall_ms": 24.841824
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.898705,
+              "raster_passes": null,
+              "wall_ms": 25.943005
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.869205,
+              "raster_passes": null,
+              "wall_ms": 25.921225
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.018046,
+              "raster_passes": null,
+              "wall_ms": 25.064906
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.744873,
+              "raster_passes": null,
+              "wall_ms": 24.785043
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.595771,
+              "raster_passes": null,
+              "wall_ms": 25.639352
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.999365,
+              "raster_passes": null,
+              "wall_ms": 25.049096
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.974655,
+              "raster_passes": null,
+              "wall_ms": 25.017836
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.753843,
+              "raster_passes": null,
+              "wall_ms": 24.793983
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.784644,
+              "raster_passes": null,
+              "wall_ms": 24.827044
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.545071,
+              "raster_passes": null,
+              "wall_ms": 25.591201
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.621212,
+              "raster_passes": null,
+              "wall_ms": 24.664422
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.343168,
+              "raster_passes": null,
+              "wall_ms": 25.38696
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 26.209838,
+              "raster_passes": null,
+              "wall_ms": 26.266218
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.355269,
+              "raster_passes": null,
+              "wall_ms": 25.40361
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.53545,
+              "raster_passes": null,
+              "wall_ms": 24.5753
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.423519,
+              "raster_passes": null,
+              "wall_ms": 24.46803
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 26.362939,
+              "raster_passes": null,
+              "wall_ms": 26.411999
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.50897,
+              "raster_passes": null,
+              "wall_ms": 25.560222
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 26.738983,
+              "raster_passes": null,
+              "wall_ms": 26.799413
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 26.287798,
+              "raster_passes": null,
+              "wall_ms": 26.341239
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 26.098236,
+              "raster_passes": null,
+              "wall_ms": 26.151908
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.010556,
+              "raster_passes": null,
+              "wall_ms": 25.058386
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.46419,
+              "raster_passes": null,
+              "wall_ms": 24.50465
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.065706,
+              "raster_passes": null,
+              "wall_ms": 25.108097
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.882234,
+              "raster_passes": null,
+              "wall_ms": 24.925854
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.258489,
+              "raster_passes": null,
+              "wall_ms": 25.296649
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.930255,
+              "raster_passes": null,
+              "wall_ms": 25.971055
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.43145,
+              "raster_passes": null,
+              "wall_ms": 25.474001
+            }
+          ]
+        }
+      ],
+      "status": "completed"
+    },
+    {
+      "variant": "python",
+      "rows": 25,
+      "warm": 12,
+      "frames": 40,
+      "backend": "wayland",
+      "viewport": true,
+      "profiled": false,
+      "renderer": "NVIDIA GeForce RTX 4090/PCIe/SSE2",
+      "framebuffer_size": [
+        1256,
+        1056
+      ],
+      "results": [
+        {
+          "scenario": "hot",
+          "median_ms": 8.3300955,
+          "p95_ms": 8.449407,
+          "samples": [
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.240824,
+              "raster_passes": null,
+              "wall_ms": 8.272084
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.378106,
+              "raster_passes": null,
+              "wall_ms": 8.412057
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.564288,
+              "raster_passes": null,
+              "wall_ms": 8.602708
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 7.992012,
+              "raster_passes": null,
+              "wall_ms": 8.037373
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.245285,
+              "raster_passes": null,
+              "wall_ms": 8.294345
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.401467,
+              "raster_passes": null,
+              "wall_ms": 8.441317
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.251585,
+              "raster_passes": null,
+              "wall_ms": 8.287995
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.324506,
+              "raster_passes": null,
+              "wall_ms": 8.367746
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.255925,
+              "raster_passes": null,
+              "wall_ms": 8.304555
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.267995,
+              "raster_passes": null,
+              "wall_ms": 8.304536
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.294235,
+              "raster_passes": null,
+              "wall_ms": 8.326705
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.358035,
+              "raster_passes": null,
+              "wall_ms": 8.394547
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.246025,
+              "raster_passes": null,
+              "wall_ms": 8.279765
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.299065,
+              "raster_passes": null,
+              "wall_ms": 8.332315
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.348455,
+              "raster_passes": null,
+              "wall_ms": 8.379566
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.262305,
+              "raster_passes": null,
+              "wall_ms": 8.295345
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.230175,
+              "raster_passes": null,
+              "wall_ms": 8.268085
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.352116,
+              "raster_passes": null,
+              "wall_ms": 8.387726
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.297896,
+              "raster_passes": null,
+              "wall_ms": 8.328236
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.301115,
+              "raster_passes": null,
+              "wall_ms": 8.331955
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.328175,
+              "raster_passes": null,
+              "wall_ms": 8.359046
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.301755,
+              "raster_passes": null,
+              "wall_ms": 8.332866
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.251835,
+              "raster_passes": null,
+              "wall_ms": 8.283925
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.377776,
+              "raster_passes": null,
+              "wall_ms": 8.409257
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.337666,
+              "raster_passes": null,
+              "wall_ms": 8.371186
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.155174,
+              "raster_passes": null,
+              "wall_ms": 8.200064
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.341086,
+              "raster_passes": null,
+              "wall_ms": 8.381266
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.284476,
+              "raster_passes": null,
+              "wall_ms": 8.320686
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.230135,
+              "raster_passes": null,
+              "wall_ms": 8.260395
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.416647,
+              "raster_passes": null,
+              "wall_ms": 8.449407
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.279435,
+              "raster_passes": null,
+              "wall_ms": 8.313615
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.219045,
+              "raster_passes": null,
+              "wall_ms": 8.259495
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.373856,
+              "raster_passes": null,
+              "wall_ms": 8.410107
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.227674,
+              "raster_passes": null,
+              "wall_ms": 8.260455
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.355256,
+              "raster_passes": null,
+              "wall_ms": 8.410086
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.303296,
+              "raster_passes": null,
+              "wall_ms": 8.343946
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 12.019204,
+              "raster_passes": null,
+              "wall_ms": 12.055574
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 4.537587,
+              "raster_passes": null,
+              "wall_ms": 4.576127
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.392776,
+              "raster_passes": null,
+              "wall_ms": 8.436026
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.198394,
+              "raster_passes": null,
+              "wall_ms": 8.252424
+            }
+          ]
+        },
+        {
+          "scenario": "redraw",
+          "median_ms": 25.4359265,
+          "p95_ms": 27.085609,
+          "samples": [
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.687714,
+              "raster_passes": null,
+              "wall_ms": 24.732074
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.444402,
+              "raster_passes": null,
+              "wall_ms": 25.486302
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.604104,
+              "raster_passes": null,
+              "wall_ms": 25.648924
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 26.26187,
+              "raster_passes": null,
+              "wall_ms": 26.30622
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 26.004617,
+              "raster_passes": null,
+              "wall_ms": 26.051548
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 26.014507,
+              "raster_passes": null,
+              "wall_ms": 26.069088
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.972886,
+              "raster_passes": null,
+              "wall_ms": 25.027478
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.659703,
+              "raster_passes": null,
+              "wall_ms": 24.706404
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.517532,
+              "raster_passes": null,
+              "wall_ms": 25.565553
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.577673,
+              "raster_passes": null,
+              "wall_ms": 24.622623
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 23.898786,
+              "raster_passes": null,
+              "wall_ms": 23.937036
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.020087,
+              "raster_passes": null,
+              "wall_ms": 24.056317
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.587343,
+              "raster_passes": null,
+              "wall_ms": 24.623743
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.551122,
+              "raster_passes": null,
+              "wall_ms": 24.588373
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.371371,
+              "raster_passes": null,
+              "wall_ms": 24.408371
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 27.045968,
+              "raster_passes": null,
+              "wall_ms": 27.085609
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 26.080378,
+              "raster_passes": null,
+              "wall_ms": 26.127388
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 28.2308,
+              "raster_passes": null,
+              "wall_ms": 28.285051
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 28.403443,
+              "raster_passes": null,
+              "wall_ms": 28.459433
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.19747,
+              "raster_passes": null,
+              "wall_ms": 25.2439
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.155289,
+              "raster_passes": null,
+              "wall_ms": 25.201279
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 26.710355,
+              "raster_passes": null,
+              "wall_ms": 26.764495
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.524922,
+              "raster_passes": null,
+              "wall_ms": 25.571073
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.908936,
+              "raster_passes": null,
+              "wall_ms": 24.947517
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.652504,
+              "raster_passes": null,
+              "wall_ms": 24.692874
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.23991,
+              "raster_passes": null,
+              "wall_ms": 25.28065
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.703324,
+              "raster_passes": null,
+              "wall_ms": 24.741935
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.195469,
+              "raster_passes": null,
+              "wall_ms": 25.24336
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.396291,
+              "raster_passes": null,
+              "wall_ms": 25.442661
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 26.022547,
+              "raster_passes": null,
+              "wall_ms": 26.071549
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.869846,
+              "raster_passes": null,
+              "wall_ms": 25.924846
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.686214,
+              "raster_passes": null,
+              "wall_ms": 25.731025
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.835646,
+              "raster_passes": null,
+              "wall_ms": 24.881396
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.937457,
+              "raster_passes": null,
+              "wall_ms": 24.983087
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 24.339351,
+              "raster_passes": null,
+              "wall_ms": 24.378871
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.587213,
+              "raster_passes": null,
+              "wall_ms": 25.628844
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.853076,
+              "raster_passes": null,
+              "wall_ms": 25.898616
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.487833,
+              "raster_passes": null,
+              "wall_ms": 25.534353
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.454502,
+              "raster_passes": null,
+              "wall_ms": 25.500482
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 25.383371,
+              "raster_passes": null,
+              "wall_ms": 25.429192
+            }
+          ]
+        }
+      ],
+      "status": "completed"
+    },
+    {
+      "variant": "python",
+      "rows": 300,
+      "warm": 12,
+      "frames": 40,
+      "backend": "wayland",
+      "viewport": true,
+      "profiled": false,
+      "renderer": "NVIDIA GeForce RTX 4090/PCIe/SSE2",
+      "framebuffer_size": [
+        1256,
+        1056
+      ],
+      "results": [
+        {
+          "scenario": "hot",
+          "median_ms": 8.325837,
+          "p95_ms": 9.328918,
+          "samples": [
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.968095,
+              "raster_passes": null,
+              "wall_ms": 9.012695
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 7.60577,
+              "raster_passes": null,
+              "wall_ms": 7.648
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.282447,
+              "raster_passes": null,
+              "wall_ms": 8.320038
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.232746,
+              "raster_passes": null,
+              "wall_ms": 8.270397
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.260577,
+              "raster_passes": null,
+              "wall_ms": 8.304827
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.442839,
+              "raster_passes": null,
+              "wall_ms": 8.485929
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.970204,
+              "raster_passes": null,
+              "wall_ms": 9.009695
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.142226,
+              "raster_passes": null,
+              "wall_ms": 8.182056
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 7.715502,
+              "raster_passes": null,
+              "wall_ms": 7.753782
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.191716,
+              "raster_passes": null,
+              "wall_ms": 8.232446
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.377168,
+              "raster_passes": null,
+              "wall_ms": 8.412659
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.303677,
+              "raster_passes": null,
+              "wall_ms": 8.337777
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.205616,
+              "raster_passes": null,
+              "wall_ms": 8.241507
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 9.271197,
+              "raster_passes": null,
+              "wall_ms": 9.328918
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 7.409478,
+              "raster_passes": null,
+              "wall_ms": 7.450269
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.299707,
+              "raster_passes": null,
+              "wall_ms": 8.340307
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.454649,
+              "raster_passes": null,
+              "wall_ms": 8.50325
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.132816,
+              "raster_passes": null,
+              "wall_ms": 8.182326
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 9.150937,
+              "raster_passes": null,
+              "wall_ms": 9.206657
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 7.368908,
+              "raster_passes": null,
+              "wall_ms": 7.408818
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.291967,
+              "raster_passes": null,
+              "wall_ms": 8.333857
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.324197,
+              "raster_passes": null,
+              "wall_ms": 8.364968
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.332407,
+              "raster_passes": null,
+              "wall_ms": 8.376998
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 9.679182,
+              "raster_passes": null,
+              "wall_ms": 9.725923
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 6.851452,
+              "raster_passes": null,
+              "wall_ms": 6.894302
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.288727,
+              "raster_passes": null,
+              "wall_ms": 8.333548
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.258097,
+              "raster_passes": null,
+              "wall_ms": 8.296537
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.297778,
+              "raster_passes": null,
+              "wall_ms": 8.334858
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 10.041056,
+              "raster_passes": null,
+              "wall_ms": 10.078226
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 6.563979,
+              "raster_passes": null,
+              "wall_ms": 6.600219
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.276668,
+              "raster_passes": null,
+              "wall_ms": 8.313488
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.281337,
+              "raster_passes": null,
+              "wall_ms": 8.320147
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.338248,
+              "raster_passes": null,
+              "wall_ms": 8.378748
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.265207,
+              "raster_passes": null,
+              "wall_ms": 8.306498
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.285807,
+              "raster_passes": null,
+              "wall_ms": 8.331527
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.352728,
+              "raster_passes": null,
+              "wall_ms": 8.395869
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.492869,
+              "raster_passes": null,
+              "wall_ms": 8.53499
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.080895,
+              "raster_passes": null,
+              "wall_ms": 8.122895
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.254497,
+              "raster_passes": null,
+              "wall_ms": 8.295137
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 8.203117,
+              "raster_passes": null,
+              "wall_ms": 8.246267
+            }
+          ]
+        },
+        {
+          "scenario": "redraw",
+          "median_ms": 260.95431,
+          "p95_ms": 276.280549,
+          "samples": [
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 259.857849,
+              "raster_passes": null,
+              "wall_ms": 259.916689
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 263.097654,
+              "raster_passes": null,
+              "wall_ms": 263.152015
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 259.179943,
+              "raster_passes": null,
+              "wall_ms": 259.234283
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 259.086811,
+              "raster_passes": null,
+              "wall_ms": 259.136603
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 258.901601,
+              "raster_passes": null,
+              "wall_ms": 258.957711
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 258.397956,
+              "raster_passes": null,
+              "wall_ms": 258.454747
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 257.798309,
+              "raster_passes": null,
+              "wall_ms": 257.867191
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 261.292757,
+              "raster_passes": null,
+              "wall_ms": 261.350357
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 260.163497,
+              "raster_passes": null,
+              "wall_ms": 260.212307
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 261.312099,
+              "raster_passes": null,
+              "wall_ms": 261.377539
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 258.309527,
+              "raster_passes": null,
+              "wall_ms": 258.364138
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 253.252824,
+              "raster_passes": null,
+              "wall_ms": 253.316224
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 273.62093,
+              "raster_passes": null,
+              "wall_ms": 273.672131
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 266.406364,
+              "raster_passes": null,
+              "wall_ms": 266.459145
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 264.502284,
+              "raster_passes": null,
+              "wall_ms": 264.556515
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 260.904817,
+              "raster_passes": null,
+              "wall_ms": 260.960707
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 259.17976,
+              "raster_passes": null,
+              "wall_ms": 259.24344
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 261.15485,
+              "raster_passes": null,
+              "wall_ms": 261.226581
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 262.629386,
+              "raster_passes": null,
+              "wall_ms": 262.694117
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 259.746916,
+              "raster_passes": null,
+              "wall_ms": 259.805497
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 257.825108,
+              "raster_passes": null,
+              "wall_ms": 257.882868
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 258.943639,
+              "raster_passes": null,
+              "wall_ms": 258.997029
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 267.964605,
+              "raster_passes": null,
+              "wall_ms": 268.019655
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 260.087492,
+              "raster_passes": null,
+              "wall_ms": 260.170673
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 259.185273,
+              "raster_passes": null,
+              "wall_ms": 259.246013
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 257.612056,
+              "raster_passes": null,
+              "wall_ms": 257.666158
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 261.821831,
+              "raster_passes": null,
+              "wall_ms": 261.881471
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 264.369989,
+              "raster_passes": null,
+              "wall_ms": 264.4342
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 260.883043,
+              "raster_passes": null,
+              "wall_ms": 260.947913
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 254.734478,
+              "raster_passes": null,
+              "wall_ms": 254.809869
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 258.409237,
+              "raster_passes": null,
+              "wall_ms": 258.464187
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 263.40058,
+              "raster_passes": null,
+              "wall_ms": 263.464072
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 261.198048,
+              "raster_passes": null,
+              "wall_ms": 261.254198
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 259.51128,
+              "raster_passes": null,
+              "wall_ms": 259.568521
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 274.501239,
+              "raster_passes": null,
+              "wall_ms": 274.575469
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 279.252511,
+              "raster_passes": null,
+              "wall_ms": 279.321802
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 279.968328,
+              "raster_passes": null,
+              "wall_ms": 280.04049
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 276.210049,
+              "raster_passes": null,
+              "wall_ms": 276.280549
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 271.792633,
+              "raster_passes": null,
+              "wall_ms": 271.855233
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": null,
+              "surface_ms": 265.84333,
+              "raster_passes": null,
+              "wall_ms": 265.903941
+            }
+          ]
+        }
+      ],
+      "status": "completed"
+    },
+    {
+      "variant": "rust",
+      "rows": 100,
+      "warm": 12,
+      "frames": 40,
+      "backend": "wayland",
+      "viewport": true,
+      "profiled": false,
+      "renderer": "NVIDIA GeForce RTX 4090/PCIe/SSE2",
+      "framebuffer_size": [
+        1256,
+        1056
+      ],
+      "results": [
+        {
+          "scenario": "hot",
+          "median_ms": 8.329027,
+          "p95_ms": 9.808041,
+          "samples": [
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.309817,
+              "raster_passes": 0,
+              "wall_ms": 8.346767
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.288926,
+              "raster_passes": 0,
+              "wall_ms": 8.325396
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.277166,
+              "raster_passes": 0,
+              "wall_ms": 8.312356
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.309826,
+              "raster_passes": 0,
+              "wall_ms": 8.346257
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.292446,
+              "raster_passes": 0,
+              "wall_ms": 8.327527
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.71631,
+              "raster_passes": 0,
+              "wall_ms": 8.75915
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.517628,
+              "raster_passes": 0,
+              "wall_ms": 8.565299
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.105214,
+              "raster_passes": 0,
+              "wall_ms": 8.146505
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 7.833771,
+              "raster_passes": 0,
+              "wall_ms": 7.880351
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.294466,
+              "raster_passes": 0,
+              "wall_ms": 8.332087
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.349667,
+              "raster_passes": 0,
+              "wall_ms": 8.385967
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.222335,
+              "raster_passes": 0,
+              "wall_ms": 8.261646
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 9.765511,
+              "raster_passes": 0,
+              "wall_ms": 9.808041
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 6.81471,
+              "raster_passes": 0,
+              "wall_ms": 6.850551
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.309436,
+              "raster_passes": 0,
+              "wall_ms": 8.349827
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.420288,
+              "raster_passes": 0,
+              "wall_ms": 8.462198
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.237546,
+              "raster_passes": 0,
+              "wall_ms": 8.293766
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 10.013264,
+              "raster_passes": 0,
+              "wall_ms": 10.072584
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 6.462197,
+              "raster_passes": 0,
+              "wall_ms": 6.506088
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.275056,
+              "raster_passes": 0,
+              "wall_ms": 8.313566
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.412218,
+              "raster_passes": 0,
+              "wall_ms": 8.464268
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.153025,
+              "raster_passes": 0,
+              "wall_ms": 8.204875
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.855692,
+              "raster_passes": 0,
+              "wall_ms": 8.959393
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 7.64944,
+              "raster_passes": 0,
+              "wall_ms": 7.6857
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.310036,
+              "raster_passes": 0,
+              "wall_ms": 8.346896
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.285346,
+              "raster_passes": 0,
+              "wall_ms": 8.319887
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.307416,
+              "raster_passes": 0,
+              "wall_ms": 8.341736
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.295576,
+              "raster_passes": 0,
+              "wall_ms": 8.330527
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.306366,
+              "raster_passes": 0,
+              "wall_ms": 8.343506
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.277606,
+              "raster_passes": 0,
+              "wall_ms": 8.312367
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.66901,
+              "raster_passes": 0,
+              "wall_ms": 8.70522
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 7.985463,
+              "raster_passes": 0,
+              "wall_ms": 8.022363
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.532239,
+              "raster_passes": 0,
+              "wall_ms": 8.568259
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.021304,
+              "raster_passes": 0,
+              "wall_ms": 8.058404
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 12.005305,
+              "raster_passes": 0,
+              "wall_ms": 12.042465
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 4.657548,
+              "raster_passes": 0,
+              "wall_ms": 4.692919
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.201225,
+              "raster_passes": 0,
+              "wall_ms": 8.236975
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.385567,
+              "raster_passes": 0,
+              "wall_ms": 8.423638
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.209065,
+              "raster_passes": 0,
+              "wall_ms": 8.251155
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 8.289896,
+              "raster_passes": 0,
+              "wall_ms": 8.326677
+            }
+          ]
+        },
+        {
+          "scenario": "redraw",
+          "median_ms": 53.550471,
+          "p95_ms": 55.742579,
+          "samples": [
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 52.94391,
+              "raster_passes": 403,
+              "wall_ms": 53.101821
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 53.087581,
+              "raster_passes": 403,
+              "wall_ms": 53.252273
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 54.582767,
+              "raster_passes": 403,
+              "wall_ms": 54.743498
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 53.763608,
+              "raster_passes": 403,
+              "wall_ms": 53.92401
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 57.831071,
+              "raster_passes": 403,
+              "wall_ms": 57.992392
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 52.550765,
+              "raster_passes": 403,
+              "wall_ms": 52.716438
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 54.089192,
+              "raster_passes": 403,
+              "wall_ms": 54.256743
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 52.374034,
+              "raster_passes": 403,
+              "wall_ms": 52.535746
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 52.98211,
+              "raster_passes": 403,
+              "wall_ms": 53.157902
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 53.177492,
+              "raster_passes": 403,
+              "wall_ms": 53.357064
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 54.627037,
+              "raster_passes": 403,
+              "wall_ms": 54.78663
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 53.347364,
+              "raster_passes": 403,
+              "wall_ms": 53.516936
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 53.194812,
+              "raster_passes": 403,
+              "wall_ms": 53.362354
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 52.8937,
+              "raster_passes": 403,
+              "wall_ms": 53.061871
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 53.812089,
+              "raster_passes": 403,
+              "wall_ms": 53.974531
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 55.318765,
+              "raster_passes": 403,
+              "wall_ms": 55.486256
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 52.661317,
+              "raster_passes": 403,
+              "wall_ms": 52.823529
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 54.488486,
+              "raster_passes": 403,
+              "wall_ms": 54.661187
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 54.951581,
+              "raster_passes": 403,
+              "wall_ms": 55.150474
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 54.802369,
+              "raster_passes": 403,
+              "wall_ms": 54.982931
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 54.067412,
+              "raster_passes": 403,
+              "wall_ms": 54.237973
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 54.209523,
+              "raster_passes": 403,
+              "wall_ms": 54.383765
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 53.82044,
+              "raster_passes": 403,
+              "wall_ms": 54.005351
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 55.559727,
+              "raster_passes": 403,
+              "wall_ms": 55.742579
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 53.229883,
+              "raster_passes": 403,
+              "wall_ms": 53.398665
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 52.519906,
+              "raster_passes": 403,
+              "wall_ms": 52.693778
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 52.234102,
+              "raster_passes": 403,
+              "wall_ms": 52.392225
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 52.791319,
+              "raster_passes": 403,
+              "wall_ms": 52.95759
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 56.502677,
+              "raster_passes": 403,
+              "wall_ms": 56.672759
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 53.177732,
+              "raster_passes": 403,
+              "wall_ms": 53.348875
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 53.365275,
+              "raster_passes": 403,
+              "wall_ms": 53.549296
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 53.017061,
+              "raster_passes": 403,
+              "wall_ms": 53.194593
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 54.070782,
+              "raster_passes": 403,
+              "wall_ms": 54.236684
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 54.071493,
+              "raster_passes": 403,
+              "wall_ms": 54.241924
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 53.079272,
+              "raster_passes": 403,
+              "wall_ms": 53.262074
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 52.773129,
+              "raster_passes": 403,
+              "wall_ms": 52.94465
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 55.522047,
+              "raster_passes": 403,
+              "wall_ms": 55.683509
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 53.369505,
+              "raster_passes": 403,
+              "wall_ms": 53.551646
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 54.590147,
+              "raster_passes": 403,
+              "wall_ms": 54.76752
+            },
+            {
+              "bodies": 402,
+              "cache_enabled": true,
+              "retained_nodes": 403,
+              "surface_ms": 53.357015,
+              "raster_passes": 403,
+              "wall_ms": 53.534846
+            }
+          ]
+        }
+      ],
+      "status": "completed"
+    },
+    {
+      "variant": "rust",
+      "rows": 25,
+      "warm": 12,
+      "frames": 40,
+      "backend": "wayland",
+      "viewport": false,
+      "profiled": false,
+      "renderer": "NVIDIA GeForce RTX 4090/PCIe/SSE2",
+      "framebuffer_size": [
+        1256,
+        1056
+      ],
+      "results": [
+        {
+          "scenario": "hot",
+          "median_ms": 8.3292845,
+          "p95_ms": 11.441887,
+          "samples": [
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 3.389894,
+              "raster_passes": 0,
+              "wall_ms": 3.461916
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 7.941801,
+              "raster_passes": 0,
+              "wall_ms": 8.000521
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.270495,
+              "raster_passes": 0,
+              "wall_ms": 8.318675
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.307395,
+              "raster_passes": 0,
+              "wall_ms": 8.345775
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 12.329595,
+              "raster_passes": 0,
+              "wall_ms": 12.384136
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 4.203713,
+              "raster_passes": 0,
+              "wall_ms": 4.262483
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.940421,
+              "raster_passes": 0,
+              "wall_ms": 8.980961
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 9.053752,
+              "raster_passes": 0,
+              "wall_ms": 9.090043
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 6.91351,
+              "raster_passes": 0,
+              "wall_ms": 6.950281
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.700418,
+              "raster_passes": 0,
+              "wall_ms": 8.735568
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.313724,
+              "raster_passes": 0,
+              "wall_ms": 8.345075
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 7.850689,
+              "raster_passes": 0,
+              "wall_ms": 7.880991
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.299244,
+              "raster_passes": 0,
+              "wall_ms": 8.332734
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.326864,
+              "raster_passes": 0,
+              "wall_ms": 8.364285
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.299124,
+              "raster_passes": 0,
+              "wall_ms": 8.335655
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.287655,
+              "raster_passes": 0,
+              "wall_ms": 8.325835
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.289154,
+              "raster_passes": 0,
+              "wall_ms": 8.325185
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.380435,
+              "raster_passes": 0,
+              "wall_ms": 8.425095
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.210313,
+              "raster_passes": 0,
+              "wall_ms": 8.257474
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.488167,
+              "raster_passes": 0,
+              "wall_ms": 8.530697
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.124163,
+              "raster_passes": 0,
+              "wall_ms": 8.165063
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.223223,
+              "raster_passes": 0,
+              "wall_ms": 8.267574
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.330735,
+              "raster_passes": 0,
+              "wall_ms": 8.365285
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.975462,
+              "raster_passes": 0,
+              "wall_ms": 15.011393
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 2.589217,
+              "raster_passes": 0,
+              "wall_ms": 2.624417
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 7.312675,
+              "raster_passes": 0,
+              "wall_ms": 7.353675
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.320775,
+              "raster_passes": 0,
+              "wall_ms": 8.366495
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.236464,
+              "raster_passes": 0,
+              "wall_ms": 8.281984
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.271944,
+              "raster_passes": 0,
+              "wall_ms": 8.312185
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.314965,
+              "raster_passes": 0,
+              "wall_ms": 8.351255
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.316585,
+              "raster_passes": 0,
+              "wall_ms": 8.354085
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.341675,
+              "raster_passes": 0,
+              "wall_ms": 8.384935
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.277654,
+              "raster_passes": 0,
+              "wall_ms": 8.320984
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 11.393606,
+              "raster_passes": 0,
+              "wall_ms": 11.441887
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 5.219303,
+              "raster_passes": 0,
+              "wall_ms": 5.257913
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.315675,
+              "raster_passes": 0,
+              "wall_ms": 8.358115
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.270594,
+              "raster_passes": 0,
+              "wall_ms": 8.314305
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.196754,
+              "raster_passes": 0,
+              "wall_ms": 8.240844
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 9.561467,
+              "raster_passes": 0,
+              "wall_ms": 9.596747
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 7.049131,
+              "raster_passes": 0,
+              "wall_ms": 7.086993
+            }
+          ]
+        },
+        {
+          "scenario": "redraw",
+          "median_ms": 15.280936,
+          "p95_ms": 16.818601,
+          "samples": [
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.852981,
+              "raster_passes": 103,
+              "wall_ms": 14.937082
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.512148,
+              "raster_passes": 103,
+              "wall_ms": 14.582509
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.388727,
+              "raster_passes": 103,
+              "wall_ms": 14.463387
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.669289,
+              "raster_passes": 103,
+              "wall_ms": 14.73945
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.281035,
+              "raster_passes": 103,
+              "wall_ms": 15.363677
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.65551,
+              "raster_passes": 103,
+              "wall_ms": 15.74653
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.332486,
+              "raster_passes": 103,
+              "wall_ms": 15.421087
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.129955,
+              "raster_passes": 103,
+              "wall_ms": 15.219425
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.63543,
+              "raster_passes": 103,
+              "wall_ms": 15.724
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.387916,
+              "raster_passes": 103,
+              "wall_ms": 15.478777
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.182795,
+              "raster_passes": 103,
+              "wall_ms": 15.267216
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.213015,
+              "raster_passes": 103,
+              "wall_ms": 15.294656
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.270436,
+              "raster_passes": 103,
+              "wall_ms": 15.343086
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.72414,
+              "raster_passes": 103,
+              "wall_ms": 14.7932
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.70798,
+              "raster_passes": 103,
+              "wall_ms": 14.771991
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 16.753791,
+              "raster_passes": 103,
+              "wall_ms": 16.818601
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.243295,
+              "raster_passes": 103,
+              "wall_ms": 15.309176
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.548958,
+              "raster_passes": 103,
+              "wall_ms": 14.613639
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.592129,
+              "raster_passes": 103,
+              "wall_ms": 14.651609
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.992573,
+              "raster_passes": 103,
+              "wall_ms": 15.056983
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.578058,
+              "raster_passes": 103,
+              "wall_ms": 14.642489
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.701619,
+              "raster_passes": 103,
+              "wall_ms": 14.76512
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.596059,
+              "raster_passes": 103,
+              "wall_ms": 15.66896
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.553598,
+              "raster_passes": 103,
+              "wall_ms": 15.650629
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.578209,
+              "raster_passes": 103,
+              "wall_ms": 15.66809
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.354226,
+              "raster_passes": 103,
+              "wall_ms": 15.445267
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.917142,
+              "raster_passes": 103,
+              "wall_ms": 14.998643
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.811321,
+              "raster_passes": 103,
+              "wall_ms": 15.894602
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 16.465558,
+              "raster_passes": 103,
+              "wall_ms": 16.567498
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.054413,
+              "raster_passes": 103,
+              "wall_ms": 15.138224
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.865511,
+              "raster_passes": 103,
+              "wall_ms": 14.944202
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 16.632009,
+              "raster_passes": 103,
+              "wall_ms": 16.712501
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 17.563929,
+              "raster_passes": 103,
+              "wall_ms": 17.648399
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 16.766361,
+              "raster_passes": 103,
+              "wall_ms": 16.861422
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.641759,
+              "raster_passes": 103,
+              "wall_ms": 15.7378
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.81283,
+              "raster_passes": 103,
+              "wall_ms": 14.890962
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.69966,
+              "raster_passes": 103,
+              "wall_ms": 14.76461
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.683759,
+              "raster_passes": 103,
+              "wall_ms": 14.7428
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.120704,
+              "raster_passes": 103,
+              "wall_ms": 15.185915
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.64601,
+              "raster_passes": 103,
+              "wall_ms": 15.71515
+            }
+          ]
+        }
+      ],
+      "status": "completed"
+    },
+    {
+      "variant": "rust",
+      "rows": 25,
+      "warm": 12,
+      "frames": 40,
+      "backend": "wayland",
+      "viewport": true,
+      "profiled": false,
+      "renderer": "NVIDIA GeForce RTX 4090/PCIe/SSE2",
+      "framebuffer_size": [
+        1256,
+        1056
+      ],
+      "results": [
+        {
+          "scenario": "hot",
+          "median_ms": 8.332755500000001,
+          "p95_ms": 9.014372,
+          "samples": [
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.278035,
+              "raster_passes": 0,
+              "wall_ms": 8.336115
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.231034,
+              "raster_passes": 0,
+              "wall_ms": 8.278695
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.301565,
+              "raster_passes": 0,
+              "wall_ms": 8.356126
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.254635,
+              "raster_passes": 0,
+              "wall_ms": 8.302355
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.280015,
+              "raster_passes": 0,
+              "wall_ms": 8.323455
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.300315,
+              "raster_passes": 0,
+              "wall_ms": 8.338726
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.970312,
+              "raster_passes": 0,
+              "wall_ms": 9.014372
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 7.588798,
+              "raster_passes": 0,
+              "wall_ms": 7.632238
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.302465,
+              "raster_passes": 0,
+              "wall_ms": 8.334785
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.294705,
+              "raster_passes": 0,
+              "wall_ms": 8.327636
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.324285,
+              "raster_passes": 0,
+              "wall_ms": 8.358566
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.279405,
+              "raster_passes": 0,
+              "wall_ms": 8.315875
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.383036,
+              "raster_passes": 0,
+              "wall_ms": 8.428326
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.187964,
+              "raster_passes": 0,
+              "wall_ms": 8.238374
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.280914,
+              "raster_passes": 0,
+              "wall_ms": 8.322526
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.406966,
+              "raster_passes": 0,
+              "wall_ms": 8.451116
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.182953,
+              "raster_passes": 0,
+              "wall_ms": 8.221555
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.397256,
+              "raster_passes": 0,
+              "wall_ms": 8.438166
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.172004,
+              "raster_passes": 0,
+              "wall_ms": 8.211004
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 9.723,
+              "raster_passes": 0,
+              "wall_ms": 9.77226
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 6.987221,
+              "raster_passes": 0,
+              "wall_ms": 7.047663
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.349455,
+              "raster_passes": 0,
+              "wall_ms": 8.397556
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.096123,
+              "raster_passes": 0,
+              "wall_ms": 8.135803
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.299045,
+              "raster_passes": 0,
+              "wall_ms": 8.343905
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.635329,
+              "raster_passes": 0,
+              "wall_ms": 8.72027
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 7.889761,
+              "raster_passes": 0,
+              "wall_ms": 7.938881
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.272885,
+              "raster_passes": 0,
+              "wall_ms": 8.318135
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.381236,
+              "raster_passes": 0,
+              "wall_ms": 8.432016
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.213804,
+              "raster_passes": 0,
+              "wall_ms": 8.257694
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.260224,
+              "raster_passes": 0,
+              "wall_ms": 8.298715
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.290295,
+              "raster_passes": 0,
+              "wall_ms": 8.330726
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 12.359257,
+              "raster_passes": 0,
+              "wall_ms": 12.395997
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 4.228263,
+              "raster_passes": 0,
+              "wall_ms": 4.260284
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.298935,
+              "raster_passes": 0,
+              "wall_ms": 8.340535
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.586368,
+              "raster_passes": 0,
+              "wall_ms": 8.631248
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.022802,
+              "raster_passes": 0,
+              "wall_ms": 8.063863
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.318656,
+              "raster_passes": 0,
+              "wall_ms": 8.375566
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.262655,
+              "raster_passes": 0,
+              "wall_ms": 8.307075
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.292095,
+              "raster_passes": 0,
+              "wall_ms": 8.339586
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 8.335035,
+              "raster_passes": 0,
+              "wall_ms": 8.388085
+            }
+          ]
+        },
+        {
+          "scenario": "redraw",
+          "median_ms": 14.864868,
+          "p95_ms": 17.094445,
+          "samples": [
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.791662,
+              "raster_passes": 103,
+              "wall_ms": 14.863263
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.527909,
+              "raster_passes": 103,
+              "wall_ms": 14.594989
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.706161,
+              "raster_passes": 103,
+              "wall_ms": 14.771052
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.282547,
+              "raster_passes": 103,
+              "wall_ms": 15.363627
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.530159,
+              "raster_passes": 103,
+              "wall_ms": 15.62088
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.835892,
+              "raster_passes": 103,
+              "wall_ms": 14.920973
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.574499,
+              "raster_passes": 103,
+              "wall_ms": 14.64329
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.511928,
+              "raster_passes": 103,
+              "wall_ms": 14.57848
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 17.913884,
+              "raster_passes": 103,
+              "wall_ms": 17.979294
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.103885,
+              "raster_passes": 103,
+              "wall_ms": 15.177905
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.761111,
+              "raster_passes": 103,
+              "wall_ms": 14.833743
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.968064,
+              "raster_passes": 103,
+              "wall_ms": 15.031534
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.841092,
+              "raster_passes": 103,
+              "wall_ms": 14.906912
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.209306,
+              "raster_passes": 103,
+              "wall_ms": 15.283357
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.408238,
+              "raster_passes": 103,
+              "wall_ms": 15.496539
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 17.824472,
+              "raster_passes": 103,
+              "wall_ms": 17.907894
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 16.994124,
+              "raster_passes": 103,
+              "wall_ms": 17.094445
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 16.326947,
+              "raster_passes": 103,
+              "wall_ms": 16.419658
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.326657,
+              "raster_passes": 103,
+              "wall_ms": 15.415468
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.67568,
+              "raster_passes": 103,
+              "wall_ms": 14.749222
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.543299,
+              "raster_passes": 103,
+              "wall_ms": 14.610569
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.569839,
+              "raster_passes": 103,
+              "wall_ms": 14.638441
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.495029,
+              "raster_passes": 103,
+              "wall_ms": 14.562609
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.289257,
+              "raster_passes": 103,
+              "wall_ms": 14.348977
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.503359,
+              "raster_passes": 103,
+              "wall_ms": 14.567829
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.540239,
+              "raster_passes": 103,
+              "wall_ms": 14.60418
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.551039,
+              "raster_passes": 103,
+              "wall_ms": 14.62136
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.725642,
+              "raster_passes": 103,
+              "wall_ms": 14.789772
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.616,
+              "raster_passes": 103,
+              "wall_ms": 14.6808
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.179745,
+              "raster_passes": 103,
+              "wall_ms": 15.257907
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.541029,
+              "raster_passes": 103,
+              "wall_ms": 14.618649
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 17.001204,
+              "raster_passes": 103,
+              "wall_ms": 17.067204
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.808422,
+              "raster_passes": 103,
+              "wall_ms": 15.897764
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.741721,
+              "raster_passes": 103,
+              "wall_ms": 14.820171
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.518109,
+              "raster_passes": 103,
+              "wall_ms": 14.58277
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.466198,
+              "raster_passes": 103,
+              "wall_ms": 14.532539
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.348917,
+              "raster_passes": 103,
+              "wall_ms": 15.430868
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 15.273757,
+              "raster_passes": 103,
+              "wall_ms": 15.367668
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.897363,
+              "raster_passes": 103,
+              "wall_ms": 14.969603
+            },
+            {
+              "bodies": 102,
+              "cache_enabled": true,
+              "retained_nodes": 103,
+              "surface_ms": 14.801202,
+              "raster_passes": 103,
+              "wall_ms": 14.866473
+            }
+          ]
+        }
+      ],
+      "status": "completed"
+    },
+    {
+      "variant": "rust",
+      "rows": 300,
+      "warm": 12,
+      "frames": 40,
+      "backend": "wayland",
+      "viewport": true,
+      "profiled": false,
+      "renderer": "NVIDIA GeForce RTX 4090/PCIe/SSE2",
+      "framebuffer_size": [
+        1256,
+        1056
+      ],
+      "results": [
+        {
+          "scenario": "hot",
+          "median_ms": 8.263436500000001,
+          "p95_ms": 9.728942,
+          "samples": [
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.366578,
+              "raster_passes": 0,
+              "wall_ms": 8.432518
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.401348,
+              "raster_passes": 0,
+              "wall_ms": 8.461948
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.028093,
+              "raster_passes": 0,
+              "wall_ms": 8.081104
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.008923,
+              "raster_passes": 0,
+              "wall_ms": 8.051684
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.092474,
+              "raster_passes": 0,
+              "wall_ms": 8.131115
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.072854,
+              "raster_passes": 0,
+              "wall_ms": 8.113385
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.545869,
+              "raster_passes": 0,
+              "wall_ms": 8.587999
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.327677,
+              "raster_passes": 0,
+              "wall_ms": 8.371238
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 9.040404,
+              "raster_passes": 0,
+              "wall_ms": 9.087754
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.725311,
+              "raster_passes": 0,
+              "wall_ms": 8.773032
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 7.966433,
+              "raster_passes": 0,
+              "wall_ms": 8.006383
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.000724,
+              "raster_passes": 0,
+              "wall_ms": 8.045794
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 7.947173,
+              "raster_passes": 0,
+              "wall_ms": 7.990183
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.136814,
+              "raster_passes": 0,
+              "wall_ms": 8.181065
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.183925,
+              "raster_passes": 0,
+              "wall_ms": 8.232946
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 7.996973,
+              "raster_passes": 0,
+              "wall_ms": 8.051634
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.037433,
+              "raster_passes": 0,
+              "wall_ms": 8.089004
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.253456,
+              "raster_passes": 0,
+              "wall_ms": 8.309047
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.230016,
+              "raster_passes": 0,
+              "wall_ms": 8.282577
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 7.976583,
+              "raster_passes": 0,
+              "wall_ms": 8.027733
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 10.227157,
+              "raster_passes": 0,
+              "wall_ms": 10.283497
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.380637,
+              "raster_passes": 0,
+              "wall_ms": 8.429218
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 7.801691,
+              "raster_passes": 0,
+              "wall_ms": 7.846812
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.172275,
+              "raster_passes": 0,
+              "wall_ms": 8.230606
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.185446,
+              "raster_passes": 0,
+              "wall_ms": 8.244296
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.153865,
+              "raster_passes": 0,
+              "wall_ms": 8.215545
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.617729,
+              "raster_passes": 0,
+              "wall_ms": 8.681581
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.157895,
+              "raster_passes": 0,
+              "wall_ms": 8.217046
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.260076,
+              "raster_passes": 0,
+              "wall_ms": 8.318056
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.088185,
+              "raster_passes": 0,
+              "wall_ms": 8.145115
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.348337,
+              "raster_passes": 0,
+              "wall_ms": 8.410898
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.314017,
+              "raster_passes": 0,
+              "wall_ms": 8.380857
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.237916,
+              "raster_passes": 0,
+              "wall_ms": 8.292377
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 7.991763,
+              "raster_passes": 0,
+              "wall_ms": 8.034803
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 9.493458,
+              "raster_passes": 0,
+              "wall_ms": 9.53959
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.065064,
+              "raster_passes": 0,
+              "wall_ms": 8.112034
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.311566,
+              "raster_passes": 0,
+              "wall_ms": 8.366388
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 11.131246,
+              "raster_passes": 0,
+              "wall_ms": 11.211276
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 9.65084,
+              "raster_passes": 0,
+              "wall_ms": 9.728942
+            },
+            {
+              "bodies": 0,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 8.67075,
+              "raster_passes": 0,
+              "wall_ms": 8.737901
+            }
+          ]
+        },
+        {
+          "scenario": "redraw",
+          "median_ms": 161.86569500000002,
+          "p95_ms": 164.881784,
+          "samples": [
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 168.318267,
+              "raster_passes": 1203,
+              "wall_ms": 168.53615
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 159.837429,
+              "raster_passes": 1203,
+              "wall_ms": 160.038771
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 162.562588,
+              "raster_passes": 1203,
+              "wall_ms": 162.754549
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 160.218473,
+              "raster_passes": 1203,
+              "wall_ms": 160.418756
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 159.87221,
+              "raster_passes": 1203,
+              "wall_ms": 160.079671
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 160.418055,
+              "raster_passes": 1203,
+              "wall_ms": 160.607777
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 163.403936,
+              "raster_passes": 1203,
+              "wall_ms": 163.606089
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 159.351805,
+              "raster_passes": 1203,
+              "wall_ms": 159.540167
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 159.771989,
+              "raster_passes": 1203,
+              "wall_ms": 159.965732
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 158.113882,
+              "raster_passes": 1203,
+              "wall_ms": 158.390355
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 159.298245,
+              "raster_passes": 1203,
+              "wall_ms": 159.483476
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 161.089563,
+              "raster_passes": 1203,
+              "wall_ms": 161.291686
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 159.323135,
+              "raster_passes": 1203,
+              "wall_ms": 159.524247
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 160.888482,
+              "raster_passes": 1203,
+              "wall_ms": 161.086364
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 163.069876,
+              "raster_passes": 1203,
+              "wall_ms": 163.269217
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 162.465989,
+              "raster_passes": 1203,
+              "wall_ms": 162.670001
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 163.257297,
+              "raster_passes": 1203,
+              "wall_ms": 163.452929
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 162.811332,
+              "raster_passes": 1203,
+              "wall_ms": 163.016965
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 164.652361,
+              "raster_passes": 1203,
+              "wall_ms": 164.881784
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 164.602632,
+              "raster_passes": 1203,
+              "wall_ms": 164.808924
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 164.663692,
+              "raster_passes": 1203,
+              "wall_ms": 164.866155
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 162.029386,
+              "raster_passes": 1203,
+              "wall_ms": 162.230707
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 162.834234,
+              "raster_passes": 1203,
+              "wall_ms": 163.027956
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 161.659291,
+              "raster_passes": 1203,
+              "wall_ms": 162.020125
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 161.046185,
+              "raster_passes": 1203,
+              "wall_ms": 161.249498
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 161.301479,
+              "raster_passes": 1203,
+              "wall_ms": 161.49894
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 161.821054,
+              "raster_passes": 1203,
+              "wall_ms": 162.018226
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 159.50456,
+              "raster_passes": 1203,
+              "wall_ms": 159.704082
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 159.855384,
+              "raster_passes": 1203,
+              "wall_ms": 160.099007
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 158.696962,
+              "raster_passes": 1203,
+              "wall_ms": 158.888503
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 163.410591,
+              "raster_passes": 1203,
+              "wall_ms": 163.602943
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 174.400786,
+              "raster_passes": 1203,
+              "wall_ms": 174.594779
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 162.044388,
+              "raster_passes": 1203,
+              "wall_ms": 162.243009
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 162.755865,
+              "raster_passes": 1203,
+              "wall_ms": 162.948927
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 161.29459,
+              "raster_passes": 1203,
+              "wall_ms": 161.489112
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 161.521422,
+              "raster_passes": 1203,
+              "wall_ms": 161.713164
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 159.725993,
+              "raster_passes": 1203,
+              "wall_ms": 159.955025
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 163.326582,
+              "raster_passes": 1203,
+              "wall_ms": 163.515823
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 160.935977,
+              "raster_passes": 1203,
+              "wall_ms": 161.132669
+            },
+            {
+              "bodies": 1202,
+              "cache_enabled": true,
+              "retained_nodes": 1203,
+              "surface_ms": 164.11344,
+              "raster_passes": 1203,
+              "wall_ms": 164.311833
+            }
+          ]
+        }
+      ],
+      "status": "completed"
+    },
+    {
+      "variant": "rust",
+      "rows": 100,
+      "viewport": false,
+      "status": "failed",
+      "error": "ValueError: measured cache height must be 0..8192 pixels",
+      "stage": "after input/lifetime fixes, before membership optimization; size limits unchanged"
+    },
+    {
+      "variant": "rust",
+      "rows": 300,
+      "viewport": false,
+      "status": "failed",
+      "error": "ValueError: measured cache height must be 0..8192 pixels",
+      "stage": "after input/lifetime fixes, before membership optimization; size limits unchanged"
+    },
+    {
+      "variant": "rust",
+      "rows": 1000,
+      "viewport": true,
+      "status": "failed",
+      "error": "RuntimeError: prototype texture budget exceeded"
+    }
+  ],
+  "diagnostic_profiles": [
+    {
+      "name": "gui-before.prof",
+      "frames": 20,
+      "entries": [
+        {
+          "function": "apply",
+          "file": "/home/lukas/Desktop/meltygui/meltygui/core/rendering/gui_imgui_input.py",
+          "calls": 2060,
+          "self_ms_per_frame": 32.4443871,
+          "total_ms_per_frame": 32.587683750000004
+        },
+        {
+          "function": "<method 'nodes' of 'builtins.RetainedGraph' objects>",
+          "file": "~",
+          "calls": 4180,
+          "self_ms_per_frame": 0.36344830000000006,
+          "total_ms_per_frame": 0.36344830000000006
+        },
+        {
+          "function": "<method 'render' of 'builtins.TextureCache' objects>",
+          "file": "~",
+          "calls": 2060,
+          "self_ms_per_frame": 5.8840817,
+          "total_ms_per_frame": 5.8840817
+        }
+      ]
+    },
+    {
+      "name": "gui-input-fixed.prof",
+      "frames": 20,
+      "entries": [
+        {
+          "function": "apply",
+          "file": "/home/lukas/Desktop/meltygui/meltygui/core/rendering/gui_imgui_input.py",
+          "calls": 2060,
+          "self_ms_per_frame": 0.77247275,
+          "total_ms_per_frame": 0.9270051000000002
+        },
+        {
+          "function": "<method 'nodes' of 'builtins.RetainedGraph' objects>",
+          "file": "~",
+          "calls": 4180,
+          "self_ms_per_frame": 0.31745135,
+          "total_ms_per_frame": 0.31745135
+        },
+        {
+          "function": "<method 'render' of 'builtins.TextureCache' objects>",
+          "file": "~",
+          "calls": 2060,
+          "self_ms_per_frame": 5.83274995,
+          "total_ms_per_frame": 5.83274995
+        }
+      ]
+    },
+    {
+      "name": "gui-300-fixed.prof",
+      "frames": 12,
+      "entries": [
+        {
+          "function": "apply",
+          "file": "/home/lukas/Desktop/meltygui/meltygui/core/rendering/gui_imgui_input.py",
+          "calls": 14436,
+          "self_ms_per_frame": 9.607559666666667,
+          "total_ms_per_frame": 11.53473775
+        },
+        {
+          "function": "<method 'nodes' of 'builtins.RetainedGraph' objects>",
+          "file": "~",
+          "calls": 28908,
+          "self_ms_per_frame": 56.95923058333333,
+          "total_ms_per_frame": 56.95923058333333
+        },
+        {
+          "function": "<method 'render' of 'builtins.TextureCache' objects>",
+          "file": "~",
+          "calls": 14436,
+          "self_ms_per_frame": 65.34514983333334,
+          "total_ms_per_frame": 65.34514983333334
+        }
+      ]
+    },
+    {
+      "name": "gui-300-final.prof",
+      "frames": 12,
+      "entries": [
+        {
+          "function": "apply",
+          "file": "/home/lukas/Desktop/meltygui/meltygui/core/rendering/gui_imgui_input.py",
+          "calls": 14436,
+          "self_ms_per_frame": 9.124873833333334,
+          "total_ms_per_frame": 10.99379425
+        },
+        {
+          "function": "<method 'nodes' of 'builtins.RetainedGraph' objects>",
+          "file": "~",
+          "calls": 24,
+          "self_ms_per_frame": 0.07511391666666667,
+          "total_ms_per_frame": 0.07511391666666667
+        },
+        {
+          "function": "<method 'render' of 'builtins.TextureCache' objects>",
+          "file": "~",
+          "calls": 14436,
+          "self_ms_per_frame": 65.630776,
+          "total_ms_per_frame": 65.630776
+        }
+      ]
+    }
+  ]
+}

@@ -30,6 +30,10 @@ class ImGuiInput:
         self.pointer_claims = {}
         self.settle_hover = set()
         self.right_active = set()
+        self.key_map = ()
+        self.pressed_keys = frozenset()
+        self.applied_key_maps = {}
+        self.delivered_keys = {}
 
     def character(self, codepoint):
         self.characters.append(codepoint)
@@ -39,25 +43,8 @@ class ImGuiInput:
     def hit(self, position):
         cache = self.cache
         x, y = position[0] - cache.origin[0], position[1] - cache.origin[1]
-        portal = None
-        for node in reversed(cache.graph.windows()):
-            wx, wy, w, h = cache.window_rect(node)
-            if wx <= x < wx + w and wy <= y < wy + h + 28:
-                if y < wy + 28:
-                    return None  # title drag belongs to the compositor
-                portal = node
-                break
-        for node in reversed(cache.graph.nodes()):
-            ancestor, owner = node, None
-            while ancestor:
-                info = cache.graph.info(ancestor)
-                if info['portal']:
-                    owner = ancestor
-                    break
-                ancestor = info['parent']
-            if owner == portal and cache._inside_clip(node, x, y):
-                return node
-        return None
+        _, hits = cache.graph.hits(x, y)
+        return hits[0][0] if hits else None
 
     def process(self, io):
         self.host_io = io
@@ -65,6 +52,8 @@ class ImGuiInput:
         position = tuple(io.mouse_pos)
         buttons = tuple(io.mouse_down)
         keys = tuple(io.keys_down)
+        self.key_map = tuple(io.key_map)
+        self.pressed_keys = frozenset(i for i, down in enumerate(keys) if down)
         modifiers = tuple(getattr(io, 'key_' + name) for name in ('ctrl', 'shift', 'alt', 'super'))
         wheel = (io.mouse_wheel, io.mouse_wheel_horizontal)
         old = self.sample
@@ -102,8 +91,11 @@ class ImGuiInput:
             return
         io.delta_time = max(1 / 1000, min(host.delta_time, .1))
         io.font_global_scale = host.font_global_scale
-        for i, key in enumerate(host.key_map):
-            io.key_map[i] = key
+        if self.applied_key_maps.get(node) != self.key_map:
+            key_map = io.key_map
+            for i, key in enumerate(self.key_map):
+                key_map[i] = key
+            self.applied_key_maps[node] = self.key_map
         if self.clipboard is not None:
             io.get_clipboard_text_fn, io.set_clipboard_text_fn = self.clipboard
         position, buttons, keys, modifiers, wheel = self.sample
@@ -117,8 +109,15 @@ class ImGuiInput:
             # A click in another cached context must deactivate the old editor.
             # Its off-view pointer ensures it cannot activate a covered widget.
             io.mouse_down[i] = down and node in (self.mouse_owner, self.blur)
-        for i, down in enumerate(keys):
-            io.keys_down[i] = down and node == self.focus
+        pressed = self.pressed_keys if node == self.focus else frozenset()
+        previous = self.delivered_keys.get(node, frozenset())
+        if pressed != previous:
+            # Each property access creates a binding array view. More importantly,
+            # unfocused contexts need no 512-slot keyboard copy on every capture.
+            keys_down = io.keys_down
+            for key in pressed ^ previous:
+                keys_down[key] = key in pressed
+            self.delivered_keys[node] = pressed
         for name, value in zip(('ctrl', 'shift', 'alt', 'super'), modifiers):
             setattr(io, 'key_' + name, value and node == self.focus)
         fresh = self.consumed.get(node) != self.serial
@@ -173,6 +172,8 @@ class ImGuiInput:
         self.right_active.discard(node)
         self.pointer_claims.pop(node, None)
         self.consumed.pop(node, None)
+        self.applied_key_maps.pop(node, None)
+        self.delivered_keys.pop(node, None)
         for name in ('hover', 'capture', 'focus', 'mouse_owner', 'blur'):
             if getattr(self, name) == node:
                 setattr(self, name, None)

@@ -370,6 +370,18 @@ Per-command clip rectangles are applied during replay. Inline child images are
 also constrained by their containing cached geometry. Pointer-region tests obey
 the same ancestor bounds. Portals escape inline ancestor clipping.
 
+Layout retains fractional coordinates, but cached images are composed at their
+actual integer texture size with one texel per output pixel. Raster origins and
+clip edges use `floor(value + 0.5)`; clipping crops the allocation instead of
+stretching a ceil-sized texture into a fractional rectangle. The same rule applies
+to captured child images, native packet placement, and final presentation. Portal
+titles, shadows and divider overlays share the body's snapped origin. Previously,
+fractional texture scaling blurred text and independently rounded title placement
+made it jitter against the body during movement. GPU regression tests compare
+composited text and one-pixel stripes byte-for-byte, including layout-only replay
+and portal movement. This is verified at the prototype's current 1:1 render scale;
+fractional display scaling is not covered by those tests.
+
 An RGB/RGBA `tint` tuple supplies a background over the final assigned extent.
 It is applied during native replay, after measurement, with premultiplied clear
 colour before the straight-alpha resolve. This is the small prototype tint path,
@@ -747,6 +759,16 @@ The collision laboratory and detailed findings are in [COLLISIONS.md](COLLISIONS
 The existing platform adapter still supplies native observation and application;
 prototype surfaces select the Rust solver instead of running both solvers.
 
+### Step 10: full-path performance and texture lifetime investigation
+
+Full app profiling exposed repeated 512-slot input copying and whole-graph
+enumeration on every view commit. Input now delivers key-state deltas, and layout
+membership checks use the native graph directly. Nested ImGui frames preserve
+parent texture references; retained packets own them until replacement or
+retirement. This fixes the large-scene stale texture-ID failure without changing
+dynamic injection. Timings, regression evidence and remaining height/memory
+limits are in [PERFORMANCE_INVESTIGATION.md](PERFORMANCE_INVESTIGATION.md).
+
 ## 11. Performance evidence and interpretation
 
 The original README records these historical headless measurements with Rust
@@ -775,7 +797,9 @@ controlled matching-body measurement. Both panels share an app frame, so the
 slower panel can limit the visible frame rate of both.
 
 No equivalent fixed-field implementation has isolated the exact cost of the
-fully dynamic field design. No production-scale benchmark yet establishes the
+fully dynamic field design. The full collection benchmark now exercises these
+costs together; see [the investigation](PERFORMANCE_INVESTIGATION.md).
+No broad application benchmark establishes the
 combined cost of context-per-node layout, pointer scanning, dirty scans, packet
 uploads, texture memory and composition across a large application.
 

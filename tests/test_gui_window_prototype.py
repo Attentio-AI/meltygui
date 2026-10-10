@@ -11,7 +11,7 @@ def host(monkeypatch):
     from meltygui.core.melty import Melty
     monkeypatch.setattr(Melty, 'root_fill', (400., 250., 30.), raising=False)
     window = _GuiWindow(graphics=False)
-    monkeypatch.setattr(window.cache, 'process_host_input', lambda: None)
+    monkeypatch.setattr(window.cache, 'process_host_input', lambda **kwargs: None)
     monkeypatch.setattr(window.cache, 'present', lambda origin: None)
     surface = SimpleNamespace(_gui_prototype=window, request_frame=lambda: None)
     return window, surface

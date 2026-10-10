@@ -4,6 +4,13 @@ See [IMPLEMENTATION.md](IMPLEMENTATION.md) for the complete architecture,
 supported behavior, gaps versus core rendering, development history and findings.
 See [COLLISIONS.md](COLLISIONS.md) for the new retained column/row and window
 collision experiment. Run `.venv/bin/python examples/gui_collision_lab.py`.
+See [BENCHMARKS.md](BENCHMARKS.md) for the latest wrapper, collision and retained
+cache measurements and their scope.
+See [FULL_APP_BENCHMARKS.md](FULL_APP_BENCHMARKS.md) for the complete application
+comparison, including the retained-path slowdown and larger-scene capture failure.
+The follow-up [performance investigation](PERFORMANCE_INVESTIGATION.md) fixes
+input copying, graph enumeration and texture-reference lifetimes; it contains
+the current full-path results and remaining size limits.
 
 Throwaway prototype, separate from `core_render.render_func`. The existing tile
 manager hosts the comparison; the measured collection subtree uses either the

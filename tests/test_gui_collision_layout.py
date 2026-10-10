@@ -191,6 +191,57 @@ def test_nested_window_movement_and_reversal_through_ordinary_view():
     finally:cache.close()
 
 
+def test_native_move_observation_carries_nested_geometry_without_driving_the_os():
+    cache,ids,_=window_scene()
+    try:
+        native=attach_native(cache,600,450)
+        g=cache.geometry
+        before={node:g.frame_rect(node) for node in g.windows}
+        local={node:cache.window_rect(node) for node in g.windows}
+        g.pointer((500,350),drag_position=(500,350),pressed=True,down=True)
+        assert g.gesture is None and not g.claim[0]
+        # Native movement is authoritative. Repeated observations and reversal
+        # must preserve all local child positions, without a second move request.
+        for dx,dy in ((80,40),(80,40),(-200,-90),(700,600),(0,0)):
+            pairs=((100+dx,700+dx),(100+dy,550+dy))
+            native.observe((pairs,((0,1200),(0,900)),'feed',1,((),())))
+            g.pointer((500,350),drag_position=(900,800),down=True)
+            cache.flush()
+            assert native.last==pairs and g.gesture is None
+            for node,rect in before.items():
+                assert g.frame_rect(node)==pytest.approx(
+                    (rect[0]+dx,rect[1]+dy,rect[2],rect[3]))
+                assert cache.window_rect(node)==pytest.approx(local[node])
+    finally:cache.close()
+
+
+@pytest.mark.parametrize('mode',['feed','walls'])
+def test_uncached_native_background_is_not_claimed_by_geometry(mode):
+    cache=RetainedGui(graphics=False)
+    try:
+        native=attach_native(cache,mode=mode)
+        before=native.last
+        for point in ((50,10),(50,60),(70,90)):
+            cache.geometry.pointer(point,drag_position=point,pressed=True,down=True)
+            assert cache.geometry.gesture is None
+            assert not cache.geometry.claim[0]
+            assert native.last==before
+    finally:cache.close()
+
+
+def test_native_background_move_does_not_steal_a_divider():
+    cache,root,calls,ids,layouts,_=scene()
+    try:
+        native=attach_native(cache)
+        g=cache.geometry
+        g.pointer((200,100),drag_position=(200,100),pressed=True,down=True)
+        assert not g.gesture['move']
+        g.pointer((220,100),drag_position=(220,100),down=True)
+        assert native.last==((100,500),(100,300))
+        assert g.layout_rect(layouts['main'])==(100,100,400,200)
+    finally:cache.close()
+
+
 def test_native_containment_keeps_interleaved_window_edges():
     cache=RetainedGui(graphics=False);ids={}
     @cache.gui(width=180,height=160,min_width=80,min_height=60)
@@ -222,6 +273,55 @@ def test_near_resize_carries_nested_window_once_and_is_stationary():
             assert cache.window_rect(ids['leaf'])[:2]==(before[0]-20,before[1]-20)
         g.pointer((90,60),right_down=True)
         assert cache.window_rect(ids['leaf'])==before
+    finally:cache.close()
+
+
+@pytest.mark.parametrize('native_y',[0.,100.,300.])
+@pytest.mark.parametrize('framed_root',[False,True])
+@pytest.mark.parametrize('nested',[False,True])
+def test_child_opposite_edge_does_not_carry_native_resize(native_y,framed_root,nested):
+    from meltygui.core.rendering.gui_native_collision import NativeCollision
+    cache=RetainedGui(graphics=False);ids={}
+    @cache.gui(width=250,height=180)
+    def child():ids['child']=cache.current
+    @cache.gui(width=350,height=280)
+    def parent():child(melty_window=True,initial={'window_pos':(20,40)})
+    @cache.gui(width=600,height=450)
+    def root():
+        if framed_root:
+            with cache.geometry.declare(('body',),axis=0,key='body',padding=0):pass
+        (parent if nested else child)(melty_window=True,initial={'window_pos':(80,50)})
+    try:
+        root()
+        g=cache.geometry
+        native=g.native=NativeCollision(g)
+        native.observe((((100,700),(native_y,native_y+450)),((0,1200),(0,900)),'feed',1,((),())))
+        before=g.frame_rect(ids['child'])
+        start=(before[0]-100+10,before[1]-native_y+10)
+        # Bottom meets the display, then the active child's top moves upward.
+        # Only after it reaches the native top may it push that top upward too.
+        opposite_top=native_y/2
+        delta=900-(before[1]+before[3])+(before[1]-28-opposite_top)
+        end=(start[0],start[1]+delta)
+        g.pointer(start,drag_position=start,right_pressed=True,right_down=True)
+        # Opposite-edge expansion consumes the gap above the child first;
+        # the native top stays put until the child actually contacts it.
+        stage_delta=900-(before[1]+before[3])+(before[1]-28-native_y-25)
+        stage=(start[0],start[1]+stage_delta)
+        g.pointer(stage,drag_position=stage,right_down=True)
+        assert g.frame_rect(ids['child'])[1]==pytest.approx(native_y+25+28)
+        assert native.last[1]==pytest.approx((native_y,900))
+        for _ in range(4):
+            g.pointer(end,drag_position=end,right_down=True)
+            cache.flush()
+            assert g.frame_rect(ids['child'])==pytest.approx(
+                (before[0],opposite_top+28,before[2],900-opposite_top-28))
+            assert native.last[1]==pytest.approx((opposite_top,900))
+            native.observe((native.last,((0,1200),(0,900)),'feed',1,((),())))
+        g.pointer(start,drag_position=start,right_down=True)
+        cache.flush()
+        assert g.frame_rect(ids['child'])==pytest.approx(before)
+        assert native.last[1]==pytest.approx((native_y,native_y+450))
     finally:cache.close()
 
 
@@ -337,6 +437,88 @@ def test_late_native_move_does_not_add_stationary_cursor_motion():
         native.os_frame.applied_origin=lambda axis:70. if axis=='x' else 100.
         g.pointer((60,70),right_down=True)
         assert g.axes[0].position(native.pairs[0][0])==70
+    finally:cache.close()
+
+
+def test_host_stabilized_drag_does_not_add_native_translation():
+    from types import SimpleNamespace
+    cache,root,calls,ids,layouts,_=scene()
+    try:
+        native=attach_native(cache)
+        # The real host has already removed surface movement from its pointer.
+        # Each commit below immediately acknowledges the requested native move.
+        native.os_frame=SimpleNamespace(
+            applied_origin=lambda axis:native.last[axis=='y'][0],
+            prototype_commit=lambda pairs:None)
+        g=cache.geometry
+        g.pointer((60,70),drag_position=(60,70),right_pressed=True,
+                  right_down=True,reverse=True)
+        for _ in range(5):
+            g.pointer((30,40),drag_position=(30,40),right_down=True)
+            cache.flush()
+            assert native.last==((70,500),(70,300))
+        # Return to the original hand position within the same held gesture.
+        g.pointer((60,70),drag_position=(60,70),right_down=True)
+        cache.flush()
+        assert native.last==((100,500),(100,300))
+        g.pointer((30,40),drag_position=(30,40),right_down=True)
+        # Hover IO returns to native-local coordinates on release, but the
+        # separate drag sample includes the final 5px without rebasing the hand.
+        g.pointer((60,70),drag_position=(25,35),right_released=True)
+        assert native.last==((65,500),(65,300))
+        assert g.gesture is None
+    finally:cache.close()
+
+
+def test_native_reply_during_drag_preserves_reversal_and_updated_walls():
+    cache,root,calls,ids,layouts,_=scene()
+    try:
+        native=attach_native(cache)
+        g=cache.geometry
+        g.pointer((300,100),drag_position=(300,100),right_pressed=True,right_down=True)
+        g.pointer((1100,750),drag_position=(1100,750),right_down=True)
+        token=g.gesture['token']
+        # A delayed native size/move reply also reports a stricter display wall.
+        native.observe((((95,1195),(45,895)),((0,1195),(0,895)),'feed',1,((),())))
+        assert g.gesture['token']==token
+        g.pointer((1100,750),drag_position=(1100,750),right_down=True)
+        assert native.last[0][1]<=1195 and native.last[1][1]<=895
+        g.pointer((300,100),drag_position=(300,100),right_down=True)
+        assert native.last==((100,500),(100,300))
+        g.pointer((300,100),drag_position=(300,100),right_released=True)
+        # With no owned drag, a genuine native move is adopted normally.
+        native.observe((((120,520),(120,320)),((0,1200),(0,900)),'feed',1,((),())))
+        assert native.last==((120,520),(120,320))
+    finally:cache.close()
+
+
+@pytest.mark.parametrize('graphics',[False,True])
+def test_fractional_nested_cells_settle_without_growing_native_frame(graphics):
+    if graphics:
+        from conftest import _ensure_gl_context
+        _ensure_gl_context()
+    cache=RetainedGui(graphics=graphics)
+    ids={}
+    @cache.gui
+    def leaf(input_value,draw_state=None):
+        ids[input_value]=cache.current
+    @cache.gui
+    def middle(input_value):
+        with cache.geometry.declare(('a','b'),axis=1,key='rows',padding=6) as layout:
+            for name in ('a','b'):
+                with layout.cell(name):leaf(name,key=name)
+    @cache.gui(width=1040,height=705)
+    def root(input_value):
+        with cache.geometry.declare(('left','middle','right'),axis=0,key='cols',padding=6) as layout:
+            with layout.cell('middle'):middle(None)
+    try:
+        root(None)
+        native=attach_native(cache,1040,705)
+        for _ in range(3):
+            root(None)
+            cache.flush()
+            assert native.last==((100,1140),(100,805))
+            assert cache.graph.info(ids['a'])['rect'][2:]==pytest.approx((1040/3-24,334.5))
     finally:cache.close()
 
 

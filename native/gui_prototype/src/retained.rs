@@ -55,6 +55,23 @@ pub struct RetainedGraph {
 }
 
 impl RetainedGraph {
+    fn position(&self, id: u64, positions: &mut HashMap<u64, (f64, f64)>) -> (f64, f64) {
+        if let Some(p) = positions.get(&id) {
+            return *p;
+        }
+        let n = &self.nodes[&id];
+        let (px, py) = if n.parent != 0 {
+            self.position(n.parent, positions)
+        } else {
+            (0., 0.)
+        };
+        let p = (
+            px + n.rect.0 as f64,
+            py + n.rect.1 as f64 + if n.portal { 28. } else { 0. },
+        );
+        positions.insert(id, p);
+        p
+    }
     fn composition(&mut self, mut id: u64) {
         while let Some(node) = self.nodes.get_mut(&id) {
             node.compose = true;
@@ -435,6 +452,41 @@ impl RetainedGraph {
         d.set_item("children", &n.children)?;
         d.set_item("z", n.z)?;
         Ok(d.unbind())
+    }
+    fn contains(&self, id: u64) -> bool {
+        self.nodes.contains_key(&id)
+    }
+    /// One native query for ImGui and retained regions. Portals escape ancestor
+    /// clips and occlude lower windows even when their body has no hit region.
+    fn hits(&self, x: f64, y: f64) -> (Option<u64>, Vec<(u64, f64, f64)>) {
+        let mut positions = HashMap::new();
+        let portal = self.windows().into_iter().rev().find(|id| {
+            let (px, py) = self.position(*id, &mut positions);
+            let r = self.nodes[id].rect;
+            px <= x && x < px + r.2 as f64 && py - 28. <= y && y < py + r.3 as f64
+        });
+        let mut hits = Vec::new();
+        for id in self.nodes().into_iter().rev() {
+            let mut ancestor = id;
+            let mut owner = None;
+            let mut inside = true;
+            while ancestor != 0 {
+                let n = &self.nodes[&ancestor];
+                let (px, py) = self.position(ancestor, &mut positions);
+                inside &= px <= x && x < px + n.rect.2 as f64
+                    && py <= y && y < py + n.rect.3 as f64;
+                if n.portal {
+                    owner = Some(ancestor);
+                    break;
+                }
+                ancestor = n.parent;
+            }
+            if inside && owner == portal {
+                let (px, py) = self.position(id, &mut positions);
+                hits.push((id, px, py));
+            }
+        }
+        (portal, hits)
     }
     fn nodes(&self) -> Vec<u64> {
         let mut ids: Vec<_> = self.nodes.keys().copied().collect();

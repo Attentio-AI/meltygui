@@ -100,6 +100,7 @@ def test_conditional_window_reconciliation_under_cached_grandparent():
 
     grandparent(None)
     assert len(cache.graph.windows()) == 1
+    assert cache.graph.contains(ids['window'])
     cache.flush()
     assert calls == [1, 1, 1]
     state['closed'] = True
@@ -108,6 +109,7 @@ def test_conditional_window_reconciliation_under_cached_grandparent():
     cache.flush()
     assert calls == [1, 2, 1]
     assert cache.graph.windows() == []
+    assert not cache.graph.contains(ids['window'])
     assert ids['window'] not in cache.records
     assert ids['window'] not in cache.regions
     state['closed'] = False
@@ -285,3 +287,55 @@ def test_window_movement_is_compositor_only_and_does_not_poll_owners():
     assert count == [2]
     assert cache.graph.info(node)['rect'][:2] == (19, 30)
     cache.close()
+
+
+def test_native_hit_query_matches_clipping_and_z_order_after_mutations():
+    """Compare against the original Python geometry rules, including portal escape."""
+    cache = RetainedGui(graphics=False)
+    g = cache.graph
+    def add(parent, key, rect, portal=False):
+        node = g.declare(parent, 1, key, None, {}, rect, portal)
+        g.begin(node)
+        return node
+    root = add(0, 'root', (10.25, 20.5, 180, 140))
+    clipped = add(root, 'clip', (12.5, 15.25, 55, 40))
+    leaf = add(clipped, 'leaf', (25.25, 20.5, 100, 90))
+    g.commit(leaf, (False, None), False)
+    escaped = add(clipped, 'portal', (80.25, 60.5, 100, 80), True)
+    content = add(escaped, 'body', (5.25, 6.5, 160, 120))
+    g.commit(content, (False, None), False)
+    g.commit(escaped, (False, None), False)
+    g.commit(clipped, (False, None), False)
+    upper = add(root, 'upper', (105.5, 95.25, 110, 70), True)
+    g.commit(upper, (False, None), False)
+    g.commit(root, (False, None), False)
+    def check():
+        cache._positions.clear()
+        for x in range(-10, 300, 7):
+            for y in range(-10, 300, 9):
+                portal = next((n for n in reversed(g.windows())
+                               if (lambda r: r[0] <= x < r[0] + r[2] and
+                                   r[1] <= y < r[1] + r[3] + 28)(cache.window_rect(n))), None)
+                expected = []
+                for n in reversed(g.nodes()):
+                    ancestor, owner = n, None
+                    while ancestor:
+                        info = g.info(ancestor)
+                        if info['portal']:
+                            owner = ancestor
+                            break
+                        ancestor = info['parent']
+                    if owner == portal and cache._inside_clip(n, x, y):
+                        expected.append((n, *cache._position(n)))
+                assert g.hits(x, y) == (portal, expected)
+    try:
+        check()
+        g.raise_window(escaped)
+        check()
+        g.move_window(escaped, -8.25, 12.5)
+        g.allocate(root, (20.5, 40.25, 100, 90))
+        check()
+        g.retire(upper)
+        check()
+    finally:
+        cache.close()

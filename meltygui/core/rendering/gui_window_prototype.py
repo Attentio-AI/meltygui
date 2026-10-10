@@ -51,7 +51,9 @@ class _GuiWindow:
         token = _window.set(self)
         self.native.begin_frame(scope=id(surface), width=width, cache=self.cache)
         try:
-            self.cache.process_host_input()
+            self.cache.process_host_input(
+                drag_position=(self.input_backend.drag_mouse_pos
+                               if self.input_backend is not None else None))
             self.cache.flush()
             if self.cache.geometry.native is not None:
                 pairs=self.cache.geometry.native.pairs

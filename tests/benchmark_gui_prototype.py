@@ -4,6 +4,7 @@ Headless ImGui, real styling, identical bodies, no texture cache or GPU timing.
 The existing wrapper profiler supplies the isolated Melty frame harness.
 """
 import argparse
+import json
 from pathlib import Path
 import runpy
 from statistics import median
@@ -15,6 +16,7 @@ def main():
     parser.add_argument('--rows', default='25,100,300')
     parser.add_argument('--frames', type=int, default=40)
     parser.add_argument('--warm', type=int, default=12)
+    parser.add_argument('--json-out', type=Path)
     args = parser.parse_args()
     harness = runpy.run_path(str(Path(__file__).with_name('profile_render_wrapper.py')))
     harness['_init_melty']()
@@ -31,6 +33,7 @@ def main():
     python = make_views(python_gui, python_counts)
     print('Headless identical-body benchmark (CPU wall time, cache off)')
     print('rows calls Python_ms Rust_ms ratio Rust_wrapper_us_per_call')
+    results = []
     for rows in map(int, args.rows.split(',')):
         data = sample_data(rows)
         times = {'python': [], 'rust': []}
@@ -67,7 +70,16 @@ def main():
                     times[variant].append(elapsed)
         old, new = median(times['python']), median(times['rust'])
         print(f'{rows:4} {calls:5} {old:9.3f} {new:7.3f} {old/new:5.1f} {median(wrapper):10.3f}', flush=True)
+        results.append({'rows': rows, 'calls': calls, 'python_median_ms': old,
+                        'rust_median_ms': new, 'ratio': old/new,
+                        'python_p95_ms': sorted(times['python'])[int(.95*(args.frames-1))],
+                        'rust_p95_ms': sorted(times['rust'])[int(.95*(args.frames-1))],
+                        'rust_wrapper_us_per_call': median(wrapper), 'samples_ms': times})
     runtime.clear()
+    if args.json_out:
+        args.json_out.write_text(json.dumps({'frames': args.frames, 'warm': args.warm,
+                                            'benchmark': 'identical bodies, cache off, headless CPU',
+                                            'results': results}, indent=2)+'\n')
 
 
 if __name__ == '__main__':

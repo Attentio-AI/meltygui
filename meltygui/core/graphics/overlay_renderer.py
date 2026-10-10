@@ -206,6 +206,8 @@ class SplitOverlayRenderer(WindowRenderer):
         Orchestrator.pump()          # engine errors surface if never swallowed here
         try:
             Orchestrator.stamp_io(imgui.get_io())
+            if Orchestrator.replaying is not None or Orchestrator._task is not None:
+                self.drag_mouse_pos = tuple(imgui.get_io().mouse_pos)
         except Exception:
             pass
 
@@ -363,8 +365,23 @@ class SplitOverlayRenderer(WindowRenderer):
     _slide_screen_origin = None
     _slide_native_sample = None
     SLIDE_DEADBAND = 1.5
+    drag_mouse_pos = None
 
     def _cancel_surface_slide(self, io):
+        """Publish drag coordinates through release, while restoring hover IO."""
+        down = any(io.mouse_down[i] for i in range(3))
+        released = not down and (getattr(self, '_slide_base', None) is not None
+                                or self._slide_screen_origin is not None)
+        local = tuple(io.mouse_pos)
+        SplitOverlayRenderer._update_surface_slide(self, io, down=down or released)
+        self.drag_mouse_pos = tuple(io.mouse_pos)
+        if released:
+            # A release can carry the final movement. Keep it in the gesture's
+            # coordinate system even though hover returns to surface coordinates.
+            io.mouse_pos = local
+            SplitOverlayRenderer._update_surface_slide(self, io, down=False)
+
+    def _update_surface_slide(self, io, *, down):
         """While a mouse button is held, subtract the SURFACE's own motion
         from the pointer. The compositor slides the studio to keep it on
         screen when its surface grows past the workarea (the OS-edge push,
@@ -376,7 +393,6 @@ class SplitOverlayRenderer(WindowRenderer):
         SLIDE_DEADBAND it is rounding, not a slide. Resets on release, so
         hover after a gesture reads the true pointer again."""
         import meltygui.core.windowing.wayland_move as wayland_move
-        down = any(io.mouse_down[i] for i in range(3))
         from meltygui.core.input.input_handler import pointer_press_token
         press = pointer_press_token()
         if press is not None and getattr(self, '_slide_press', press) != press:

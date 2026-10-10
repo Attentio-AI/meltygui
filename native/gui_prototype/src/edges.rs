@@ -409,7 +409,12 @@ impl EdgeGraph {
                 start: self.snapshot(),
             });
         }
-        let start = self.gesture.as_ref().unwrap().start.clone();
+        let mut start = self.gesture.as_ref().unwrap().start.clone();
+        // Sticky replay restores movable geometry, not external boundaries.
+        // Native acknowledgements can refine a display wall during a drag.
+        for wall in &walls {
+            start.insert(*wall, self.position(*wall)?);
+        }
         let before = self.snapshot();
         self.restore(&start);
         self.visits = 0;

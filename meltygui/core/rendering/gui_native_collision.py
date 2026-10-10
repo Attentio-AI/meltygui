@@ -35,15 +35,24 @@ class NativeCollision:
                 self.pairs.append(tuple(graph.edge(1,str(i),p) for i,p in enumerate(pairs[axis])))
                 self.screen.append(tuple(graph.edge(2,str(i),p) for i,p in enumerate(screen[axis])))
         else:
+            # During an app-owned drag, native replies acknowledge our output;
+            # they are not another drag of the graph. A late/clamped reply must
+            # not translate the gesture baseline or cancel sticky reversal.
+            # Updated display walls still constrain the next solve. Fixed-bound
+            # and idle surfaces continue to adopt observed allocations below.
+            dragging=mode!='walls' and (geometry.gesture is not None
+                                       or any(i is not None for i in self.drag_index))
             for axis,graph in enumerate(geometry.axes):
                 near,far=self.pairs[axis]
+                graph.set_positions(dict(zip(self.screen[axis],screen[axis])))
+                if dragging:
+                    continue
                 shift=pairs[axis][0]-graph.position(near)
                 if shift:
                     self.cancel()
                     graph.set_positions({e:p+shift for e,p in graph.values().items()
                                          if e not in self.screen[axis]})
                     graph.end_drag()
-                graph.set_positions(dict(zip(self.screen[axis],screen[axis])))
                 if abs(graph.position(far)-pairs[axis][1])>1e-6:
                     self.contacts(True)
                     graph.solve(far,pairs[axis][1],[near])
@@ -52,9 +61,9 @@ class NativeCollision:
                     self.contacts(False)
                     graph.end_drag()
         for axis,graph in enumerate(geometry.axes):
-            near,far=self.pairs[axis];sn,sf=self.screen[axis]
+            near,far=self.pairs[axis]
             graph.replace_cells(1,[(near,far,1.,8192.)])
-            graph.replace_cells(2,[(sn,near,0.,None),(far,sf,0.,None)] if mode!='walls' else [])
+        self.move_policy(bool(geometry.gesture and geometry.gesture['move']))
         for node in tuple(geometry.frames):self.connect(node)
         self.last=pairs
         for axis,items in enumerate(pending):

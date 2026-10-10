@@ -47,6 +47,51 @@ def test_unowned_cocoa_window_keeps_local_pointer(monkeypatch):
     assert io.mouse_pos == (20., 30.)
 
 
+def test_release_keeps_final_drag_motion_separate_from_hover(monkeypatch):
+    origin=[400.,300.]
+    renderer=SimpleNamespace(window=object(),_slide_screen_origin=None,
+                             _slide_native_sample=None)
+    io=SimpleNamespace(mouse_down=[False,True,False],mouse_pos=(100.,100.))
+    monkeypatch.setattr(wayland_move,'relative_motion_available',lambda:False)
+    monkeypatch.setattr(melty_windows,'drag_origin',lambda window:tuple(origin))
+    SplitOverlayRenderer._cancel_surface_slide(renderer,io)
+    origin[:]=[350.,250.]
+    io.mouse_pos=(100.,100.)
+    SplitOverlayRenderer._cancel_surface_slide(renderer,io)
+    assert renderer.drag_mouse_pos==(50.,50.)
+    # The release brings another 5px of hand motion in the translated surface.
+    io.mouse_down=[False]*3
+    io.mouse_pos=(95.,95.)
+    SplitOverlayRenderer._cancel_surface_slide(renderer,io)
+    assert renderer.drag_mouse_pos==(45.,45.)
+    assert io.mouse_pos==(95.,95.)
+    assert renderer._slide_screen_origin is None
+    SplitOverlayRenderer._cancel_surface_slide(renderer,io)
+    assert renderer.drag_mouse_pos==(95.,95.)
+
+
+def test_relative_pointer_release_keeps_final_drag_motion(monkeypatch):
+    renderer=SimpleNamespace(window=object(),_slide_screen_origin=None,
+                             _slide_native_sample=None,_slide_base=None,
+                             _slide_last=None,SLIDE_DEADBAND=1.5)
+    io=SimpleNamespace(mouse_down=[False,True,False],mouse_pos=(100.,100.))
+    relative=[0.,0.]
+    monkeypatch.setattr(wayland_move,'relative_motion_available',lambda:True)
+    monkeypatch.setattr(wayland_move,'relative_motion_total',lambda:tuple(relative))
+    SplitOverlayRenderer._cancel_surface_slide(renderer,io)
+    relative[:]=[-50.,-50.]
+    io.mouse_pos=(110.,110.)
+    SplitOverlayRenderer._cancel_surface_slide(renderer,io)
+    assert renderer.drag_mouse_pos==(50.,50.)
+    relative[:]=[-55.,-55.]
+    io.mouse_pos=(105.,105.)
+    io.mouse_down=[False]*3
+    SplitOverlayRenderer._cancel_surface_slide(renderer,io)
+    assert renderer.drag_mouse_pos==(45.,45.)
+    assert io.mouse_pos==(105.,105.)
+    assert renderer._slide_base is None
+
+
 def test_cocoa_regrab_between_frames_reanchors_at_new_press(monkeypatch):
     from meltygui.core.input.input_handler import InputHandler
     handler = InputHandler()

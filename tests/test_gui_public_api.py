@@ -1,7 +1,5 @@
 """Public prototype decorators: one import, one tag, optional input and return."""
 import inspect
-import runpy
-from pathlib import Path
 
 import pytest
 
@@ -63,9 +61,10 @@ def test_bare_decorators_and_user_minimal_example(registrations, monkeypatch):
     def parentheses():
         pass
 
-    example = Path(__file__).resolve().parents[1] / 'examples/example_ui.py'
-    namespace = runpy.run_path(str(example))
-    minimal = namespace['example_app']
+    # Keep the minimal API contract independent of the evolving table demo.
+    @os_window(name='example main', width=1400, height=1000)
+    def minimal():
+        imgui.text('hello')
     assert [config['name'] for _, config in registrations] == ['bare', 'parentheses', 'example main']
     assert str(inspect.signature(minimal)) == '()'
     window, surface = host(monkeypatch)

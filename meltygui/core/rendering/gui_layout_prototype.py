@@ -94,12 +94,26 @@ class GuiGeometry:
         return x+self.offset[0],y+self.offset[1]
 
     def projected_position(self,node):
-        if not node:return self.offset
+        if not node:
+            if self.native and self.native.pairs:
+                return tuple(g.position(pair[0]) for g,pair in zip(self.axes,self.native.pairs))
+            return self.offset
         if node in self.frames:return self.frame_rect(node)[:2]
         if node in self.bindings:return self.cell_rect(*self.bindings[node])[:2]
         info=self.cache.graph.info(node)
         x,y=self.projected_position(info['parent'])
         return x+info['rect'][0],y+info['rect'][1]+(28 if info['portal'] else 0)
+
+    def carry_origin(self,node):
+        parent=self.cache.graph.info(node)['parent']
+        position=self.projected_position(parent)
+        if self.portal(parent) is None:
+            # Native near-edge resize rebases local coordinates; the Rust
+            # solver already owns the windows' screen positions. Carry only
+            # actual layout reflow here, not the native frame's translation.
+            origin=self.projected_position(0)
+            return tuple(p-o for p,o in zip(position,origin))
+        return position
 
     def translate_window(self,node,axis,delta):
         if not delta:return
@@ -116,7 +130,7 @@ class GuiGeometry:
             parent=self.cache.graph.info(node)['parent']
             if not parent:continue
             old=baseline[node]
-            new=self.projected_position(parent)
+            new=self.carry_origin(node)
             for axis in range(2):
                 delta=new[axis]-old[axis]
                 self.translate_window(node,axis,delta)
@@ -201,10 +215,14 @@ class GuiGeometry:
                 for axis, (graph, pair) in enumerate(zip(self.axes, pairs)):
                     near, far = pair
                     shift = rect[axis]-old[axis]
-                    # Translate owned layout edges once; resizing then solves
-                    # the far edge with the new near boundary held.
+                    # Translate the entire connected allocation, including bound
+                    # child frames. Leaving those frames at their old origin
+                    # violates their fixed padding constraints; each subsequent
+                    # capture then mistakes that offset for more content size.
                     ids = {e for l in self.layouts.values() if self._frame_owner(l.owner)==node
-                           for e in graph.owner_edges(l.serial)} | set(graph.owner_edges(serial))
+                           for e in graph.owner_edges(l.serial)}
+                    ids.update(e for child,(owner,_,_) in self.frames.items()
+                               if self._frame_owner(child)==node for e in graph.owner_edges(owner))
                     graph.set_positions({e:graph.position(e)+shift for e in ids})
                     graph.solve(far, rect[axis]+rect[axis+2], [near])
                 self.frames[node] = (serial,pairs,rect)
@@ -223,8 +241,8 @@ class GuiGeometry:
         for child,(layout,index) in tuple(self.bindings.items()):
             if layout.owner==node and child not in layout.children:
                 self.bindings.pop(child)
-        active=set(self.cache.graph.nodes())
-        for window in sorted((w for w in self.windows if w in active),key=self.depth):
+        graph = self.cache.graph
+        for window in sorted((w for w in self.windows if graph.contains(w)),key=self.depth):
             parent=self.cache.graph.info(window)['parent']
             if window!=node and self.descendant(parent,node):
                 desired=self.position(window)
@@ -389,8 +407,8 @@ class GuiGeometry:
             self.native.commit()
         # Commit placement parents before their descendants. Portal rectangles
         # remain parent-relative even across ordinary intermediate views.
-        active=set(cache.graph.nodes())
-        for node in sorted((n for n in self.windows if n in active),key=lambda n:self.depth(n)):
+        graph = cache.graph
+        for node in sorted((n for n in self.windows if graph.contains(n)),key=lambda n:self.depth(n)):
             if node not in cache.records:continue
             x,y,w,h=self.frame_rect(node)
             parent=cache.graph.info(node)['parent']
@@ -400,7 +418,7 @@ class GuiGeometry:
             value,args=cache.invocations[node]
             cache.invocations[node]=(value,{**args,'width':rect[2],'height':rect[3]})
         for node,(layout,index) in tuple(self.bindings.items()):
-            if node not in active or layout.owner not in active: continue
+            if not graph.contains(node) or not graph.contains(layout.owner): continue
             x,y,w,h=self.cell_rect(layout,index)
             ox,oy=self.position(layout.owner)
             rect=(x-ox,y-oy,max(1.,w),h)
@@ -415,7 +433,7 @@ class GuiGeometry:
                     value,args=cache.invocations[node]
                     cache.invocations[node]=(value,{**args,'width':rect[2],'height':h})
             if cache.graphics and cache.gpu and node in cache.states:
-                cache.gpu.place_child(layout.owner,node,rect,(x-ox,y-oy,x-ox+w,y-oy+h),node in self.frozen)
+                cache.gpu.place_child(layout.owner,node,rect,(x-ox,y-oy,x-ox+w,y-oy+h))
 
     def depth(self,node):
         depth=0
@@ -429,7 +447,7 @@ class GuiGeometry:
         root=self._frame_owner(layout.owner)
         key=(token,layout.serial,index,tuple(g.stats()[2] for g in self.axes))
         if self.drag_parents is None or self.drag_parents[0]!=key:
-            self.drag_parents=(key,{node:self.projected_position(self.cache.graph.info(node)['parent'])
+            self.drag_parents=(key,{node:self.carry_origin(node)
                                     for node in self.windows})
         changed=graph.drag(token,layout.edges[index],displacement,self.walls(layout.axis,root))
         self.carry_windows(self.drag_parents[1])
@@ -463,15 +481,24 @@ class GuiGeometry:
 
     def pointer(self, position, *, down=False, pressed=False, released=False,
                 right_down=False, right_pressed=False, right_released=False,
-                reverse=False, widget_claim=(False,False)):
+                reverse=False, widget_claim=(False,False), drag_position=None):
         point=tuple(position[i]-self.cache.origin[i]+self.offset[i] for i in range(2))
         # Hit testing uses proposed local allocations; drag displacement uses
         # the actually applied OS origin so delayed moves cannot add motion.
-        pointer_origin=self.native.pointer_origin() if self.native else self.offset
-        pointer=tuple(position[i]-self.cache.origin[i]+pointer_origin[i] for i in range(2))
+        if drag_position is None:
+            pointer_origin=self.native.pointer_origin() if self.native else self.offset
+            pointer=tuple(position[i]-self.cache.origin[i]+pointer_origin[i] for i in range(2))
+        else:
+            # The surface input adapter already removes native window movement.
+            # Adding the moving OS origin again feeds our resize back into itself.
+            pointer=tuple(drag_position)
         if self.gesture and self.gesture['versions']!=tuple(g.stats()[2] for g in self.axes):
             self.end_gesture()
         portal,layouts=self.hit(*point)
+        # Unclaimed native background belongs to the host's WM move gesture.
+        # Driving it through os_frame queues a next-frame surface move and mixes
+        # asynchronous native origins with local pointer samples. Only retained
+        # portals/dividers own app-driven left drags here.
         targets={}; divider=None
         for layout in layouts:
             graph=self.axes[layout.axis]
@@ -479,7 +506,8 @@ class GuiGeometry:
                 if abs(point[layout.axis]-graph.position(edge))<=4:
                     divider=(layout,index);break
             if divider:break
-        self.claim=(bool(divider) or portal is not None, bool(layouts) or portal is not None)
+        self.claim=(bool(divider) or portal is not None,
+                    bool(layouts) or portal is not None)
         if not self.gesture:
             move=False
             if pressed and divider:
@@ -508,7 +536,7 @@ class GuiGeometry:
                 self.gesture={'targets':targets,'start':pointer,'token':self.sequence,
                               'button':1 if right_pressed else 0,'move':move,
                               'base':tuple(g.values() for g in self.axes),
-                              'parents':{node:self.projected_position(self.cache.graph.info(node)['parent'])
+                              'parents':{node:self.carry_origin(node)
                                          for node in self.windows}}
                 if portal:
                     for node in self.cache.graph.windows():
@@ -575,14 +603,21 @@ class GuiGeometry:
             self.native.release()
 
     def paint(self,draw_list,origin,portal=None):
+        shift=[origin[i]-self.offset[i] for i in range(2)]
+        if portal:
+            position=self.cache.window_rect(portal)[:2]
+            for axis in range(2):
+                at=position[axis]+origin[axis]
+                shift[axis]+=math.floor(at+.5)-at
         for layout in self.layouts.values():
             if self.portal(layout.owner)!=portal:continue
             rx,ry,w,h=self.layout_rect(layout)
-            rx+=origin[0]-self.offset[0];ry+=origin[1]-self.offset[1]
+            rx+=shift[0];ry+=shift[1]
+            left,top,right,bottom=(math.floor(v+.5) for v in (rx,ry,rx+w,ry+h))
             for edge in layout.edges[1:-1]:
-                at=self.axes[layout.axis].position(edge)+origin[layout.axis]-self.offset[layout.axis]
-                if layout.axis==0:draw_list.add_rect_filled(at-1,ry,at+1,ry+h,0xFF777777)
-                else:draw_list.add_rect_filled(rx,at-1,rx+w,at+1,0xFF777777)
+                at=math.floor(self.axes[layout.axis].position(edge)+shift[layout.axis]+.5)
+                if layout.axis==0:draw_list.add_rect_filled(at-1,top,at+1,bottom,0xFF777777)
+                else:draw_list.add_rect_filled(left,at-1,right,at+1,0xFF777777)
 
     def remove_layout(self, identity):
         layout=self.layouts.pop(identity,None)

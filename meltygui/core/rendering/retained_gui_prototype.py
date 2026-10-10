@@ -44,6 +44,7 @@ class RetainedGui:
         self.contexts = {}
         self.states = {}
         self.backgrounds = {}
+        self.texture_refs = {}
         self.auto_layout = False
         self.request_frame = None
         self.root_ids = set()
@@ -159,7 +160,9 @@ class RetainedGui:
                     raise ValueError('width=None requires a parent or graphics host')
             if not math.isfinite(w) or not 0 < w <= 8192 or (h is not None and (not math.isfinite(h) or h < 0)):
                 raise ValueError('cached boundaries require positive width and nonnegative height')
-            w, h = math.ceil(w), None if h is None else math.ceil(h)
+            # Keep logical constraint geometry fractional. Only GPU storage
+            # needs whole pixels; rounding a cell here fights its layout solver.
+            w, h = float(w), None if h is None else float(h)
             if h is not None:
                 h = min(maximum, max(minimum, h))
             arguments = {**decoration, **kwargs, 'width': w, 'height': h,
@@ -203,8 +206,7 @@ class RetainedGui:
             if self.graphics:
                 if parent and not portal:
                     import meltygui_imgui as imgui
-                    imgui.get_window_draw_list().add_image(
-                        self.gpu.texture(node), (x, y), (x + w, y + h), (0, 1), (1, 0))
+                    self._draw_image(imgui.get_window_draw_list(),node,x,y,w,h)
                     imgui.dummy(w, h)
                 elif self.auto_layout and not parent and not portal:
                     import meltygui_imgui as imgui
@@ -266,6 +268,7 @@ class RetainedGui:
         self.stack.append(node)
         self.staged_regions[node] = []
         previous = None
+        parent_texture_refs = None
         try:
             self.geometry.begin(node)
             if self.graphics:
@@ -274,6 +277,11 @@ class RetainedGui:
                 if self.gpu is None:
                     self.gpu = TextureCache()
                 previous = imgui.get_current_context()
+                # This binding's keepalive list is shared by ImGui contexts.
+                # A child's new_frame clears it while the parent's draw list is
+                # unfinished. Own those Python texture-ID objects through the
+                # nested capture, including user-submitted images and failures.
+                parent_texture_refs = tuple(previous._keepalive_cache)
                 context = self._context(node, w, h)
                 imgui.set_current_context(context)
                 imgui.get_io().display_size = (w, h)
@@ -297,24 +305,30 @@ class RetainedGui:
             measured_h = result[2].height if requested_h < 0 else requested_h
             if not math.isfinite(measured_h) or measured_h < 0 or measured_h > 8192:
                 raise ValueError('measured cache height must be 0..8192 pixels')
-            measured_h = min(arguments['max_height'], max(arguments['min_height'], math.ceil(measured_h)))
+            measured_h = min(arguments['max_height'], max(arguments['min_height'], measured_h))
             result[2].height = measured_h
             tint = result[2].get('tint', (0., 0., 0., 0.))
             background = tuple(tint) + ((1.,) if len(tint) == 3 else ())
             if len(background) != 4 or any(not math.isfinite(c) or not 0 <= c <= 1 for c in background):
                 raise ValueError('prototype tint must be RGB or RGBA components in 0..1')
             if self.graphics:
-                self.gpu.target(node, int(w), max(1, measured_h))
+                self.gpu.target(node, math.ceil(w), max(1, math.ceil(measured_h)))
                 self.gpu.begin_packet(node)
+                texture_refs = []
                 for draw_list in imgui.get_draw_data().commands_lists:
                     commands, offset = [], 0
                     for command in draw_list.commands:
-                        commands.append((int(command.texture_id), command.elem_count,
+                        texture = command.texture_id
+                        texture_refs.append(texture)
+                        commands.append((int(texture), command.elem_count,
                                          tuple(command.clip_rect), offset, 0))
                         offset += command.elem_count
                     self.gpu.add_packet(node,
                         ctypes.string_at(draw_list.vtx_buffer_data, draw_list.vtx_buffer_size * 20),
                         ctypes.string_at(draw_list.idx_buffer_data, draw_list.idx_buffer_size * 4), commands)
+                # Retained commands outlive this ImGui frame. A texture-ID object
+                # may itself own its resource, so retain it until packet replacement.
+                self.texture_refs[node] = tuple(texture_refs)
             self.graph.commit(node, result[:2], independent)
             self._retire()
             self.backgrounds[node] = background
@@ -341,13 +355,16 @@ class RetainedGui:
             self.stack.pop()
             if previous is not None:
                 imgui.set_current_context(previous)
+                previous._keepalive_cache[:] = parent_texture_refs
 
     def _compose(self):
         if self.graphics and self.gpu:
-            for node in self.graph.composition_order():
-                # An executing ancestor still has its previous command packet.
-                if node not in self.stack:
-                    self.gpu.render(node, self.backgrounds[node])
+            # Keep the complete bottom-up replay order, but save/restore host GL
+            # state once for the batch rather than once for every cached view.
+            nodes = [node for node in self.graph.composition_order() if node not in self.stack]
+            if nodes:
+                self.gpu.render_many([(node, self.backgrounds[node]) for node in nodes])
+                for node in nodes:
                     self.graph.composed(node)
 
     def flush(self):
@@ -392,7 +409,8 @@ class RetainedGui:
                 self.imgui_input.release_context_callbacks()
                 imgui.destroy_context(self.contexts.pop(node))
                 imgui.set_current_context(previous)
-            for mapping in (self.invocations, self.events, self.regions, self.states, self.backgrounds):
+            for mapping in (self.invocations, self.events, self.regions, self.states,
+                            self.backgrounds, self.texture_refs):
                 mapping.pop(node, None)
             self.root_ids.discard(node)
             for key,value in tuple(self.window_ids.items()):
@@ -458,29 +476,10 @@ class RetainedGui:
             return
         target = None
         # Windows occlude underlying content even where no control is present.
-        portal_hit = None
-        for node in reversed(self.graph.windows()):
-            wx, wy, w, h = self.window_rect(node)
-            if wx <= x < wx + w and wy <= y < wy + h + 28:
-                portal_hit = node
-                if pressed:
-                    self.graph.raise_window(node)
-                break
-        for node in reversed(self.graph.nodes()):
-            info = self.graph.info(node)
-            ancestor = node
-            portal = None
-            while ancestor:
-                a = self.graph.info(ancestor)
-                if a['portal']:
-                    portal = ancestor
-                    break
-                ancestor = a['parent']
-            if portal != portal_hit:
-                continue
-            if not self._inside_clip(node, x, y):
-                continue
-            px, py = self._position(node)
+        portal_hit, hits = self.graph.hits(x, y)
+        if pressed and portal_hit is not None:
+            self.graph.raise_window(portal_hit)
+        for node, px, py in hits:
             for key, (rx, ry, rw, rh) in self.regions.get(node, []):
                 if px + rx <= x < px + rx + rw and py + ry <= y < py + ry + rh:
                     target = node, key
@@ -496,7 +495,7 @@ class RetainedGui:
         if pressed and target:
             self.send(*target)
 
-    def process_host_input(self):
+    def process_host_input(self, *, drag_position=None):
         """Uncached adapter at the host boundary, never inside a cached body.
 
         Route raw ImGui IO and retained hit regions. Claim gestures through the host
@@ -506,12 +505,16 @@ class RetainedGui:
         self.imgui_input.process(imgui.get_io())
         # Resolve actual widget ownership before allowing background gestures.
         self.flush()
+        if self.geometry.gesture is None:
+            self.pointer(imgui.get_mouse_pos())
         claims=self.imgui_input.pointer_claims.get(self.imgui_input.mouse_owner,(False,False))
+        claims=(claims[0] or self.hover is not None or self.drag is not None,claims[1])
         self.geometry.pointer(imgui.get_mouse_pos(),pressed=imgui.is_mouse_clicked(0),
                               down=imgui.is_mouse_down(0),released=imgui.is_mouse_released(0),
                               right_pressed=imgui.is_mouse_clicked(1),right_down=imgui.is_mouse_down(1),
                               right_released=imgui.is_mouse_released(1),reverse=imgui.is_mouse_double_clicked(1),
-                              widget_claim=claims)
+                              widget_claim=claims,drag_position=(imgui.get_mouse_pos()
+                                  if drag_position is None else drag_position))
         if self.geometry.gesture is None:
             self.pointer(imgui.get_mouse_pos(), pressed=imgui.is_mouse_clicked(0),
                          down=imgui.is_mouse_down(0), released=imgui.is_mouse_released(0))
@@ -547,17 +550,27 @@ class RetainedGui:
             x, y, w, h = self.window_rect(node)
             x += origin[0]
             y += origin[1]
-            dl.add_rect_filled(x + 5, y + 5, x + w + 5, y + h + 33, 0x66000000, 5)
-            dl.add_rect_filled(x, y, x + w, y + 28, 0xFF65513B, 5)
-            dl.add_text(x + 9, y + 5, 0xFFFFFFFF, 'Owned @gui window (drag title)')
-            dl.add_image(self.gpu.texture(node),(x,y+28),(x+w,y+28+h),(0,1),(1,0))
+            left,top,right,bottom=(math.floor(v+.5) for v in (x,y,x+w,y+28+h))
+            dl.add_rect_filled(left+5,top+5,right+5,bottom+5,0x66000000,5)
+            dl.add_rect_filled(left,top,right,top+28,0xFF65513B,5)
+            dl.add_text(left+9,top+5,0xFFFFFFFF,'Owned @gui window (drag title)')
+            self._draw_image(dl,node,x,y+28,w,h)
             self.geometry.paint(dl,origin,portal=node)
+
+    def _draw_image(self,dl,node,x,y,w,h):
+        texture,tw,th=self.gpu.image(node)
+        left,top,right,bottom=(math.floor(v+.5) for v in (x,y,x+w,y+h))
+        dl.push_clip_rect(left,top,right,bottom,True)
+        try:
+            dl.add_image(texture,(left,top),(left+tw,top+th),(0,1),(1,0))
+        finally:
+            dl.pop_clip_rect()
 
     def _image(self, dl, node, origin):
         x, y, w, h = self.graph.info(node)['rect']
         x += origin[0]
         y += origin[1]
-        dl.add_image(self.gpu.texture(node), (x, y), (x + w, y + h), (0, 1), (1, 0))
+        self._draw_image(dl,node,x,y,w,h)
 
     def close(self):
         if not self.closed:

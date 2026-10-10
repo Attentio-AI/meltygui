@@ -342,6 +342,30 @@ def test_text_and_empty_cached_space_pass_window_gestures_through(cache, button,
         assert ('gui-pointer', id(cache)) not in events
 
 
+@pytest.mark.parametrize('position',[(10,8),(100,70)])
+def test_minimal_native_gui_routes_background_drag_to_host_after_geometry_input(cache,monkeypatch,position):
+    from test_gui_collision_layout import attach_native
+    @cache.gui(width=180,height=90)
+    def view():
+        imgui.text('hello')
+    view()
+    native=attach_native(cache,180,90)
+    before=native.last
+    # The old routing tests did not attach native geometry or call its input
+    # adapter, so they missed the collision graph claiming native background.
+    frame(cache,position)
+    monkeypatch.setattr(imgui,'is_mouse_clicked',lambda button:button==0)
+    monkeypatch.setattr(imgui,'is_mouse_down',lambda button:button==0)
+    monkeypatch.setattr(imgui,'is_mouse_released',lambda button:False)
+    monkeypatch.setattr(imgui,'is_mouse_double_clicked',lambda button:False)
+    cache.process_host_input(drag_position=position)
+    events=routed_drag(cache,position,'left')
+    assert 'os-window' in events
+    assert ('gui-pointer',id(cache)) not in events
+    assert cache.geometry.gesture is None
+    assert native.last==before
+
+
 @pytest.mark.parametrize('button,double,claimed', [('left', False, True),
                                                    ('right', False, False),
                                                    ('right', True, False)])
@@ -374,6 +398,29 @@ def test_leaving_widget_does_not_leave_cached_background_claimed(cache):
     assert len(calls) == count  # settling does not turn into continuous invalidation
 
 
+def test_retained_region_claims_press_before_native_background_move(cache,monkeypatch):
+    from test_gui_collision_layout import attach_native
+    received=[]
+    @cache.gui(width=180,height=90)
+    def view(view_events=None):
+        cache.region('click',(0,0,100,30))
+        if view_events.get('click'):received.append(view_events['click'])
+    view()
+    native=attach_native(cache,180,90)
+    before=native.last
+    imgui.get_io().mouse_pos=(10,10)
+    imgui.get_io().mouse_down[0]=True
+    monkeypatch.setattr(imgui,'is_mouse_clicked',lambda button:button==0)
+    monkeypatch.setattr(imgui,'is_mouse_down',lambda button:button==0)
+    monkeypatch.setattr(imgui,'is_mouse_released',lambda button:False)
+    monkeypatch.setattr(imgui,'is_mouse_double_clicked',lambda button:False)
+    cache.process_host_input(drag_position=(10,10))
+    cache.flush()
+    assert cache.geometry.gesture is None
+    assert native.last==before
+    assert len(received)==1
+
+
 def test_active_slider_keeps_left_drag_when_pointer_leaves_its_view(cache):
     value = [.5]
     @cache.gui(width=180, height=60)
@@ -404,3 +451,46 @@ def test_keyboard_focus_does_not_claim_a_later_right_drag(cache):
         assert 'os-window' in routed_drag(cache, (150, 70), 'right')
     finally:
         io.mouse_down[1] = False
+
+
+def test_held_keys_follow_focus_and_release_in_cached_contexts(cache):
+    ids, observed = {}, {}
+
+    @cache.gui(width=160, height=40)
+    def child(label='a'):
+        ids[label] = cache.current
+        io = imgui.get_io()
+        observed[label] = (bool(io.keys_down[65]), bool(io.key_ctrl), io.key_map[imgui.KEY_A])
+        imgui.text(label)
+
+    @cache.gui(width=200, height=120)
+    def parent():
+        child(key='a', label='a')
+        child(key='b', label='b')
+
+    parent()
+    a, b = (cache._position(ids[key]) for key in ('a', 'b'))
+    pa, pb = (a[0] + 8, a[1] + 8), (b[0] + 8, b[1] + 8)
+    frame(cache, pa, down=True, keys=(65,), ctrl=True)
+    assert observed['a'][:2] == (True, True)
+    assert observed['b'][:2] == (False, False)
+    frame(cache, pb, keys=(65,), ctrl=True)
+    frame(cache, pb, down=True, keys=(65,), ctrl=True)
+    assert observed['a'][:2] == (False, False)
+    assert observed['b'][:2] == (True, True)
+    frame(cache, pb)
+    assert observed['b'][:2] == (False, False)
+    io = imgui.get_io()
+    original = io.key_map[imgui.KEY_A]
+    try:
+        io.key_map[imgui.KEY_A] = 66
+        for node in ids.values():
+            cache.invalidate_id(node)
+        frame(cache, pb)
+        assert observed['a'][2] == observed['b'][2] == 66
+    finally:
+        io.key_map[imgui.KEY_A] = original
+    cache.graph.retire(ids['b'])
+    cache._retire()
+    assert ids['b'] not in cache.imgui_input.delivered_keys
+    assert ids['b'] not in cache.imgui_input.applied_key_maps

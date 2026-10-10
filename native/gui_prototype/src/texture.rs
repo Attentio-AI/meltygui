@@ -227,7 +227,8 @@ pub struct TextureCache {
     resolve_loc: i32,
     targets: HashMap<u64, Target>,
     packets: HashMap<u64, Vec<Packet>>,
-    scratch: Option<Target>,
+    scratch: Vec<Target>,
+    scratch_allocations: u64,
     renders: u64,
     uploads: u64,
     budget: usize,
@@ -289,7 +290,8 @@ impl TextureCache {
                 resolve_loc: glGetUniformLocation(p, b"resolve\0".as_ptr().cast()),
                 targets: HashMap::new(),
                 packets: HashMap::new(),
-                scratch: None,
+                scratch: Vec::new(),
+                scratch_allocations: 0,
                 renders: 0,
                 uploads: 0,
                 budget,
@@ -333,15 +335,18 @@ impl TextureCache {
                 .filter(|(k, _)| **k != id)
                 .map(|(_, t)| (t.w * t.h * 4) as usize)
                 .sum();
-            let scratch_bytes = self
-                .scratch
-                .as_ref()
-                .map_or(0, |s| (s.w * s.h * 4) as usize);
             let next_bytes = (w * h * 4) as usize;
-            if used + next_bytes + scratch_bytes.max(next_bytes) > self.budget {
+            let largest = self.targets.iter().filter(|(k, _)| **k != id)
+                .map(|(_, t)| (t.w * t.h * 4) as usize)
+                .max().unwrap_or(0).max(next_bytes);
+            // Reserve enough space to replay any target, even after later allocations.
+            if used + next_bytes + largest > self.budget {
                 return Err(PyRuntimeError::new_err("prototype texture budget exceeded"));
             }
             let _guard = Guard::new();
+            while used + next_bytes + self.scratch_bytes() > self.budget {
+                self.scratch.remove(0).delete();
+            }
             if let Some(t) = self.targets.get_mut(&id) {
                 // Keep the texture name stable: parent command packets reference it.
                 glBindTexture(TEX, t.tex);
@@ -359,25 +364,24 @@ impl TextureCache {
     fn begin_packet(&mut self, id: u64) {
         self.packets.insert(id, vec![]);
     }
-    #[pyo3(signature=(parent, child, rect, clip, native_scale=false))]
     fn place_child(
         &mut self,
         parent: u64,
         child: u64,
         rect: (f32, f32, f32, f32),
         clip: (f32, f32, f32, f32),
-        native_scale: bool,
     ) -> PyResult<()> {
         let target = self
             .targets
             .get(&child)
             .ok_or_else(|| PyRuntimeError::new_err("missing child texture"))?;
         let tex = target.tex;
-        let size = if native_scale {
-            (target.w as f32, target.h as f32)
-        } else {
-            (rect.2, rect.3)
-        };
+        // Cached pixels are never stretched to a fractional layout allocation.
+        // Crop at snapped layout edges; keep one source texel per output pixel.
+        let size = (target.w as f32, target.h as f32);
+        let origin = ((rect.0 + 0.5).floor(), (rect.1 + 0.5).floor());
+        let clip = ((clip.0 + 0.5).floor(), (clip.1 + 0.5).floor(),
+                    (clip.2 + 0.5).floor(), (clip.3 + 0.5).floor());
         // Framework-generated child images are isolated texture commands. Keep
         // their place in the draw list while changing geometry without Python
         // execution of the parent. Other packet commands remain byte-identical.
@@ -411,9 +415,9 @@ impl TextureCache {
                         let v =
                             f32::from_ne_bytes(packet.vertices[p + 12..p + 16].try_into().unwrap());
                         packet.vertices[p..p + 4]
-                            .copy_from_slice(&(rect.0 + u * size.0).to_ne_bytes());
+                            .copy_from_slice(&(origin.0 + u * size.0).to_ne_bytes());
                         packet.vertices[p + 4..p + 8]
-                            .copy_from_slice(&(rect.1 + (1. - v) * size.1).to_ne_bytes());
+                            .copy_from_slice(&(origin.1 + (1. - v) * size.1).to_ne_bytes());
                     }
                     command.2 = clip;
                 }
@@ -451,21 +455,100 @@ impl TextureCache {
     }
     #[pyo3(signature=(id, background=(0.0, 0.0, 0.0, 0.0)))]
     fn render(&mut self, id: u64, background: (f32, f32, f32, f32)) -> PyResult<()> {
+        let _guard = unsafe { Guard::new() };
+        self.render_inner(id, background)
+    }
+    fn render_many(&mut self, views: Vec<(u64, (f32, f32, f32, f32))>) -> PyResult<()> {
+        let _guard = unsafe { Guard::new() };
+        for (id, background) in views {
+            self.render_inner(id, background)?;
+        }
+        Ok(())
+    }
+    fn texture(&self, id: u64) -> Option<u32> {
+        self.targets.get(&id).map(|t| t.tex)
+    }
+    fn image(&self, id: u64) -> Option<(u32, i32, i32)> {
+        self.targets.get(&id).map(|t| (t.tex, t.w, t.h))
+    }
+    fn remove(&mut self, id: u64) {
+        self.packets.remove(&id);
+        if let Some(t) = self.targets.remove(&id) {
+            unsafe {
+                t.delete();
+            }
+        }
+    }
+    fn stats(&self) -> (u64, u64, usize, usize) {
+        (
+            self.renders,
+            self.uploads,
+            self.targets
+                .values()
+                .map(|t| (t.w * t.h * 4) as usize)
+                .sum(),
+            self.packets
+                .values()
+                .flatten()
+                .map(|p| p.vertices.len() + p.indices.len())
+                .sum(),
+        )
+    }
+    fn scratch_stats(&self) -> (usize, usize, u64) {
+        (self.scratch.len(), self.scratch_bytes(), self.scratch_allocations)
+    }
+    fn close(&mut self) {
+        unsafe {
+            for (_, t) in self.targets.drain() {
+                t.delete();
+            }
+            self.packets.clear();
+            for t in self.scratch.drain(..) {
+                t.delete();
+            }
+            if self.program != 0 {
+                glDeleteProgram(self.program);
+                glDeleteBuffers(1, &self.vbo);
+                glDeleteBuffers(1, &self.ebo);
+                glDeleteVertexArrays(1, &self.vao);
+                self.program = 0;
+            }
+        }
+    }
+}
+
+impl TextureCache {
+    fn scratch_bytes(&self) -> usize {
+        self.scratch.iter().map(|t| (t.w * t.h * 4) as usize).sum()
+    }
+    // The caller owns a Guard for either this replay or a whole composition batch.
+    fn render_inner(&mut self, id: u64, background: (f32, f32, f32, f32)) -> PyResult<()> {
         unsafe {
             let target = self
                 .targets
                 .get(&id)
                 .ok_or_else(|| PyRuntimeError::new_err("missing target"))?;
-            let (w, h) = (target.w, target.h);
-            let _guard = Guard::new();
-            if !self.scratch.as_ref().is_some_and(|s| s.w == w && s.h == h) {
-                if let Some(s) = self.scratch.take() {
-                    s.delete();
+            let (w, h, target_fbo) = (target.w, target.h, target.fbo);
+            let index = if let Some(index) = self.scratch.iter().position(|s| s.w == w && s.h == h) {
+                index
+            } else {
+                let used: usize = self.targets.values().map(|t| (t.w * t.h * 4) as usize).sum();
+                let bytes = (w * h * 4) as usize;
+                if used + bytes > self.budget {
+                    return Err(PyRuntimeError::new_err("prototype texture budget exceeded"));
                 }
-                self.scratch = Some(Target::new(w, h)?);
-            }
-            let scratch = self.scratch.as_ref().unwrap();
-            glBindFramebuffer(FB, scratch.fbo);
+                while self.scratch.len() >= 8 || used + self.scratch_bytes() + bytes > self.budget {
+                    self.scratch.remove(0).delete();
+                }
+                self.scratch.push(Target::new(w, h)?);
+                self.scratch_allocations += 1;
+                self.scratch.len() - 1
+            };
+            // LRU pool of transient accumulation targets, independent of view caches.
+            let scratch = self.scratch.remove(index);
+            let (scratch_fbo, scratch_tex) = (scratch.fbo, scratch.tex);
+            self.scratch.push(scratch);
+            glBindFramebuffer(FB, scratch_fbo);
             glViewport(0, 0, w, h);
             glColorMask(1, 1, 1, 1);
             for p in [0x0B71, 0x0B44, 0x0B90, 0x8DB9, 0x0C11] {
@@ -523,11 +606,11 @@ impl TextureCache {
             }
             // Resolve premultiplied accumulation to straight-alpha ImGui textures.
             // This prevents double-multiplication at nested cache boundaries.
-            glBindFramebuffer(FB, target.fbo);
+            glBindFramebuffer(FB, target_fbo);
             glDisable(0x0BE2);
             glDisable(0x0C11);
             glUniform1i(self.resolve_loc, 1);
-            glBindTexture(TEX, scratch.tex);
+            glBindTexture(TEX, scratch_tex);
             let mut vertices = Vec::<u8>::new();
             for (x, y, u, v) in [
                 (0., 0., 0., 1.),
@@ -551,50 +634,6 @@ impl TextureCache {
             glDrawElementsBaseVertex(4, 6, 0x1405, ptr::null(), 0);
             self.renders += 1;
             Ok(())
-        }
-    }
-    fn texture(&self, id: u64) -> Option<u32> {
-        self.targets.get(&id).map(|t| t.tex)
-    }
-    fn remove(&mut self, id: u64) {
-        self.packets.remove(&id);
-        if let Some(t) = self.targets.remove(&id) {
-            unsafe {
-                t.delete();
-            }
-        }
-    }
-    fn stats(&self) -> (u64, u64, usize, usize) {
-        (
-            self.renders,
-            self.uploads,
-            self.targets
-                .values()
-                .map(|t| (t.w * t.h * 4) as usize)
-                .sum(),
-            self.packets
-                .values()
-                .flatten()
-                .map(|p| p.vertices.len() + p.indices.len())
-                .sum(),
-        )
-    }
-    fn close(&mut self) {
-        unsafe {
-            for (_, t) in self.targets.drain() {
-                t.delete();
-            }
-            self.packets.clear();
-            if let Some(t) = self.scratch.take() {
-                t.delete();
-            }
-            if self.program != 0 {
-                glDeleteProgram(self.program);
-                glDeleteBuffers(1, &self.vbo);
-                glDeleteBuffers(1, &self.ebo);
-                glDeleteVertexArrays(1, &self.vao);
-                self.program = 0;
-            }
         }
     }
 }

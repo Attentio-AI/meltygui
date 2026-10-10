@@ -60,6 +60,10 @@ the body. The prototype title strip is 28 pixels. `movable=False` and
 - Dividers use left drag. Right drag over a cell selects its local far edges;
   holding the second right click selects near edges. The other axis falls
   back to its enclosing window. Gesture targets stay captured until release.
+- Unclaimed native background left drags pass to the existing host window-manager
+  move gesture, as in core render. The retained graph observes the resulting OS
+  positions and carries local child geometry; it does not issue competing moves.
+  Internal windows, dividers and controls retain their own input ownership.
 - Snapshots use total pointer displacement. Stationary frames do not keep
   moving edges, and out-and-back movement restores displaced geometry.
   Only the actively resized pair receives opposite-edge expansion at a wall.
@@ -130,6 +134,24 @@ were more important than the min/max arithmetic:
 6. Using proposed native position for mouse displacement accumulates motion
    while an OS move is pending. An explicit late-acknowledgement test covers
    stationary motion before and after the request lands.
+7. App-driving native background movement through the retained graph added the
+   next-frame `os_frame.flush`/surface-request delay and depended on independently
+   arriving local pointer and native-origin samples. This produced lag and jumps
+   even in the minimal `imgui.text('hello')` app. Background movement now uses the
+   host's existing WM gesture; nested movement and resize still use the graph.
+   Routing tests attach native geometry and run `process_host_input` before host
+   dispatch, since testing the input router alone missed the competing owner.
+8. Rebasing an ordinary layout owner translated its layout edges but omitted
+   bound child frame edges. Fixed padding constraints then linked old and new
+   origins; repeated captures grew the table by the origin delta until the
+   invalidation limit tripped. Translation now includes every frame in the
+   owner's allocation chain exactly once. The real table demo is exercised with
+   nested movement, resizing, native boundary pushes and stationary holds at
+   multiple native origins, including an ordinary intermediate view.
+9. Giving a plain child the same width/height as its parent does not declare a
+   collision relationship. The table demo now places its native table in a
+   zero-padding filling cell: its outer row/column edges connect through the
+   layout to the OS frame, so outermost-cell resizing changes the OS window.
 
 This is still a prototype, not production feature parity:
 
