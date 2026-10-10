@@ -8,3 +8,5 @@ build/
 .melty/
 .DS_Store
 .idea/
+meltygui/core/rendering/_gui_native*.so
+meltygui/core/rendering/_gui_native*.pyd

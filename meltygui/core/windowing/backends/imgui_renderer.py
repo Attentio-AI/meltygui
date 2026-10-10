@@ -13,6 +13,7 @@ class WindowRenderer(ProgrammablePipelineRenderer):
     def __init__(self, window, attach_callbacks:bool=True):
         super(WindowRenderer, self).__init__()
         self.window = window
+        self.gui_character_callback = None  # optional retained-context input sink
 
         if attach_callbacks:
             glfw.set_key_callback(self.window, self.keyboard_callback)
@@ -97,6 +98,10 @@ class WindowRenderer(ProgrammablePipelineRenderer):
 
         if 0 < char < 0x10000:
             io.add_input_character(char)
+            # Existing surfaces can predate this optional hook after a hotswap.
+            callback = self.__dict__.get('gui_character_callback')
+            if callback is not None:
+                callback(char)
 
     def resize_callback(self, window, width, height):
         self.io.display_size = width, height

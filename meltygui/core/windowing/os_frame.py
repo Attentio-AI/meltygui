@@ -846,6 +846,26 @@ def queue_drag(axis, index, inc):
         _STATE["pending"][axis].append((int(index), float(inc)))
 
 
+def prototype_snapshot():
+    """Platform observations/requests for the opt-in Rust geometry authority."""
+    pairs=tuple(tuple(edge[axis] for edge in _STATE['edges'][axis]) for axis in ('x','y'))
+    screen=tuple(tuple(edge[axis] for edge in _STATE['screen'][axis]) for axis in ('x','y'))
+    pending=tuple(tuple(_STATE['pending'][axis]) for axis in ('x','y'))
+    _STATE['pending']={'x':[],'y':[]}
+    return pairs,screen,_STATE['mode'],_STATE['window_id'],pending
+
+
+def prototype_commit(pairs):
+    """Commit one Rust solution; begin_frame/flush still own OS acknowledgements."""
+    for i,axis in enumerate(('x','y')):
+        near,far=_STATE['edges'][axis]
+        delta=pairs[i][0]-near[axis]
+        near[axis],far[axis]=pairs[i]
+        _STATE['unapplied'][i]+=delta
+        _STATE['os_seen'][i]=pairs[i]
+        _STATE['consumed'][axis]=True
+
+
 def attach(window, axis, has_pending=True, hand_move=False, binding=None):
     """Called by columns._frame_pass for a ROOT window before its solve:
     the native/display cells, walls and drags in window coordinates.

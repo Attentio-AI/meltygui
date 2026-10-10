@@ -32,6 +32,7 @@ from meltygui.core.runtime.app import after_first_frame
 from meltygui.core.runtime.app import checkpoint
 
 if TYPE_CHECKING:   # IDE / type checkers only; never executed
+    from meltygui.core.rendering.gui_prototype import gui, os_window
     from meltygui.state.new_core_model import DrawState
     from meltygui.view.text_view import draw_text
     from meltygui.model.tile_model import multi_instance
@@ -60,6 +61,10 @@ if TYPE_CHECKING:   # IDE / type checkers only; never executed
 
 _NCV = 'meltygui.core.rendering.render_dispatch'
 _VIEWS = {
+    'columns': ('meltygui.core.rendering.gui_layout_prototype', 'columns'),
+    'rows': ('meltygui.core.rendering.gui_layout_prototype', 'rows'),
+    'gui': ('meltygui.core.rendering.gui_prototype', 'gui'),
+    'os_window': ('meltygui.core.rendering.gui_prototype', 'os_window'),
     'DrawState': ('meltygui.state.new_core_model', 'DrawState'),
     'draw_voxels': ('meltygui.view.voxel_view', 'draw_voxels'),
     'draw_voxels_opengl': ('meltygui.view.voxel_view', 'draw_voxels_opengl'),

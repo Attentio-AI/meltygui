@@ -161,6 +161,7 @@ class Surface:
         self.name, self.body, self.parent, self.draw_state = name, body, parent, draw_state
         self.tint = tint
         self.on_close = on_close      # asked when an OS close lands; False keeps the window
+        self._gui_prototype = None   # opt-in @gui state, owned by this GL surface
         self.state = state
         self.settings = None          # app_settings.AppSettings of a @glfw_window(settings=...) root: the chrome's cog
         if state is not None and state.size is not None:
@@ -515,6 +516,9 @@ class Surface:
             self.parent.children.remove(self)
         self.activate()
         self.remember_size()
+        if getattr(self, '_gui_prototype', None) is not None:
+            self._gui_prototype.close()
+            self._gui_prototype = None
         from meltygui.core.cache.tile_cache import TileCacheMasked
         TileCacheMasked.window_caches.pop(Melty.cache, None)
         from meltygui.core.graphics.gl_state import GLState

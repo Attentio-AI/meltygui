@@ -121,7 +121,11 @@ def draw_surface_frame(surface, *, transparent=False, chrome=False, request=None
     os_frame.begin_frame()
     if chrome:
         titlebar.poll_os_window_drag()
-    os_frame.solve()
+    prototype = getattr(surface, '_gui_prototype', None)
+    if prototype is None:
+        os_frame.solve()
+    else:
+        prototype.solve_native(os_frame)
     imgui.set_cursor_screen_pos((0, 0))
     imgui.set_item_allow_overlap()
     draw_list = imgui.get_window_draw_list()

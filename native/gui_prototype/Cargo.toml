@@ -1,0 +1,17 @@
+[package]
+name = "melty-gui-prototype"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[lib]
+name = "_gui_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "=0.23.5", features = ["extension-module"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+

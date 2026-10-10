@@ -39,3 +39,16 @@ include = ["/meltygui", "/tests", "/examples", "/tools/native_wheels", "/tools/r
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.melty.tasks."Run examples/tile_manager.py"]
+cmd = "python tile_manager.py"
+cwd = "examples"
+module = "examples/tile_manager.py"
+
+[tool.melty.tasks."Run examples/tile_manager.py".env]
+[tool.melty.tasks."Run examples/example_ui.py"]
+cmd = "python example_ui.py"
+cwd = "examples"
+module = "examples/example_ui.py"
+
+[tool.melty.tasks."Run examples/example_ui.py".env]

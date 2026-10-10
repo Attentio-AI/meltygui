@@ -607,7 +607,7 @@ def retire_layouts(window, draw_state, dead=frozenset()):
 
 
 def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
-               multi_instance_renderers=(), content_top=None):
+               multi_instance_renderers=(), content_top=None, use_cache=True):
     """Render a whole tile tree over the host window's frame: the root
     adopts the window's four frame edges (``frame_edges``), so the window
     frame and every divider move through one collision solve. Call from a
@@ -616,7 +616,9 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
     True when the layout, editor selection or editor content changed.
     ``multi_instance_renderers`` is supplied by the hosting render_func's
     injected parameter of the same name. ``content_top`` optionally reserves
-    space above the tiles (an absolute screen y coordinate). The root must be a Split."""
+    space above the tiles (an absolute screen y coordinate). ``use_cache=False``
+    executes tile renderers on each frame, including resize, for live benchmarks.
+    The root must be a Split."""
     window = layout_window(draw_state)
     root_frame = frame_edges(window)
     if content_top is not None:
@@ -687,7 +689,7 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
         content_rect = (left + content_padding, top + vertical_inset,
                         right - left - 2 * content_padding, bottom - top - 2 * vertical_inset)
         previous = records.get(tile.id)
-        if resizing and previous is not None and previous.replay(tile, content_rect, Melty.cache):
+        if use_cache and resizing and previous is not None and previous.replay(tile, content_rect, Melty.cache):
             continue
         record = TileResizeRecord(renderer_version(tile.render_func), tile.input_value, rect)
         content_changed, _ = draw_tile_content(
@@ -700,7 +702,7 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0,
             # Each tile is its own blit-cache unit: only the tiles whose view
             # was invalidated run their renderer, the rest draw their captured
             # texture. Set False here to render every tile live each frame.
-            use_cache=True,
+            use_cache=use_cache,
         )
         records[tile.id] = record
         changed |= content_changed

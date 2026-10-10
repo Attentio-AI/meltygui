@@ -506,6 +506,9 @@ def _root_body(fn, name, view_kwargs=None, config=None):
     layout context its children (draw_rows, draw_any, fields) expect —
     minus the closable chrome, which the OS window provides.
 
+    Experimental @gui roots use a private per-surface native owner instead of
+    the render_func root adapter. The OS surface owns that owner's teardown.
+
     ``config`` is the root's LIVE registration (the dict in _ROOTS): a
     render-func body reads its `view_kwargs` on every frame, so a
     re-decoration (a hotswapped `@glfw_window(tint=...)` edit) reaches the
@@ -513,6 +516,9 @@ def _root_body(fn, name, view_kwargs=None, config=None):
     def current_kwargs():
         source = config.get('view_kwargs') if config is not None else view_kwargs
         return dict(source or {})
+    if hasattr(fn, '__gui_definition__'):
+        from meltygui.core.rendering.gui_window_prototype import draw_gui_surface
+        return lambda surface: draw_gui_surface(surface, fn, current_kwargs())
     if hasattr(fn, '__render_func__'):
         return lambda surface: _draw_root(fn, name, **current_kwargs())
     if current_kwargs().get('tint') is None and config is None:

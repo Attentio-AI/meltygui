@@ -34,6 +34,11 @@ uv add "meltygui[tensor] @ /path/to/meltygui"
 
 `meltygui-imgui` supplies a namespaced binding; it does not replace upstream
 `imgui`. Low-level app code uses `from meltygui import imgui`.
+The opt-in Rust prototype additionally allows `from meltygui import os_window`
+followed by `import imgui`: importing either prototype decorator installs an
+import bridge to the same namespaced binding. Importing upstream `imgui` first
+is rejected when opting into the prototype, since its native contexts are
+incompatible. This does not replace either installed distribution.
 
 ### Tensor dependencies
 
