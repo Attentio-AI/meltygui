@@ -94,13 +94,13 @@ def test_watch_navigation_keeps_other_views_and_queues_invalidation(monkeypatch)
     assert retired == ['/first']
 
 
-def test_metadata_injection_respects_explicit_dictionary(gl_context, monkeypatch):
+def test_metadata_injection_respects_explicit_dictionary(gl_context, monkeypatch, stores):
     from conftest import begin_frame, end_frame
     from test_render_func_integration import _init_melty, _tick_frame
     from meltygui.core.core_render import render_func
     import meltygui.models.file_meta as metadata
     runtime = _init_melty()
-    shared, supplied, seen = {}, {}, []
+    shared, supplied, seen = stores[0], {}, []
     monkeypatch.setattr(metadata, 'file_meta_store', lambda: shared)
 
     @render_func(tint=(0.3, 0.5, 0.7), show_bg=False, use_cache=False)

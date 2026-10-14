@@ -5946,6 +5946,11 @@ def render_func(*args, **o_kwargs):
     # the raw onto the wrapper now, so every order lands on the same object.
     _adopt_raw_registrations(func, wrapper)
 
+    # Persist discovery at decoration time, before any view is instantiated or
+    # drawn. Full paths keep same-named renderers from different apps distinct.
+    from meltygui.models.file_meta import file_meta_store
+    file_meta_store().register_render_func(wrapper)
+
     return wrapper
 
 

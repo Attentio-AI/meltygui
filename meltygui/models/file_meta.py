@@ -26,9 +26,18 @@ live. The file I/O is the proxy's job and stays off the render thread:
 
 `MELTY_FILE_META=/path.pkl` overrides the location (tests, a second user).
 An iOS override must resolve within the current app container.
+
+`@render_func` also records each decorated function here: its full Python
+`module.qualname` is the key, with `is_render_func=True` in the entry. Functions
+launched as `__main__` use `source_path::qualname` to keep app identities distinct.
+Entries also retain `source_path` and `source_qualname` when available. This is
+an accumulated catalog of functions observed by apps sharing the store, not a
+scan of unimported code. `file_meta_store().render_func_paths()` returns the
+sorted paths for consumers such as guigym, without importing the renderers.
 """
 import atexit
 import contextlib
+import inspect
 import os
 import pickle
 import sys
@@ -279,6 +288,44 @@ class FileMetaProxy(dict):
         self._changed_paths = set()
         self.load()
         atexit.register(self.flush)
+
+    def register_render_func(self, func):
+        """Remember a renderer's source as well as its Python import identity.
+
+        Entry scripts all run as __main__; use source::qualname for those so
+        different apps' identically named functions cannot overwrite each other.
+        """
+        path = f"{func.__module__}.{func.__qualname__}"
+        origin = {}
+        try:
+            raw = inspect.unwrap(func)
+            filename = inspect.getsourcefile(raw)
+            if filename and not filename.startswith('<'):
+                source = str(Path(filename).resolve())
+                origin = {'source_path': source, 'source_qualname': raw.__qualname__}
+                if func.__module__ == '__main__':
+                    path = f'{source}::{raw.__qualname__}'
+        except (TypeError, ValueError):
+            pass
+        with self._lock:
+            entry = self.get(path)
+            if entry is None:
+                self[path] = {"is_render_func": True, **origin}
+            else:
+                for name, value in {"is_render_func": True, **origin}.items():
+                    if entry.get(name) != value:
+                        entry[name] = value
+
+    def render_func_paths(self):
+        """Sorted full paths observed across apps, including earlier runs.
+
+        Local functions retain their Python `<locals>` qualifier; a catalog
+        entry records discovery and does not guarantee the path is importable.
+        """
+        self._sync()
+        with self._lock:
+            return sorted(path for path, entry in dict.items(self)
+                          if entry.get("is_render_func") is True)
 
     # ── file ───────────────────────────────────────────────────────────────
     def _stat_sig(self):

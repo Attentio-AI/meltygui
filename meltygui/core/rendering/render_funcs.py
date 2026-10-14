@@ -55,6 +55,10 @@ class _LazyRenderFunc:
     def __call__(self, *args, **kwargs):
         return self._resolve()(*args, **kwargs)
 
+    def __reduce__(self):
+        # Persist the symbol reference, never a copy of the handle or cached fn.
+        return _restore_render_func, (self.__name__,)
+
     def __getattr__(self, item):
         # Forward real attributes (e.g. _load_data/_save_data) to the resolved
         # func, but never dunders; copy/pickle probes (__deepcopy__, etc.) must
@@ -188,6 +192,10 @@ class _RenderFuncs:
 #     from meltygui.core.rendering.render_funcs import RenderFuncs
 #     @window(render_func=RenderFuncs.draw_type)
 RenderFuncs = _RenderFuncs()
+
+
+def _restore_render_func(name):
+    return getattr(RenderFuncs, name)
 
 
 class CodeGenerator:
