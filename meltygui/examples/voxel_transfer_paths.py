@@ -112,6 +112,7 @@ VIEW_SIZE = (480, 400)
 ROUTE_KEYS = ('cuda_view', 'cuda_image_interop', 'cuda_image', 'cuda_host', 'volume_cuda', 'volume')
 
 
+
 def _route(state, expect):
     """The resources the view holds after this frame, i.e. the route it took."""
     misc = getattr(state, 'misc', None) or {}

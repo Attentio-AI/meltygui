@@ -271,9 +271,17 @@ def run_application(request):
             if config.get('packages_dir'):
                 config, compiler, runtime = ensure_configuration(root, build, config, refresh_local=True)
             derived = build / 'run-products'
-            print('Building iOS app…', flush=True)
+            # CoreDevice identifiers can differ from the hardware UDID Xcode
+            # expects. Provision for this phone instead of reusing a generic
+            # build's profile, which may authorize only another device.
+            details = device_command(['device', 'info', 'details', '--device', device])
+            udid = details.get('hardwareProperties', {}).get('udid')
+            if not udid:
+                raise ValueError('Xcode did not return the selected iOS device hardware UDID.')
+            print('Building and provisioning for the selected iOS device…', flush=True)
             subprocess.run([xcrun(), 'xcodebuild', '-project', str(build / 'MeltyIOS.xcodeproj'),
-                            '-scheme', 'Melty', '-configuration', 'Debug', '-destination', 'generic/platform=iOS',
+                            '-scheme', 'Melty', '-configuration', 'Debug', '-destination', f'platform=iOS,id={udid}',
+                            '-allowProvisioningUpdates', '-allowProvisioningDeviceRegistration',
                             '-derivedDataPath', str(derived), 'build'], check=True, close_fds=False, env=xcode_environment())
             bundle = derived / 'Build/Products/Debug-iphoneos/Melty.app'
             info = plistlib.loads((bundle / 'Info.plist').read_bytes())

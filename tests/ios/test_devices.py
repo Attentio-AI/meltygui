@@ -42,7 +42,8 @@ def test_request_refuses_wrong_entry_and_missing_build(tmp_path, monkeypatch):
         devices.execution_request(tmp_path, {'cmd': 'echo hello'}, 'device-a')
 
 
-def test_run_stages_snapshot_builds_installs_and_stops_exact_app(tmp_path, monkeypatch, selected_runtime):
+@pytest.mark.parametrize('udid', ['hardware-udid-a', 'hardware-udid-b'])
+def test_run_stages_snapshot_builds_installs_and_stops_exact_app(tmp_path, monkeypatch, selected_runtime, udid):
     monkeypatch.setattr(devices, 'xcrun', lambda: '/usr/bin/xcrun')
     monkeypatch.setattr(devices, 'xcode_environment', lambda: {})
     monkeypatch.setattr(devices, 'list_devices', lambda: [{'id': 'device-a', 'name': 'Work iPhone'}])
@@ -78,6 +79,8 @@ def test_run_stages_snapshot_builds_installs_and_stops_exact_app(tmp_path, monke
 
     def command(arguments, **kwargs):
         calls.append(arguments)
+        if 'details' in arguments:
+            return {'hardwareProperties': {'udid': udid}}
         if 'install' in arguments:
             return {'installedApplications': [{'bundleID': 'org.example.test',
                                                'installationURL': application_url}]}
@@ -95,7 +98,12 @@ def test_run_stages_snapshot_builds_installs_and_stops_exact_app(tmp_path, monke
             devices.run_application(request)
     assert source.read_text() == 'print("saved")'
     assert (build / 'app-bundle/app/main.py').read_text() == 'print("pending")'
-    assert any('xcodebuild' in call for call in calls)
+    builds = [call for call in calls if 'xcodebuild' in call]
+    assert builds
+    for call in builds:
+        assert call[call.index('-destination') + 1] == f'platform=iOS,id={udid}'
+        assert '-allowProvisioningUpdates' in call
+        assert '-allowProvisioningDeviceRegistration' in call
     assert preparations == [False, True, False, True]
     terminated = [call[-1] for call in calls if 'terminate' in call]
     assert terminated == ['42', '42']
@@ -202,6 +210,8 @@ def test_source_only_runs_skip_build_and_install_and_retry_failed_upload(tmp_pat
     fail_copy = [False]
     def command(args, **kwargs):
         calls.append(args)
+        if 'details' in args:
+            return {'hardwareProperties': {'udid': 'hardware-udid-b'}}
         if 'install' in args:
             return {'installedApplications': [{'bundleID': 'test.app', 'installationURL': 'file:///Melty.app/'}]}
         if 'apps' in args:
