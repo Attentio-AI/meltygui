@@ -235,6 +235,12 @@ input, geometry, graphics targets and presentation. Fonts, styles and session
 initialization are shared in `core/runtime/app.py`. Platform resources are
 released by their owning host.
 
+The image inspector uses native Metal filters for brightness/contrast, hue and
+saturation, false color, and crop dimming. Each view owns its filter textures;
+RGBA16F intermediates preserve HDR values, and nearest/linear sampling is
+selected per texture. Native texture storage is top-down; the shared image view
+keeps the desktop UV convention through the renderer's sampling conversion.
+
 Documents/Projects is the editable workspace; Library/Application Support holds
 settings/sessions and Library/Caches holds disposable data. The host imports the
 app's own sources and resources from a writable copy in

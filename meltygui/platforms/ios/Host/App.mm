@@ -1,5 +1,8 @@
 #import <UIKit/UIKit.h>
 #import "MeltyHost.h"
+#if __has_include("Launcher/HubLauncher.h")
+#import "Launcher/HubLauncher.h"
+#endif
 
 @interface MeltyView : UIView <UIKeyInput>
 @property(nonatomic, strong) MeltyHost *host;
@@ -160,25 +163,30 @@
     ] activeWhenNearEdge:NSDirectionalRectEdgeTop];
     // Touch coordinates remain local to the Metal view via locationInView:;
     // no keyboard offset is added to the native input or Python geometry.
-    UILabel *status = [[UILabel alloc] initWithFrame:CGRectZero];
+    UITextView *status = [[UITextView alloc] initWithFrame:CGRectZero];
     status.text = @"Starting embedded Python…";
     status.textColor = UIColor.whiteColor;
     status.font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
-    status.numberOfLines = 0;
+    status.backgroundColor = UIColor.blackColor;
+    status.editable = NO;
+    status.selectable = YES;
+    status.alwaysBounceVertical = YES;
+    status.textContainerInset = UIEdgeInsetsZero;
+    status.textContainer.lineFragmentPadding = 0;
     status.translatesAutoresizingMaskIntoConstraints = NO;
-    status.userInteractionEnabled = NO;
     [view addSubview:status];
     [NSLayoutConstraint activateConstraints:@[
         [status.leadingAnchor constraintEqualToAnchor:view.safeAreaLayoutGuide.leadingAnchor constant:20],
         [status.trailingAnchor constraintEqualToAnchor:view.safeAreaLayoutGuide.trailingAnchor constant:-20],
         [status.topAnchor constraintEqualToAnchor:view.safeAreaLayoutGuide.topAnchor constant:20],
-        [status.bottomAnchor constraintLessThanOrEqualToAnchor:view.safeAreaLayoutGuide.bottomAnchor constant:-20],
+        [status.bottomAnchor constraintEqualToAnchor:view.safeAreaLayoutGuide.bottomAnchor constant:-20],
     ]];
     __weak MeltyView *weakView = view;
     __weak UIView *weakRoot = root;
     self.host = [[MeltyHost alloc] initWithLayer:view.metalLayer viewport:view.layer status:^(NSString *message) {
         status.text = message;
         status.hidden = message.length == 0;
+        [status setContentOffset:CGPointZero animated:NO];
     } keyboard:^(BOOL visible) {
         if (visible) [weakView becomeFirstResponder]; else [weakView resignFirstResponder];
     } safeZone:^(CGFloat top, CGFloat bottom) {
@@ -187,7 +195,12 @@
         [weakRoot setNeedsLayout];
     }];
     view.host = self.host;
+#if __has_include("Launcher/HubLauncher.h")
+    status.text = @"Choose launch inputs to start.";
+    HubLaunchStart(self, ^{ [self.host start]; });
+#else
     [self.host start];
+#endif
 }
 @end
 
@@ -200,13 +213,24 @@ static MeltyController *gController;
 @end
 @implementation MeltySceneDelegate
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
+#if __has_include("Launcher/HubLauncher.h")
+    HubLaunchReceiveURLs(options.URLContexts);
+#endif
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     if (!gController) gController = [MeltyController new];
     self.controller = gController;
     self.window.rootViewController = self.controller;
     [self.window makeKeyAndVisible];
 }
-- (void)sceneDidBecomeActive:(UIScene *)scene { [self.controller.host setActive:YES]; }
+- (void)sceneDidBecomeActive:(UIScene *)scene {
+    [self.controller.host setActive:YES];
+#if __has_include("Launcher/HubLauncher.h")
+    HubLaunchBecameActive();
+#endif
+}
+#if __has_include("Launcher/HubLauncher.h")
+- (void)scene:(UIScene *)scene openURLContexts:(NSSet<UIOpenURLContext *> *)contexts { HubLaunchReceiveURLs(contexts); }
+#endif
 - (void)sceneWillResignActive:(UIScene *)scene { [self.controller.host setActive:NO]; }
 - (void)sceneDidDisconnect:(UIScene *)scene { [self.controller.host setActive:NO]; }
 @end

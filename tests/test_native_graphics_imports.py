@@ -16,6 +16,7 @@ class NoDesktop(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, NoDesktop())
 import meltygui.core.rendering.mode
 from meltygui.core.graphics import desktop_gl
+from meltygui.core.windowing.surface import Surface
 from meltygui.core.graphics.shader_func import shader_func
 assert getattr(desktop_gl, '__module__', None) is None
 @shader_func(fragment='out vec4 color; void main() { color = vec4(1); }')

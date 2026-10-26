@@ -5,6 +5,8 @@ using namespace metal;
 // top). Keep that public contract while Metal storage itself is top-down.
 constexpr sampler nearest_gl(coord::normalized, address::clamp_to_zero, filter::nearest);
 constexpr sampler linear_gl(coord::normalized, address::clamp_to_edge, filter::linear);
+constexpr sampler min_nearest_gl(coord::normalized, address::clamp_to_edge, min_filter::nearest, mag_filter::linear);
+constexpr sampler mag_nearest_gl(coord::normalized, address::clamp_to_edge, min_filter::linear, mag_filter::nearest);
 float4 sample_gl(texture2d<float> t, float2 uv) { return t.sample(nearest_gl, float2(uv.x, 1-uv.y)); }
 float4 sample_linear_gl(texture2d<float> t, float2 uv) { return t.sample(linear_gl, float2(uv.x, 1-uv.y)); }
 float4 read_gl(texture2d<float> t, int2 p, int level) {
@@ -57,7 +59,10 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]], constant MeshUniforms &u 
     float4 color=float4(in.color.rgb/max(in.color.a,1e-6),in.color.a);
     // The font atlas's UVs are already top-down, while cached tiles/images
     // retain Melty's bottom-up contract. u.hdr.w selects that distinction.
-    float4 t=tex.sample(linear_gl,float2(in.uv.x,u.hdr.w>0 ? in.uv.y : 1-in.uv.y));
+    float2 uv=float2(in.uv.x,u.hdr.w>0 ? in.uv.y : 1-in.uv.y);
+    float4 t=u.hdr.w==-3 ? tex.sample(nearest_gl,uv) :
+             u.hdr.w==-1 ? tex.sample(min_nearest_gl,uv) :
+             u.hdr.w==-2 ? tex.sample(mag_nearest_gl,uv) : tex.sample(linear_gl,uv);
     float alpha=t.a;
     if(u.hdr.w>0 && all(fwidth(in.uv)>0)) {
         float peak=max(max(color.r,color.g),color.b);

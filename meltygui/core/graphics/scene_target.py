@@ -19,7 +19,7 @@ Module-level GL state survives hotswap (`globals().get`), like titlebar.py.
 """
 from __future__ import annotations
 
-import OpenGL.GL as gl
+from meltygui.core.graphics import desktop_gl as gl
 
 from meltygui.core.graphics.gl_state import GLState
 from meltygui.core.graphics.gl_state import GLTexture

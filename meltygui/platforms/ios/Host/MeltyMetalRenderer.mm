@@ -10,6 +10,7 @@ typedef void (^MetalOperation)(id<MTLCommandBuffer>);
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, id<MTLTexture>> *textures;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, id<MTLRenderPipelineState>> *pipelines;
 @property(nonatomic, strong) NSMutableArray<MetalOperation> *pending;
+@property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *sampling;
 @property(nonatomic) uint64_t nextTexture;
 @property(nonatomic) uint64_t scene;
 - (id<MTLRenderPipelineState>)pipeline:(NSString *)fragment format:(MTLPixelFormat)format blend:(NSString *)blend;
@@ -25,13 +26,24 @@ static NSString *testManifest;
     if ((self = [super init])) {
         self.device=device; self.owner=NSThread.currentThread;
         NSURL *url=[NSBundle.mainBundle URLForResource:@"Melty" withExtension:@"metallib"];
-        if (!url) {
-            if(error) *error=[NSError errorWithDomain:@"MeltyMetal" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Melty.metallib is missing; run the iOS shader packaging build phase"}];
-            return nil;
+        if (url) {
+            self.library=[device newLibraryWithURL:url error:error];
+        } else {
+            // Linux can generate the same finite shader ports without Apple's
+            // offline compiler. Compile once on this device, on the render thread.
+            NSURL *sourceURL=[NSBundle.mainBundle URLForResource:@"Melty" withExtension:@"metal"];
+            if (!sourceURL) {
+                if(error) *error=[NSError errorWithDomain:@"MeltyMetal" code:1 userInfo:@{NSLocalizedDescriptionKey:@"The app is missing its Melty shader library or generated Metal source"}];
+                return nil;
+            }
+            NSString *source=[NSString stringWithContentsOfURL:sourceURL encoding:NSUTF8StringEncoding error:error];
+            if (!source) return nil;
+            MTLCompileOptions *options=[MTLCompileOptions new];
+            options.languageVersion=MTLLanguageVersion3_0;
+            self.library=[device newLibraryWithSource:source options:options error:error];
         }
-        self.library=[device newLibraryWithURL:url error:error];
         if(!self.library) return nil;
-        self.textures=[NSMutableDictionary new]; self.pipelines=[NSMutableDictionary new]; self.pending=[NSMutableArray new];
+        self.sampling=[NSMutableDictionary new]; self.textures=[NSMutableDictionary new]; self.pipelines=[NSMutableDictionary new]; self.pending=[NSMutableArray new];
         engine=self;
     }
     return self;
@@ -118,8 +130,9 @@ static MTLRenderPassDescriptor *passFor(id<MTLTexture> target) {
     p.colorAttachments[0].texture=target; p.colorAttachments[0].loadAction=MTLLoadActionLoad; p.colorAttachments[0].storeAction=MTLStoreActionStore; return p;
 }
 static PyObject *createTexture(PyObject *,PyObject *args) {
-    int w,h; const char *format; PyObject *pixels=Py_None;
-    if(!PyArg_ParseTuple(args,"iis|O",&w,&h,&format,&pixels)||!ready()) return nullptr;
+    int w,h; const char *format; PyObject *pixels=Py_None; unsigned long long existing=0;
+    if(!PyArg_ParseTuple(args,"iis|OK",&w,&h,&format,&pixels,&existing)||!ready()) return nullptr;
+    if(existing && !texture(existing)) return nullptr;
     if(w<1 || h<1 || w>16384 || h>16384) { PyErr_SetString(PyExc_ValueError,"Texture dimensions must be 1..16384"); return nullptr; }
     MTLPixelFormat f; size_t stride;
     if(!strcmp(format,"rgba16f")) { f=MTLPixelFormatRGBA16Float; stride=8; }
@@ -137,13 +150,19 @@ static PyObject *createTexture(PyObject *,PyObject *args) {
         if(data.length!=(NSUInteger)w*h*stride) { PyErr_SetString(PyExc_ValueError,"Texture upload byte size mismatch"); return nullptr; }
         [t replaceRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:0 withBytes:data.bytes bytesPerRow:w*stride];
     }
-    uint64_t identifier=++engine.nextTexture; engine.textures[@(identifier)]=t;
+    uint64_t identifier=existing ? existing : ++engine.nextTexture; engine.textures[@(identifier)]=t;
     return PyLong_FromUnsignedLongLong(identifier);
 }
 static PyObject *deleteTexture(PyObject *,PyObject *arg) {
     uint64_t handle=PyLong_AsUnsignedLongLong(arg); if(PyErr_Occurred()||!ready()) return nullptr;
     // Submitted operations hold strong references independently of this registry.
-    [engine.textures removeObjectForKey:@(handle)]; Py_RETURN_NONE;
+    [engine.textures removeObjectForKey:@(handle)]; [engine.sampling removeObjectForKey:@(handle)]; Py_RETURN_NONE;
+}
+static PyObject *setTextureSampling(PyObject *,PyObject *args) {
+    unsigned long long handle; int mode;
+    if(!PyArg_ParseTuple(args,"Ki",&handle,&mode)||!ready()||!texture(handle)) return nullptr;
+    if(mode<0 || mode>3) { PyErr_SetString(PyExc_ValueError,"Invalid texture sampling mode"); return nullptr; }
+    engine.sampling[@(handle)]=@(mode); Py_RETURN_NONE;
 }
 static PyObject *uploadTexture(PyObject *,PyObject *args) {
     unsigned long long handle; int w,h; PyObject *pixels;
@@ -243,7 +262,7 @@ static PyObject *drawMesh(PyObject *,PyObject *args) {
         int x1=MIN((int)target.width,(int)ceilf(r[2])),y1=MIN((int)target.height,(int)ceilf(r[3]));
         if(x1<=x0||y1<=y0||!count) continue;
         NSMutableData *params=[p mutableCopy]; float *f=(float *)params.mutableBytes;
-        f[7]=tid==font ? 1 : 0; f[11]=r[4];
+        f[7]=tid==font ? 1 : -[engine.sampling[@(tid)] intValue]; f[11]=r[4];
         [rows addObject:@{ @"texture":tex,@"first":@(first),@"count":@(count),@"x":@(x0),@"y":@(y0),@"w":@(x1-x0),@"h":@(y1-y0),@"params":params }];
     }
     Py_DECREF(seq);
@@ -318,7 +337,7 @@ static PyObject *testInitialize(PyObject *,PyObject *args) {
     if(!renderer.library) { PyErr_SetString(PyExc_RuntimeError,error.localizedDescription.UTF8String); return nullptr; }
     testManifest=[NSString stringWithContentsOfFile:[NSString stringWithUTF8String:manifest] encoding:NSUTF8StringEncoding error:&error];
     if(!testManifest) { PyErr_SetString(PyExc_RuntimeError,error.localizedDescription.UTF8String); return nullptr; }
-    renderer.textures=[NSMutableDictionary new];renderer.pipelines=[NSMutableDictionary new];renderer.pending=[NSMutableArray new];
+    renderer.sampling=[NSMutableDictionary new]; renderer.textures=[NSMutableDictionary new];renderer.pipelines=[NSMutableDictionary new];renderer.pending=[NSMutableArray new];
     engine=renderer; Py_RETURN_NONE;
 }
 static PyObject *testFlush(PyObject *,PyObject *) {
@@ -363,6 +382,7 @@ static PyMethodDef methods[]={
 #endif
     {"program_manifest",programManifest,METH_NOARGS,nullptr},
     {"create_texture",createTexture,METH_VARARGS,nullptr},{"delete_texture",deleteTexture,METH_O,nullptr},
+    {"set_texture_sampling",setTextureSampling,METH_VARARGS,nullptr},
     {"upload_texture",uploadTexture,METH_VARARGS,nullptr},{"clear_texture",clearTexture,METH_VARARGS,nullptr},
     {"quad",drawQuad,METH_VARARGS,nullptr},{"set_scene",setScene,METH_O,nullptr},
     {"mesh",drawMesh,METH_VARARGS,nullptr},{"shape",drawShape,METH_VARARGS,nullptr},

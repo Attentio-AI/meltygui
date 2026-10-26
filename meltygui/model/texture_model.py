@@ -179,6 +179,15 @@ def texture_filter_target(state, key, width, height, nearest=False):
     Change precision here for all texture-view color passes. HDR values require
     floating-point storage; sampler choice belongs to this output, not the input.
     """
+    from meltygui.core.melty import Melty
+    renderer = Melty.graphics_backend
+    if renderer is not None:
+        def create_native():
+            handle = renderer.create_texture(width, height, 'rgba16f')
+            renderer.set_texture_sampling(handle, nearest, nearest)
+            return handle
+        return state.get(key, create_native, renderer.delete_texture,
+                         deps=(renderer, width, height, nearest))
     def create():
         previous = int(gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D))
         texture = int(gl.glGenTextures(1))

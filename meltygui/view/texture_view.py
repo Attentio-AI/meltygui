@@ -104,21 +104,27 @@ def draw_texture(input_value: numpy.uint32 | ImageTexture, hovered, scroll_y_cha
                  left_mouse_double_clicked=None, kp_1_pressed=None, keyboard_available=True, **kwargs):
     """Prepare this view's image and handle injected events; the overlay paints it."""
     from meltygui.core.melty import Melty
-    if Melty.graphics_backend is not None:
-        raise NotImplementedError('The image inspector filters do not yet have a native Metal implementation')
+    renderer = Melty.graphics_backend
     _texture_state.texture_id = 0
     original_id = int(input_value)
     imgui.dummy(draw_state.width, max(0, draw_state.height - 20))
-    if not gl.glIsTexture(original_id):
-        imgui.text(f"Error: {original_id} is not a valid texture")
-        return False, input_value
-    original_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
-    try:
-        gl.glBindTexture(gl.GL_TEXTURE_2D, original_id)
-        width = int(gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_WIDTH))
-        height = int(gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_HEIGHT))
-    finally:
-        gl.glBindTexture(gl.GL_TEXTURE_2D, original_texture)
+    if renderer is not None:
+        info = renderer._textures.get(original_id)
+        if info is None:
+            imgui.text(f"Error: {original_id} is not a valid texture")
+            return False, input_value
+        width, height, _ = info
+    else:
+        if not gl.glIsTexture(original_id):
+            imgui.text(f"Error: {original_id} is not a valid texture")
+            return False, input_value
+        original_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
+        try:
+            gl.glBindTexture(gl.GL_TEXTURE_2D, original_id)
+            width = int(gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_WIDTH))
+            height = int(gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_HEIGHT))
+        finally:
+            gl.glBindTexture(gl.GL_TEXTURE_2D, original_texture)
     if width > 16384 or height > 16384:
         imgui.text(f"Error: Texture size {width}x{height} exceeds maximum supported size.")
         return False, input_value
@@ -200,18 +206,23 @@ def draw_texture(input_value: numpy.uint32 | ImageTexture, hovered, scroll_y_cha
     # their lifetime and replaces allocations only when dimensions/sampling change.
     adjusted = texture_filter_target(gl_state, 'texture_adjusted', width, height, nearest)
     bright = texture_filter_target(gl_state, 'texture_color', width, height, nearest)
-    filters = Core.melty.filter
-    filters.brightness_contrast(original_id, output_texture=adjusted,
-                                brightness=zoom_state.brightness, contrast=zoom_state.contrast)
+    def apply_filter(name, source, target, **values):
+        if renderer is not None:
+            renderer.draw(name, target, u_texture=source, **values)
+        else:
+            Core.melty.filter.apply(name, source, output_texture=target, **values)
+
+    apply_filter('brightness_contrast', original_id, adjusted,
+                 brightness=zoom_state.brightness, contrast=zoom_state.contrast)
     if jet:
-        filters.jet(adjusted, output_texture=bright, offset=zoom_state.hue)
+        apply_filter('jet', adjusted, bright, offset=zoom_state.hue)
     else:
-        filters.hue_saturation(adjusted, output_texture=bright,
-                               saturation=zoom_state.saturation, hue_shift=zoom_state.hue)
+        apply_filter('hue_saturation', adjusted, bright,
+                     saturation=zoom_state.saturation, hue_shift=zoom_state.hue)
     output = bright
     if dim_outside is not None:
         output = texture_filter_target(gl_state, 'texture_dimmed', width, height, nearest)
-        filters.multiply(bright, output_texture=output, factor=1.0 - dim_alpha)
+        apply_filter('multiply', bright, output, factor=1.0 - dim_alpha)
     else:
         gl_state.drop('texture_dimmed')
 

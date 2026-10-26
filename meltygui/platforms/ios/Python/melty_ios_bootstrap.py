@@ -40,6 +40,7 @@ class Host:
 class _Log(io.TextIOBase):
     def __init__(self, native):
         self._native = native
+        self.tail = ""
 
     @property
     def encoding(self):
@@ -50,11 +51,30 @@ class _Log(io.TextIOBase):
 
     def write(self, text):
         if text:
+            self.tail = (self.tail + text)[-16000:]
             self._native.write_log(text)
         return len(text)
 
     def flush(self):
         pass
+
+
+def describe_failure(error):
+    """Keep the reason visible first, including usage printed before sys.exit."""
+    import traceback
+
+    if isinstance(error, SystemExit):
+        code = error.code
+        if code is None or code == 0:
+            message = "Program finished."
+        elif isinstance(code, int):
+            message = f"Program exited with code {code}."
+        else:
+            message = f"Program exited: {code}"
+        output = sys.stderr.tail.strip() if isinstance(sys.stderr, _Log) else ""
+        return message + (f"\n\nConsole output:\n{output}" if output else "")
+    summary = "".join(traceback.format_exception_only(error)).strip()
+    return summary + "\n\n" + "".join(traceback.format_exception(error))
 
 
 def _source_files(root):
@@ -187,7 +207,19 @@ def initialize(config):
     from meltygui.core.runtime.native_app import start_native_application
     imports_ready = time.perf_counter()
     print(f"[startup] Melty runtime imports: {(imports_ready - source_ready) * 1000:.1f} ms")
-    _app = start_native_application(dict(config), _host)
+    # Runner-provided entry adapters live in the signed host resources. They
+    # receive the managed source directory, never a path to the build machine.
+    import plistlib
+    settings = plistlib.loads((bundle / 'HostSettings.plist').read_bytes())
+    entry_runner = None
+    if not settings.get('entry_runner') and 'HUB_RUNNER_LAUNCH' in os.environ:
+        from hub_launch import arguments
+        sys.argv = [config['entry_module'], *arguments([])]
+    if settings.get('entry_runner'):
+        module, name = settings['entry_runner'].split(':', 1)
+        runner = getattr(importlib.import_module(module), name)
+        entry_runner = lambda: runner(settings['entry_settings'], source)
+    _app = start_native_application(dict(config), _host, entry_runner=entry_runner)
     print(f"[startup] application launch: {(time.perf_counter() - imports_ready) * 1000:.1f} ms")
     print(f"{_app.config['app_id']}: embedded CPython {sys.version.split()[0]} initialized")
 

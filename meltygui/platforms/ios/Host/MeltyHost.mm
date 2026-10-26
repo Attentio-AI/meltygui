@@ -93,6 +93,21 @@ static NSString *pythonError() {
     Py_XDECREF(savedTraceback);
 #endif
     if (!exception) return @"Unknown Python failure";
+    // Once Python is running, its host can distinguish an ordinary CLI exit
+    // (and its usage output) from a traceback. Keep the fallback for failures
+    // that prevent importing the bootstrap itself.
+    PyObject *bootstrap = PyDict_GetItemString(PyImport_GetModuleDict(), "melty_ios_bootstrap");
+    PyObject *formatted = bootstrap ? PyObject_CallMethod(bootstrap, "describe_failure", "O", exception) : nullptr;
+    const char *formattedUTF8 = formatted ? PyUnicode_AsUTF8(formatted) : nullptr;
+    if (formattedUTF8) {
+        NSString *message = [NSString stringWithUTF8String:formattedUTF8];
+        Py_DECREF(formatted);
+        Py_DECREF(exception);
+        PyErr_Clear();
+        return message;
+    }
+    Py_XDECREF(formatted);
+    PyErr_Clear();
     PyObject *traceback = PyImport_ImportModule("traceback");
     PyObject *parts = traceback ? PyObject_CallMethod(traceback, "format_exception", "O", exception) : nullptr;
     PyObject *separator = PyUnicode_FromString("");
@@ -459,6 +474,9 @@ static const char *kindName(melty::InputKind kind) {
 - (void)setActive:(BOOL)active {
     NSAssert([NSThread isMainThread], @"Scene lifecycle belongs to UIKit");
     _active = active;
+    // UIKit can activate/background the scene while the runner is still
+    // collecting arguments. Preserve activity, but there is no render thread yet.
+    if (!_thread) return;
     if (active) [self refreshClipboard];
     if (!active) _input.push({melty::InputKind::CancelAll, 0, CACurrentMediaTime()});
     // This is a finite request to finish saving, not background execution of
@@ -499,6 +517,7 @@ static const char *kindName(melty::InputKind kind) {
 
 - (void)close {
     _active = false;
+    if (!_thread) return;
     [self performSelector:@selector(applyClose) onThread:_thread withObject:nil waitUntilDone:NO];
 }
 

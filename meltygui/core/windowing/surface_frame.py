@@ -119,8 +119,9 @@ def draw_surface_frame(surface, *, transparent=False, chrome=False, request=None
     # Collision bounds belong to the surface, including when the OS
     # supplies its title bar and cannot accept collision-driven moves.
     os_frame.begin_frame()
-    if chrome:
-        titlebar.poll_os_window_drag()
+    # Resize gestures belong to the surface, regardless of who paints its
+    # decorations. The titlebar registers targets and os_frame gates support.
+    titlebar.poll_os_window_drag()
     prototype = getattr(surface, '_gui_prototype', None)
     if prototype is None:
         os_frame.solve()

@@ -28,6 +28,7 @@ class NativeApplication:
         self.tint = None
         self._thread = threading.get_ident()
         self._safe_zone = None
+        self.hdr_tagged = False  # Wayland tagging is independent of native Metal EDR.
 
     def _check_thread(self):
         if threading.get_ident() != self._thread:
@@ -58,6 +59,8 @@ class NativeApplication:
         Melty.graphics_backend = self.renderer
         Melty.native_surface = self
         Melty.is_touch = True
+        from meltygui.core.windowing.surface import Surface
+        Surface.active = self
 
     def start(self):
         """Complete setup after the app has registered its root and model types."""
@@ -247,6 +250,9 @@ class NativeApplication:
         if self.ctx is not None:
             release(lambda: imgui.destroy_context(self.ctx))
             self.ctx = None
+        from meltygui.core.windowing.surface import Surface
+        if Surface.active is self:
+            Surface.active = None
         Melty.native_surface = Melty.graphics_backend = Melty.glfw_window = None
         Melty.is_touch = False
         if self.window_backend is not None:
@@ -258,8 +264,12 @@ class NativeApplication:
             raise ExceptionGroup('The native application could not close cleanly', errors)
 
 
-def start_native_application(config, host, renderer_factory=None):
-    """Launch an ordinary app module after installing its native host."""
+def start_native_application(config, host, renderer_factory=None, *, entry_runner=None):
+    """Install the native host before importing a module or invoking a task runner.
+
+    Embedders can supply a zero-argument runner to preserve ordinary Python
+    script, module and console-script semantics without changing the app.
+    """
     import importlib
     from meltygui.core.runtime import app
     if renderer_factory is None:
@@ -267,10 +277,13 @@ def start_native_application(config, host, renderer_factory=None):
         from meltygui.core.graphics.metal_renderer import MetalRenderer
         renderer_factory = lambda: MetalRenderer(_melty_metal)
     entry = config['entry_module']
-    if not isinstance(entry, str) or not all(part.isidentifier() for part in entry.split('.')):
+    if entry_runner is None and (not isinstance(entry, str) or not all(part.isidentifier() for part in entry.split('.'))):
         raise ValueError('entry_module must be a Python module name')
     application = NativeApplication(config, host, renderer_factory)
     app.install_native_host(application)
-    importlib.import_module(entry)
+    if entry_runner is None:
+        importlib.import_module(entry)
+    else:
+        entry_runner()
     app.run()
     return application

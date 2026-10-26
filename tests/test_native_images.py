@@ -71,3 +71,37 @@ def test_decode_worker_cannot_upload_to_native_gpu(gpu):
     assert not worker.is_alive()
     assert errors and 'render thread' in errors[0]
     assert not gpu.uploads
+
+
+def test_native_image_inspector_keeps_per_view_outputs_and_sampler(gpu, monkeypatch):
+    import inspect
+    from types import SimpleNamespace
+    import numpy as np
+    from meltygui.core.graphics import desktop_gl
+    from meltygui.state.new_core_model import ZoomState
+    from meltygui.state.texture_state import TextureViewState
+    from meltygui.view import texture_view
+
+    gpu._textures = {101: (3, 2, 'rgba16f')}
+    gpu.sampling, gpu.passes = {}, []
+    gpu.set_texture_sampling = lambda handle, *mode: gpu.sampling.update({handle: mode})
+    gpu.draw = lambda name, target, **values: gpu.passes.append((name, target, values))
+    monkeypatch.setattr(desktop_gl, '__getattr__', lambda name: (_ for _ in ()).throw(AssertionError('Desktop GL: ' + name)))
+    monkeypatch.setattr(texture_view.imgui, 'dummy', lambda *args: None)
+    monkeypatch.setattr(texture_view.imgui, 'get_text_line_height', lambda: 16)
+    states = [TextureViewState(), TextureViewState()]
+    owners = [gl_state.GLState(), gl_state.GLState()]
+    view = SimpleNamespace(width=400, height=300, abs_left=0, abs_top=0, on_action=lambda name: None)
+    for i in range(2):
+        zoom = ZoomState(); zoom.brightness = i * .5
+        inspect.unwrap(texture_view.draw_texture)(np.uint32(101), False, None, None, None, zoom, .3,
+            draw_state=view, _texture_state=states[i], gl_state=owners[i], nearest=bool(i), dim_outside=(0, 0, 1, 1))
+    assert states[0].texture_id != states[1].texture_id
+    assert (states[0].width, states[0].height) == (3, 2)
+    assert [p[0] for p in gpu.passes] == ['brightness_contrast', 'hue_saturation', 'multiply'] * 2
+    assert gpu.passes[0][2]['brightness'] == 0 and gpu.passes[3][2]['brightness'] == .5
+    assert gpu.sampling[states[0].texture_id] == (False, False)
+    assert gpu.sampling[states[1].texture_id] == (True, True)
+    for owner in owners: owner.release()
+    gl_state.GLState.flush_deletes()
+    assert set(gpu.deleted) == {1, 2, 3, 4, 5, 6}

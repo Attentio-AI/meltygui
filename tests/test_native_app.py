@@ -19,6 +19,20 @@ from meltygui.core.styling import fonts, warm_start
 from meltygui.core.windowing import glfw_utils, window_api, window_constants as codes
 
 
+def test_entry_adapter_runs_after_host_installation(monkeypatch):
+    from meltygui.core.runtime import native_app
+    calls = []
+    owner = object()
+    monkeypatch.setattr(native_app, 'NativeApplication', lambda *args: owner)
+    monkeypatch.setattr(app, 'install_native_host', lambda host: calls.append(('install', host)))
+    monkeypatch.setattr(app, 'run', lambda: calls.append(('run', owner)))
+    result = native_app.start_native_application(
+        {'entry_module': 'unused.module'}, object(), renderer_factory=object(),
+        entry_runner=lambda: calls.append(('entry', owner)))
+    assert result is owner
+    assert calls == [('install', owner), ('entry', owner), ('run', owner)]
+
+
 class Host:
     def __init__(self):
         self.wakes = []

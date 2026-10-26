@@ -39,6 +39,18 @@ class MetalRenderer:
             self.native.clear_texture(handle, (0, 0, 0, 0))
         return handle
 
+    def redefine_texture(self, handle, width, height, format="rgba16f", pixels=None):
+        """Replace storage while keeping the public texture ID and queued draws valid."""
+        if handle not in self._textures:
+            raise ValueError('Unknown native texture')
+        self.native.create_texture(int(width), int(height), format, pixels, int(handle))
+        self._textures[handle] = (int(width), int(height), format)
+        if pixels is None:
+            self.native.clear_texture(handle, (0, 0, 0, 0))
+
+    def set_texture_sampling(self, handle, min_nearest=False, mag_nearest=False):
+        self.native.set_texture_sampling(int(handle), int(bool(min_nearest)) | (int(bool(mag_nearest)) << 1))
+
     def delete_texture(self, handle):
         if handle and handle in self._textures:
             self.native.delete_texture(handle)

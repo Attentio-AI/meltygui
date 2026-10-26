@@ -708,9 +708,10 @@ def _jedi_script(file_path, code=None):
     if sys.platform == 'ios':
         # Threading alone is insufficient: Script's default Environment probes
         # an executable and runs compiled-module introspection in a subprocess.
-        # InterpreterEnvironment performs those lookups in bundled CPython.
-        from jedi.api.environment import InterpreterEnvironment
-        kwargs['environment'] = InterpreterEnvironment()
+        # Keep lookups inside bundled CPython without replacing sys.path while
+        # the app's rendering/decoder threads are importing their own modules.
+        from meltygui.code.embedded_jedi import EmbeddedEnvironment
+        kwargs['environment'] = EmbeddedEnvironment()
     return jedi.Script(code=code, path=str(file_path), project=_jedi_project(file_path), **kwargs)
 
 

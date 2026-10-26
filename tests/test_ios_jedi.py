@@ -1,5 +1,6 @@
 """Completions, signatures and navigation inside embedded CPython."""
 import builtins
+import importlib
 import os
 from pathlib import Path
 import subprocess
@@ -49,6 +50,74 @@ def test_device_executor_uses_one_worker_in_current_process(device_analysis):
     assert pid == os.getpid() and worker != caller
     with pytest.raises(RuntimeError, match='embedded interpreter'):
         conversion._get_jedi_mp_ctx()
+
+
+def test_analysis_lookup_does_not_hide_app_modules_from_other_threads(device_analysis, monkeypatch):
+    from jedi.inference.compiled.subprocess import functions
+    root = device_analysis
+    runtime = root / 'runtime'
+    runtime.mkdir()
+    (runtime / 'runtime_sidecar.py').write_text('value = 42\n')
+    (root / 'analysis_helper.py').write_text('value = 7\n')
+    monkeypatch.syspath_prepend(str(runtime))
+    script = conversion._jedi_script(root / 'main.py', '')
+    processor = script._inference_state.compiled_subprocess
+    entered, release = threading.Event(), threading.Event()
+    original = functions._find_module
+
+    def paused_lookup(**kwargs):
+        entered.set()
+        assert release.wait(5)
+        return original(**kwargs)
+
+    monkeypatch.setattr(functions, '_find_module', paused_lookup)
+    future = conversion._get_jedi_pool().submit(processor.get_module_info,
+        string='analysis_helper', sys_path=[str(root)])
+    try:
+        assert entered.wait(5)
+        assert importlib.import_module('runtime_sidecar').value == 42
+    finally:
+        release.set()
+        found, package = future.result(timeout=5)
+        sys.modules.pop('runtime_sidecar', None)
+    assert str(found.path) == str(root / 'analysis_helper.py') and not package
+
+
+def test_compiled_inspection_uses_runtime_imports_without_replacing_sys_path(device_analysis, monkeypatch):
+    from jedi.inference.compiled import access
+    root = device_analysis
+    runtime = root / 'runtime'
+    runtime.mkdir()
+    (runtime / 'runtime_compiled_probe.py').write_text('value = 42\n')
+    monkeypatch.syspath_prepend(str(runtime))
+    path = sys.path
+    seen = []
+    monkeypatch.setattr(access, 'create_access_path', lambda state, module: seen.append((module.value, sys.path is path)))
+    script = conversion._jedi_script(root / 'main.py', '')
+    try:
+        script._inference_state.compiled_subprocess.load_module(
+            dotted_name='runtime_compiled_probe', sys_path=[str(root)])
+    finally:
+        sys.modules.pop('runtime_compiled_probe', None)
+    assert seen == [(42, True)]
+
+
+def test_embedded_lookup_preserves_builtins_namespaces_and_package_paths(device_analysis):
+    root = device_analysis
+    namespace = root / 'analysis_namespace'
+    namespace.mkdir()
+    (namespace / 'helper.py').write_text('value = 42\n')
+    script = conversion._jedi_script(root / 'main.py', '')
+    process = script._inference_state.compiled_subprocess
+    paths = sys.path
+    assert process.get_module_info(string='sys', sys_path=[]) == (None, False)
+    assert process.get_module_info(string='absent_module_probe', sys_path=[]) == (None, None)
+    found, package = process.get_module_info(string='analysis_namespace', sys_path=[str(root)])
+    assert package and found.name == 'analysis_namespace' and list(found.paths) == [str(namespace)]
+    found, package = process.get_module_info(string='helper', path=[str(namespace)],
+        full_name='analysis_namespace.helper', is_global_search=False, sys_path=[])
+    assert not package and str(found.path) == str(namespace / 'helper.py')
+    assert sys.path is paths
 
 
 def test_completion_and_signature_help_resolve_local_project_without_external_python(device_analysis):

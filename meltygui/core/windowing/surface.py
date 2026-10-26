@@ -42,7 +42,7 @@ from types import SimpleNamespace
 
 import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
-import OpenGL.GL as gl
+from meltygui.core.graphics import desktop_gl as gl
 from meltygui.core.conversion.dict_conversion import DictConversion
 
 from meltygui.core.melty import Melty

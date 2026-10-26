@@ -133,7 +133,7 @@ def generate(toolkit, output):
         msl,metadata=port(name,values[variable]); source+=msl; manifest[name]=metadata
     classes = ast.parse((package / "graphics/shaders.py").read_text())
     for node in classes.body:
-        if not isinstance(node,ast.ClassDef) or node.name not in ("ShadowCast","ShadowComposite","BrightnessContrast"):
+        if not isinstance(node,ast.ClassDef) or node.name not in ("ShadowCast","ShadowComposite","BrightnessContrast","HueSaturation","Jet","Multiply"):
             continue
         fields={n.targets[0].id:n.value for n in node.body if isinstance(n,ast.Assign) and len(n.targets)==1 and isinstance(n.targets[0],ast.Name)}
         env={"__builtins__":{},"GLType":SimpleNamespace(**{name:value for name,value in (
