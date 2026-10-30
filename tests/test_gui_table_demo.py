@@ -19,7 +19,7 @@ def test_table_move_resize_and_native_origin_changes(monkeypatch,moving,point,na
     _ensure_gl_context()
     # Load the real example without opening its OS window or entering its loop.
     monkeypatch.setattr(meltygui,'os_window',lambda **kw:gui)
-    demo=runpy.run_path(str(Path(__file__).parents[1]/'examples/example_ui.py'))
+    demo=runpy.run_path(str(Path(__file__).parents[1]/'examples/rust_tiles_gui.py'))
     host=_GuiWindow();cache=host.cache;geometry=cache.geometry
     token=_window.set(host)
     native=NativeCollision(geometry);geometry.native=native

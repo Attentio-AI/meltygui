@@ -18,8 +18,10 @@ struct Node {
     dirty: bool,
     compose: bool,
     portal: bool,
-    rect: (f32, f32, f32, f32),
-    constraints: (f32, f32), // negative height requests content measurement
+    // Keep logical geometry at collision-solver precision: rounded captures
+    // would otherwise feed changed spans back into shared layout edges.
+    rect: (f64, f64, f64, f64),
+    constraints: (f64, f64), // negative height requests content measurement
     layout_changes: u64,
     z: u64,
     executions: u64,
@@ -66,8 +68,8 @@ impl RetainedGraph {
             (0., 0.)
         };
         let p = (
-            px + n.rect.0 as f64,
-            py + n.rect.1 as f64 + if n.portal { 28. } else { 0. },
+            px + n.rect.0,
+            py + n.rect.1 + if n.portal { 28. } else { 0. },
         );
         positions.insert(id, p);
         p
@@ -131,7 +133,7 @@ impl RetainedGraph {
         key: Py<PyAny>,
         input: Py<PyAny>,
         kwargs: Py<PyDict>,
-        rect: (f32, f32, f32, f32),
+        rect: (f64, f64, f64, f64),
         portal: bool,
     ) -> PyResult<u64> {
         if parent != 0 && !self.nodes.contains_key(&parent) {
@@ -300,7 +302,7 @@ impl RetainedGraph {
     fn dirty(&self, id: u64) -> bool {
         self.nodes.get(&id).is_some_and(|n| n.dirty)
     }
-    fn measured(&mut self, id: u64, width: f32, height: f32) -> PyResult<bool> {
+    fn measured(&mut self, id: u64, width: f64, height: f64) -> PyResult<bool> {
         if !width.is_finite() || !height.is_finite() || width <= 0.0 || height < 0.0 {
             return Err(PyRuntimeError::new_err("invalid measured extent"));
         }
@@ -396,7 +398,7 @@ impl RetainedGraph {
             n.compose = false;
         }
     }
-    fn move_window(&mut self, id: u64, x: f32, y: f32) {
+    fn move_window(&mut self, id: u64, x: f64, y: f64) {
         if let Some(n) = self.nodes.get_mut(&id) {
             if n.portal {
                 n.rect.0 = x;
@@ -404,7 +406,7 @@ impl RetainedGraph {
             }
         }
     }
-    fn allocate(&mut self, py: Python<'_>, id: u64, rect: (f32, f32, f32, f32)) -> PyResult<bool> {
+    fn allocate(&mut self, py: Python<'_>, id: u64, rect: (f64, f64, f64, f64)) -> PyResult<bool> {
         if ![rect.0, rect.1, rect.2, rect.3]
             .iter()
             .all(|x| x.is_finite())
@@ -473,8 +475,7 @@ impl RetainedGraph {
             while ancestor != 0 {
                 let n = &self.nodes[&ancestor];
                 let (px, py) = self.position(ancestor, &mut positions);
-                inside &= px <= x && x < px + n.rect.2 as f64
-                    && py <= y && y < py + n.rect.3 as f64;
+                inside &= px <= x && x < px + n.rect.2 && py <= y && y < py + n.rect.3;
                 if n.portal {
                     owner = Some(ancestor);
                     break;

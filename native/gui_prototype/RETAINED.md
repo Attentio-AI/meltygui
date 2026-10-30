@@ -43,7 +43,7 @@ and identity. Explicit `(changed, value)` returns continue to deliver edits.
 Typed state and arbitrary caller/definition arguments still work without an
 `input_value` parameter.
 
-The smallest app is [examples/example_ui.py](../../examples/example_ui.py):
+The smallest app is [examples/example_ui.py](../../examples/rust_tiles_gui.py):
 
 ```python
 from meltygui import os_window

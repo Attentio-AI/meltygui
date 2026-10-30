@@ -545,3 +545,53 @@ def test_ordinary_view_reflow_carries_cached_portal_without_reexecution():
         assert cache.window_rect(ids['window'])[:2]==(before[0]+50,before[1])
         assert calls==Counter(window=1,ordinary=1)
     finally:cache.close()
+
+
+@pytest.mark.parametrize('graphics', [False, True])
+def test_nested_cells_converge_across_native_size_changes(graphics):
+    """Fractional captures must not feed rounded sizes back into shared edges."""
+    if graphics:
+        from conftest import _ensure_gl_context
+        _ensure_gl_context()
+    cache = RetainedGui(graphics=graphics)
+    ids = {}
+
+    @cache.gui
+    def panel(input_value):
+        pass
+
+    @cache.gui
+    def split(input_value):
+        with cache.geometry.declare(('top', 'bottom'), axis=1, key='rows',
+                                    mins=90, padding=6) as layout:
+            for key in layout.keys:
+                with layout.cell(key):
+                    panel(None, key=key)
+
+    @cache.gui
+    def root(input_value):
+        ids['root'] = cache.current
+        with cache.geometry.declare(('controls', 'rows', 'panel'), axis=0,
+                                    key='columns', mins=(220, 140, 140), padding=6) as layout:
+            with layout.cell('controls'):
+                panel(None, key='controls')
+            with layout.cell('rows'):
+                split(None)
+            with layout.cell('panel'):
+                panel(None, key='right')
+
+    try:
+        # Shrinking after the first resize used to exhaust all 64 flush passes.
+        for width, height in [(1936, 1602), (1395, 1239), (1040, 705), (1395, 1239)] * 2:
+            root(None, width=width, height=height)
+            cache.flush()
+            assert not cache.graph.dirty_nodes()
+            assert cache.graph.info(ids['root'])['rect'][2:] == (width, height)
+            geometry = [axis.values() for axis in cache.geometry.axes]
+            executions = {node: cache.graph.info(node)['executions'] for node in cache.records}
+            root(None, width=width, height=height)
+            cache.flush()
+            assert [axis.values() for axis in cache.geometry.axes] == geometry
+            assert {node: cache.graph.info(node)['executions'] for node in cache.records} == executions
+    finally:
+        cache.close()

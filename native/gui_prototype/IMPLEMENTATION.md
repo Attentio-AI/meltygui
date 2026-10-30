@@ -811,7 +811,7 @@ Use the checkout's configured virtual environment and Rust toolchain:
 
 ```sh
 .venv/bin/python tools/build_gui_prototype.py
-.venv/bin/python examples/example_ui.py
+.venv/bin/python examples/rust_tiles_gui.py
 .venv/bin/python examples/tile_manager.py --rust-gui
 .venv/bin/python examples/tile_manager.py --rust-cache
 .venv/bin/python examples/tile_manager.py --rust-layout
