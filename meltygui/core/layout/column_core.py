@@ -1151,7 +1151,7 @@ def _frame_pass(window, axis):
     # Foreign size change since last frame → the far frame edge follows it
     # THROUGH the collision solve. Third slot None = NOT a cursor drag (the
     # OS-edge hooks below skip it; _solve_collisions keeps its position).
-    if abs(far[axis] - size) > 0.5:
+    if abs(far[axis] - size) > 1e-6:
         _pending(window, axis).append((far, float(size), None))
 
     # The frame can never out-compress the window: keep min_width /
@@ -1163,7 +1163,7 @@ def _frame_pass(window, axis):
     graph = _window_graph(window, axis)
     span = graph.chain(near, far)
     _hold_window_min(window, axis, declared,
-                     snap_int(near[axis] + max(_axis_min(axis), span or 0.0)))
+                     near[axis] + max(_axis_min(axis), span or 0.0))
 
     # Delivered events refer to the previous committed hit regions. Consume
     # them before solving; register the next regions only after both axes.
@@ -1284,19 +1284,19 @@ def _frame_pass(window, axis):
             window.window_pos = ((pos[0] + d_near, pos[1]) if axis == "x"
                                  else (pos[0], pos[1] + d_near))
         if axis == "x":
-            window.width = snap_int(window.width - d_near)
+            window.width = window.width - d_near
         else:
-            window.height = snap_int(window.height - d_near)
+            window.height = window.height - d_near
         for e in _all_edges(window, axis):
             e[axis] -= d_near
         moved = True
     size = window.width if axis == "x" else window.height
     native_size = int(round(far[axis])) if binding is not None else None
-    if (native_size is not None and native_size != size) or abs(far[axis] - size) > 0.5:
+    if (native_size is not None and native_size != size) or abs(far[axis] - size) > 1e-6:
         # A surface-bound frame is the native content size. Match flush()'s
         # integer request: truncating here but rounding there makes its own
         # acknowledgement look like an external resize on the next pass.
-        size = native_size if native_size is not None else snap_int(far[axis])
+        size = native_size if native_size is not None else far[axis]
         if axis == "x":
             window.width = size
         else:
@@ -1332,7 +1332,7 @@ def reframe_window(window, d_left, d_right, extra_edges=()):
         window._frame_edges = fe
     pos = window.window_pos or (0, 0)
     window.window_pos = (pos[0] + d_left, pos[1])
-    window.width = snap_int((window.width or 0) - d_left + d_right)
+    window.width = (window.width or 0) - d_left + d_right
     if d_left:
         seen = set()
         for e in list(_all_edges(window)) + list(extra_edges):
@@ -1368,11 +1368,11 @@ def reframe_axis(window, axis, d_near):
     pos = window.window_pos or (0, 0)
     if axis == "x":
         window.window_pos = (pos[0] + d_near, pos[1])
-        window.width = snap_int((window.width or 0) - d_near)
+        window.width = (window.width or 0) - d_near
         size = window.width
     else:
         window.window_pos = (pos[0], pos[1] + d_near)
-        window.height = snap_int((window.height or 0) - d_near)
+        window.height = (window.height or 0) - d_near
         size = window.height
     seen = set()
     for e in _all_edges(window, axis):
@@ -1806,10 +1806,10 @@ class ColumnLayout:
             draw_list = imgui.get_window_draw_list()
             draw_list.channels_set_current(Core.melty.get_channel() - 1)
             draw_list.add_rect_filled(
-                snap_int(self.win_x + self._band_left()),
-                snap_int(self.top),
-                snap_int(self.win_x + self._band_right()),
-                snap_int(self._band_bottom()),
+                self.win_x + self._band_left(),
+                self.top,
+                self.win_x + self._band_right(),
+                self._band_bottom(),
                 pack_color(*band_color),
                 rounding=radius)
             draw_list.channels_set_current(Core.melty.get_channel())
@@ -1867,13 +1867,13 @@ class ColumnLayout:
         authority the band paints to."""
         pad = self.padding
         pad_y = self.padding_y
-        x0 = snap_int(self.win_x + self._bound_left(idx) + pad)
-        y0 = snap_int(self.top + pad_y)
+        x0 = self.win_x + self._bound_left(idx) + pad
+        y0 = self.top + pad_y
         if height is not None:
-            y1 = snap_int(self.top) + snap_int(height) - snap_int(pad_y)
+            y1 = self.top + height - pad_y
         else:
-            y1 = snap_int(self._band_bottom()) - snap_int(pad_y)
-        return x0, y0, snap_int(self.inner_width(idx)), y1 - y0
+            y1 = self._band_bottom() - pad_y
+        return x0, y0, self.inner_width(idx), y1 - y0
 
     @contextmanager
     def cell(self, idx, height=None):
@@ -2071,7 +2071,7 @@ class RowLayout:
         # keeps its minimum when the window frame edge is dragged, and the
         # frame-fit clamp places it correctly.
         lead = self._band_top() - edges[0]["y"]
-        if lead > 0.5:
+        if lead > 1e-6:
             edges[1]["min"] = _row_floor(row_mins, 0) + lead
         _clamp_interior(edges, axis="y")
         if persist and seed_valid and (not ok or any(a is not b for a, b in zip(stored, edges))):
@@ -2086,7 +2086,7 @@ class RowLayout:
         else:
             _bands(window, "y").pop(registry_key, None)
         floors = [_row_floor(row_mins, i) for i in range(n_rows)]
-        if lead > 0.5:
+        if lead > 1e-6:
             floors[0] += lead
         _specs(window, "y")[registry_key] = (
             floors,
@@ -2161,10 +2161,10 @@ class RowLayout:
             draw_list = imgui.get_window_draw_list()
             draw_list.channels_set_current(Core.melty.get_channel() - 1)
             draw_list.add_rect_filled(
-                snap_int(self.left),
-                snap_int(self.win_y + self._band_top()),
-                snap_int(self.right),
-                snap_int(self.win_y + self._band_bottom()),
+                self.left,
+                self.win_y + self._band_top(),
+                self.right,
+                self.win_y + self._band_bottom(),
                 pack_color(*band_color),
                 rounding=radius)
             draw_list.channels_set_current(Core.melty.get_channel())
@@ -2220,13 +2220,13 @@ class RowLayout:
         default the box runs to the visible box's right."""
         pad = self.padding
         pad_x = self.padding_x
-        x0 = snap_int(self.left + pad_x)
-        y0 = snap_int(self.win_y + self._bound_top(idx) + pad)
+        x0 = self.left + pad_x
+        y0 = self.win_y + self._bound_top(idx) + pad
         if width is not None:
-            x1 = snap_int(self.left) + snap_int(width) - snap_int(pad_x)
+            x1 = self.left + width - pad_x
         else:
-            x1 = snap_int(self.right) - snap_int(pad_x)
-        y1 = snap_int(self.win_y + self._bound_bottom(idx)) - snap_int(pad)
+            x1 = self.right - pad_x
+        y1 = self.win_y + self._bound_bottom(idx) - pad
         return x0, y0, x1 - x0, y1 - y0
 
     @contextmanager

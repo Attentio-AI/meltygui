@@ -43,7 +43,6 @@ import meltygui.core.input.mouse_cursor as mouse_cursor
 from meltygui.hdr_color import pack_color
 from meltygui.core.runtime.toggles import Tint
 from meltygui.core.conversion.dict_conversion import DictConversion
-from meltygui.core.cache.tile_marks import snap_int
 from meltygui.core.cache.tile_marks import add_shadow
 from meltygui.core.layout.column_core import ColumnLayout
 from meltygui.core.layout.column_core import RowLayout
@@ -158,7 +157,7 @@ def frame_rect(frame, window):
 
 
 def tile_rect(frame, draw_state, gap=4.0):
-    """A tile's painted box (absolute, ints): its frame inset by ``gap``
+    """A tile's painted box (absolute logical coordinates): its frame inset by ``gap``
     / 2 and clipped to the host's visible box, or None when nothing of it
     shows."""
     window = layout_window(draw_state)
@@ -170,8 +169,8 @@ def tile_rect(frame, draw_state, gap=4.0):
             max(clip[0], content[0]), max(clip[1], content[1]),
             min(clip[2], content[2]), min(clip[3], content[3]))
     half = gap / 2
-    x0, y0 = snap_int(x0 + half), snap_int(y0 + half)
-    x1, y1 = snap_int(x1 - half), snap_int(y1 - half)
+    x0, y0 = x0 + half, y0 + half
+    x1, y1 = x1 - half, y1 - half
     if clip is not None:
         x0, y0 = max(x0, clip[0]), max(y0, clip[1])
         x1, y1 = min(x1, clip[2]), min(y1, clip[3])
@@ -512,7 +511,7 @@ def draw_split_dividers(layout, axis, frame, draw_state, tile_state=None, path=(
     draw_list = imgui.get_window_draw_list()
     for k in range(1, len(edges) - 1):
         lo, hi = _grab_zone(edges, k, axis=axis)
-        line = snap_int(origin + edges[k][axis])
+        line = origin + edges[k][axis]
         if axis == "x":
             grab = (origin + lo, y0, origin + hi, y1)
             ends = (line, y0, line, y1)

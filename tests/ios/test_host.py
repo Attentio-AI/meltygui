@@ -576,6 +576,8 @@ class BootstrapTests(unittest.TestCase):
             self.native.set_keyboard_visible.assert_called_once_with(True)
             self.bootstrap._host.set_safe_zone(64, 24)
             self.native.set_safe_zone.assert_called_once_with(64.0, 24.0)
+            self.bootstrap._host.set_safe_zone(-1, -1)
+            self.native.set_safe_zone.assert_called_with(-1.0, -1.0)
             self.bootstrap.suspend()
             self.bootstrap.close()
         self.app.suspend.assert_called_once()

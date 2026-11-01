@@ -32,7 +32,88 @@ def hdr_png(path, pixels=None):
                      + chunk(b'IEND', b''))
 
 
-def test_hdr_is_preferred_and_preserved_in_primary_icon(tmp_path, icon_project):
+def test_hdr_content_light_metadata_is_recognizable_without_changing_color(tmp_path):
+    path = tmp_path / 'icon.png'
+    nits = np.full((8, 8, 3), [1000, 200, 40], dtype=np.float32)
+    alpha = np.full((8, 8), 32768, dtype=np.uint16)
+    app_icon.write_hdr_icon(path, nits, 8, bytes([9, 16, 0, 1]), alpha)
+    data = path.read_bytes()
+    chunks = {}
+    offset = 8
+    while offset < len(data):
+        length, = struct.unpack_from('>I', data, offset)
+        kind = data[offset + 4:offset + 8]
+        body = data[offset + 8:offset + 8 + length]
+        crc, = struct.unpack_from('>I', data, offset + 8 + length)
+        assert crc == zlib.crc32(kind + body)
+        chunks[kind] = body
+        offset += length + 12
+    # PNG 3 specifies cLLI (uppercase I). The old draft spelling cLLi is
+    # ignored by decoders, leaving bright colors without tone-mapping metadata.
+    assert b'cLLi' not in chunks
+    assert struct.unpack('>II', chunks[b'cLLI']) == (5000076, 5000076)
+    assert list(chunks).index(b'cLLI') < list(chunks).index(b'IDAT')
+    # Match the project-list icon path for ICC-based Apple image consumers,
+    # not just decoders that understand PNG's newer cICP chunk.
+    profile_name, compressed = chunks[b'iCCP'].split(b'\0', 1)
+    assert profile_name and compressed[0] == 0
+    profile = zlib.decompress(compressed[1:])
+    assert profile[16:20] == b'RGB ' and profile[36:40] == b'acsp'
+    count, = struct.unpack_from('>I', profile, 128)
+    tags = {profile[p:p + 4]: struct.unpack_from('>II', profile, p + 4)
+            for p in range(132, 132 + count * 12, 12)}
+    offset, length = tags[b'cicp']
+    assert profile[offset + 8:offset + length] == chunks[b'cICP']
+    assert list(chunks).index(b'iCCP') < list(chunks).index(b'IDAT')
+    with Image.open(path) as image:
+        assert image.info['icc_profile'] == profile
+    rgb, output_alpha, cicp = read_png16(path)
+    assert cicp == bytes([9, 16, 0, 1])
+    np.testing.assert_allclose(pq_decode(rgb / 65535), nits, rtol=.001)
+    np.testing.assert_array_equal(output_alpha, alpha)
+
+
+@pytest.mark.parametrize('peak', [500, 1000, 10000])
+def test_hdr_icon_preserves_absolute_brightness_without_normalizing_or_capping(tmp_path, peak):
+    # A decoder's default headroom must not change the artwork's exposure or
+    # clip highlights. Preserve channels and shading above and below 1000 nits.
+    nits = np.full((8, 8, 3), [peak, peak / 5, peak / 25], dtype=np.float32)
+    nits[:4] *= .25  # Preserve the relationship between shading and highlights.
+    alpha = np.full((8, 8), 32768, dtype=np.uint16)
+    path = tmp_path / 'icon.png'
+    app_icon.write_hdr_icon(path, nits, 8, bytes([9, 16, 0, 1]), alpha)
+    rgb, output_alpha, cicp = read_png16(path)
+    output = pq_decode(rgb / 65535)
+    np.testing.assert_allclose(output, nits, rtol=.001)
+    assert output.max() > 203  # Retain HDR, not an SDR fallback.
+    np.testing.assert_array_equal(output_alpha, alpha)
+    assert cicp == bytes([9, 16, 0, 1])
+
+
+def test_home_screen_keeps_gold_and_blue_saturated_without_darkening_the_body():
+    # Bright colored bodies, darker shading and a far brighter neutral glint.
+    p3 = np.array([[[1800, 280, 32], [72, 75, 5200], [13000, 13000, 13000]],
+                   [[450, 70, 8], [18, 18.75, 1300], [3250, 3250, 3250]]], dtype=float)
+    source = p3 @ app_icon.P3_TO_REC2020.T
+    result = (app_icon.home_screen_nits(source) @ app_icon.REC2020_TO_P3.T) / 203
+    assert result.max() <= 1.00001 and result.min() >= -1e-6
+    gold, blue, white = result[0]
+    assert gold[0] > .8 and .35 < gold[1] < .6 and gold[2] < .05
+    assert max(blue[:2]) < .08 and blue[2] > .9
+    np.testing.assert_allclose(white, [1, 1, 1], atol=1e-6)
+    assert (result[1] < result[0]).all()
+
+
+def test_home_screen_ignores_invisible_rgb_and_keeps_in_range_artwork():
+    p3 = np.array([[[100, 40, 10], [10000, 10000, 10000]]], dtype=float)
+    source = p3 @ app_icon.P3_TO_REC2020.T
+    alpha = np.array([[65535, 0]], dtype=np.uint16)
+    result = app_icon.home_screen_nits(source, alpha) @ app_icon.REC2020_TO_P3.T
+    np.testing.assert_allclose(result[0, 0], p3[0, 0], atol=1e-6)
+
+
+def test_hdr_is_preferred_and_fitted_to_home_screen_in_primary_icon(tmp_path, icon_project):
+    (tmp_path / 'pyproject.toml').write_text('[tool.hub.ios]\nicon = "icon.png"\n')
     Image.new('RGB', (4, 4), 'blue').save(tmp_path / 'icon.png')
     hdr_png(tmp_path / 'hdr.png')
     launcher(tmp_path, extra='X-HDR-Icon=./hdr.png\n')
@@ -46,8 +127,9 @@ def test_hdr_is_preferred_and_preserved_in_primary_icon(tmp_path, icon_project):
     assert rgb.shape == (180, 180, 3) and alpha.shape == (180, 180)
     assert cicp == bytes([9, 16, 0, 1])
     nits = pq_decode(rgb / 65535)
-    assert nits[90, 90, 0] == pytest.approx(1000, abs=1)
-    assert nits[90, 90, 1] == pytest.approx(0, abs=1)
+    p3 = nits @ app_icon.REC2020_TO_P3.T
+    assert p3[90, 90, 0] == pytest.approx(203, abs=.2)
+    assert abs(p3[90, 90, 1]) < .2 and p3[90, 90, 2] / p3[90, 90, 0] < .02
     assert alpha[90, 90] == pytest.approx(32768, abs=1)
     assert alpha[0, 0] == 0
     objects = plistlib.loads(project.read_bytes())['objects']
@@ -58,6 +140,30 @@ def test_hdr_is_preferred_and_preserved_in_primary_icon(tmp_path, icon_project):
         assert settings['INFOPLIST_FILE'] == str(build / 'app-icon/Info.plist')
     phase, = [obj for obj in objects.values() if obj['isa'] == 'PBXResourcesBuildPhase']
     assert len(phase['files']) == 14
+
+
+@pytest.mark.parametrize('section', ['tool.hub.ios', 'tool.melty.app'])
+def test_manifest_artwork_preserves_hdr_and_tracks_replacement(tmp_path, section):
+    (tmp_path / 'pyproject.toml').write_text(f'[{section}]\nicon = "hdr.png"\n')
+    hdr_png(tmp_path / 'hdr.png')
+    build = tmp_path / 'build'
+    app_icon.prepare_icon(tmp_path, build)
+    output = build / 'app-icon/AppIcon60x60@3x.png'
+    rgb, alpha, cicp = read_png16(output)
+    assert cicp == bytes([9, 16, 0, 1])
+    p3 = pq_decode(rgb / 65535) @ app_icon.REC2020_TO_P3.T
+    assert p3[90, 90, 0] == pytest.approx(203, abs=.2)
+    assert alpha[90, 90] == pytest.approx(32768, abs=1)
+    before = output.stat().st_mtime_ns
+    app_icon.prepare_icon(tmp_path, build)
+    assert output.stat().st_mtime_ns == before
+    Image.new('RGBA', (4, 4), 'green').save(tmp_path / 'sdr.png')
+    (tmp_path / 'pyproject.toml').write_text(f'[{section}]\nicon = "sdr.png"\n')
+    app_icon.prepare_icon(tmp_path, build)
+    assert Image.open(output).getpixel((90, 90)) == (0, 128, 0, 255)
+    (tmp_path / 'sdr.png').unlink()
+    with pytest.raises(ValueError, match='could not be resolved'):
+        app_icon.prepare_icon(tmp_path, build)
 
 
 def test_noop_source_edits_and_icon_replacement(tmp_path, monkeypatch, icon_project):
@@ -189,7 +295,8 @@ def test_margin_toggle_changes_geometry_and_invalidates_cache(tmp_path, icon_pro
         if hdr:
             rgb, alpha, cicp = read_png16(path)
             assert cicp == bytes([9, 16, 0, 1])
-            assert pq_decode(rgb[90, 90, 0] / 65535) == pytest.approx(1000, abs=1)
+            p3 = pq_decode(rgb[90, 90] / 65535) @ app_icon.REC2020_TO_P3.T
+            assert p3[0] == pytest.approx(203, abs=.2)
         else:
             with Image.open(path) as image:
                 alpha = np.asarray(image.getchannel('A'))

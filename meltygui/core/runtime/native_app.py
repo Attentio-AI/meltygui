@@ -111,6 +111,9 @@ class NativeApplication:
         if not math.isfinite(top) or not math.isfinite(bottom):
             raise ValueError('Mobile safe zones must be finite numbers of UIKit points')
         insets = (max(0.0, top), max(0.0, bottom))
+        if Melty.is_touch and Toggles.Mobile.automatic_safe_area:
+            # -1 delegates that edge to UIKit; no per-frame geometry polling.
+            insets = (-1.0, -1.0)
         if insets != self._safe_zone:
             self.host.set_safe_zone(*insets)
             self._safe_zone = insets

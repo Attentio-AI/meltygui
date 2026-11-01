@@ -442,7 +442,7 @@ def paint_cached_view(draw_state):
     tile = _resident_tile(draw_state)
     if tile is None:
         return False
-    from meltygui.core.cache.tile_cache import _tile_alloc
+    from meltygui.core.cache.tile_cache import _tile_image_uv
     # Definition changes retire the preserved outer bands. Sampling only the
     # logical image is safe until normal cache reuse clears those bands; GL
     # resource housekeeping must not run inside a timed overlay callback.
@@ -451,13 +451,13 @@ def paint_cached_view(draw_state):
     width, height = min(width, draw_state.width), min(height, draw_state.height)
     if width <= 0 or height <= 0:
         return False
-    alloc_width, alloc_height = _tile_alloc(tile)
     left, top = draw_state.abs_left, draw_state.abs_top
+    uv_a, uv_b = _tile_image_uv(tile, (left, top), (width, height))
     draw_list = imgui.get_window_draw_list()
     draw_list.push_clip_rect(*draw_state.abs_clip_rect, True)
     try:
         draw_list.add_image(tile.tex, (left, top), (left + width, top + height),
-                            (0, 1), (width / alloc_width, 1 - height / alloc_height))
+                            uv_a, uv_b)
     finally:
         draw_list.pop_clip_rect()
     return True

@@ -1164,7 +1164,7 @@ class DrawState(DictConversion):
             # scroll_offset on the very first frame, before its content (or
             # a loading stand-in) renders. Returns 0 only for never-measured
             # views, matching the old behavior for genuinely new ones.
-            return int(self.observed_content_height)
+            return self.observed_content_height
 
         content_height = 0
         f = Core.melty.frame_count
@@ -1206,7 +1206,7 @@ class DrawState(DictConversion):
         # if is_scroll_view:
         #     content_height = max(content_height, self.height)
 
-        return int(self.observed_content_height)
+        return self.observed_content_height
 
     @property
     def abs_layer(self):
@@ -1253,14 +1253,14 @@ class DrawState(DictConversion):
         elif self.anchor_pos in RIGHT_ANCHORS:
             offset_x = -self.width
         else:  # horizontally centered
-            offset_x = int(-self.width / 2)
+            offset_x = -self.width / 2
 
         if self.anchor_pos in TOP_ANCHORS:
             offset_y = 0
         elif self.anchor_pos in BOTTOM_ANCHORS:
             offset_y = -self.height + -anchor_margin
         else:  # vertically centered
-            offset_y = int(-self.height / 2)
+            offset_y = -self.height / 2
 
         return (offset_x, offset_y)
 
@@ -1284,14 +1284,14 @@ class DrawState(DictConversion):
         elif self.parent_anchor_pos in RIGHT_ANCHORS:
             offset_x = parent.width
         else:  # horizontally centered
-            offset_x = int(parent.width / 2)
+            offset_x = parent.width / 2
 
         if self.parent_anchor_pos in TOP_ANCHORS:
             offset_y = 0
         elif self.parent_anchor_pos in BOTTOM_ANCHORS:
             offset_y = parent.height
         else:  # vertically centered
-            offset_y = int(parent.height / 2)
+            offset_y = parent.height / 2
 
         return (offset_x, offset_y)
 
@@ -1575,7 +1575,7 @@ class DrawState(DictConversion):
             this_left = (window_pos_x + parent_left + self.left_offset - sx
                          + self.parent_anchor_offset[0] + anchor[0])
             this_left = self._cap_to_display(this_left, 0)
-        return int(this_left)
+        return this_left
 
     def _abs_top_true(self):
         parent_top = 0
@@ -1605,7 +1605,7 @@ class DrawState(DictConversion):
             # See _abs_left for why this subtracts the live ancestor scroll.
             this_top = (window_pos_y + parent_top + self.top_offset_true
                         + self.parent_anchor_offset[1] + anchor[1])
-        return int(this_top)
+        return this_top
 
 
     def _abs_top(self):
@@ -1636,7 +1636,7 @@ class DrawState(DictConversion):
             this_top = (window_pos_y + parent_top + self.top_offset - sy
                         + self.parent_anchor_offset[1] + anchor[1])
             this_top = self._cap_to_display(this_top, 1)
-        return int(this_top)
+        return this_top
 
     @property
     def abs_clip_rect(self):
@@ -1663,10 +1663,10 @@ class DrawState(DictConversion):
 
         # Intersect the LIVE box with the (shifted) clip rect. Both move with the
         # window now, so the clamped edges stay pinned to the unclamped corner.
-        return (int(max(abs_left, clip[0])),
-                int(max(abs_top, clip[1])),
-                int(min(box_right, clip[2])),
-                int(min(box_bottom, clip[3])))
+        return (max(abs_left, clip[0]),
+                max(abs_top, clip[1]),
+                min(box_right, clip[2]),
+                min(box_bottom, clip[3]))
 
     @property
     def abs_clip_rect_local(self):
@@ -1697,10 +1697,10 @@ class DrawState(DictConversion):
 
         # Intersect the LIVE box with the (shifted) clip rect. Both move with the
         # window now, so the clamped edges stay locked to the unclamped corner.
-        return (int(max(abs_left, clip[0])),
-                int(max(abs_top, clip[1])),
-                int(min(box_right, clip[2])),
-                int(min(box_bottom, clip[3])))
+        return (max(abs_left, clip[0]),
+                max(abs_top, clip[1]),
+                min(box_right, clip[2]),
+                min(box_bottom, clip[3]))
 
     def children_in_clip(self, clip=None, max_depth=1, include_windows=True):
         """Descendants whose vertical span overlaps `clip` (default: this view's
@@ -1829,7 +1829,7 @@ class DrawState(DictConversion):
         t = cache._tiles.get(self._tile_id)
         if t is None:
             return False
-        return t.size != (int(self.width), int(self.height))
+        return t.size != (self.width, self.height)
 
     @property
     def tile_fully_filled(self) -> bool:

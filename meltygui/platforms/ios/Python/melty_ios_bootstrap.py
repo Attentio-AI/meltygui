@@ -26,7 +26,7 @@ class Host:
         self._native.set_keyboard_visible(bool(visible))
 
     def set_safe_zone(self, top, bottom):
-        """Update native edge insets; subsequent frames report the real bounds."""
+        """Set edge reserves (-1 uses automatic layout); frames report real bounds."""
         self._native.set_safe_zone(float(top), float(bottom))
 
     def get_clipboard_text(self):

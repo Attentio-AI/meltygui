@@ -9,7 +9,7 @@ import traceback
 from collections import deque, defaultdict
 from copy import copy
 from dataclasses import dataclass
-from math import ceil, floor, radians, tan
+from math import ceil, floor, isfinite, radians, tan
 from typing import Dict, List, Optional, Tuple, MutableMapping, Any
 
 from meltygui.core.graphics import desktop_gl as gl
@@ -70,11 +70,11 @@ MAX_TILE_DIM = 8000
 TILE_BUCKET = 32
 
 
-def _bucket(v: int) -> int:
-    return min(MAX_TILE_DIM, ((int(v) + TILE_BUCKET - 1) // TILE_BUCKET) * TILE_BUCKET)
+def _bucket(v: float) -> int:
+    return min(MAX_TILE_DIM, ((ceil(v) + TILE_BUCKET - 1) // TILE_BUCKET) * TILE_BUCKET)
 
 
-def _bucket_h(v: int) -> int:
+def _bucket_h(v: float) -> int:
     """Height bucket, graduated: tall tiles (a 6000px code editor) round to
     256 so per-line content growth (±23px per Enter/Backspace) stays
     within-bucket ~10 keystrokes at a time instead of realloc'ing a
@@ -82,7 +82,7 @@ def _bucket_h(v: int) -> int:
     bucket — a 256px floor there would waste ~1MB per short row tile."""
     b = 256 if v >= 1024 else TILE_BUCKET
 
-    return min(MAX_TILE_DIM, ((int(v) + b - 1) // b) * b)
+    return min(MAX_TILE_DIM, ((ceil(v) + b - 1) // b) * b)
 
 
 def _bump_note(t, site):
@@ -140,21 +140,105 @@ def _pixel_rect(rect, scale):
 
 def _tile_pixel_size(tile, *, allocated=False):
     size = _tile_alloc(tile) if allocated else tile.size
-    return _pixel_rect((0, 0, *size), tile.pixel_scale)[2:]
+    if allocated:
+        return _pixel_rect((0, 0, *size), tile.pixel_scale)[2:]
+    return ceil(size[0] * tile.pixel_scale[0]), ceil(size[1] * tile.pixel_scale[1])
 
 
-def _tile_uv_rect(t) -> Tuple[float, float, float, float]:
-    """uUVRect (xy scale, zw offset) mapping a 0..1 dest-rect UV onto the
-    top-anchored logical subrect of a bucket-padded tile texture."""
-    taw, tah = _tile_alloc(t)
-    sx = t.size[0] / taw
-    sy = t.size[1] / tah
-    return (sx, sy, 0.0, 1.0 - sy)
+def _tile_has_capture_guard(tile):
+    aw, ah = _tile_pixel_size(tile, allocated=True)
+    sx, sy = tile.pixel_scale
+    return aw >= ceil(tile.size[0] * sx) + 1 and ah >= ceil(tile.size[1] * sy) + 1
 
 
-# ==============================
-# Small structs
-# ==============================
+def _tile_content_rect(tile, size):
+    """Enclosing texels for a logical size in the retained capture grid."""
+    aw, ah = _tile_pixel_size(tile, allocated=True)
+    sx, sy = tile.pixel_scale
+    ox, oy = tile.capture_offset
+    w, h = min(aw, ceil(size[0] * sx + ox)), min(ah, ceil(size[1] * sy + oy))
+    return 0, ah - h, w, h
+
+
+def _tile_growth_bands(tile, size):
+    _, _, ow, oh = _tile_content_rect(tile, tile.size)
+    _, bottom, w, h = _tile_content_rect(tile, size)
+    bands = []
+    if h > oh:
+        bands.append((0, bottom, w, h - oh))
+    if w > ow:
+        bands.append((ow, bottom, w - ow, h))
+    return bands
+
+
+def _tile_capture_rect(tile, bounds):
+    """Copy whole framebuffer texels; retain the logical origin within them.
+
+    Sampling a fractional source rect would filter the image during capture,
+    then filter it again during replay. The extra allocation point holds the
+    trailing physical texel at any supported display density.
+    """
+    x0, y0, x1, y1 = bounds
+    left, bottom, right, top = floor(x0), floor(y0), ceil(x1), ceil(y1)
+    offset = (x0 - left, top - y1)
+    changed = offset != tile.capture_offset
+    tile.capture_offset = offset
+    if changed:
+        tile.filled_bbox = None
+    return (left, bottom, right, top), changed
+
+
+def _tile_uv_rect(t, size=None, bounds=None) -> Tuple[float, float, float, float]:
+    """UV scale/offset for logical geometry, or its integer mask viewport."""
+    aw, ah = _tile_pixel_size(t, allocated=True)
+    w, h = t.size if size is None else size
+    sx, sy = t.pixel_scale
+    ox, oy = t.capture_offset
+    width, height = w * sx, h * sy
+    if bounds is not None:
+        x0, y0, x1, y1 = bounds
+        ox += floor(x0) - x0
+        oy += y1 - ceil(y1)
+        width, height = ceil(x1) - floor(x0), ceil(y1) - floor(y0)
+    return width / aw, height / ah, ox / aw, 1.0 - (oy + height) / ah
+
+
+def _tile_matches_pixel_grid(tile, pos, display_pos):
+    """A raster capture can move by whole physical pixels without resampling.
+
+    Layout positions stay fractional, but a different fractional origin needs
+    a fresh render: interpolating an already hinted glyph bitmap blurs it.
+    The framebuffer's shadow inset is integral and does not affect this phase.
+    """
+    for value, origin, scale, offset in zip(pos, display_pos, tile.pixel_scale,
+                                          tile.capture_offset):
+        delta = (value - origin) * scale - offset
+        if abs(delta - round(delta)) > 1e-4:
+            return False
+    return True
+
+
+def _tile_image_uv(tile, pos, size=None, *, source_top=0.0):
+    """Replay native texels without filtering an already rasterized image.
+
+    Resize replay bypasses the normal capture-phase check and may move both
+    the body and a cropped toolbar by fractional pixels. Align the sampling
+    translation, not the logical rectangle, so neither replay nor an enclosing
+    cache capture can blur the retained text. Sizes and hit testing stay exact.
+    """
+    aw, ah = _tile_pixel_size(tile, allocated=True)
+    w, h = tile.size if size is None else size
+    sx, sy = tile.pixel_scale
+    vx, vy = imgui.get_main_viewport().pos
+    dx, dy = (pos[0] - vx) * sx, (pos[1] - vy) * sy
+    ox, oy = tile.capture_offset
+    oy += source_top * sy
+    ox = dx - floor(dx - ox + 0.5)
+    oy = dy - floor(dy - oy + 0.5)
+    return ((ox / aw, 1.0 - oy / ah),
+            ((ox + w * sx) / aw, 1.0 - (oy + h * sy) / ah))
+
+
 @dataclass
 class Tile:
     draw_state: any
@@ -162,9 +246,10 @@ class Tile:
     tex: int
     mask_tex: int  # Cached subtree mask for this tile
     rbo: Optional[int]
-    size: Tuple[int, int]  # LOGICAL view size; the texture may be larger (alloc_size)
-    alloc_size: Optional[Tuple[int, int]] = None  # bucketed window-point dims, None = same as size
+    size: Tuple[float, float]  # LOGICAL view size; the texture may be larger (alloc_size)
+    alloc_size: Optional[Tuple[float, float]] = None  # bucketed window-point dims, None = same as size
     pixel_scale: Tuple[float, float] = (1.0, 1.0)  # physical texels per window point
+    capture_offset: Tuple[float, float] = (0.0, 0.0)  # physical texels from captured top-left
     dirty: bool = True
     last_clean_frame: int = -1
     last_invalidated_frame: int = 3
@@ -180,13 +265,13 @@ class Tile:
     # once it covers (0,0,size) the tile is fully filled and scroll-driven
     # invalidations can be skipped. Reset on tile recreation and clamped in place
     # on a within-bucket logical resize.
-    filled_bbox: Optional[Tuple[int, int, int, int]] = None
+    filled_bbox: Optional[Tuple[float, float, float, float]] = None
     # freeze_resize tiles only: per-axis high-water mark of the logical size -
     # the extent of ever-rendered content still resident in the texture.
     # Shrinks leave those texels in place (no band clear, alloc never
     # shrinks) so a grow-drag's frozen blit can reveal them instead of
     # background. None for normal tiles (logical size == content extent).
-    content_size: Optional[Tuple[int, int]] = None
+    content_size: Optional[Tuple[float, float]] = None
     # Scroll offset those beyond-logical texels were rendered at (clamped on
     # shrink). If the view scrolls away from it while small, those texels no
     # longer line up with the live content - _scrub_stale_content clears them
@@ -194,7 +279,7 @@ class Tile:
     # frames don't re-clear); the frozen blit paints the real background
     # (content_bg) underneath, so a grow-drag pops in the view's exact bg
     # instead of misaligned stale pixels.
-    content_scroll: Optional[Tuple[int, int]] = None
+    content_scroll: Optional[Tuple[float, float]] = None
     content_bg: bool = False
     # Function edits invalidate preserved pixels as well as the current view.
     # Mark on invalidation; clear the bands only when the render thread reuses
@@ -212,7 +297,7 @@ class _Ctx:
     draw_state: any
     key: str
     pos: Tuple[float, float]
-    size: Optional[Tuple[int, int]]
+    size: Optional[Tuple[float, float]]
     layer: int
     depth_and_layer: any
     drew_cached: bool
@@ -231,7 +316,7 @@ class _Pending:
     draw_state: any
     tile: Tile
     pos: Tuple[float, float]
-    size: Tuple[int, int]
+    size: Tuple[float, float]
     layer: int
     depth_and_layer: any
     key: str
@@ -380,25 +465,21 @@ def _clear_mask_regions(mask_tex: int, rects) -> None:
         gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
 
-def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, draw_state=None, tile_id=None,
+def _ensure_tile(existing: Optional[Tile], w: float, h: float, frame_id: int = 0, draw_state=None, tile_id=None,
                  pixel_scale=(1.0, 1.0), gpu=None) -> \
         Optional[Tile]:
     if gpu is not None:
         return gpu.ensure_tile(existing, w, h, frame_id, draw_state, pixel_scale)
-    # Layout occasionally hands us fractional or negative dims (e.g. a
-    # midline is 0.333... width). glTexImage2D coerces those to int and lands on
-    # 0, producing an incomplete FBO attachment (0x8CD6). Snap to integer
-    # coords up front and bail before any GL work if it reduces to zero.
-    w = int(w) if w and w > 0 else 0
-    h = int(h) if h and h > 0 else 0
-    if w <= 0 or h <= 0:
+    # Logical sizes stay fractional. Only allocation and texel bounds round.
+    w, h = float(w or 0), float(h or 0)
+    if not (isfinite(w) and isfinite(h)) or w <= 0 or h <= 0:
         return None
     same_scale = existing is not None and existing.pixel_scale == pixel_scale
-    if same_scale and existing.size == (w, h):
+    if same_scale and existing.size == (w, h) and _tile_has_capture_guard(existing):
         return existing
 
-    aw = _bucket(w)
-    ah = _bucket_h(h)
+    aw = _bucket(w) + 1
+    ah = _bucket_h(h) + 1
 
     # freeze_resize tiles never shrink their allocation: a shrink stays on the
     # in-place path below with the beyond-logical texels left intact, so a
@@ -416,8 +497,8 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         # the same texels). Returning the SAME object is the caller's signal
         # to issue a direct ancestor invalidate instead of the "New Tile"
         # invalidate_up cascade.
-        ow = snap_int(existing.size[0])
-        oh = snap_int(existing.size[1])
+        ow = existing.size[0]
+        oh = existing.size[1]
 
         # Invariant: texels outside the current logical rect stay transparent
         # (color) and rank 0 (mask), so a grow reveals new pixels - PASS 3's
@@ -433,18 +514,13 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         if (w > ow or h > oh) and not no_shrink:
             st = _GLState()
             try:
-                bands = []
-                if h > oh:  # bottom band: screen rows [oh, h)
-                    bands.append((0, ah - h, w, h - oh))
-                if w > ow:  # right band: screen cols [ow, w), full new height
-                    bands.append((ow, ah - h, w - ow, h))
+                bands = _tile_growth_bands(existing, (w, h))
                 gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, existing.fbo)
                 gl.glEnable(gl.GL_SCISSOR_TEST)
                 # Pin the colormask: a leaked R-only one (the mask passes use
                 # one) would leave stale G/B/A inside the new logical rect.
                 gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
                 gl.glClearColor(0, 0, 0, 0.0)
-                bands = [_pixel_rect(rect, pixel_scale) for rect in bands]
                 for x, y, cw, ch in bands:
                     gl.glScissor(int(x), int(y), int(cw), int(ch))
                     gl.glClear(gl.GL_COLOR_BUFFER_BIT)
@@ -473,7 +549,7 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
                 # cleared - anchor them to the current scroll so a later
                 # scroll can detect they've gone stale.
                 so = getattr(draw_state, "scroll_offset", None) or (0, 0)
-                existing.content_scroll = (snap_int(so[0]), snap_int(so[1]))
+                existing.content_scroll = tuple(so)
                 existing.content_bg = False
         existing.size = (w, h)
         # Always stamp alloc_size: also upgrades a pre-bucketing tile whose
@@ -542,21 +618,24 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
             # surface. The crop dims are the LOGICAL dims; the crop source
             # runs from alloc_h - crop_h to alloc_h on both surfaces.
             old_aw, old_ah = _tile_alloc(existing)
-            ow = snap_int(existing.size[0])
-            oh = snap_int(existing.size[1])
+            ow = existing.size[0]
+            oh = existing.size[1]
             if no_shrink:
                 # Recreate under no_shrink only happens on a genuine grow
                 # (aw/ah >= old alloc), so the full content extent - not just
                 # the logical size - fits the new surface. Carry it over.
                 cs = getattr(existing, "content_size", None) or (ow, oh)
-                cw = max(0, min(snap_int(cs[0]), aw))
-                ch = max(0, min(snap_int(cs[1]), ah))
+                cw = max(0, min(cs[0], aw))
+                ch = max(0, min(cs[1], ah))
             else:
                 cw = max(0, min(ow, w))
                 ch = max(0, min(oh, h))
             if cw > 0 and ch > 0:
-                src_x, src_y, src_w, src_h = _pixel_rect((0, old_ah - ch, cw, ch), existing.pixel_scale)
-                dst_x, dst_y, dst_w, dst_h = _pixel_rect((0, ah - ch, cw, ch), pixel_scale)
+                ox, oy = existing.capture_offset
+                src_w, src_h = ceil(cw * existing.pixel_scale[0] + ox), ceil(ch * existing.pixel_scale[1] + oy)
+                src_x, src_y = 0, _tile_pixel_size(existing, allocated=True)[1] - src_h
+                dst_w, dst_h = ceil(cw * pixel_scale[0] + ox), ceil(ch * pixel_scale[1] + oy)
+                dst_x, dst_y = 0, pixel_ah - dst_h
                 gl.glBlitFramebuffer(
                     src_x, src_y, src_x + src_w, src_y + src_h,
                     dst_x, dst_y, dst_x + dst_w, dst_y + dst_h,
@@ -598,8 +677,9 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
     # the old corner, so only the newly-revealed border still needs to fill in.
     # A new tile -> None (untouched, scroll-invalidate proceeds).
     if existing is not None:
-        ow = snap_int(existing.size[0])
-        oh = snap_int(existing.size[1])
+        t.capture_offset = existing.capture_offset
+        ow = existing.size[0]
+        oh = existing.size[1]
         cw = max(0, min(ow, w))
         ch = max(0, min(oh, h))
         t.filled_bbox = (0, 0, cw, ch) if cw > 0 and ch > 0 else None
@@ -1482,7 +1562,7 @@ class TileCacheMasked:
         # path then re-engages until _ensure_tile catches up next frame.
         ds = t.draw_state
         if ds is not None and ds.width is not None and ds.height is not None:
-            if int(ds.width) != w or int(ds.height) != h:
+            if ds.width != w or ds.height != h:
                 t.filled_bbox = None
                 return False
         l, top, r, b = t.filled_bbox
@@ -1509,13 +1589,13 @@ class TileCacheMasked:
             return
         cb = draw_state.clipped_by_rect or (0, 0, 0, 0)
         w, h = t.size
-        bl = max(0, int(cb[0]))
-        bt = max(0, int(cb[1]))
-        br = max(bl, w - max(0, int(cb[2])))
-        bb = max(bt, h - max(0, int(cb[3])))
+        bl = max(0, cb[0])
+        bt = max(0, cb[1])
+        br = max(bl, w - max(0, cb[2]))
+        bb = max(bt, h - max(0, cb[3]))
         if on_screen is not None:
-            bl, bt = max(bl, int(on_screen[0])), max(bt, int(on_screen[1]))
-            br, bb = min(br, int(on_screen[2])), min(bb, int(on_screen[3]))
+            bl, bt = max(bl, on_screen[0]), max(bt, on_screen[1])
+            br, bb = min(br, on_screen[2]), min(bb, on_screen[3])
         if br <= bl or bb <= bt:
             return  # nothing actually written this frame
         if t.filled_bbox is None:
@@ -1542,7 +1622,7 @@ class TileCacheMasked:
         the display, in tile-local xyxy; the whole tile without a display."""
         disp = self._display_rect_screen()
         if disp is None:
-            return (0, 0, int(w), int(h))
+            return (0.0, 0.0, w, h)
         return (max(0.0, disp[0] - x), max(0.0, disp[1] - y),
                 min(float(w), disp[2] - x), min(float(h), disp[3] - y))
 
@@ -1566,12 +1646,13 @@ class TileCacheMasked:
         if vr <= vl or vb <= vt:
             return False            # nothing of this is visible: nothing to miss
         fl, ft, fr, fb = t.filled_bbox
-        return fl > vl + 0.5 or ft > vt + 0.5 or fr < vr - 0.5 or fb < vb - 0.5
+        half_x, half_y = 0.5 / t.pixel_scale[0], 0.5 / t.pixel_scale[1]
+        return fl > vl + half_x or ft > vt + half_y or fr < vr - half_x or fb < vb - half_y
 
-    def _oversized(self, size: Optional[Tuple[int, int]]) -> bool:
+    def _oversized(self, size: Optional[Tuple[float, float]]) -> bool:
         """True if a view this size is too large to back with an offscreen tile."""
-        return size is not None and (size[0] * self._pixel_scale[0] > MAX_TILE_DIM
-                                     or size[1] * self._pixel_scale[1] > MAX_TILE_DIM)
+        return size is not None and ((_bucket(size[0]) + 1) * self._pixel_scale[0] > MAX_TILE_DIM
+                                     or (_bucket_h(size[1]) + 1) * self._pixel_scale[1] > MAX_TILE_DIM)
 
     def _discard_tile(self, key: str) -> None:
         """Drop a tile and free its GL resources (e.g. a view grew too large to cache)."""
@@ -2100,8 +2181,7 @@ class TileCacheMasked:
                 rx1, ry1 = rx0 + r.w, ry0 + r.h
                 if rx0 < mx1 and mx0 < rx1 and ry0 < my1 and my0 < ry1:
                     # print(f"{r.draw_state.name}  From {rx0},{ry0},{rx1},{ry1} to {mx0},{my0},{mx1},{my1}")
-                    occluders.append((r.key, snap_int(r.x), snap_int(r.y),
-                                      snap_int(r.w), snap_int(r.h)))
+                    occluders.append((r.key, r.x, r.y, r.w, r.h))
 
             occ_frozen = frozenset(occluders)
             new_occluders[key] = occ_frozen
@@ -3923,7 +4003,7 @@ class TileCacheMasked:
         for draw_state, rect, footer in items:
             if not self.can_replay_resize(draw_state):
                 return False
-            rect = tuple(map(snap_int, rect))
+            rect = tuple(rect)
             if rect[2] <= 0 or rect[3] <= 0:
                 return False
             prepared.append((draw_state, rect, footer))
@@ -3973,7 +4053,6 @@ class TileCacheMasked:
             draw_background(draw_state)
         else:
             self.draw_freeze_bg(draw_state, x, y, width, height, live=False)
-        alloc_w, alloc_h = _tile_alloc(tile)
         resident_w, resident_h = tile.content_size or tile.size
         footer = min(footer_height, tile.size[1], height)
         if footer:
@@ -3984,12 +4063,14 @@ class TileCacheMasked:
         # enclosing draw-list clip handles the screen/parent intersection.
         visible_w, visible_h = min(resident_w, width), min(resident_h, height - footer)
         if visible_w > 0 and visible_h > 0:
+            uv_a, uv_b = _tile_image_uv(tile, (x, y), (visible_w, visible_h))
             dl.add_image(tile.tex, (x, y), (x + visible_w, y + visible_h),
-                         (0, 1), (visible_w / alloc_w, 1 - visible_h / alloc_h))
+                         uv_a, uv_b)
         if footer and visible_w > 0:
+            uv_a, uv_b = _tile_image_uv(tile, (x, y + height - footer),
+                                       (visible_w, footer), source_top=resident_h)
             dl.add_image(tile.tex, (x, y + height - footer), (x + visible_w, y + height),
-                         (0, 1 - resident_h / alloc_h),
-                         (visible_w / alloc_w, 1 - tile.size[1] / alloc_h))
+                         uv_a, uv_b)
         clipped = self._clip_rect(x, y, width, height, clip)
         if clipped is None:
             clipped = (x, y, width, height)
@@ -4086,11 +4167,7 @@ class TileCacheMasked:
             draw_background(draw_state)
             a = draw_state.abs_left, draw_state.abs_top
             b = draw_state.abs_left + size[0], draw_state.abs_top + size[1]
-            # Top-anchored logical subrect of the (possibly bucket-padded)
-            # texture: content spans u [0, lw/aw], v [1 - lh/ah, 1].
-            taw, tah = _tile_alloc(t)
-            uv_a = (0.0, 1.0)
-            uv_b = (t.size[0] / taw, 1.0 - t.size[1] / tah)
+            uv_a, uv_b = _tile_image_uv(t, a)
 
             imgui.get_window_draw_list().add_image_rounded(t.tex,
                                                            a=a,
@@ -4187,13 +4264,13 @@ class TileCacheMasked:
         if cs is None or getattr(t, "content_bg", False):
             t.content_stale = False
             return
-        w, h = snap_int(t.size[0]), snap_int(t.size[1])
-        cw, ch = snap_int(cs[0]), snap_int(cs[1])
+        w, h = t.size[0], t.size[1]
+        cw, ch = cs[0], cs[1]
         if cw <= w and ch <= h:
             t.content_stale = False
             return
         so = getattr(draw_state, "scroll_offset", None) or (0, 0)
-        so = (snap_int(so[0]), snap_int(so[1]))
+        so = tuple(so)
         anchor = getattr(t, "content_scroll", None)
         if anchor is None and not definition_changed:
             # Pre-field tile (hotswap) or first sighting: anchor here.
@@ -4202,13 +4279,7 @@ class TileCacheMasked:
         if anchor == so and not definition_changed:
             return
 
-        aw, ah = _tile_alloc(t)
-        bands = []
-        if ch > h:  # bottom band: screen rows [h, ch)
-            bands.append((0, ah - ch, cw, ch - h))
-        if cw > w:  # right band: screen cols [w, cw), full content height
-            bands.append((w, ah - ch, cw - w, ch))
-        bands = [_pixel_rect(rect, t.pixel_scale) for rect in bands]
+        bands = _tile_growth_bands(t, (cw, ch))
         if self.gpu is not None:
             self.gpu.clear_bands(t, bands)
             t.content_scroll = so
@@ -4253,7 +4324,6 @@ class TileCacheMasked:
 
         Melty.tile_id_stack.append(key)
         x, y = imgui.get_cursor_screen_pos()
-        imgui.set_cursor_screen_pos((snap_int(x), snap_int(y)))
         layer = max(self._LAYER_MIN, min(self._LAYER_MAX, layer))
 
         parent_ctx = self._stack[-1] if self._stack else None
@@ -4261,7 +4331,7 @@ class TileCacheMasked:
         size = (draw_state.width, draw_state.height)
 
         if draw_state.width is not None and draw_state.height is not None:
-            size = snap_int(draw_state.width), snap_int(draw_state.height)
+            size = draw_state.width, draw_state.height
 
         self.key_to_parent_key[rkey] = parent_ctx.key if parent_ctx else None
         self.key_to_draw_state[rkey] = draw_state
@@ -4328,6 +4398,16 @@ class TileCacheMasked:
                          and (t.size == (size[0], size[1]))
                          and (not self._is_dirty(t))
                          and (not draw_state.size_change))
+            if use_image and not _tile_matches_pixel_grid(
+                    t, (draw_state.abs_left, draw_state.abs_top), imgui.get_main_viewport().pos):
+                # Position changes deliberately retain cached content. Only
+                # reuse those pixels when their capture grid still lines up
+                # with the destination; otherwise render and capture once at
+                # the new phase. Integer-pixel movement remains a cache hit.
+                use_image = False
+                t.last_invalidated_frame = max(t.last_invalidated_frame, self._frame_id)
+                t.dirty = self._is_dirty(t)
+                _bump_note(t, "pixel grid changed")
             if use_image and self._visible_unfilled(t, draw_state):
                 # Captured while (partially) off the display: the tile holds
                 # black where the screen ended. Render live and re-capture
@@ -4397,11 +4477,7 @@ class TileCacheMasked:
                 # crops the image only, leaving earlier-era content intact.
                 draw_size = (getattr(t, "content_size", None) or t.size) if frozen else size
                 b = draw_state.abs_left + draw_size[0], draw_state.abs_top + draw_size[1]
-                # Top-anchored subrect of the (possibly bucket-padded)
-                # texture: content spans u [0, dw/aw], v [1 - dh/ah, 1].
-                taw, tah = _tile_alloc(t)
-                uv_a = (0.0, 1.0)
-                uv_b = (draw_size[0] / taw, 1.0 - draw_size[1] / tah)
+                uv_a, uv_b = _tile_image_uv(t, a, draw_size)
 
                 dl = imgui.get_window_draw_list()
                 from meltygui.core.rendering.overlay import draw_background
@@ -4532,7 +4608,7 @@ class TileCacheMasked:
         finish_cached_overlays(self, ctx)
         self.finish_cached_input(ctx)
 
-        minx, miny = int(ctx.draw_state.abs_left), int(ctx.draw_state.abs_top)
+        minx, miny = ctx.draw_state.abs_left, ctx.draw_state.abs_top
 
         ctx.pos = (float(minx), float(miny))
         ctx.size = (ctx.draw_state.width, ctx.draw_state.height)
@@ -4540,9 +4616,9 @@ class TileCacheMasked:
         min_width = ctx.draw_state.min_width
         min_height = ctx.draw_state.min_height
         if min_width is not None and ctx.size[0] < min_width:
-            ctx.size = (snap_int(min_width), ctx.size[1])
+            ctx.size = (min_width, ctx.size[1])
         if min_height is not None and ctx.size[1] < min_height:
-            ctx.size = (ctx.size[0], snap_int(min_height))
+            ctx.size = (ctx.size[0], min_height)
 
         x, y = ctx.pos
         w, h = ctx.size
@@ -4666,8 +4742,7 @@ class TileCacheMasked:
                 gl.glBindVertexArray(self._dummy_vao)
             old_size = t.size if t else None
 
-            if (((t is None) or ((int(t.size[0]), int(t.size[1])) != (
-            int(ctx.size[0]), int(ctx.size[1])))) and not imgui.is_mouse_down(0)
+            if ((t is None or t.size != ctx.size) and not imgui.is_mouse_down(0)
                     and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2)
                     and not Melty.space_mouse_drag):
                 old_t = t
@@ -4698,7 +4773,7 @@ class TileCacheMasked:
                     self.invalidate(ctx.key, note=Note(name="New Tile", reason="fresh tile",
                                                        tint=(1, 0.5, 0)))
                 elif (t is not None and old_size is not None
-                      and int(old_size[0]) == int(ctx.size[0])):
+                      and old_size[0] == ctx.size[0]):
                     # Cross-bucket HEIGHT-ONLY resize (typing adds/removes a
                     # line in a tall code view): every width - and so every
                     # child's wrap/layout - is unchanged; children below the
@@ -4746,7 +4821,7 @@ class TileCacheMasked:
                     # An external edit may wake a frozen body mid-gesture.
                     # Its tile still has the pre-drag size: copy 1:1 instead
                     # of stretching the live viewport into that old extent.
-                    cap_size = (snap_int(t.size[0]), snap_int(t.size[1]))
+                    cap_size = (t.size[0], t.size[1])
                 self._pending.append(
                     _Pending(draw_state=ctx.draw_state, tile=t, pos=ctx.pos, size=cap_size, layer=ctx.layer,
                              depth_and_layer=ctx.depth_and_layer, key=ctx.key))
@@ -5196,8 +5271,12 @@ class TileCacheMasked:
                             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, p.tile.fbo)
                             # Write into the top-anchored logical subrect of the
                             # (possibly bucket-padded) texture.
-                            t_lw, t_lh = _tile_pixel_size(p.tile)
+                            source, phase_changed = _tile_capture_rect(p.tile, (x0, y0, x1, y1))
+                            t_lw, t_lh = source[2] - source[0], source[3] - source[1]
                             t_ah = _tile_pixel_size(p.tile, allocated=True)[1]
+                            if phase_changed:
+                                gl.glClearColor(0, 0, 0, 0)
+                                gl.glClear(gl.GL_COLOR_BUFFER_BIT)
                             gl.glViewport(0, t_ah - t_lh, t_lw, t_lh)
 
                             # Pre-tint: multiplicative blending drifts stale pixels toward blue
@@ -5217,7 +5296,7 @@ class TileCacheMasked:
 
                             gl.glUniform4f(self._loc_copy_uTint, 1.0, 1.0, 1.0, 1.0)
 
-                            gl.glUniform4f(self._loc_uSrcRectPx, float(x0), float(y0), float(x1), float(y1))
+                            gl.glUniform4f(self._loc_uSrcRectPx, *map(float, source))
                             gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
                             p.tile.last_clean_frame = self._frame_id
@@ -5374,7 +5453,7 @@ class TileCacheMasked:
                                 offset,
                                 r.corner_radius * s_x,
                                 r.draw_state.shadow_margin * s_x if r.draw_state is not None else 0.0,
-                                uv_rect=_tile_uv_rect(t_child),
+                                uv_rect=_tile_uv_rect(t_child, bounds=(sx0, sy0, sx1, sy1)),
                             )
                         else:
                             if r.draw_state.parent_window is not None:
@@ -5433,13 +5512,11 @@ class TileCacheMasked:
 
                         # Dst is the top-anchored logical subrect of the (possibly
                         # bucket-ized) mask texture, mirroring PASS 3's viewport.
-                        m_lw, m_lh = _tile_pixel_size(p.tile)
+                        source, _ = _tile_capture_rect(p.tile, (x0, y0, x1, y1))
+                        m_lw, m_lh = source[2] - source[0], source[3] - source[1]
                         m_ah = _tile_pixel_size(p.tile, allocated=True)[1]
                         gl.glBlitFramebuffer(
-                            int(x0),
-                            int(y0),
-                            int(x1),
-                            int(y1),
+                            *source,
                             0,
                             m_ah - m_lh,
                             m_lw,
@@ -5519,7 +5596,7 @@ class TileCacheMasked:
 
                         mask_stamps.append((t.mask_tex, (ix0, iy0, iw, ih),
                                             (clip_ix0, clip_iy0, clip_iw, clip_ih),
-                                            _tile_uv_rect(t), offset, r.corner_radius * s_x, shadow_margin * s_x))
+                                            _tile_uv_rect(t, bounds=(x0, y0, x1, y1)), offset, r.corner_radius * s_x, shadow_margin * s_x))
                     else:
                         clip = (clip_ix0, clip_iy0, clip_iw, clip_ih)
                         shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0

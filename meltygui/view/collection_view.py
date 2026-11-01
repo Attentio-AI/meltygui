@@ -1084,9 +1084,9 @@ def fast_draw_collection(input_value=None, **kwargs):
             imgui.set_cursor_screen_pos((cursor[0] + kwargs["indent_size"], cursor[1]))
         imgui.begin_group()
         if draw_state.expanded:
-            left, top = snap_int(draw_state.left), snap_int(draw_state.top)
-            Melty.push_clip((left, top, left + snap_int(draw_state.width),
-                             top + snap_int(draw_state.height or 0)))
+            left, top = draw_state.left, draw_state.top
+            Melty.push_clip((left, top, left + draw_state.width,
+                             top + (draw_state.height or 0)))
             if show_bg:
                 Melty.bg_depth += 1
                 Melty.bg_stack.append(style_manager.get_tint())

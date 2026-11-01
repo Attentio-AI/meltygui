@@ -6,12 +6,12 @@ all coordinates/UVs keep the desktop cache's top-anchored, Y-up contract.
 """
 from __future__ import annotations
 from collections import defaultdict
-from math import ceil, floor, radians, tan
+from math import ceil, floor, isfinite, radians, tan
 import struct
 
 from meltygui.core.cache.tile_cache import (
     Tile, _bucket, _bucket_h, _bump_note, _tile_alloc, _tile_pixel_size,
-    _tile_uv_rect, _pixel_rect, _full_mask_rects, INV_65535,
+    _tile_uv_rect, _tile_capture_rect, _tile_has_capture_guard, _tile_growth_bands, _pixel_rect, _full_mask_rects, INV_65535,
 )
 from meltygui.core.cache.tile_marks import snap_int
 from meltygui.core.melty import Melty
@@ -90,29 +90,26 @@ class MetalTileBackend:
                 self.renderer.clear_rect(tile.mask_tex, rect)
 
     def ensure_tile(self, existing, w, h, frame_id, draw_state, pixel_scale):
-        w, h = int(w or 0), int(h or 0)
-        if w <= 0 or h <= 0:
+        w, h = float(w or 0), float(h or 0)
+        if not (isfinite(w) and isfinite(h)) or w <= 0 or h <= 0:
             return None
         same_scale = existing is not None and existing.pixel_scale == pixel_scale
-        if same_scale and existing.size == (w,h):
+        if same_scale and existing.size == (w,h) and _tile_has_capture_guard(existing):
             return existing
-        aw, ah = _bucket(w), _bucket_h(h)
+        aw, ah = _bucket(w) + 1, _bucket_h(h) + 1
         frozen = bool(getattr(draw_state,"freeze_resize",False))
         if frozen and existing:
             eaw,eah = _tile_alloc(existing)
             aw,ah = max(aw,snap_int(eaw)),max(ah,snap_int(eah))
         if same_scale and _tile_alloc(existing) == (aw,ah):
-            ow,oh = map(snap_int,existing.size)
+            ow,oh = existing.size
             if not frozen:
-                bands=[]
-                if h>oh: bands.append((0,ah-h,w,h-oh))
-                if w>ow: bands.append((ow,ah-h,w-ow,h))
-                self.clear_bands(existing,[_pixel_rect(b,pixel_scale) for b in bands])
+                self.clear_bands(existing,_tile_growth_bands(existing,(w,h)))
             else:
                 cs=existing.content_size or (ow,oh)
                 existing.content_size=(min(aw,max(cs[0],w)),min(ah,max(cs[1],h)))
                 if w<ow or h<oh:
-                    existing.content_scroll=tuple(map(snap_int,getattr(draw_state,"scroll_offset",None) or (0,0)))
+                    existing.content_scroll=tuple(getattr(draw_state,"scroll_offset",None) or (0,0))
                     existing.content_bg=False
             existing.size,existing.alloc_size=(w,h),(aw,ah)
             if existing.filled_bbox is not None:
@@ -128,13 +125,17 @@ class MetalTileBackend:
         mask=self.renderer.create_texture(pw,ph,"r16")
         tile=Tile(draw_state,tex,tex,mask,None,(w,h),(aw,ah),pixel_scale)
         if existing:
-            ow,oh=map(snap_int,existing.size)
+            tile.capture_offset=existing.capture_offset
+            ow,oh=existing.size
             cs=(existing.content_size or (ow,oh)) if frozen else (ow,oh)
             cw,ch=min(cs[0],aw if frozen else w),min(cs[1],ah if frozen else h)
             if cw>0 and ch>0:
+                ox,oy=existing.capture_offset
+                sw,sh=ceil(cw*existing.pixel_scale[0]+ox),ceil(ch*existing.pixel_scale[1]+oy)
+                dw,dh=ceil(cw*pixel_scale[0]+ox),ceil(ch*pixel_scale[1]+oy)
                 self.renderer.copy(existing.tex,tex,
-                    source_rect=_pixel_rect((0,_tile_alloc(existing)[1]-ch,cw,ch),existing.pixel_scale),
-                    target_rect=_pixel_rect((0,ah-ch,cw,ch),pixel_scale))
+                    source_rect=(0,_tile_pixel_size(existing,allocated=True)[1]-sh,sw,sh),
+                    target_rect=(0,ph-dh,dw,dh))
             cw,ch=min(ow,w),min(oh,h)
             tile.filled_bbox=(0,0,cw,ch) if cw>0 and ch>0 else None
             if frozen:
@@ -178,9 +179,10 @@ class MetalTileBackend:
                   and (exclude_key is not None or ((cached or resize) and mark.key in cache._key_to_ctx)))
         if use_live:
             w,h=tile.size if frozen else (ds.width,ds.height)
-            rect=integer_rect(cache._screen_rect_to_fb_xyxy(ds.abs_left,ds.abs_top,w,h,dp_x,dp_y,sx,sy,fh))
+            bounds=cache._screen_rect_to_fb_xyxy(ds.abs_left,ds.abs_top,w,h,dp_x,dp_y,sx,sy,fh)
         else:
-            rect=clip
+            bounds=cache._screen_rect_to_fb_xyxy(mark.x,mark.y,mark.w,mark.h,dp_x,dp_y,sx,sy,fh)
+        rect=integer_rect(bounds)
         if min(rect[2:]+clip[2:])<=0:
             return
         margin=getattr(mark.draw_state,"shadow_margin",0)*sx
@@ -188,7 +190,7 @@ class MetalTileBackend:
             self.renderer.draw("mask_offset_rounded",target,rect=rect,clip=clip,
                 uTex=tile.mask_tex,uOffset=(mark.depth_and_layer-tile.mask_layer)*INV_65535,
                 uRectSize=rect[2:],uCornerRadius=mark.corner_radius*sx,uMargin=margin,
-                uUVRect=_tile_uv_rect(tile))
+                uUVRect=_tile_uv_rect(tile,bounds=bounds))
         else:
             # Full mask uses the clipped fresh geometry, tile mask uses live
             # geometry clipped by the recorded subtree rect, as desktop does.
@@ -315,11 +317,14 @@ class MetalTileBackend:
                         self.fresh(cache,mark,cache._sub_mask_tex,xform,rank=mark.layer*INV_65535,blend=self.blend(mark),clip=clip)
                     tile=capture.tile
                     if tile is None: continue
-                    lw,lh=_tile_pixel_size(tile)
+                    source,phase_changed=_tile_capture_rect(tile,bounds)
+                    lw,lh=source[2]-source[0],source[3]-source[1]
                     _,ah=_tile_pixel_size(tile,allocated=True)
+                    if phase_changed:
+                        r.native.clear_texture(tile.tex,(0,0,0,0))
                     r.draw("tile_copy",tile.tex,rect=(0,ah-lh,lw,lh),
                         uSrc=cache.snapshot_tex,uTopMask=cache._mask_tex,uSubMask=cache._sub_mask_tex,
-                        uFBSize=cache._fb_alloc_size,uSrcRectPx=bounds,uDebugScale=cache.offscreen_scale,
+                        uFBSize=cache._fb_alloc_size,uSrcRectPx=source,uDebugScale=cache.offscreen_scale,
                         uCopyDebugMode=cache._copy_debug_mode_to_int(),uTint=(1,1,1,1))
                     tile.last_clean_frame=cache._frame_id
                     tile.dirty=cache._is_dirty(tile)
@@ -337,9 +342,10 @@ class MetalTileBackend:
                         self.stamp_shadows(cache,owned,dp_x,dp_y,sx,sy,fh,scissor_fb=bounds,win_gate=False)
                     tile=capture.tile
                     if tile is not None and tile.mask_tex is not None:
-                        lw,lh=_tile_pixel_size(tile)
+                        source,_=_tile_capture_rect(tile,bounds)
+                        x,y,x1,y1=source
+                        lw,lh=x1-x,y1-y
                         _,ah=_tile_pixel_size(tile,allocated=True)
-                        x,y,x1,y1=bounds
                         r.copy(cache._full_sub_mask_tex,tile.mask_tex,source_rect=(x,y,x1-x,y1-y),target_rect=(0,ah-lh,lw,lh))
                         tile.mask_layer=capture.depth_and_layer
                         cb=capture.draw_state.clipped_by_rect if capture.draw_state else None

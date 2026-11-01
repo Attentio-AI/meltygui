@@ -100,7 +100,7 @@ class MetalPixels(unittest.TestCase):
         backend=MetalTileBackend(self.renderer)
         ds=SimpleNamespace(freeze_resize=False)
         tile=backend.ensure_tile(None,10,10,1,ds,(1,1))
-        self.renderer.clear_rect(tile.tex,(0,22,10,10),(1,0,0,1))
+        self.renderer.clear_rect(tile.tex,(0,self.renderer._textures[tile.tex][1]-10,10,10),(1,0,0,1))
         same=backend.ensure_tile(tile,12,12,2,ds,(1,1))
         self.assertIs(same,tile)
         image=self.pixels(tile.tex)
@@ -111,6 +111,73 @@ class MetalPixels(unittest.TestCase):
         self.assertEqual(image[0][0],(1,0,0,1))
         self.assertEqual(image[33][33],(0,0,0,0))
         backend.delete_tile(grown)
+
+    def test_fractional_sizes_and_capture_phase_keep_resize_edges_clean(self):
+        from types import SimpleNamespace
+        from meltygui.core.graphics.metal_tiles import MetalTileBackend
+        backend = MetalTileBackend(self.renderer)
+        ds = SimpleNamespace(freeze_resize=False)
+        tiny = backend.ensure_tile(None, .25, .375, 1, ds, (3, 3))
+        try:
+            self.assertEqual(tiny.size, (.25, .375))
+            self.assertGreater(self.renderer._textures[tiny.tex][0], 0)
+        finally:
+            backend.delete_tile(tiny)
+        tile = backend.ensure_tile(None, 10.125, 10.125, 1, ds, (3, 3))
+        try:
+            tile.capture_offset = (.375, .75)
+            self.native.clear_texture(tile.tex, (1, 1, 1, 1))
+            same = backend.ensure_tile(tile, 10.25, 10.25, 2, ds, (3, 3))
+            self.assertIs(same, tile)
+            self.assertEqual(tile.size, (10.25, 10.25))
+            image = self.pixels(tile.tex)
+            for row in image[:32]:
+                self.assertTrue(all(pixel == (1, 1, 1, 1) for pixel in row[:31]))
+                self.assertEqual(row[31], (0, 0, 0, 0))
+        finally:
+            backend.delete_tile(tile)
+
+    def test_cached_images_move_by_quarter_physical_pixels(self):
+        from meltygui.core.cache.tile_cache import _tile_uv_rect
+        from meltygui.core.graphics.metal_tiles import MetalTileBackend
+        r, imgui = self.renderer, self.imgui
+        backend = MetalTileBackend(r)
+        for scale in (1, 2, 3):
+            with self.subTest(scale=scale):
+                tile = backend.ensure_tile(None, 8, 8, 1, None, (scale, scale))
+                tile.capture_offset = (.375, .75)
+                aw, ah, _ = r._textures[tile.tex]
+                values = [v for y in range(ah) for x in range(aw) for v in (x % 2, 0, 0, 1)]
+                r.redefine_texture(tile.tex, aw, ah, 'rgba32f', struct.pack(f'{len(values)}f', *values))
+                us, vs, u0, v0 = _tile_uv_rect(tile)
+                io = imgui.get_io()
+                io.display_size, io.display_fb_scale = (48, 48), (scale, scale)
+                previous = None
+                for offset in (0, .25, .5, .75, 1):
+                    x, y = 16 + (.375 + offset) / scale, 16 + .75 / scale
+                    r.begin_scene(48 * scale, 48 * scale, (0, 0, 0, 0))
+                    r.draw_backgrounds([], (0, 0, 0, 0))
+                    imgui.new_frame()
+                    imgui.get_background_draw_list().add_image(tile.tex, (x, y), (x+8, y+8),
+                                                               (u0, v0+vs), (u0+us, v0))
+                    r.begin_frame_split()
+                    imgui.render()
+                    r.render_except_overlay(imgui.get_draw_data())
+                    r.end_scene()
+                    pixels = self.pixels(r.scene_framebuffer)
+                    row = []
+                    for screen_x in range(16 * scale + 2, 24 * scale - 2):
+                        sample = screen_x - 16 * scale - offset
+                        base = int(sample)
+                        fraction = sample - base
+                        expected = (base % 2) * (1-fraction) + ((base+1) % 2) * fraction
+                        value = pixels[20 * scale][screen_x][0]
+                        self.assertAlmostEqual(value, expected, delta=.002)
+                        row.append(value)
+                    if previous is not None:
+                        self.assertNotEqual(row, previous)
+                    previous = row
+                backend.delete_tile(tile)
 
     def test_shadow_strip_and_glow_execute(self):
         r=self.renderer

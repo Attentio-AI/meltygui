@@ -321,6 +321,7 @@ def test_frame_applies_worker_results_before_input_and_draw(native, monkeypatch)
 def test_safe_zone_updates_native_layout_only_when_setting_changes(native, monkeypatch):
     from meltygui.core.runtime.toggles import Toggles
 
+    monkeypatch.setattr(Toggles.Mobile, 'automatic_safe_area', False)
     monkeypatch.setattr(Toggles.Mobile, 'Safezone', 64)
     monkeypatch.setattr(Toggles.Mobile, 'bottom_safezone', 24)
     native.surface.start()
@@ -342,6 +343,25 @@ def test_safe_zone_updates_native_layout_only_when_setting_changes(native, monke
     assert native.host.safe_zones[-1] == (0.0, 0.0)
     native.surface.close()
     assert not Melty.is_touch
+
+
+def test_automatic_safe_area_delegates_rotation_and_can_restore_manual_reserves(native, monkeypatch):
+    from meltygui.core.runtime.toggles import Toggles
+
+    monkeypatch.setattr(Toggles.Mobile, 'automatic_safe_area', True)
+    monkeypatch.setattr(Toggles.Mobile, 'Safezone', 64)
+    monkeypatch.setattr(Toggles.Mobile, 'bottom_safezone', 28)
+    native.surface.start()
+    assert native.host.safe_zones == [(-1.0, -1.0)]
+    for index in range(3):
+        native.surface.frame(frame_info(index), [])
+    assert native.host.safe_zones == [(-1.0, -1.0)]
+    Toggles.Mobile.automatic_safe_area = False
+    native.surface.frame(frame_info(3), [])
+    assert native.host.safe_zones[-1] == (64.0, 28.0)
+    Toggles.Mobile.automatic_safe_area = True
+    native.surface.frame(frame_info(4), [])
+    assert native.host.safe_zones[-1] == (-1.0, -1.0)
 
 
 @pytest.mark.parametrize("setting", ["Safezone", "bottom_safezone"])

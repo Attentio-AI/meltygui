@@ -18,6 +18,10 @@ def install_check(application):
     (output / 'result.json').unlink(missing_ok=True)
     Path.home = classmethod(lambda cls: sandbox)
     from meltygui.core.runtime import app
+    from meltygui.core.runtime.toggles import Toggles
+    # This probe exercises explicit reserve changes. Automatic UIKit layout has
+    # its own safe-area tests; keep this scenario independent of device insets.
+    Toggles.Mobile.automatic_safe_area = False
     from meltygui import glfw_window
     from meltygui.core.core_render import render_func
     from meltygui.view.text_view import draw_text

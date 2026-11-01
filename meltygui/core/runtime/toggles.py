@@ -486,10 +486,12 @@ class Swoosh:
 @window(tint=(0.27, 0.19, 0.14))
 class Toggles:
     class Mobile:
-        # Top inset in logical UI pixels (UIKit points), below the Dynamic
-        # Island/status area. Set to 0 for edge-to-edge content.
+        # Follow UIKit's top/side safe areas and draw through to the bottom edge.
+        # Disable to use the manual top and bottom reserves below.
+        automatic_safe_area = True
+        # Manual top inset in UIKit points. Zero allows edge-to-edge content.
         Safezone = 64
-        # Bottom strip in UIKit points, above the home indicator.
+        # Manual bottom reserve in UIKit points.
         bottom_safezone = 28
         # During iOS icon generation, top up the artwork's existing transparent
         # margin to 10%. Disable to retain its original fit. Applied on next Run.

@@ -49,7 +49,7 @@ def test_replay_requires_resident_complete_capture_and_honors_external_changes()
     assert not cache.can_replay_resize(ds)
 
 
-@pytest.mark.parametrize('size', [(180, 120), (460, 340)])
+@pytest.mark.parametrize('size', [(180, 120), (460, 340), (180.125, 120.375), (460.25, 340.125)])
 def test_pixels_do_not_stretch_and_footer_tracks_bottom(monkeypatch, size):
     from meltygui.core.cache import tile_cache
     from meltygui.core.rendering import view_identity
@@ -84,8 +84,15 @@ def test_pixels_do_not_stretch_and_footer_tracks_bottom(monkeypatch, size):
     visible_w, visible_h = min(width, 300), min(height - 28, 172)
     assert body.args == (2, (40, 60), (40 + visible_w, 60 + visible_h),
                          (0, 1), (visible_w / 512, 1 - visible_h / 256))
-    assert footer.args == (2, (40, 60 + height - 28), (40 + visible_w, 60 + height),
-                           (0, 1 - 172 / 256), (visible_w / 512, 1 - 200 / 256))
+    assert footer.args[:3] == (2, (40, 60 + height - 28), (40 + visible_w, 60 + height))
+    uv_a, uv_b = footer.args[3:]
+    assert uv_a[0] == 0 and uv_b[0] == visible_w / 512
+    assert (uv_a[1] - uv_b[1]) * 256 == pytest.approx(28)
+    # The independently moved footer must map destination pixel centers to
+    # source texel centers, even when its new bottom edge is fractional.
+    destination_top = 60 + height - 28
+    source_top = (1 - uv_a[1]) * 256
+    assert destination_top - source_top == pytest.approx(round(destination_top - source_top))
     dl.push_clip_rect.assert_not_called()
     dl.pop_clip_rect.assert_not_called()
     assert ds.width == width and ds.height == height
@@ -94,6 +101,75 @@ def test_pixels_do_not_stretch_and_footer_tracks_bottom(monkeypatch, size):
     assert cache._frozen_served['child'] is ds
     assert cache._key_to_ctx['child'].size == size
     dl.channels_set_current.assert_called_once_with(Melty.get_channel(ds.depth))
+
+
+@pytest.mark.parametrize('scale', [(1., 1.), (1.25, 1.5), (2., 2.), (3., 3.)])
+@pytest.mark.parametrize('replay', ['resize', 'overlay'])
+def test_cached_replay_keeps_native_texels_sharp(gl_context, monkeypatch, scale, replay):
+    """Exercise draw_tiles and the File Editor's child overlay through OpenGL."""
+    import numpy as np
+    from OpenGL import GL as gl
+    from meltygui import imgui
+    from meltygui.core.cache import tile_cache
+    from meltygui.core.rendering import overlay, view_identity
+    cache, ds, tile = resident()
+    cache._pixel_scale = tile.pixel_scale = scale
+    cache.tex_init_count = 0
+    tile.alloc_size = (513, 257)  # Physical allocation rounds at fractional DPI.
+    tile.capture_offset = (.25, .75)
+    monkeypatch.setattr(Melty, 'cache', cache)
+    monkeypatch.setattr(Melty, 'get_clip_rect', lambda: (0, 0, 160, 140))
+    monkeypatch.setattr(Melty, 'channels_split', False)
+    monkeypatch.setattr(Melty, 'frame_count', 12)
+    monkeypatch.setattr(Melty, 'silence_invalidate', False)
+    monkeypatch.setattr(view_identity, 'place_in_parent_window', lambda _: None)
+    monkeypatch.setattr(overlay, 'finish_cached_overlays', lambda *args: None)
+    aw, ah = tile_cache._tile_pixel_size(tile, allocated=True)
+    tile.tex = tile_cache._create_color_tex(aw, ah)  # Keep linear filtering enabled.
+    yy, xx = np.indices((ah, aw))
+    pattern = ((xx + yy) % 2).astype('f')
+    pixels = np.stack((pattern, pattern, pattern, np.ones_like(pattern)), axis=-1)
+    gl.glBindTexture(gl.GL_TEXTURE_2D, tile.tex)
+    gl.glTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, aw, ah, gl.GL_RGBA, gl.GL_FLOAT, pixels)
+    fw, fh = int(160 * scale[0]), int(140 * scale[1])
+    output = tile_cache._create_color_tex(fw, fh)
+    fbo, _ = tile_cache._create_fbo_with_tex(output, False, fw, fh)
+    io = imgui.get_io()
+    old_size, old_scale = tuple(io.display_size), tuple(io.display_fb_scale)
+    rect, footer_height = (20.375, 12.625, 80.25, 90.375), 12.25
+    try:
+        io.display_size, io.display_fb_scale = (160, 140), scale
+        imgui.new_frame()
+        imgui.set_next_window_position(0, 0)
+        imgui.set_next_window_size(160, 140)
+        imgui.begin('Native tile replay', flags=imgui.WINDOW_NO_DECORATION | imgui.WINDOW_NO_BACKGROUND)
+        if replay == 'resize':
+            assert cache.replay_resize(ds, rect, footer_height=footer_height)
+        else:
+            ds.abs_left, ds.abs_top, ds.width, ds.height = rect
+            ds.abs_clip_rect = (rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3])
+            assert overlay.paint_cached_view(ds)
+        imgui.end()
+        imgui.render()
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo)
+        gl.glViewport(0, 0, fw, fh)
+        gl.glClearColor(.3, .3, .3, 1)
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+        gl_context[1].render(imgui.get_draw_data())
+        rendered = np.array(gl.glReadPixels(0, 0, fw, fh, gl.GL_RGBA, gl.GL_FLOAT)).reshape(fh, fw, 4)
+        x, y, width, height = rect
+        for top, bottom in [(y, y + height - footer_height), (y + height - footer_height, y + height)]:
+            region = rendered[fh - int(bottom * scale[1]) + 2:fh - int(top * scale[1]) - 2,
+                              int(x * scale[0]) + 2:int((x + width) * scale[0]) - 2, :3]
+            assert region.size
+            # Interpolation of the checkerboard would create grey values.
+            assert np.max(np.minimum(abs(region), abs(1 - region))) < .002
+            assert region.min() < .002 and region.max() > .998
+    finally:
+        io.display_size, io.display_fb_scale = old_size, old_scale
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        gl.glDeleteFramebuffers(1, [fbo])
+        gl.glDeleteTextures(2, [tile.tex, output])
 
 
 def test_tile_replay_is_atomic_and_rejects_renderer_or_input_replacement(monkeypatch):

@@ -33,8 +33,9 @@ static PyObject *setKeyboardVisible(PyObject *, PyObject *args) {
 static PyObject *setSafeZone(PyObject *, PyObject *args) {
     double top, bottom;
     if (!PyArg_ParseTuple(args, "dd", &top, &bottom)) return nullptr;
-    if (!std::isfinite(top) || top < 0 || !std::isfinite(bottom) || bottom < 0) {
-        PyErr_SetString(PyExc_ValueError, "safe zone must be a finite nonnegative number");
+    if (!std::isfinite(top) || (top < 0 && top != -1) ||
+        !std::isfinite(bottom) || (bottom < 0 && bottom != -1)) {
+        PyErr_SetString(PyExc_ValueError, "safe zone must be nonnegative or -1 for automatic layout");
         return nullptr;
     }
     [gHost setSafeZone:top bottom:bottom];
@@ -69,7 +70,7 @@ static PyMethodDef nativeMethods[] = {
     {"request_frame", requestFrame, METH_NOARGS, "Wake display pacing."},
     {"write_log", writeLog, METH_VARARGS, "Write to the on-device host log."},
     {"set_keyboard_visible", setKeyboardVisible, METH_VARARGS, "Show or hide text input."},
-    {"set_safe_zone", setSafeZone, METH_VARARGS, "Inset the native content from the screen top and bottom, in UIKit points."},
+    {"set_safe_zone", setSafeZone, METH_VARARGS, "Reserve top/bottom UIKit points, or -1 for automatic top safety and edge-to-edge bottom layout."},
     {"get_clipboard_text", getClipboardText, METH_NOARGS, "Read the latest UIKit clipboard snapshot."},
     {"set_clipboard_text", setClipboardText, METH_VARARGS, "Copy text through UIKit asynchronously."},
     {nullptr, nullptr, 0, nullptr},

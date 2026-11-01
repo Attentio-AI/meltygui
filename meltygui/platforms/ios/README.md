@@ -22,6 +22,34 @@ including on buttons, background and drag handles. The next tap activates
 normally. Explicit handles retain mouse dragging when scrolling is idle, and
 cached controls are re-hit at the contact origin so the first tap works.
 
+## Fractional rendering
+
+Scroll and drag positions stay in floating-point logical coordinates through
+DrawState, nested layout, clipping, ImGui text and cached-image replay. Native
+binding `meltygui-imgui` 2.0.3 is required; updating Python sources alone cannot
+remove the older binding's integer layout and text snapping.
+
+Columns, rows, split dividers and tile bodies also retain fractional logical sizes,
+including padding, footer placement and resize previews. Cache coverage is tracked
+in that same coordinate space so a fractional edge does not force repeated redraws.
+Texture allocations and newly exposed resize bands use enclosing physical texels;
+the resize bands include the stored capture offset to preserve existing edge pixels.
+Native OS window-size requests remain quantized at the platform boundary.
+
+The GL and Metal tile backends copy an integer enclosure of the live framebuffer
+without resampling it. Each tile stores its fractional capture origin and reserves
+an extra allocation point for the edge texel. Replay UVs account for that origin
+and the actual physical texture dimensions, including fractional display scales.
+Color images use linear sampling when moved; depth ranks retain nearest sampling.
+Cached subtree masks, frozen-resize previews, toolbars and clip rectangles share
+the same placement. A recapture with a different fractional origin clears stale
+pixels from the old origin rather than mixing the two coordinate grids.
+
+Regression coverage includes native-resolution capture at fractional origins,
+first-live versus cached mask alignment, fractional text vertices and nested
+geometry, and GPU readbacks for quarter-physical-pixel motion at 1x, 2x and 3x.
+Both the OpenGL and device Metal paths exercise the fractional image replay.
+
 ## Application inputs
 
 The build tools are installed with MeltyGUI:
@@ -57,13 +85,29 @@ theme icon paths are supported. When a checkout moves to the Mac, stale absolute
 paths can be rebased against the project name or a launcher `Exec` executable
 that also exists in the new checkout.
 
+Without a desktop launcher, `tool.melty.app.icon` or `tool.hub.ios.icon` supplies
+the artwork through the same HDR-preserving pipeline. Hub's generic Python/GLFW
+runner also uses this pipeline for apps that package MeltyGUI.
+
 HDR artwork must be a 16-bit Rec.2020/PQ PNG with a cICP tag. It is resized in
 premultiplied linear light and written as straight-alpha 16-bit PQ RGBA PNGs,
-preserving full transparency with cICP and content-light metadata. iPhone/iPad icon
-files are registered through `CFBundleIcons` and copied without PNG compression.
+preserving full transparency with cICP and content-light metadata. The bundled
+`rec2020-pq.icc` profile (Google Inc. 2016, the same profile used by Hub's project
+list) is also embedded as iCCP, so ICC-based icon consumers interpret the PQ
+samples and Rec.2020 primaries consistently with the project-list artwork.
+Home Screen copies are fitted to standard-range Display P3 with a filmic
+highlight shoulder and chroma compensation. On the tested iPhone, SpringBoard exports an 8-bit
+Display P3 icon and clips bright PQ channels, washing out blue and gold. Fitting
+the gamut and tone curve before packaging keeps colored midtones bright and
+saturated instead of letting the system clip each channel independently. Fully
+transparent RGB does not affect the exposure. The project's HDR master and its
+project-list rendering are unchanged; the low-level HDR writer still preserves
+absolute brightness. Content-light metadata uses the standard `cLLI` spelling.
+The iPhone/iPad icon files are registered through `CFBundleIcons` and copied
+without PNG compression.
 This deliberately bypasses `actool`: Xcode's app-icon asset compilation converts
-PQ artwork to 8-bit sRGB. The built bundle preserves HDR; the system launcher
-controls how it displays those files. The Home Screen's native Default/Dark icon
+PQ artwork to 8-bit sRGB. The built bundle retains 16-bit wide-color samples;
+the system launcher controls how it displays those files. The Home Screen's native Default/Dark icon
 appearance supplies the background behind the transparent artwork; the build
 does not paint a background. This was checked with the iOS 27.2 Home Screen.
 This path has not been validated for App Store submission or for HDR brightness
@@ -272,9 +316,14 @@ Dependencies and the signed bundle remain read-only. Clipboard access,
 keyboard visibility, safe-zone updates and frame requests are native services.
 Input and frame dimensions use UIKit points; `scale` converts to Metal pixels.
 Keyboard viewport animation uses the presentation-layer bounds at native scale.
-`Toggles.Mobile.Safezone` controls the top inset (64 points by default);
-`Toggles.Mobile.bottom_safezone` controls the bottom home-indicator strip (28 points).
-Both persist with the normal settings and can be set to zero for edge-to-edge content. Idle rendering pauses; active
+`Toggles.Mobile.automatic_safe_area` defaults to true: UIKit supplies the actual
+top and side insets for this scene, updating them on rotation. Content reaches the
+bottom edge behind the home indicator, unless the app explicitly requests an
+additional bottom inset. Keyboard avoidance operates inside that rectangle without
+adding a home-indicator reserve. Disable automatic mode to use `Toggles.Mobile.Safezone` and
+`Toggles.Mobile.bottom_safezone` as manual top/bottom reserves (64 and 28 points).
+Manual reserves persist with normal settings and may be zero. Side cutouts remain
+protected in both modes. Idle rendering pauses; active
 rendering requests the available cadence up to 120 Hz.
 The Metal display link allows two frames of scheduling time so CPU preparation
 and GPU execution can overlap even when their combined time exceeds 8.3 ms.

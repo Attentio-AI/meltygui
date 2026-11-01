@@ -63,7 +63,6 @@ from meltygui.core.melty import MeltyState
 from meltygui.core.melty import SearchTerm
 from meltygui.core.melty import search_walk
 from meltygui.core.layout.cursor_core import same_line
-from meltygui.core.cache.tile_marks import snap_int
 from meltygui.core.cache.tile_marks import add_shadow
 from meltygui.core.cache.tile_marks import clear_shadows
 from meltygui.state.annotation_state import AnnotationOverride
@@ -213,7 +212,7 @@ def column_boundary(content_width, n_cols, offsets, c):
     the last column take an explicit width. A column's width is the gap between
     its own boundary and the next one.
     """
-    base = snap_int(content_width / n_cols * c)
+    base = content_width / n_cols * c
     if offsets and 1 <= c <= n_cols and c - 1 < len(offsets):
         base += offsets[c - 1]
     return base
@@ -231,7 +230,7 @@ def set_column_width(column_parent, n_cols, column, column_width):
     content_width = column_parent.content_width
     offsets = column_parent.column_offsets
     left_boundary = column_boundary(content_width, n_cols, offsets, column)
-    base_right = snap_int(content_width / n_cols * (column + 1))
+    base_right = content_width / n_cols * (column + 1)
     if len(offsets) <= column:
         offsets.extend([0] * (column + 1 - len(offsets)))
     offsets[column] = left_boundary + column_width - base_right
@@ -1738,9 +1737,9 @@ def render_func(*args, **o_kwargs):
             Melty.draw_state_stack.append(draw_state)
         draw_state._has_popup = kwargs.get("has_popup", False)
         if passed_width is not None:
-            draw_state.width = snap_int(passed_width)
+            draw_state.width = passed_width
         if passed_height is not None:
-            draw_state.height = snap_int(passed_height)
+            draw_state.height = passed_height
             draw_state._source["height"] = "passed height"
 
         Melty.input_value_stack.append(input_value)
@@ -2392,9 +2391,9 @@ def render_func(*args, **o_kwargs):
                                 resize_trace.record("queue-y-error", draw_state, handle_drag, error=True)
                                 queued_rows = False
                         if not queued_rows and not fixed_frame:
-                            new_h = snap_int(max(size_h, draw_state.min_height))
+                            new_h = max(size_h, draw_state.min_height)
                             if draw_state.max_height:
-                                new_h = min(new_h, snap_int(draw_state.max_height))
+                                new_h = min(new_h, draw_state.max_height)
                             draw_state.height = new_h
                             draw_state._source["height"] = "initial window size"
                             if from_top_left:
@@ -2459,7 +2458,7 @@ def render_func(*args, **o_kwargs):
                                 resize_trace.record("queue-x-error", draw_state, handle_drag, error=True)
                                 queued = False
                         if not queued and not fixed_frame:
-                            new_w = snap_int(max(size_w, draw_state.min_width))
+                            new_w = max(size_w, draw_state.min_width)
                             draw_state.width = new_w
                             if from_top_left:
                                 # Direct LEFT-edge fallback (no edge exists in
@@ -2516,24 +2515,24 @@ def render_func(*args, **o_kwargs):
                                 draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy))
                         elif anchor_pos == Anchor.TOP_CENTER:
                             draw_state.window_pos = (
-                                snap_int(draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx) / 2),
+                                (draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx) / 2),
                                 draw_state.window_pos[1])
                         elif anchor_pos == Anchor.BOTTOM_CENTER:
                             draw_state.window_pos = (
-                                snap_int(draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx) / 2),
+                                (draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx) / 2),
                                 draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy))
                         elif anchor_pos == Anchor.CENTER_LEFT:
                             draw_state.window_pos = (
                                 draw_state.window_pos[0],
-                                snap_int(draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy) / 2))
+                                (draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy) / 2))
                         elif anchor_pos == Anchor.CENTER_RIGHT:
                             draw_state.window_pos = (
                                 draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx),
-                                snap_int(draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy) / 2))
+                                (draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy) / 2))
                         elif anchor_pos == Anchor.CENTER:
                             draw_state.window_pos = (
-                                snap_int(draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx) / 2),
-                                snap_int(draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy) / 2))
+                                (draw_state._initial_window_pos_resize[0] + max(0, handle_drag.total_dx) / 2),
+                                (draw_state._initial_window_pos_resize[1] + max(0, handle_drag.total_dy) / 2))
 
                     # Sticky resize: re-anchor the top to the drag-start
                     # position each frame so the bottom-on-display clamp below
@@ -2591,28 +2590,28 @@ def render_func(*args, **o_kwargs):
                         abs_top_tl = draw_state._abs_top()
                         if abs_top_tl < 0:
                             if passed_height is None:
-                                draw_state.height = snap_int(draw_state.height + abs_top_tl)
+                                draw_state.height = draw_state.height + abs_top_tl
                             draw_state.window_pos = (draw_state.window_pos[0],
-                                                     snap_int(draw_state.window_pos[1] - abs_top_tl))
+                                                     (draw_state.window_pos[1] - abs_top_tl))
                     display_h = imgui.get_io().display_size[1]
                     abs_top = draw_state._abs_top()
                     if abs_top + draw_state.height > display_h and not queued_rows:
                         new_h, slide = os_frame.clamp_far_edge(
                             abs_top, draw_state.height, display_h, cap_size=passed_height is None)
                         if new_h != draw_state.height:
-                            draw_state.height = snap_int(new_h)
+                            draw_state.height = new_h
                         if slide > 0:
                             draw_state.window_pos = (draw_state.window_pos[0],
-                                                     snap_int(draw_state.window_pos[1] - slide))
+                                                     (draw_state.window_pos[1] - slide))
                     display_w = imgui.get_io().display_size[0]
                     abs_left = draw_state._abs_left()
                     if abs_left + draw_state.width > display_w and not queued:
                         new_w, slide = os_frame.clamp_far_edge(
                             abs_left, draw_state.width, display_w, cap_size=passed_width is None)
                         if new_w != draw_state.width:
-                            draw_state.width = snap_int(new_w)
+                            draw_state.width = new_w
                         if slide > 0:
-                            draw_state.window_pos = (snap_int(draw_state.window_pos[0] - slide),
+                            draw_state.window_pos = ((draw_state.window_pos[0] - slide),
                                                      draw_state.window_pos[1])
                     resize_trace.record("drag-applied", draw_state, handle_drag,
                                         queued_x=queued, queued_y=queued_rows)
@@ -2812,7 +2811,7 @@ def render_func(*args, **o_kwargs):
                 # shift the whole body until the next native acknowledgement.
                 if (not _explicit_window_pos or draw_state.pin_to_clip is not None
                         or draw_state._frame_pinned):
-                    imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
+                    imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
 
             kwargs['melty_window'] = False
             Melty.size_stack.append((draw_state.width, draw_state.height))
@@ -2824,8 +2823,7 @@ def render_func(*args, **o_kwargs):
 
 
             ######################## ERROR HANDLING FOR TYPES ########################
-            cursor_pos = imgui.get_cursor_pos()
-            imgui.set_cursor_pos((snap_int(cursor_pos[0]), snap_int(cursor_pos[1])))
+            # Preserve fractional scroll/drag origins through layout and rasterization.
 
 
             # A caller's mutation notification invalidates the rendered tile
@@ -2993,8 +2991,8 @@ def render_func(*args, **o_kwargs):
                 column_parent._column_width = parent_wrap_width
 
 
-                parent_wrap_left = draw_state.abs_left + snap_int(left_boundary)
-                available_width = int(parent_wrap_width - indent_x - 5)
+                parent_wrap_left = draw_state.abs_left + left_boundary
+                available_width = parent_wrap_width - indent_x - 5
             else:
                 # content_margin is a RIGHT-side depth inset (2 px per stacked
                 # bg) that keeps nested content short of the enclosing bg
@@ -3013,7 +3011,7 @@ def render_func(*args, **o_kwargs):
             if column is not None and column_parent is not None:
                 max_height = column_max_height(column_parent)
                 if not closable:
-                    draw_state.height = snap_int(min(draw_state.height, max_height))
+                    draw_state.height = min(draw_state.height, max_height)
                     draw_state._source["height"] = "column not closable, item_rect[1]"
 
             if kwargs.get("show_bg", False):
@@ -3029,10 +3027,10 @@ def render_func(*args, **o_kwargs):
                     if len(Melty.fixed_size_stack) > 1:
                         fixed_size_draw_state = Melty.fixed_size_stack[-2]
                         parent_wrap_width = fixed_size_draw_state.width
-                        draw_state.width = snap_int(parent_wrap_width)
-                    draw_state.height = snap_int(fill_height_result) - content_margin
+                        draw_state.width = parent_wrap_width
+                    draw_state.height = fill_height_result - content_margin
                     parent_wrap_width = fixed_size_draw_state.width
-                    available_width = snap_int(parent_wrap_width)
+                    available_width = parent_wrap_width
 
                 else:
                     if len(Melty.fixed_size_stack) > 2:
@@ -3040,9 +3038,9 @@ def render_func(*args, **o_kwargs):
                     else:
                         fixed_size_draw_state = Melty.melty_window_stack[-1] if len(Melty.melty_window_stack) > 0 else draw_state
                     parent_wrap_width = fixed_size_draw_state.width
-                    available_width = snap_int(parent_wrap_width)
+                    available_width = parent_wrap_width
                     draw_state._source["height"] = "fill height"
-                    draw_state.width = snap_int(available_width)
+                    draw_state.width = available_width
 
                     view_top = draw_state.abs_top
                     if draw_state.parent_window is not None:
@@ -3137,14 +3135,14 @@ def render_func(*args, **o_kwargs):
                 # default size, a shrunk window) lands under it too.
                 if closable and draw_state.max_height and draw_state.height:
                     if draw_state.height > draw_state.max_height:
-                        draw_state.height = snap_int(draw_state.max_height)
+                        draw_state.height = draw_state.max_height
                         draw_state._source["height"] = "max_height cap"
 
             ################# Columns
             if column is not None and column_parent is not None and draw_state.parent_window is not None:
                 column_cursor_y = column_parent._column_cursor[column][1] + column_parent._columns_top
-                imgui.set_cursor_screen_pos((snap_int(parent_wrap_left + indent_x),
-                                             snap_int(parent_wrap_top + column_cursor_y)))
+                imgui.set_cursor_screen_pos((parent_wrap_left + indent_x,
+                                             parent_wrap_top + column_cursor_y))
 
                 # See the main-entry capture at :393 - store unscrolled position
                 # in parent_window's content so _abs_left can react to mid-frame
@@ -3735,8 +3733,6 @@ def render_func(*args, **o_kwargs):
 
                 begin_group(unique)
 
-                draw_state.left = snap_int(draw_state.left)
-                draw_state.top = snap_int(draw_state.top)
                 # expected_type = param_types[0] if len(param_types) > 0 else None
                 # --- convert_in / convert_out (explicit function chains) ---
                 # Check decorator kwargs first, then runtime kwargs (from Mode).
@@ -4591,11 +4587,6 @@ def render_func(*args, **o_kwargs):
                 width = draw_state.width
                 height = draw_state.height
 
-                top = snap_int(top)
-                left = snap_int(left)
-                width = snap_int(width)
-                height = snap_int(height)
-
                 #### MAIN CALL #######################
                 Melty.push_clip((left, top,
                                  left + width,
@@ -4994,7 +4985,7 @@ def render_func(*args, **o_kwargs):
                     if passed_width is None:
                         max_width = kwargs.get("max_width", 1e9)
                         min_width = kwargs.get("min_width", 20)
-                        draw_state.width = snap_int(max(min(item_rect[0], max_width), min_width))
+                        draw_state.width = max(min(item_rect[0], max_width), min_width)
 
                 if passed_height is None and kwargs.get("fill_height", None) is None:
                     max_height = kwargs.get("max_height", 1e9)
@@ -5004,11 +4995,11 @@ def render_func(*args, **o_kwargs):
                         # the pre-rendering clamp - bound it the same way.
                         max_height = min(max_height, column_max_height(column_parent))
                     if not closable:
-                        draw_state.height = min(snap_int(item_rect[1]), max_height)
+                        draw_state.height = min(item_rect[1], max_height)
                         draw_state._source["height"] = "not closable, item_rect[1]"
                     else:
                         display_height = imgui.get_io().display_size[1]
-                        draw_state.height = snap_int(min(item_rect[1], min(display_height, max_height)))
+                        draw_state.height = min(item_rect[1], min(display_height, max_height))
                         draw_state._source["height"] = "closable, item_rect[1]"
 
             elif (closable and passed_height is None
@@ -5022,8 +5013,7 @@ def render_func(*args, **o_kwargs):
                         and Melty.pending_placeholder_frame != Melty.frame_count):
                     display_height = imgui.get_io().display_size[1]
                     max_height = kwargs.get("max_height", 1e9)
-                    draw_state.height = snap_int(
-                        max(min(item_rect[1], display_height, max_height), 20))
+                    draw_state.height = max(min(item_rect[1], display_height, max_height), 20)
                     draw_state._source["height"] = "initial content height"
                     draw_state._height_from_content = False
 
@@ -5070,7 +5060,7 @@ def render_func(*args, **o_kwargs):
                 # persisted size, a shrunk content) lands under it too.
                 if closable and draw_state.max_height and draw_state.height:
                     if draw_state.height > draw_state.max_height:
-                        draw_state.height = snap_int(draw_state.max_height)
+                        draw_state.height = draw_state.max_height
                         draw_state._source["height"] = "max_height cap"
 
 
@@ -5749,7 +5739,7 @@ def render_func(*args, **o_kwargs):
 
                     draw_state._return_value = return_value
                     end_cursor = imgui.get_cursor_screen_pos()
-                    draw_state.observed_content_height = int(end_cursor[1] - start_cursor[1])
+                    draw_state.observed_content_height = end_cursor[1] - start_cursor[1]
 
                     Melty.silence_invalidate = True
 

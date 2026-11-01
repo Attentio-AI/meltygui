@@ -44,8 +44,8 @@ def test_absolute_position_parent_cycle_remains_bounded(monkeypatch):
         node.left_offset, node.top_offset = 0, 0
         node.window_pos = (0., 0.)
     first.parent_window, second.parent_window = second, first
-    assert isinstance(first.abs_left, int)
-    assert isinstance(first.abs_top, int)
+    assert first.abs_left == 0.0
+    assert first.abs_top == 0.0
 
 
 def _nested_chain(monkeypatch, depth=6):

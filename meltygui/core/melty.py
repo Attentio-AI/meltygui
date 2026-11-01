@@ -4048,7 +4048,7 @@ class Melty:
             except Exception:
                 pass
         kwargs['layer_unique'] = draw_state.unique
-        imgui.set_cursor_screen_pos((int(draw_state.abs_left), int(draw_state.abs_top)))
+        imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
 
         if Toggles.debug_z_depth:
             draw_list = imgui.get_overlay_draw_list()
@@ -6073,12 +6073,11 @@ class Melty:
         draw_list = imgui.get_window_draw_list()
         current_clip = cls.get_clip_rect()
         if current_clip is not None:
-            from meltygui.core.cache.tile_marks import snap_int
             clip_new_rect = (
-                max(current_clip[0], snap_int(rect[0])),
-                max(current_clip[1], snap_int(rect[1])),
-                min(current_clip[2], snap_int(rect[2])),
-                min(current_clip[3], snap_int(rect[3])),
+                max(current_clip[0], rect[0]),
+                max(current_clip[1], rect[1]),
+                min(current_clip[2], rect[2]),
+                min(current_clip[3], rect[3]),
             )
             rect = clip_new_rect
 

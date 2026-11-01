@@ -14,7 +14,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from meltygui.core.runtime.toggles import Toggles
-from meltygui.image_load import png_pq_cicp, pq_decode, read_png16
+from meltygui.image_load import PRIMARIES_TO_SRGB, png_pq_cicp, pq_decode, read_png16
 from meltygui.model.folder_icon_model import Probe, decode_icon, folder_icon_candidates, stamp
 
 
@@ -22,6 +22,41 @@ from meltygui.model.folder_icon_model import Probe, decode_icon, folder_icon_can
 ICON_SIZES = {'20x20': (1, 2, 3), '29x29': (1, 2, 3), '40x40': (1, 2, 3),
               '60x60': (2, 3), '76x76': (1, 2), '83.5x83.5': (2,)}
 INFO_TEMPLATE = Path(__file__).parent / 'Host/Info.plist'
+PQ_ICC_FILE = Path(__file__).with_name('rec2020-pq.icc')
+REC2020_TO_P3 = np.linalg.solve(PRIMARIES_TO_SRGB[12], PRIMARIES_TO_SRGB[9])
+P3_TO_REC2020 = np.linalg.inv(REC2020_TO_P3)
+
+
+def home_screen_nits(nits, alpha=None):
+    """Fit the artwork to SpringBoard's standard-range Display P3 icon surface.
+
+    The system icon service clips bright PQ channels independently, turning
+    blue into lavender and gold into pale yellow. A filmic shoulder retains
+    bright midtones without clipping the highlights; chroma compensation keeps
+    that compression from lifting saturated blue/gold toward white. This
+    affects launcher copies, never the HDR master.
+    """
+    p3 = np.maximum(nits @ REC2020_TO_P3.T, 0)
+    peak = float(p3.max()) if alpha is None else float(
+        np.max(p3, where=alpha[..., None] > 0, initial=0))
+    if peak > 203:
+        # Remove part of the neutral component only in colorful pixels before
+        # compression. Neutrals keep equal channels and are never color-tinted.
+        maximum = p3.max(axis=-1, keepdims=True)
+        minimum = p3.min(axis=-1, keepdims=True)
+        saturation = np.divide(maximum - minimum, maximum,
+                               out=np.zeros_like(maximum), where=maximum > 0)
+        colorful = p3 - .8 * saturation * minimum
+
+        def shoulder(value):
+            # Hable's filmic curve, with a 100-nit exposure reference. This
+            # lifts the icon's body while rolling its much brighter glints off.
+            x = value / 100
+            return ((x * (.15 * x + .10 * .50) + .20 * .02)
+                    / (x * (.15 * x + .50) + .20 * .30)) - .02 / .30
+
+        p3 = np.clip(shoulder(colorful) / shoulder(peak), 0, 1) * 203
+    return np.maximum(p3 @ P3_TO_REC2020.T, 0)
 
 
 def foreground_scale(alpha):
@@ -52,6 +87,13 @@ def icon_dimensions(width, height, size, artwork_scale):
 
 def write_hdr_icon(path, nits, size, cicp, alpha=None, *, artwork_scale=1.0):
     """Resample premultiplied linear light; emit straight-alpha 16-bit PQ RGBA."""
+    if cicp != bytes((9, 16, 0, 1)):
+        raise ValueError('HDR app icons require full-range RGB Rec.2020/PQ')
+    # Preserve the artwork's absolute brightness. ImageIO's default headroom
+    # is not a proven display limit and must not become an exposure adjustment
+    # or a 1000-nit cap. Only suppress resampling overshoot beyond the source.
+    peak = float(nits.max()) if alpha is None else float(
+        np.max(nits, where=alpha[..., None] > 0, initial=0))
     height, width = nits.shape[:2]
     dimensions = icon_dimensions(width, height, size, artwork_scale)
     opacity = np.ones((height, width), dtype=np.float32) if alpha is None else alpha.astype(np.float32) / 65535
@@ -65,7 +107,7 @@ def write_hdr_icon(path, nits, size, cicp, alpha=None, *, artwork_scale=1.0):
     # PNG stores straight alpha, so unpremultiply before PQ encoding.
     resized = np.divide(premultiplied, resized_alpha[..., None], out=np.zeros_like(premultiplied),
                         where=resized_alpha[..., None] > 1e-6)
-    resized = np.clip(resized, 0, float(nits.max()))
+    resized = np.clip(resized, 0, peak)
     square = np.zeros((size, size, 3), dtype=np.float32)
     square_alpha = np.zeros((size, size), dtype=np.float32)
     x, y = (size - dimensions[0]) // 2, (size - dimensions[1]) // 2
@@ -83,7 +125,12 @@ def write_hdr_icon(path, nits, size, cicp, alpha=None, *, artwork_scale=1.0):
     light = struct.pack('>II', round(float(visible.max()) * 10000),
                         round(float(visible.max(axis=-1).mean()) * 10000))
     path.write_bytes(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 16, 6, 0, 0, 0))
-                     + chunk(b'cICP', cicp) + chunk(b'cLLi', light)
+                     # PNG chunk names are case-sensitive: cLLi is an obsolete
+                     # draft spelling, not the standard content-light metadata.
+                     + chunk(b'cICP', cicp) + chunk(b'cLLI', light)
+                     # Match the project-list PNGs: ICC-based icon decoders also
+                     # need the PQ transfer and Rec.2020 primaries, not bare codes.
+                     + chunk(b'iCCP', b'HDR RGB\0\0' + zlib.compress(PQ_ICC_FILE.read_bytes()))
                      + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
 
 
@@ -173,7 +220,7 @@ def prepare_icon(root, build, *, name=None):
         previous = json.loads(receipt.read_text())
     except (OSError, ValueError):
         previous = {}
-    if (previous.get('root') == str(root) and previous.get('version') == 5
+    if (previous.get('root') == str(root) and previous.get('version') == 11
             and previous.get('host_runtime') == host_runtime
             and previous.get('identity') == list(identity)
             and previous.get('auto_margin') == Toggles.Mobile.icon_auto_margin
@@ -193,8 +240,18 @@ def prepare_icon(root, build, *, name=None):
         desktop, value, source = chosen
         if source is None:
             raise ValueError(f'{desktop}: launcher icon {value!r} could not be resolved')
+    else:
+        # A launcher can supply an HDR counterpart to a manifest's SDR icon.
+        # Without a launcher, still process configured artwork through this
+        # pipeline instead of flattening it via xtool/actool or replacing it.
+        value = config.get('icon') or data.get('tool', {}).get('hub', {}).get('ios', {}).get('icon')
+        if value:
+            source = (artwork_root / value).resolve()
+            if not probe.exists(source):
+                raise ValueError(f'{manifest}: app icon {value!r} could not be resolved')
     probe.exists(INFO_TEMPLATE)
     probe.exists(Path(__file__))
+    probe.exists(PQ_ICC_FILE)
     info = plistlib.loads(INFO_TEMPLATE.read_bytes())
     if host_runtime:
         runtime_manifest = Path(host_runtime) / 'runtime.json'
@@ -211,11 +268,10 @@ def prepare_icon(root, build, *, name=None):
             rgb, alpha, cicp = read_png16(source)
             if cicp != bytes([9, 16, 0, 1]):
                 raise ValueError(f'{source}: HDR app icons require full-range RGB Rec.2020/PQ')
-            nits = pq_decode(rgb.astype(np.float64) / 65535)
+            nits = home_screen_nits(pq_decode(rgb.astype(np.float64) / 65535), alpha)
         else:
             # A declared HDR icon must never silently fall through an SDR decoder.
-            config = probe.config(desktop)
-            if config.get('Desktop Entry', 'X-HDR-Icon', fallback='').strip():
+            if chosen is not None and probe.config(desktop).get('Desktop Entry', 'X-HDR-Icon', fallback='').strip():
                 raise ValueError(f'{source}: X-HDR-Icon must be a tagged 16-bit Rec.2020/PQ PNG')
             pixels = decode_icon(source, size=1024)
             image = Image.frombytes('RGBA', (pixels.width, pixels.height), pixels.data)
@@ -256,7 +312,7 @@ def prepare_icon(root, build, *, name=None):
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     outputs.append(destination / 'Info.plist')
     receipt.touch(exist_ok=True)
-    receipt.write_text(json.dumps(dict(version=5, identity=identity, root=str(root), launchers=launchers, hdr=nits is not None,
+    receipt.write_text(json.dumps(dict(version=11, identity=identity, root=str(root), launchers=launchers, hdr=nits is not None,
         auto_margin=Toggles.Mobile.icon_auto_margin, host_runtime=host_runtime,
         source=str(source) if source else None,
         dependencies={str(path): stamp(path) for path in probe.dependencies if path != root},

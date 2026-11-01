@@ -149,8 +149,17 @@
 
 @interface MeltyController : UIViewController
 @property(nonatomic, strong) MeltyHost *host;
+@property(nonatomic, strong) NSLayoutConstraint *automaticBottom;
 @end
 @implementation MeltyController
+- (void)viewSafeAreaInsetsDidChange {
+    [super viewSafeAreaInsetsDidChange];
+    [self updateBottomInset];
+}
+- (void)updateBottomInset {
+    // Draw behind the home indicator; only explicit app reserves inset the bottom.
+    self.automaticBottom.constant = -MAX(0, self.additionalSafeAreaInsets.bottom);
+}
 - (void)loadView {
     // UIKit owns the unobscured native viewport. Resizing this child feeds the
     // real bounds through MeltyView.layoutSubviews into Python's normal native
@@ -158,8 +167,8 @@
     UIView *root = [[UIView alloc] initWithFrame:UIScreen.mainScreen.bounds];
     root.backgroundColor = UIColor.blackColor;
     self.view = root;
-    // The configurable top and bottom strips belong to UIKit, outside the Metal canvas.
-    // Keyboard geometry and touches then use the same local content coordinates.
+    // UIKit owns the top/side edges; content extends behind the home indicator.
+    // Manual top/bottom reserves remain available; automatic layout is the default.
     UIView *container = [[UIView alloc] initWithFrame:CGRectZero];
     container.translatesAutoresizingMaskIntoConstraints = NO;
     [root addSubview:container];
@@ -167,20 +176,25 @@
     safeZoneTop.priority = UILayoutPriorityRequired - 1;
     NSLayoutConstraint *safeZoneBottom = [container.bottomAnchor constraintEqualToAnchor:root.bottomAnchor];
     safeZoneBottom.priority = UILayoutPriorityRequired - 1;
+    NSLayoutConstraint *automaticTop = [container.topAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.topAnchor];
+    NSLayoutConstraint *automaticBottom = [container.bottomAnchor constraintEqualToAnchor:root.bottomAnchor];
+    self.automaticBottom = automaticBottom;
+    [self updateBottomInset];
+    automaticTop.priority = automaticBottom.priority = UILayoutPriorityRequired - 1;
     [NSLayoutConstraint activateConstraints:@[
-        safeZoneTop,
+        automaticTop,
         [container.topAnchor constraintGreaterThanOrEqualToAnchor:root.topAnchor],
         [container.heightAnchor constraintGreaterThanOrEqualToConstant:1],
-        [container.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
-        [container.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],
-        safeZoneBottom,
+        [container.leadingAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.leadingAnchor],
+        [container.trailingAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.trailingAnchor],
+        automaticBottom,
         [container.bottomAnchor constraintLessThanOrEqualToAnchor:root.bottomAnchor],
     ]];
     MeltyView *view = [[MeltyView alloc] initWithFrame:CGRectZero];
     view.translatesAutoresizingMaskIntoConstraints = NO;
     [container addSubview:view];
     UIKeyboardLayoutGuide *keyboard = container.keyboardLayoutGuide;
-    keyboard.usesBottomSafeArea = NO; // Use the configured bottom inset when hidden.
+    keyboard.usesBottomSafeArea = NO; // The container already owns the bottom reserve.
     keyboard.followsUndockedKeyboard = YES;
     [NSLayoutConstraint activateConstraints:@[
         [view.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
@@ -227,8 +241,15 @@
     } keyboard:^(BOOL visible) {
         if (visible) [weakView becomeFirstResponder]; else [weakView resignFirstResponder];
     } safeZone:^(CGFloat top, CGFloat bottom) {
-        safeZoneTop.constant = top;
-        safeZoneBottom.constant = -bottom;
+        // Switch anchors, not a sampled inset: rotation and scene changes then
+        // update the viewport immediately, without a Python-frame round trip.
+        [NSLayoutConstraint deactivateConstraints:@[automaticTop, automaticBottom, safeZoneTop, safeZoneBottom]];
+        safeZoneTop.constant = MAX(0, top);
+        safeZoneBottom.constant = -MAX(0, bottom);
+        [NSLayoutConstraint activateConstraints:@[
+            top == -1 ? automaticTop : safeZoneTop,
+            bottom == -1 ? automaticBottom : safeZoneBottom,
+        ]];
         [weakRoot setNeedsLayout];
     }];
     view.host = self.host;
