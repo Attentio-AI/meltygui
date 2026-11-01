@@ -38,6 +38,8 @@ MELTY_BENCH=1 also prints it and exits after the first frame.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import inspect
 import os
 import pathlib
@@ -54,6 +56,7 @@ _state = dict(booted=False, ran=False, app_id=None, app_name=None, cache=None, i
               import_error=None, switch_interval=None, failed=False)
 # The kernel keeps a process's name (/proc/<pid>/comm) in 16 bytes including the terminator.
 PROCESS_NAME_BYTES = 15
+_embedded_app_state = ContextVar('meltygui_embedded_app_state', default=None)
 
 
 def mark(label):
@@ -81,6 +84,25 @@ def _write_startup_log(app_id, subject):
 
 
 # --- boot -------------------------------------------------------------------------
+@contextmanager
+def embedded_imports():
+    """Import views into an existing host without starting their application.
+
+    Window registration, boot/run and first-frame startup callbacks stay with
+    the host. Persisted models start from their factories in a temporary,
+    shared import scope; the source app's saved session is never opened.
+    Nested and transitive imports share that scope, isolated from other threads.
+    """
+    if _embedded_app_state.get() is not None:
+        yield
+        return
+    token = _embedded_app_state.set({})
+    try:
+        yield
+    finally:
+        _embedded_app_state.reset(token)
+
+
 def install_native_host(host):
     """Select an externally paced host before app imports register their views.
 
@@ -116,6 +138,8 @@ def _utf8_output():
 def boot(app_id=None):
     """Start meltygui: shortcuts, glfw, the owner window, the import thread.
     Idempotent; the first @glfw_window calls it."""
+    if _embedded_app_state.get() is not None:
+        return
     if _state['booted']:
         if app_id and app_id != _state['app_id']:
             print(f"meltygui: app_id {app_id!r} ignored — already booted as {_state['app_id']!r} "
@@ -318,6 +342,8 @@ def after_first_frame(fn):
     model loads): their imports and GIL time then come after the first
     frame instead of stretching it. Registered after that frame, ``fn``
     runs at once."""
+    if _embedded_app_state.get() is not None:
+        return
     if _state.get('presented'):
         fn()
     else:
@@ -351,12 +377,16 @@ def persisted(name, factory, *, app_id=None):
     `app_id` names the session file when this runs before the first
     `@glfw_window` (the usual place — the object feeds the window's body);
     the decorator's later `app_id` must match it."""
-    boot(app_id)
-    session = _load_session()
-    saved = session.app_state.get(name)
+    app_state = _embedded_app_state.get()
+    if app_state is None:
+        boot(app_id)
+        app_state, key = _load_session().app_state, name
+    else:
+        key = (app_id, name)
+    saved = app_state.get(key)
     if saved is None or (isinstance(factory, type) and not isinstance(saved, factory)):
         saved = factory()
-        session.app_state[name] = saved
+        app_state[key] = saved
     return saved
 
 
@@ -457,6 +487,8 @@ def glfw_window(fn=None, *, name=None, width=1280, height=800, app_id=None, app_
     the new kwargs on the next frame — instead of registering a second
     root."""
     def wrap(fn):
+        if _embedded_app_state.get() is not None:
+            return fn
         boot(app_id)
         name_app(app_name)
         try:
@@ -697,6 +729,8 @@ def refresh_surface(surface):
 
 def run():
     """Open every registered window and run until the last one closes."""
+    if _embedded_app_state.get() is not None:
+        return
     if _state['ran']:
         return
     _unhook_main_return()

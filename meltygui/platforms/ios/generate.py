@@ -19,17 +19,22 @@ BUILD = build_directory()
 ROOT = Path(__file__).resolve().parent
 
 
-def generation_inputs():
+def generation_inputs(host_runtime=None):
     """Project structure changes require regeneration, not dependency rebuilding."""
     stat = Path(__file__).stat()
-    return {'generator': [stat.st_mtime_ns, stat.st_size],
-            'sources': sorted(path.name for path in (ROOT / 'Host').glob('*.mm'))}
+    inputs = {'generator': [stat.st_mtime_ns, stat.st_size],
+              'sources': sorted(path.name for path in (ROOT / 'Host').glob('*.mm'))}
+    if host_runtime:
+        manifest = Path(host_runtime) / 'runtime.json'
+        stat = manifest.stat()
+        inputs['host_runtime'] = [str(manifest), stat.st_mtime_ns, stat.st_size]
+    return inputs
 
 
 def generate(*, python_framework, python_lib, app_dir, packages_dir=None,
              output=BUILD, team="", bundle_id=None,
              entry_module=None, application=None, project_python=None,
-             renderer_sources=(), embed_frameworks=(), toolkit_dir=ROOT.parents[1]):
+             renderer_sources=(), embed_frameworks=(), toolkit_dir=ROOT.parents[1], host_runtime=None):
     from meltygui.platforms.ios.application import read_application
     app_config = read_application(application or app_dir)
     bundle_id = bundle_id or app_config['bundle_id']
@@ -40,6 +45,10 @@ def generate(*, python_framework, python_lib, app_dir, packages_dir=None,
     packages_dir = Path(packages_dir).resolve() if packages_dir else None
     output = Path(output).resolve()
     toolkit_dir = Path(toolkit_dir).resolve()
+    host_runtime = Path(host_runtime).resolve() if host_runtime else None
+    additions = json.loads((host_runtime / 'runtime.json').read_text()) if host_runtime else {}
+    runtime_sources = [host_runtime / path for path in additions.get('sources', [])]
+    libraries = [host_runtime / path for path in additions.get('libraries', [])]
     if python_framework.name != "Python.framework":
         raise ValueError("Pass the ARM64 iOS device slice's Python.framework")
     project_python = select_project_python(app_config['root'], project_python)
@@ -53,9 +62,9 @@ def generate(*, python_framework, python_lib, app_dir, packages_dir=None,
     if not all(part.isidentifier() for part in entry_module.split(".")):
         raise ValueError("The entry module must be a Python dotted module name")
 
-    sources = sorted((ROOT / "Host").glob("*.mm")) + [Path(path).resolve() for path in renderer_sources]
+    sources = sorted((ROOT / "Host").glob("*.mm")) + [Path(path).resolve() for path in renderer_sources] + runtime_sources
     frameworks = [python_framework] + [Path(path).resolve() for path in embed_frameworks]
-    for path in sources + frameworks:
+    for path in sources + frameworks + libraries:
         if not path.exists():
             raise ValueError(f"Missing native source or framework: {path}")
     if len({path.name for path in frameworks}) != len(frameworks):
@@ -78,20 +87,22 @@ def generate(*, python_framework, python_lib, app_dir, packages_dir=None,
             fields["settings"] = settings
         return add(f"build:{key}:{ref}", "PBXBuildFile", **fields)
 
-    source_refs = [file(path, "sourcecode.cpp.objcpp") for path in sources]
+    source_types = {'.c': 'sourcecode.c.c', '.cpp': 'sourcecode.cpp.cpp', '.m': 'sourcecode.c.objc', '.mm': 'sourcecode.cpp.objcpp'}
+    source_refs = [file(path, source_types[path.suffix]) for path in sources]
     header_refs = [file(path, "sourcecode.c.h") for path in sorted((ROOT / "Host").glob("*.h*"))]
     linked_refs = [file(path, "wrapper.framework") for path in frameworks]
+    library_refs = [file(path, 'archive.ar') for path in libraries]
     system_refs = [file(f"System/Library/Frameworks/{name}.framework", "wrapper.framework", "SDKROOT")
                    for name in ("UIKit", "Foundation", "CoreGraphics", "Metal", "QuartzCore", "Network", "Security", "UniformTypeIdentifiers")]
     product = add("product", "PBXFileReference", explicitFileType="wrapper.application",
                   path="Melty.app", sourceTree="BUILT_PRODUCTS_DIR")
     products = add("products", "PBXGroup", children=[product], name="Products", sourceTree="<group>")
-    group = add("group", "PBXGroup", children=source_refs + header_refs + linked_refs + system_refs + [products],
+    group = add("group", "PBXGroup", children=source_refs + header_refs + linked_refs + library_refs + system_refs + [products],
                 sourceTree="<group>")
     compile_phase = add("sources", "PBXSourcesBuildPhase", buildActionMask=2147483647,
                         files=[build_file(ref) for ref in source_refs], runOnlyForDeploymentPostprocessing=0)
     link_phase = add("frameworks", "PBXFrameworksBuildPhase", buildActionMask=2147483647,
-                     files=[build_file(ref) for ref in linked_refs + system_refs], runOnlyForDeploymentPostprocessing=0)
+                     files=[build_file(ref) for ref in linked_refs + library_refs + system_refs], runOnlyForDeploymentPostprocessing=0)
     embed_phase = add("embed", "PBXCopyFilesBuildPhase", buildActionMask=2147483647,
                       files=[build_file(ref, {"ATTRIBUTES": ["CodeSignOnCopy", "RemoveHeadersOnCopy"]}, "embed")
                              for ref in linked_refs], dstPath="", dstSubfolderSpec=10, name="Embed Frameworks",
@@ -128,9 +139,10 @@ def generate(*, python_framework, python_lib, app_dir, packages_dir=None,
             "CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER": "NO",
             "ENABLE_USER_SCRIPT_SANDBOXING": "NO", "CODE_SIGN_STYLE": "Automatic",
             "PRODUCT_NAME": "Melty", "PRODUCT_BUNDLE_IDENTIFIER": bundle_id,
-            "INFOPLIST_FILE": str(ROOT / "Host/Info.plist"), "GENERATE_INFOPLIST_FILE": "NO",
+            "INFOPLIST_FILE": str(ROOT / 'Host/Info.plist'), "GENERATE_INFOPLIST_FILE": "NO",
             "FRAMEWORK_SEARCH_PATHS": ["$(inherited)"] + sorted({str(path.parent) for path in frameworks}),
-            "HEADER_SEARCH_PATHS": ["$(inherited)", str(ROOT / "Host"), str(python_framework / "Headers")],
+            "HEADER_SEARCH_PATHS": ["$(inherited)", str(ROOT / "Host"), str(python_framework / "Headers")]
+                                   + [str(host_runtime / path) for path in additions.get('includes', [])],
             "LD_RUNPATH_SEARCH_PATHS": ["$(inherited)", "@executable_path/Frameworks"],
             "GCC_OPTIMIZATION_LEVEL": "0" if name == "Debug" else "s",
             "GCC_PREPROCESSOR_DEFINITIONS": ["$(inherited)", "DEBUG=1"] if name == "Debug" else ["$(inherited)"],
@@ -163,10 +175,12 @@ def generate(*, python_framework, python_lib, app_dir, packages_dir=None,
         "python_framework": str(python_framework), "python_version": runtime['version'],
         "python_magic": runtime['magic'], "project_python": project_python,
         "project_dir": str(app_config['root'].resolve()),
-        "generation_inputs": generation_inputs(),
+        "generation_inputs": generation_inputs(host_runtime),
         "generator": {"team": team, "toolkit_dir": str(toolkit_dir),
                       "renderer_sources": [str(Path(path).resolve()) for path in renderer_sources],
-                      "embed_frameworks": [str(Path(path).resolve()) for path in embed_frameworks]},
+                      "embed_frameworks": [str(Path(path).resolve()) for path in embed_frameworks],
+                      **({'host_runtime': str(host_runtime)} if host_runtime else {})},
+        **({'host_runtime': str(host_runtime)} if host_runtime else {}),
         "packages_dir": str(packages_dir) if packages_dir else None,
         "bootstrap_dir": str(ROOT / "Python"), "bundle_id": bundle_id, "entry_module": entry_module,
         "shaders_dir": str(shaders_dir),

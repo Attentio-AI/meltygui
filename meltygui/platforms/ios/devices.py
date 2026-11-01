@@ -153,7 +153,7 @@ def input_stamps(paths):
 def native_inputs(build, config):
     project = build / 'MeltyIOS.xcodeproj/project.pbxproj'
     paths = [build / 'host-build.json', project, Path(__file__).parent]
-    paths.extend(config[key] for key in ('python_lib', 'bootstrap_dir', 'packages_dir', 'shaders_dir') if config.get(key))
+    paths.extend(config[key] for key in ('python_lib', 'bootstrap_dir', 'packages_dir', 'shaders_dir', 'host_runtime') if config.get(key))
     if project.is_file():
         objects = plistlib.loads(project.read_bytes())['objects']
         paths.extend(item['path'] for item in objects.values()

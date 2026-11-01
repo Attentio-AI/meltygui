@@ -138,6 +138,11 @@ def prepare(config, bundle, *, identity=None, signing_allowed=True):
     copy_tree(Path(config["python_lib"]), bundle / "python/lib")
     copy_tree(Path(config["app_dir"]), bundle / "app", checkout_root=True)
     copy_tree(Path(config["bootstrap_dir"]), bundle / "host")
+    additions = {}
+    if config.get('host_runtime'):
+        host_runtime = Path(config['host_runtime'])
+        additions = json.loads((host_runtime / 'runtime.json').read_text())
+        shutil.copytree(host_runtime / 'Resources', bundle, dirs_exist_ok=True)
     packages = bundle / "app_packages"
     if config.get("packages_dir"):
         copy_tree(Path(config["packages_dir"]), packages)
@@ -199,6 +204,7 @@ def prepare(config, bundle, *, identity=None, signing_allowed=True):
     (bundle / "HostSettings.plist").write_bytes(plistlib.dumps({
         "entry_module": config["entry_module"], "source_generation": uuid.uuid4().hex,
         "source_updates": 1, "source_files": files,
+        **additions.get('settings', {}),
     }))
     return modules
 

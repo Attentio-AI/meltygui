@@ -377,7 +377,10 @@ static const char *kindName(melty::InputKind kind) {
             _displayLink = [[CAMetalDisplayLink alloc] initWithMetalLayer:_layer];
             _displayLink.delegate = self;
             _displayLink.preferredFrameLatency = 1;
-            _displayLink.preferredFrameRateRange = CAFrameRateRangeMake(30, 120, 120);
+            // A lower minimum permits ProMotion to settle at 80 Hz even when
+            // rendering keeps up. Request the native rate while frames are active.
+            float maximumFPS = (float)_maximumFramesPerSecond;
+            _displayLink.preferredFrameRateRange = CAFrameRateRangeMake(maximumFPS, maximumFPS, maximumFPS);
             _displayLink.paused = YES;
             [_displayLink addToRunLoop:runLoop forMode:NSRunLoopCommonModes];
         }

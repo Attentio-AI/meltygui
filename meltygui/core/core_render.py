@@ -3,7 +3,6 @@ import inspect
 import sys
 import time
 import threading
-import traceback
 import types
 import zlib
 from collections import defaultdict
@@ -57,7 +56,6 @@ from meltygui.utils.render_utils import pop_style_var
 from meltygui.core.windowing.glfw_utils import request_render
 from meltygui.core.windowing.glfw_utils import note_shared_change
 from meltygui.core.windowing.glfw_utils import print_stack_trace
-from meltygui.core.windowing.glfw_utils import trace_group
 from meltygui.core.windowing.glfw_utils import get_live_frames
 from meltygui.core.melty import Melty
 from meltygui.core.melty import apply_collection_action
@@ -112,38 +110,17 @@ def _report_draw_exception(e, draw_state, func):
     if hotswap_guard.handle_exception(e):
         request_render()
 
-    # Check if previous stack trace is the same as the current one to avoid flooding logs with the same error
-    is_same_exception = False
-    if draw_state is not None and draw_state._stack_trace is not None:
-        previous_exception = draw_state._stack_trace
-        if type(e) == type(previous_exception):
-            is_same_exception = True
     if draw_state is not None:
         draw_state._stack_trace = e
 
-    if not is_same_exception:
-        # The fancy printer resolves watches against live objects and
-        # can itself throw. An escape here would land in the finally
-        # below, whose return DISCARDS the in-flight exception and the
-        # original trace would vanish without a sound. Fall back to a
-        # plain traceback, which cannot fail.
+    # Called directly from the wrapper's except blocks, while the failed
+    # view's ImGui group/clip is active. Draw on every failed frame.
+    if imgui.get_current_context() is not None:
+        imgui.push_style_color(imgui.COLOR_TEXT, 1.0, 0.25, 0.28, 1.0)
         try:
-            with trace_group(f"Drawing {func.__name__} {draw_state.name}", hash=draw_state.unique) as g:
-                watch = ["draw_state.name", "input_value", "convert_path", "clean_args.input_value", "func.__name__",
-                         "mode"]
-                print_stack_trace(frames=get_live_frames(), section="UI Thread",
-                                  group=g, watch=watch)
-                print_stack_trace(exception=e, section="Exception",
-                                  group=g, watch=watch)
-                print_stack_trace(exception=e, ignore_functions=[])
-        except Exception as report_err:
-            print(f"print_stack_trace failed, plain traceback for {func.__name__}:")
-            traceback.print_exception(type(e), e, e.__traceback__)
-            print("--- reporter's own failure ---")
-            traceback.print_exception(type(report_err), report_err,
-                                      report_err.__traceback__)
-    else:
-        print(f"Exception in {func.__name__}: {e}")
+            imgui.text_wrapped(f"Error in {func.__name__}: {type(e).__name__}: {e}")
+        finally:
+            imgui.pop_style_color()
 
 
 
@@ -380,7 +357,8 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
         col_grab = pack_color(1, 1, 1, grab_alpha)
     col_border = imgui.get_color_u32(imgui.COLOR_BORDER)
 
-    dl = imgui.get_overlay_draw_list()
+    from meltygui.core.rendering.overlay import overlay_draw_list
+    dl = overlay_draw_list()
     if Melty._overlay_channels_active:
         dl.channels_set_current(Melty.overlay_channel_for(draw_state))
     overlay_clip = draw_state.abs_clip_rect

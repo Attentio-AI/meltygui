@@ -1,6 +1,9 @@
 """Launcher artwork for iOS, preserving PQ HDR instead of passing it through actool."""
 import hashlib
 import json
+import os
+import pickle
+import tomllib
 from pathlib import Path
 import plistlib
 import shutil
@@ -8,7 +11,7 @@ import struct
 import zlib
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.image_load import png_pq_cicp, pq_decode, read_png16
@@ -84,17 +87,95 @@ def write_hdr_icon(path, nits, size, cicp, alpha=None, *, artwork_scale=1.0):
                      + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
 
 
-def prepare_icon(root, build):
+
+class _MetadataReader(pickle.Unpickler):
+    def find_class(self, module, name):
+        raise pickle.UnpicklingError('File metadata must contain plain values')
+
+
+def fallback_identity(root):
+    """Read the app label and painted repository color, including generated hosts."""
+    manifest = root / 'pyproject.toml'
+    data = tomllib.loads(manifest.read_text()) if manifest.is_file() else {}
+    config = data.get('tool', {}).get('melty', {}).get('app', {})
+    repository = Path(config.get('icon_root', root)).resolve()
+    name = config.get('name') or data.get('tool', {}).get('hub', {}).get('ios', {}).get('name') or data.get('project', {}).get('name')
+    if not name:
+        for desktop in sorted(repository.glob('*.desktop')):
+            name = Probe().config(desktop).get('Desktop Entry', 'Name', fallback='').strip()
+            if name:
+                break
+    metadata = Path(os.environ.get('MELTY_FILE_META', Path.home() / '.melty/file_meta.pkl'))
+    tint = None
+    try:
+        with metadata.open('rb') as stream:
+            entries = _MetadataReader(stream).load().get('entries', {})
+        value = entries.get(str(repository), {}).get('tint')
+        if isinstance(value, (list, tuple)) and len(value) >= 3 and (len(value) < 4 or value[3]):
+            tint = [max(0, min(1, float(channel))) for channel in value[:3]]
+    except (OSError, ValueError, TypeError, AttributeError, EOFError, pickle.UnpicklingError):
+        pass
+    return str(name or repository.name), repository.name, tint
+
+
+def fallback_label(name, repository, draw):
+    """Wrap at spaces into up to three bold, readable lines; keep words intact."""
+    font_path = Path(__file__).parents[2] / 'resources/dejavu/DejaVuSans.ttf'
+    words = name.split()
+    for size in range(220, 95, -8):
+        font = ImageFont.truetype(str(font_path), size)
+        lines = []
+        for word in words:
+            if lines and draw.textlength(lines[-1] + ' ' + word, font=font) + 2 * round(size * .025) <= 800:
+                lines[-1] += ' ' + word
+            else:
+                lines.append(word)
+        if lines and len(lines) <= 3 and all(draw.textlength(line, font=font) + 2 * round(size * .025) <= 800 for line in lines):
+            return '\n'.join(lines), font
+    return (repository.strip()[:1] or '?').upper(), ImageFont.truetype(str(font_path), 560)
+
+
+def fallback_icon(name, repository, tint):
+    """An opaque, tinted tile with centered, contrast-safe typography."""
+    color = tuple(round(channel * 255) for channel in (tint or (0.22, 0.36, 0.58)))
+    image = Image.new('RGBA', (1024, 1024), (*color, 255))
+    draw = ImageDraw.Draw(image)
+    linear = [c / 12.92 if c <= .04045 else ((c + .055) / 1.055) ** 2.4 for c in (v / 255 for v in color)]
+    luminance = sum(c * weight for c, weight in zip(linear, (.2126, .7152, .0722)))
+    ink = 'black' if luminance > .179 else 'white'
+    label, font = fallback_label(name, repository, draw)
+    # Embolden the bundled font consistently, including on remote Macs.
+    stroke = max(2, round(font.size * .025))
+    left, top, right, bottom = draw.multiline_textbbox(
+        (0, 0), label, font=font, spacing=20, align='center', stroke_width=stroke)
+    draw.multiline_text(((1024 - right - left) / 2, (1024 - bottom - top) / 2),
+                        label, font=font, fill=ink, spacing=20, align='center',
+                        stroke_width=stroke, stroke_fill=ink)
+    return image
+
+
+def prepare_icon(root, build, *, name=None):
     """Refresh generated icons only when launcher/artwork inputs change."""
     root, build = Path(root).resolve(), Path(build).resolve()
+    manifest = root / 'pyproject.toml'
+    data = tomllib.loads(manifest.read_text()) if manifest.is_file() else {}
+    config = data.get('tool', {}).get('melty', {}).get('app', {})
+    artwork_root = Path(config.get('icon_root', root)).resolve()
     destination = build / 'app-icon'
     receipt = build / 'app-icon.json'
-    launchers = sorted(path.name for path in root.glob('*.desktop'))
+    host_config = build / 'host-build.json'
+    host_runtime = json.loads(host_config.read_text()).get('host_runtime') if host_config.is_file() else None
+    identity = fallback_identity(root)
+    if name:
+        identity = (str(name), *identity[1:])
+    launchers = sorted(path.name for path in artwork_root.glob('*.desktop'))
     try:
         previous = json.loads(receipt.read_text())
     except (OSError, ValueError):
         previous = {}
-    if (previous.get('root') == str(root) and previous.get('version') == 4
+    if (previous.get('root') == str(root) and previous.get('version') == 5
+            and previous.get('host_runtime') == host_runtime
+            and previous.get('identity') == list(identity)
             and previous.get('auto_margin') == Toggles.Mobile.icon_auto_margin
             and previous.get('launchers') == launchers
             and all(stamp(Path(path)) == (tuple(value) if value else None)
@@ -104,7 +185,8 @@ def prepare_icon(root, build):
         return destination, [Path(path) for path in previous['outputs'] if path.endswith('.png')]
 
     probe = Probe()
-    candidates = folder_icon_candidates(root, probe, 1024, prefer_hdr=True)
+    probe.exists(manifest)
+    candidates = folder_icon_candidates(artwork_root, probe, 1024, prefer_hdr=True)
     chosen = next(candidates, None)
     source = None
     if chosen is not None:
@@ -114,6 +196,10 @@ def prepare_icon(root, build):
     probe.exists(INFO_TEMPLATE)
     probe.exists(Path(__file__))
     info = plistlib.loads(INFO_TEMPLATE.read_bytes())
+    if host_runtime:
+        runtime_manifest = Path(host_runtime) / 'runtime.json'
+        probe.exists(runtime_manifest)
+        info.update(json.loads(runtime_manifest.read_text()).get('info', {}))
     nits = None
     alpha = None
     image = None
@@ -134,13 +220,16 @@ def prepare_icon(root, build):
             pixels = decode_icon(source, size=1024)
             image = Image.frombytes('RGBA', (pixels.width, pixels.height), pixels.data)
 
+    if source is None:
+        image = fallback_icon(*identity)
+
     if destination.exists():
         shutil.rmtree(destination)
     destination.mkdir(parents=True)
     outputs = []
-    if source is not None:
+    if image is not None or nits is not None:
         artwork_scale = 1.0
-        if Toggles.Mobile.icon_auto_margin:
+        if source is not None and Toggles.Mobile.icon_auto_margin:
             if nits is not None:
                 opacity = alpha if alpha is not None else np.ones(nits.shape[:2], dtype=np.uint8)
             else:
@@ -167,8 +256,8 @@ def prepare_icon(root, build):
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     outputs.append(destination / 'Info.plist')
     receipt.touch(exist_ok=True)
-    receipt.write_text(json.dumps(dict(version=4, root=str(root), launchers=launchers, hdr=nits is not None,
-        auto_margin=Toggles.Mobile.icon_auto_margin,
+    receipt.write_text(json.dumps(dict(version=5, identity=identity, root=str(root), launchers=launchers, hdr=nits is not None,
+        auto_margin=Toggles.Mobile.icon_auto_margin, host_runtime=host_runtime,
         source=str(source) if source else None,
         dependencies={str(path): stamp(path) for path in probe.dependencies if path != root},
         outputs={str(path): stamp(path) for path in outputs}), indent=2) + '\n')

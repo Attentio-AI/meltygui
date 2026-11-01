@@ -10,6 +10,7 @@ descendant overlays; draw_overlay paints the owning view's foreground afterward.
 import inspect
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 
 import meltygui_imgui as imgui
 
@@ -25,6 +26,32 @@ OVERLAY_BUDGET_SECONDS = 0.0005
 # Linear fade duration after the most recent budget overrun.
 OVERLAY_WARNING_FADE_SECONDS = 5.0
 _STATE_KEY = 'render_overlay'
+
+
+_draw_target = ContextVar('melty_overlay_draw_target', default=None)
+
+
+@contextmanager
+def overlay_draw_target(draw_list):
+    """Let an immediate host paint foregrounds in its window's ordered pass.
+
+    Hosts without Melty's GPU window masks must paint body and foreground
+    together, before painting the next floating window over them.
+    """
+    token = _draw_target.set(draw_list)
+    channels_active = Melty._overlay_channels_active
+    # The host list does not have the foreground list's window channels.
+    Melty._overlay_channels_active = False
+    try:
+        yield
+    finally:
+        Melty._overlay_channels_active = channels_active
+        _draw_target.reset(token)
+
+
+def overlay_draw_list():
+    target = _draw_target.get()
+    return imgui.get_overlay_draw_list() if target is None else target
 
 
 @no_save('callback', 'owner', 'code', 'names', 'error', 'budget_warning', 'budget_warning_at',
@@ -179,9 +206,9 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
     if state.error and state.error.startswith(f'{option}: ') and state.error.endswith('ms CPU budget'):
         state.error = None
     budget_warning = None
-    draw_list = imgui.get_overlay_draw_list() if foreground else imgui.get_window_draw_list()
+    draw_list = overlay_draw_list() if foreground else imgui.get_window_draw_list()
     clip = draw_state.abs_clip_rect
-    if foreground and Melty._overlay_channels_active:
+    if foreground and _draw_target.get() is None and Melty._overlay_channels_active:
         draw_list.channels_set_current(Melty.overlay_channel_for(draw_state))
     if clip is not None:
         draw_list.push_clip_rect(*clip, True)
@@ -236,7 +263,7 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
     finally:
         if clip is not None:
             draw_list.pop_clip_rect()
-        if foreground and Melty._overlay_channels_active:
+        if foreground and _draw_target.get() is None and Melty._overlay_channels_active:
             draw_list.channels_set_current(Melty.max_layer - 1)
     # getattr also supports existing instances retained across a live update.
     warning_alpha = 0.0
@@ -251,8 +278,8 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
             state.budget_warning = None
     if budget_warning is not None or (state.error is not None and not foreground):
         # An error painted below an opaque cached body would be invisible.
-        error_list = imgui.get_overlay_draw_list()
-        if Melty._overlay_channels_active:
+        error_list = overlay_draw_list()
+        if _draw_target.get() is None and Melty._overlay_channels_active:
             error_list.channels_set_current(Melty.overlay_channel_for(draw_state))
         if clip is not None:
             error_list.push_clip_rect(*clip, True)
@@ -290,7 +317,7 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
         finally:
             if clip is not None:
                 error_list.pop_clip_rect()
-            if Melty._overlay_channels_active:
+            if _draw_target.get() is None and Melty._overlay_channels_active:
                 error_list.channels_set_current(Melty.max_layer - 1)
     return result if state.error is None else None
 

@@ -2640,8 +2640,86 @@ class Melty:
                 Melty.cache.invalidate_up(tile_id, max_depth=10, force=True)
 
     @classmethod
-    def begin_frame(cls):
-        if cls.graphics_backend is None:
+    @contextmanager
+    def embedded_frame(cls, state, *, font=None):
+        """Run the native lifecycle inside the current host ImGui window.
+
+        The caller owns new_frame/render and the viewport. Each embedded pane
+        retains its own input handler, registry and deferred windows in state.
+        No OS surface or offscreen framebuffer is created here.
+        """
+        from meltygui.core.rendering.overlay import overlay_draw_target
+
+        style = imgui.get_style()
+        defaults = imgui.GuiStyle.create()
+        fields = tuple(name for name in dir(defaults)
+                       if not name.startswith('_') and name not in ('colors', 'color')
+                       and not callable(getattr(defaults, name)))
+        metrics = {name: getattr(style, name) for name in fields}
+        colors = tuple(tuple(style.colors[i]) for i in range(imgui.COLOR_COUNT))
+        scoped = ('unique_stack', 'draw_state_stack', 'font_style_stack',
+                  'font_base_stack', 'flow_spacing', 'indent_count', 'unindent_count',
+                  'original_spacing', 'original_window_padding', 'original_frame_padding',
+                  'layers', 'active_layer', 'paint_rank', 'depth', 'bg_stack',
+                  'clip_stack', 'annotation_mode', 'style_manager', 'backend',
+                  'event_handler', 'cache', 'root_draw_states', 'draw_state_registry')
+        previous = {name: getattr(cls, name) for name in scoped}
+        previous_global_style = cls.global_attrs.get('style_manager')
+        draw_list = imgui.get_window_draw_list()
+        cursor = imgui.get_cursor_screen_pos()
+        try:
+            for name, value in state.values.items():
+                setattr(cls, name, value)
+            cls.global_attrs['style_manager'] = cls.style_manager
+            cls.annotation_mode = False
+            cls.layers = []
+            for name in fields:
+                setattr(style, name, getattr(defaults, name))
+            for index in range(imgui.COLOR_COUNT):
+                style.colors[index] = hdr_color.style_color(*defaults.colors[index])
+            cls.style_manager.current_rgb = (0.0, 0.0, 0.0)
+            cls.style_manager.set_imgui_tint(*Toggles.Melty.app_root_tint)
+            if font is not None:
+                imgui.push_font(font)
+            try:
+                cls.begin_frame(embedded=True)
+                cls.imgui_main_window_hovered = imgui.is_window_hovered()
+                cls.push_clip((*draw_list.get_clip_rect_min(), *draw_list.get_clip_rect_max()))
+                try:
+                    with overlay_draw_target(draw_list):
+                        try:
+                            yield
+                        finally:
+                            cursor = imgui.get_cursor_screen_pos()
+                            cls.end_frame()
+                finally:
+                    cls.pop_clip()
+            finally:
+                if cls.channels_split:
+                    draw_list.channels_merge()
+                    cls.channels_split = False
+                cls.finalize_overlay_channels()
+                if font is not None:
+                    imgui.pop_font()
+        finally:
+            for name in state.values:
+                state.values[name] = getattr(cls, name)
+            for name, value in previous.items():
+                setattr(cls, name, value)
+            if previous_global_style is None:
+                cls.global_attrs.pop('style_manager', None)
+            else:
+                cls.global_attrs['style_manager'] = previous_global_style
+            for name, value in metrics.items():
+                setattr(style, name, value)
+            for index, color in enumerate(colors):
+                style.colors[index] = color
+            imgui.set_cursor_screen_pos(cursor)
+
+    @classmethod
+    def begin_frame(cls, *, embedded=False):
+        """Start a render frame; embedded hosts own framebuffer and mask setup."""
+        if not embedded and cls.graphics_backend is None:
             cls._sync_gl_error_checking()
         # Every cached tile holds pixels composed on the previous root colour
         # (and then adjusted against it): a root / toggle change repaints all.
@@ -2703,7 +2781,7 @@ class Melty:
 
         cls.layer_inc = 0.04 / ((Melty.max_layer - 1.0) * (Melty.max_depth - 1.0)) * 65535.0
 
-        if cls.graphics_backend is None:
+        if not embedded and cls.graphics_backend is None:
             import OpenGL.GL as gl
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, cls.default_framebuffer())
             gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
@@ -3033,7 +3111,8 @@ class Melty:
         cls.display_size = (fb_w, fb_h)
         # Masks/tiles cover the WHOLE framebuffer (shadow margin included).
         real_fb = cls.framebuffer_size or (fb_w, fb_h)
-        cls.cache.mask_begin_frame((int(real_fb[0]), int(real_fb[1])), imgui.get_io().display_fb_scale)
+        if not embedded:
+            cls.cache.mask_begin_frame((int(real_fb[0]), int(real_fb[1])), imgui.get_io().display_fb_scale)
 
         # Channel-split the foreground/overlay draw list the same way as the
         # window draw list (max_depth channels) so per-window overlays can be
@@ -3868,7 +3947,7 @@ class Melty:
         Melty.bg_depth = draw_state._bg_depth
 
         original_bg_stack = copy(Melty.bg_stack)
-        if draw_state._bg_stack is not None:
+        if draw_state._bg_stack:
             from meltygui.core.input.drag_drop_core import DragDrop
             if DragDrop.active and draw_state is DragDrop.item_ds:
                 # A dragged item is the one window that flips inline ->
@@ -6969,6 +7048,34 @@ Core.melty = Melty
 class DepthState:
     def __init__(self):
         self.flow_spacing = 0.0
+
+
+class EmbeddedFrameState:
+    """Persistent native resources for one immediate embedded render pane."""
+
+    def __init__(self):
+        from meltygui.core.input.input_handler import InputHandler
+        from meltygui.core.input.pynput_backend import ImGuiBackend
+        from meltygui.core.cache.tile_cache import TileCacheMasked
+        from meltygui.core.styling.style_core import ImGuiStyleManager
+
+        handler = InputHandler()
+        self.values = dict(event_handler=handler, backend=ImGuiBackend(handler),
+                           cache=TileCacheMasked(), style_manager=ImGuiStyleManager(),
+                           root_draw_states=defaultdict(list), draw_state_registry={})
+
+    def close(self, owner=None):
+        previous = Melty.root_draw_states
+        Melty.root_draw_states = self.values['root_draw_states']
+        try:
+            Melty.release_window_tree(owner)
+            for children in list(Melty.root_draw_states.values()):
+                for child in list(children):
+                    Melty.release_window_tree(child)
+            Melty.root_draw_states.clear()
+            self.values['draw_state_registry'].clear()
+        finally:
+            Melty.root_draw_states = previous
 
 
 class MeltyState:

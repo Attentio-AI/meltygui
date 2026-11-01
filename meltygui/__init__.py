@@ -22,6 +22,7 @@ from meltygui.core.styling.style import default_tint_accumulation
 from meltygui.core.styling.style import default_scalar_accumulation
 
 from meltygui.core.runtime.app import boot
+from meltygui.core.runtime.app import embedded_imports
 from meltygui.core.runtime.app import glfw_window
 from meltygui.core.runtime.app import run
 from meltygui.core.runtime.app import pressed
@@ -121,6 +122,6 @@ def __getattr__(name):
     return value
 
 
-__all__ = ['Style', 'boot', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', 'after_first_frame', 'checkpoint',
+__all__ = ['Style', 'boot', 'embedded_imports', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', 'after_first_frame', 'checkpoint',
            'toggles', 'window_api', 'imgui',
            *_VIEWS]

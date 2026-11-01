@@ -184,7 +184,7 @@ def draw_bool(
     text_inset = 11
     
     # [tint=(0.939, 0.836, 0.595, 1.0), show_tint=True]
-    cursor_start = imgui.get_cursor_pos_x()
+    cursor_start = imgui.get_cursor_screen_pos().x
 
     if input_value:
         bg_color = pack_color(*Tint.checkbox_bg_selected(), 1.0)
@@ -232,8 +232,9 @@ def draw_bool(
     # edge and letting the box grow left over the header - so when there's
     # absolutely no room it starts overlapping the header rather than overflowing.
     right_offset = cell_width - width
-    box_left = imgui.get_cursor_pos_x() + left_margin + right_offset
-    box_right = imgui.get_cursor_pos_x() + width + right_offset
+    # Draw-list geometry and hit testing both use screen coordinates.
+    box_left = imgui.get_cursor_screen_pos().x + left_margin + right_offset
+    box_right = imgui.get_cursor_screen_pos().x + width + right_offset
     
     # abs_top and abs_left should be used when the top/left of the view port is needed
     box_top = draw_state.abs_top

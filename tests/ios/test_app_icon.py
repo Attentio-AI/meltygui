@@ -82,8 +82,8 @@ def test_noop_source_edits_and_icon_replacement(tmp_path, monkeypatch, icon_proj
         assert image.getpixel((90, 90)) == (0, 0, 255, 255)
     desktop.unlink()
     app_icon.sync_project_icon(tmp_path, build)
-    assert not icon.exists()
-    assert 'CFBundleIcons' not in plistlib.loads((build / 'app-icon/Info.plist').read_bytes())
+    assert icon.exists()
+    assert 'CFBundleIcons' in plistlib.loads((build / 'app-icon/Info.plist').read_bytes())
 
 
 def test_new_launcher_and_deleted_output_are_detected(tmp_path, icon_project):
@@ -198,3 +198,45 @@ def test_margin_toggle_changes_geometry_and_invalidates_cache(tmp_path, icon_pro
         assert (xs.min(), ys.min()) == pytest.approx((inset, inset), abs=1)
         assert (xs.max(), ys.max()) == pytest.approx((179 - inset, 179 - inset), abs=1)
         assert alpha[0, 0] == 0
+
+
+def test_fallback_name_tint_and_cache(tmp_path, monkeypatch):
+    import pickle
+    metadata = tmp_path / 'metadata.pkl'
+    monkeypatch.setenv('MELTY_FILE_META', str(metadata))
+    (tmp_path / 'pyproject.toml').write_text('[tool.melty.app]\nname = "My Great App"\n')
+    metadata.write_bytes(pickle.dumps({'entries': {str(tmp_path): {'tint': (.8, .2, .1, 1)}}}))
+    build = tmp_path / 'build'
+    destination, icons = app_icon.prepare_icon(tmp_path, build)
+    assert len(icons) == 14
+    icon = destination / 'AppIcon60x60@3x.png'
+    assert Image.open(icon).getpixel((0, 0)) == (204, 51, 26, 255)
+    before = icon.stat().st_mtime_ns
+    app_icon.prepare_icon(tmp_path, build)
+    assert icon.stat().st_mtime_ns == before
+    metadata.write_bytes(pickle.dumps({'entries': {str(tmp_path): {'tint': (.1, .2, .8, 1)}}}))
+    app_icon.prepare_icon(tmp_path, build)
+    assert Image.open(icon).getpixel((0, 0)) == (26, 51, 204, 255)
+
+
+def test_fallback_wrap_and_repository_initial():
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(Image.new('RGB', (1024, 1024)))
+    label, font = app_icon.fallback_label('My Great App', 'repository', draw)
+    assert label.replace('\n', ' ') == 'My Great App'
+    assert '\n' in label
+    label, font = app_icon.fallback_label('UnreasonablyLongApplicationName' * 10, 'repository', draw)
+    assert label == 'R'
+
+
+def test_generated_host_uses_original_repository(tmp_path, monkeypatch):
+    import pickle
+    repository = tmp_path / 'original-repo'
+    repository.mkdir()
+    host = tmp_path / 'host'
+    host.mkdir()
+    (host / 'pyproject.toml').write_text('[tool.melty.app]\nname = "Original App"\nicon_root = ' + json.dumps(str(repository)))
+    metadata = tmp_path / 'metadata.pkl'
+    metadata.write_bytes(pickle.dumps({'entries': {str(repository): {'tint': (.2, .3, .4, 1)}}}))
+    monkeypatch.setenv('MELTY_FILE_META', str(metadata))
+    assert app_icon.fallback_identity(host) == ('Original App', 'original-repo', [.2, .3, .4])

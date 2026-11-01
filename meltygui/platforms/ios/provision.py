@@ -730,7 +730,7 @@ def ensure_configuration(root, build, config, *, cache_root=None, refresh_local=
     except (ValueError, OSError, StopIteration):
         ready = False
     if ready:
-        if config.get('generation_inputs') == generation_inputs():
+        if config.get('generation_inputs') == generation_inputs(_generation_options(build, config).get('host_runtime')):
             return config, compiler, info
         # Native host APIs/frameworks can change while Python inputs stay ready.
         # Regenerate locally so an existing project picks up those changes too.

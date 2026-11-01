@@ -293,6 +293,47 @@ assert module.value == 42
             self.assertEqual((self.target / "app_packages" / name / "__init__.py").read_text(), f"# package {name}\n")
         self.assertEqual((self.target / "app/resources/build/template.py").read_text(), "# application resource\n")
 
+    def test_host_runtime_survives_project_generation_and_bundle_packaging(self):
+        runtime = self.root / 'host runtime'
+        (runtime / 'Resources/host').mkdir(parents=True)
+        (runtime / 'Sources').mkdir()
+        (runtime / 'Sources/Settings.mm').write_text('// native overlay\n')
+        (runtime / 'Sources/hooks.c').write_text('// C hooks\n')
+        (runtime / 'libssh.a').write_bytes(b'fixture archive')
+        (runtime / 'Resources/host/runner.py').write_text('def run(settings, source): pass\n')
+        (runtime / 'Resources/LaunchProfile.json').write_text('{"name": "Fixture"}')
+        additions = dict(sources=['Sources/Settings.mm', 'Sources/hooks.c'], includes=['Sources'],
+                         libraries=['libssh.a'], info={'HubLaunchParentBundle': 'org.test.fixture'},
+                         settings=dict(entry_runner='runner:run', entry_settings={'module': 'main'}))
+        (runtime / 'runtime.json').write_text(json.dumps(additions))
+        output = self.root / 'output'
+        generator.generate(python_framework=self.runtime, python_lib=self.library, app_dir=self.app,
+                           packages_dir=self.packages, output=output, host_runtime=runtime)
+        config = json.loads((output / 'host-build.json').read_text())
+        self.assertEqual(config['generator']['host_runtime'], str(runtime))
+        self.assertEqual(config['generation_inputs'], generator.generation_inputs(runtime))
+        objects = plistlib.loads((output / 'MeltyIOS.xcodeproj/project.pbxproj').read_bytes())['objects']
+        refs = {item.get('path'): item for item in objects.values() if item['isa'] == 'PBXFileReference'}
+        self.assertEqual(refs[str(runtime / 'Sources/hooks.c')]['lastKnownFileType'], 'sourcecode.c.c')
+        self.assertEqual(refs[str(runtime / 'libssh.a')]['lastKnownFileType'], 'archive.ar')
+        settings = next(item['buildSettings'] for item in objects.values()
+                        if item['isa'] == 'XCBuildConfiguration' and item['buildSettings'])
+        self.assertIn(str(runtime / 'Sources'), settings['HEADER_SEARCH_PATHS'])
+        self.assertEqual(plistlib.loads(Path(settings['INFOPLIST_FILE']).read_bytes())['HubLaunchParentBundle'],
+                         'org.test.fixture')
+        # Use the fixture's shader inputs and Python runtime while packaging
+        # the generated addition through the real resource staging path.
+        bundle.prepare(self.config | {'host_runtime': str(runtime)}, self.target, signing_allowed=False)
+        self.assertTrue((self.target / 'host/runner.py').is_file())
+        self.assertTrue((self.target / 'LaunchProfile.json').is_file())
+        host_settings = plistlib.loads((self.target / 'HostSettings.plist').read_bytes())
+        self.assertEqual(host_settings['entry_runner'], 'runner:run')
+        self.assertEqual(host_settings['entry_settings'], {'module': 'main'})
+        old = generator.generation_inputs(runtime)
+        additions['info']['HubLaunchParentBundle'] = 'org.test.changed'
+        (runtime / 'runtime.json').write_text(json.dumps(additions))
+        self.assertNotEqual(old, generator.generation_inputs(runtime))
+
     def test_generator_is_repeatable_device_only_and_shares_documents(self):
         arguments = dict(python_framework=self.runtime, python_lib=self.library, app_dir=self.app,
                          output=self.root / "output", team="EXAMPLETEAM")
@@ -579,9 +620,25 @@ class BootstrapTests(unittest.TestCase):
         self.config['app_id'] = 'another-melty-app'
         with self.environment():
             self.bootstrap.initialize(self.config)
-            self.launch.assert_called_once_with(self.config, self.bootstrap._host)
+            self.launch.assert_called_once_with(self.config, self.bootstrap._host, entry_runner=None)
             with self.assertRaisesRegex(RuntimeError, 'already initialized'):
                 self.bootstrap.initialize(self.config)
+
+    def test_runner_adapter_starts_the_app_with_managed_source(self):
+        settings_path = self.bundle / 'HostSettings.plist'
+        settings = plistlib.loads(settings_path.read_bytes())
+        settings.update(entry_runner='fixture_runner:run', entry_settings={'module': 'test_ios_application'})
+        settings_path.write_bytes(plistlib.dumps(settings))
+        runner = types.ModuleType('fixture_runner')
+        runner.run = mock.Mock()
+        with self.environment(), mock.patch.dict(sys.modules, {'fixture_runner': runner}):
+            self.bootstrap.initialize(self.config)
+            self.launch.call_args.kwargs['entry_runner']()
+        runner.run.assert_called_once()
+        self.assertEqual(runner.run.call_args.args[0], settings['entry_settings'])
+        source = runner.run.call_args.args[1]
+        self.assertTrue((source / 'test_ios_application.py').is_file())
+        self.assertNotEqual(source, self.bundle / 'app')
 
 
 class NativeInputTests(unittest.TestCase):
