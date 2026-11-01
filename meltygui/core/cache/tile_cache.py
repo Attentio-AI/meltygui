@@ -2442,6 +2442,7 @@ class TileCacheMasked:
         if self.gpu is not None:
             for rect in strips:
                 self.gpu.renderer.clear_rect(self._full_mask_tex, rect)
+            self.gpu.full_mask_generation += 1
             return True
         st = _GLState()
         try:

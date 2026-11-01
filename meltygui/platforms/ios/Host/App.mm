@@ -12,6 +12,10 @@
 @implementation MeltyView {
     NSMapTable<UITouch *, NSNumber *> *_touchIDs;
     uint64_t _nextTouchID;
+    UIPanGestureRecognizer *_velocityPan;
+    __weak UITouch *_velocityTouch;
+    CGPoint _releaseVelocity;
+    BOOL _hasReleaseVelocity;
     CAMetalLayer *_metalLayer;
 }
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -26,6 +30,13 @@
         _metalLayer.anchorPoint = CGPointZero;
         [self.layer addSublayer:_metalLayer];
         _touchIDs = [NSMapTable weakToStrongObjectsMapTable];
+        // Observe UIKit's filtered velocity without taking over touch delivery.
+        _velocityPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(captureReleaseVelocity:)];
+        _velocityPan.maximumNumberOfTouches = 1;
+        _velocityPan.cancelsTouchesInView = NO;
+        _velocityPan.delaysTouchesBegan = NO;
+        _velocityPan.delaysTouchesEnded = NO;
+        [self addGestureRecognizer:_velocityPan];
     }
     return self;
 }
@@ -71,8 +82,18 @@
     CGPoint windowPoint = [self convertPoint:point toView:self.window];
     return CGRectContainsPoint(visible.bounds, [self visiblePointFromWindow:windowPoint]);
 }
+- (void)captureReleaseVelocity:(UIPanGestureRecognizer *)recognizer {
+    if (recognizer.state == UIGestureRecognizerStateEnded) {
+        _releaseVelocity = [recognizer velocityInView:self];
+        _hasReleaseVelocity = YES;
+    }
+}
 - (void)sendTouches:(NSSet<UITouch *> *)touches event:(UIEvent *)event kind:(melty::InputKind)kind {
     for (UITouch *touch in touches) {
+        if (kind == melty::InputKind::Begin && _touchIDs.count == 0) {
+            _velocityTouch = touch;
+            _hasReleaseVelocity = NO;
+        }
         NSNumber *identity = [_touchIDs objectForKey:touch];
         if (!identity) {
             identity = @(++_nextTouchID);
@@ -91,9 +112,25 @@
             input.y = point.y;
             input.pressure = sample.maximumPossibleForce > 0 ? sample.force / sample.maximumPossibleForce : 0;
             input.pencil = sample.type == UITouchTypePencil;
+            if (kind == melty::InputKind::End && touch == _velocityTouch) {
+                CGPoint velocity = CGPointZero;
+                if (_hasReleaseVelocity) velocity = _releaseVelocity;
+                else if (_velocityPan.state == UIGestureRecognizerStateBegan ||
+                         _velocityPan.state == UIGestureRecognizerStateChanged ||
+                         _velocityPan.state == UIGestureRecognizerStateEnded)
+                    velocity = [_velocityPan velocityInView:self];
+                input.velocityX = velocity.x;
+                input.velocityY = velocity.y;
+            }
             [self.host enqueue:std::move(input)];
         }
-        if (kind == melty::InputKind::End || kind == melty::InputKind::Cancel) [_touchIDs removeObjectForKey:touch];
+        if (kind == melty::InputKind::End || kind == melty::InputKind::Cancel) {
+            [_touchIDs removeObjectForKey:touch];
+            if (touch == _velocityTouch) {
+                _velocityTouch = nil;
+                _hasReleaseVelocity = NO;
+            }
+        }
     }
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {

@@ -5,6 +5,23 @@ MeltyGUI supplies the application lifecycle, ordinary window/view rendering,
 input, settings, persistence and tile cache. The same application entry module
 runs on desktop and iOS. Applications do not implement a native adapter.
 
+## Touch scrolling and taps
+
+Shared `core/input/touch_input.py` owns gesture arbitration and momentum for all
+Melty apps. UIKit observes pan velocity without cancelling the original touch
+stream; release velocity reaches the shared handler in logical points/second.
+The scroll tuning matches GUI Gym: normal iOS deceleration (0.998), a 100 pt/s
+release threshold, smooth fast-flick gain up to 2.25x without a speed cap, and
+same-direction repeat-flick carry for releases within 350 ms and at least
+800 pt/s. Carry stays with its captured pane; slow releases, reversals and holds
+discard it. Coast distance is independent of rendering frame rate.
+
+Scrolling locks to one axis, preferring vertical motion unless horizontal intent
+is clear. A contact stops existing momentum immediately and consumes its tap,
+including on buttons, background and drag handles. The next tap activates
+normally. Explicit handles retain mouse dragging when scrolling is idle, and
+cached controls are re-hit at the contact origin so the first tap works.
+
 ## Application inputs
 
 The build tools are installed with MeltyGUI:
@@ -259,6 +276,22 @@ Keyboard viewport animation uses the presentation-layer bounds at native scale.
 `Toggles.Mobile.bottom_safezone` controls the bottom home-indicator strip (28 points).
 Both persist with the normal settings and can be set to zero for edge-to-edge content. Idle rendering pauses; active
 rendering requests the available cadence up to 120 Hz.
+The Metal display link allows two frames of scheduling time so CPU preparation
+and GPU execution can overlap even when their combined time exceeds 8.3 ms.
+The GPU semaphore still permits only one submitted frame at a time. A single
+frame of scheduling time can miss 120 Hz deadlines despite each stage fitting
+individually; this is separate from an application's CPU or GPU throughput limit.
+The Metal renderer also retains the shadow-cast result while its depth mask,
+lighting parameters and texture allocation are unchanged. Mask rebuilds, margin
+clears and cleanup advance the mask generation. Scene color and glow still
+composite each frame, so updating content does not unnecessarily repeat the cast.
+
+For device profiling, set `frame_diagnostics` in `HostSettings.plist`. Each frame's
+`info['diagnostics']` includes CPU/native and GPU durations, GPU waits, display
+callback counts, and `displayed_frames` / `last_presentation_time`. Compute actual
+displayed FPS from the differences of the latter two values over a measurement
+window; submitted frames and requested refresh rate alone do not prove display
+cadence. Presentation callbacks and timing collection are disabled normally.
 
 Project execution/debugging belongs to MeltyGUI Pro's `ProjectExecution` model.
 On iOS it runs Python modules in the embedded interpreter and rejects shell or

@@ -39,6 +39,7 @@ class MetalTileBackend:
         self.renderer = renderer
         self.mask_target = None
         self.targets = {}
+        self.full_mask_generation = 0
 
     def target(self, name, w, h, format="r16"):
         handle = self.renderer.target((id(self), name), w, h, format)
@@ -61,6 +62,7 @@ class MetalTileBackend:
         self.renderer.delete_texture(tile.mask_tex)
 
     def cleanup(self, cache):
+        self.full_mask_generation += 1
         for tile in list(cache._tiles.values()):
             self.delete_tile(tile)
         cache._tiles.clear()
@@ -357,6 +359,7 @@ class MetalTileBackend:
                 self.stamp_shadows(cache,standalone,dp_x,dp_y,sx,sy,fh)
                 cache._finalize_retained_marks(pending,dp_x,dp_y,sx,sy,fw,fh,[])
                 cache._mask_sig_prev=signature
+                self.full_mask_generation += 1
         finally:
             cache._detect_occluder_changes(cache._mask_rects)
             for field in ("_pending","_mask_rects","_shadow_rects","_glow_rects","_glow_cleared", "_depth_frame",

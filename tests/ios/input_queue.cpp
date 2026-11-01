@@ -7,12 +7,16 @@ int main() {
     InputQueue queue(3);
     queue.push({InputKind::Begin, 42, 1.0});
     queue.push({InputKind::Move, 42, 1.1});
-    queue.push({InputKind::End, 42, 1.2});
+    InputEvent release{InputKind::End, 42, 1.2};
+    release.velocityX = 12.5;
+    release.velocityY = -1800.25;
+    queue.push(std::move(release));
     auto events = queue.drain();
     assert(events.size() == 3);
     assert(events[0].kind == InputKind::Begin);
     assert(events[2].kind == InputKind::End);
     assert(events[2].touch == 42 && events[2].timestamp == 1.2);
+    assert(events[2].velocityX == 12.5 && events[2].velocityY == -1800.25);
     assert(queue.drain().empty());
     for (int i = 0; i < 4; ++i) queue.push({InputKind::Move, 42, (double)i});
     events = queue.drain();

@@ -461,3 +461,26 @@ def test_native_adapter_import_graph_is_free_of_glfw_and_opengl():
               'from meltygui.core.input.ios_input import IOSInput; '
               'assert "glfw" not in sys.modules; assert "OpenGL" not in sys.modules')
     subprocess.run([sys.executable, '-c', source], check=True, close_fds=False)
+
+
+def test_native_release_velocity_reaches_shared_gesture_handler(native):
+    end = touch('end', y=10)
+    end['velocity'] = (12.5, -1800.25)
+    native.adapter.process_inputs(frame_info(), [touch('begin'), touch('move', y=10), end])
+    assert native.handler._touch_input.events[-1][-1] == (12.5, -1800.25)
+
+
+def test_native_stopping_contact_never_presses_raw_imgui_control(native):
+    import time
+    native.handler.feed_touch('begin', t=time.perf_counter())
+    state = native.handler._touch_input
+    state.events.clear()
+    state.velocity = -1000
+    state.coast_time = time.perf_counter()
+    native.adapter.process_inputs(frame_info(), [touch('begin')])
+    assert not native.io.mouse_down[0]
+    native.adapter.process_inputs(frame_info(1), [touch('end')])
+    assert not native.io.mouse_down[0]
+    state.velocity = 0
+    native.adapter.process_inputs(frame_info(2), [touch('begin', identity=2)])
+    assert native.io.mouse_down[0]

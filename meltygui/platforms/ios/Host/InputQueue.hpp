@@ -17,6 +17,7 @@ struct InputEvent {
     double x = 0, y = 0, pressure = 0;
     bool pencil = false;
     std::string text{};
+    double velocityX = 0, velocityY = 0;
 };
 
 // UIKit never acquires the GIL. Drain immediately before evaluating a frame.

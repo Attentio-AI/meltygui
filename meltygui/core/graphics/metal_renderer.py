@@ -30,6 +30,7 @@ class MetalRenderer:
         self.scene_framebuffer = None
         self._has_overlay = False
         self._delete_queue = []
+        self._shadow_key = None
         self._zero = self.create_texture(1, 1, "rgba8", bytes(4))
 
     def create_texture(self, width, height, format="rgba16f", pixels=None):
@@ -222,12 +223,19 @@ class MetalRenderer:
             down=max(1,int(Toggles.shadow_downscale))
             size=(max(1,w//down),max(1,h//down))
             shadow=self.target("shadow_cast",*size)
-            self.draw("shadow_cast",shadow,u_texture=cache.full_mask_tex,
+            shadow_uniforms = dict(u_texture=cache.full_mask_tex,
                 max_steps=layers*65535./2.,depth_scale=1./layers,
                 light_dir=tuple(Toggles.shadow_light_dir),height_scale=Toggles.shadow_height_scale,
                 blur_scale=Toggles.shadow_blur_scale,blur_exponent=Toggles.shadow_blur_exponent,
                 blur_samples=max(1,int(Toggles.shadow_blur_samples)),hit_strength=Toggles.shadow_hit_strength,
                 hit_falloff=Toggles.shadow_hit_falloff,shadow_strength=Toggles.shadow_strength)
+            # The retained depth mask already knows when geometry changes.
+            # Reuse its expensive cast while content/color drawing continues;
+            # lighting, allocation and mask writes all invalidate this result.
+            shadow_key = (shadow, cache.gpu.full_mask_generation, tuple(shadow_uniforms.items()))
+            if shadow_key != self._shadow_key:
+                self.draw("shadow_cast", shadow, **shadow_uniforms)
+                self._shadow_key = shadow_key
             if not Toggles.draw_legacy:
                 glow=cache.glow_tex if cache.glow_active and Toggles.glow else None
                 self.draw("shadow_composite",scratch,u_texture=self.scene_framebuffer,
@@ -260,5 +268,6 @@ class MetalRenderer:
         GLState.on_window_deleted(ds)
 
     def shutdown(self):
+        self._shadow_key = None
         for handle in list(self._textures):
             self.delete_texture(handle)

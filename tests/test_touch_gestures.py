@@ -14,10 +14,10 @@ def gesture(monkeypatch):
     monkeypatch.setattr('meltygui.core.windowing.glfw_utils.request_render', lambda: None)
     set_button_probe(None)
 
-    def send(kind, x=20.0, y=80.0, dt=1/60):
+    def send(kind, x=20.0, y=80.0, dt=1/60, velocity=None):
         clock[0] += dt
         handler.feed_move(x, y)
-        handler.feed_touch(kind, x, y, t=clock[0])
+        handler.feed_touch(kind, x, y, t=clock[0], velocity=velocity)
 
     def text():
         handler.register_hovered('text', ['left_mouse_down', 'left_mouse_drag', 'touch_clicked'],
@@ -148,7 +148,7 @@ def test_mouse_still_focuses_on_press_and_wheel_stays_in_notches(gesture):
     assert result['scroll']['scroll_y_changed'].value == 1
 
 
-def test_diagonal_gesture_sends_each_axis_to_its_captured_consumer(gesture):
+def test_diagonal_gesture_locks_vertical_and_removes_horizontal_jitter(gesture):
     handler, _, send, text = gesture
     text()
     handler.register_hovered('text', ['touch_scroll_x_changed'], priority=0, tile_id='text-tile')
@@ -157,9 +157,8 @@ def test_diagonal_gesture_sends_each_axis_to_its_captured_consumer(gesture):
     handler.begin_frame()
     send('move', x=70.25, y=60.5)
     result = handler.process_frame()[0]
-    assert result['text']['touch_scroll_x_changed'].value == -29.75
+    assert set(result) == {'scroll'}
     assert result['scroll']['touch_scroll_changed'].value == -19.5
-    assert 'left_mouse_drag' not in result['text']
 
 
 def test_focus_observers_wait_for_tap_and_do_not_block_scroll(gesture):
@@ -199,3 +198,144 @@ def test_swipe_over_a_text_button_scrolls_instead_of_selecting_text(gesture):
     result = handler.process_frame()[0]
     assert set(result) == {'scroll'}
     assert result['scroll']['touch_scroll_changed'].value == -40
+
+
+def flick(gesture, speed=-1500.0):
+    handler, clock, send, text = gesture
+    text()
+    send('begin')
+    send('move', y=40)
+    send('end', y=40, velocity=(0.0, speed))
+    result = handler.process_frame()[0]
+    handler.begin_frame()
+    return result
+
+
+@pytest.mark.parametrize('fps', [60, 80, 120])
+def test_native_flick_has_apple_projected_distance_at_every_frame_rate(gesture, fps):
+    from meltygui.core.input.touch_input import flick_velocity, FLICK_PROJECTION
+    handler, clock, _, _ = gesture
+    flick(gesture, -2400.0)
+    distance = 0.0
+    for _ in range(10 * fps):
+        clock[0] += 1 / fps
+        result = handler.process_frame()[0]
+        if 'scroll' in result:
+            distance += result['scroll']['touch_scroll_changed'].value
+        handler.begin_frame()
+    assert distance == pytest.approx(flick_velocity(-2400) * FLICK_PROJECTION)
+    assert not handler._touch_input.has_momentum(clock[0])
+
+
+@pytest.mark.parametrize('speed,coasts', [(0, False), (99.999, False), (100, True),
+                                         (-100, True), (float('nan'), False)])
+def test_deliberate_native_scroll_release_threshold(gesture, speed, coasts):
+    flick(gesture, speed)
+    assert bool(gesture[0]._touch_input.velocity) is coasts
+
+
+def test_native_velocity_ignores_noisy_lift_off_sample(gesture):
+    handler, _, send, text = gesture
+    text()
+    send('begin')
+    send('move', y=20)
+    send('end', y=21, dt=.00001, velocity=(0, -500))
+    handler.process_frame()
+    assert handler._touch_input.velocity == -500
+
+
+def test_flick_gain_is_smooth_and_has_no_speed_ceiling(gesture):
+    from meltygui.core.input.touch_input import flick_velocity
+    assert flick_velocity(1200) == 1200
+    assert flick_velocity(4000) == 9000
+    assert flick_velocity(8000) == 18000
+    assert flick_velocity(-8000) == -18000
+    flick(gesture, -8000)
+    assert gesture[0]._touch_input.velocity == -18000
+
+
+def test_horizontal_intent_locks_without_later_axis_switch(gesture):
+    handler, _, send, text = gesture
+    text()
+    handler.register_hovered('horizontal', ['touch_scroll_x_changed'], priority=0)
+    send('begin', x=100)
+    send('move', x=80, y=76)
+    send('move', x=70, y=20)
+    send('end', x=70, y=20, velocity=(-500, -5000))
+    result = handler.process_frame()[0]
+    assert set(result) == {'horizontal'}
+    assert result['horizontal']['touch_scroll_x_changed'].value == -30
+    assert handler._touch_input.velocity == 0
+    assert handler._touch_input.velocity_x == -500
+
+
+@pytest.mark.parametrize('target', ['text', 'button', 'handle', 'background'])
+def test_stop_tap_consumes_every_control_and_next_tap_activates(gesture, target):
+    handler, _, send, text = gesture
+    flick(gesture)
+    if target in ('text', 'button', 'handle'):
+        text()
+    if target == 'button':
+        handler.register_hovered(target, ['left_mouse_down', 'left_mouse_clicked'], priority=-10)
+    elif target == 'handle':
+        handler.register_hovered(target, ['left_mouse_down', 'left_mouse_drag'], priority=-10)
+    elif target == 'background':
+        handler.register_hovered(target, ['left_mouse_down'], priority=-20, blocker=True)
+    send('begin')
+    send('end')
+    assert not handler.process_frame()[0]
+    assert not handler.is_down('left_mouse')
+    handler.begin_frame()
+    if target == 'text':
+        text()
+    else:
+        handler.register_hovered(target, ['left_mouse_down'], priority=-10)
+    send('begin')
+    send('end')
+    assert target in handler.process_frame()[0]
+
+
+@pytest.mark.parametrize('hold,speed,other_pane,accelerates', [
+    (.1, -1000, False, True), (.36, -1000, False, False),
+    (.1, 1000, False, False), (.1, -799, False, False),
+    (.1, -99, False, False), (.1, -1000, True, False)])
+def test_repeat_flick_carry_requires_quick_same_direction_same_pane(gesture, hold, speed, other_pane, accelerates):
+    from meltygui.core.input.touch_input import flick_velocity
+    handler, clock, send, text = gesture
+    flick(gesture, -2000)
+    text()
+    if other_pane:
+        handler.register_hovered('other', ['touch_scroll_changed'], priority=-10)
+    send('begin')
+    assert not handler.process_frame()[0]  # remaining coast stops under the finger
+    handler.begin_frame()
+    send('move', y=40, dt=hold / 2)
+    send('end', y=40, dt=hold / 2, velocity=(0, speed))
+    handler.process_frame()
+    baseline = flick_velocity(speed) if abs(speed) >= 100 else 0
+    if accelerates:
+        assert abs(handler._touch_input.velocity) > abs(baseline)
+    else:
+        assert handler._touch_input.velocity == baseline
+
+
+def test_expired_coast_does_not_swallow_next_tap(gesture):
+    handler, _, send, text = gesture
+    flick(gesture)
+    text()
+    send('begin', dt=10)
+    send('end')
+    assert 'touch_clicked' in handler.process_frame()[0]['text']
+
+
+def test_flick_and_stop_tap_batched_before_dispatch(gesture):
+    handler, _, send, text = gesture
+    text()
+    send('begin')
+    send('move', y=40)
+    send('end', y=40, velocity=(0, -1800))
+    send('begin', y=40)
+    send('end', y=40)
+    result = handler.process_frame()[0]
+    assert set(result) == {'scroll'}
+    assert handler._touch_input.velocity == 0

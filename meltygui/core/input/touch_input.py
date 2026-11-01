@@ -10,10 +10,32 @@ from meltygui.core.input.input_handler import _InputState
 
 # Tune in logical pixels / seconds, independently of framebuffer density.
 TOUCH_SLOP = 8.0
-FLICK_DECAY = 8.0
-FLICK_MIN_SPEED = 30.0
-FLICK_MAX_SPEED = 4000.0
+DECELERATION_RATE = 0.998  # UIScrollView.DecelerationRate.normal
+FLICK_DECAY = -1000.0 * math.log(DECELERATION_RATE)
+FLICK_PROJECTION = DECELERATION_RATE / (1000.0 * (1.0 - DECELERATION_RATE))
+MIN_FLING_SPEED = 100.0
+STOP_DISTANCE = 0.25
+REPEAT_FLICK_WINDOW = 0.35
+REPEAT_FLICK_MIN = 800.0
 FLICK_PAUSE = 0.10
+
+
+def flick_velocity(speed):
+    amount = max(0.0, min(1.0, (abs(speed) - 1200.0) / 2800.0))
+    return speed * (1.0 + 1.25 * amount * amount * (3.0 - 2.0 * amount))
+
+
+def scroll_axes(dx, dy, horizontal, vertical):
+    if horizontal and vertical:
+        if abs(dx) >= 12.0 and abs(dx) >= 2.0 * abs(dy):
+            return True, False
+        if abs(dy) > TOUCH_SLOP:
+            return False, True
+    elif horizontal and abs(dx) > TOUCH_SLOP:
+        return True, False
+    elif vertical and abs(dy) > TOUCH_SLOP:
+        return False, True
+    return None
 
 
 class TouchInput(_InputState):
@@ -30,10 +52,26 @@ class TouchInput(_InputState):
         self.velocity = 0.0
         self.velocity_x = 0.0
         self.last_motion = self.coast_time = 0.0
+        self.contact_time = 0.0
+        self.axes = None
+        self.stopping = self.stop_contact = False
+        self.carry = None
+        self.estimated_velocity = (0.0, 0.0)
+
+    def remaining_velocity(self, timestamp):
+        decay = math.exp(-FLICK_DECAY * max(0.0, timestamp - self.coast_time))
+        return tuple(v * decay if abs(v * decay * FLICK_PROJECTION) > STOP_DISTANCE else 0.0
+                     for v in (self.velocity_x, self.velocity))
+
+    def has_momentum(self, timestamp):
+        return not self.active and any(self.remaining_velocity(timestamp))
 
     def cancel(self, handler):
         self.events.clear()
         self.active = self.mouse = False
+        self.stopping = self.stop_contact = False
+        self.carry = self.axes = None
+        self.estimated_velocity = (0.0, 0.0)
         self.velocity = 0.0
         self.velocity_x = 0.0
         self.scroll_target = self.tap_target = None
@@ -65,8 +103,14 @@ class TouchInput(_InputState):
                         value=delta + (previous.value if previous else 0.0), timestamp=timestamp)
 
         events, self.events = self.events, []
-        for kind, x, y, timestamp in events:
+        for kind, x, y, timestamp, release_velocity in events:
             if kind == 'begin':
+                remaining = self.remaining_velocity(timestamp) if not self.active else (0.0, 0.0)
+                self.stopping = any(remaining)
+                self.carry = ((self.scroll_x_target, self.scroll_target), remaining, timestamp) if self.stopping else None
+                self.axes = None
+                self.estimated_velocity = (0.0, 0.0)
+                self.contact_time = timestamp
                 self.velocity = 0.0
                 self.velocity_x = 0.0
                 self.active, self.moved = True, False
@@ -91,6 +135,9 @@ class TouchInput(_InputState):
                 self.mouse = bool(drags and drags[0] not in taps)
                 self.scroll_target = scrolls[0] if scrolls and not self.mouse else None
                 self.scroll_x_target = scrolls_x[0] if scrolls_x and not self.mouse else None
+                self.stop_contact = self.stopping and (self.mouse or not (scrolls or scrolls_x))
+                if self.stop_contact:
+                    continue
                 if self.mouse or (self.tap_target is None and self.scroll_target is None
                                   and self.scroll_x_target is None):
                     self.mouse = True
@@ -101,27 +148,31 @@ class TouchInput(_InputState):
                 old_x, old_y = self.position
                 self.position = (x, y)
                 dx, dy = x - self.origin[0], y - self.origin[1]
-                was_moved = self.moved
                 self.moved |= dx * dx + dy * dy > TOUCH_SLOP * TOUCH_SLOP
+                if self.stop_contact:
+                    if kind == 'end':
+                        self.active = False
+                    continue
                 if self.moved and not self.mouse:
-                    # Include travel accumulated below slop, then use each
-                    # sample exactly once (including the final release sample).
-                    scroll(x - old_x if was_moved else dx, y - old_y if was_moved else dy, timestamp)
+                    previous_axes = self.axes
+                    if self.axes is None:
+                        self.axes = scroll_axes(dx, dy, self.scroll_x_target is not None,
+                                                self.scroll_target is not None)
+                    if self.axes is not None:
+                        # Include sub-slop travel once, then retain the chosen axis.
+                        scroll((x - old_x if previous_axes else dx) if self.axes[0] else 0.0,
+                               (y - old_y if previous_axes else dy) if self.axes[1] else 0.0, timestamp)
+                    # Backends without native velocity may estimate from moves,
+                    # never from the noisy, often tiny final lift-off interval.
                     elapsed = timestamp - self.last_motion
-                    if x != old_x or y != old_y:
-                        if 0 < elapsed <= FLICK_PAUSE:
-                            speed = (y - old_y) / elapsed
-                            self.velocity = max(-FLICK_MAX_SPEED, min(FLICK_MAX_SPEED, speed))
-                            speed_x = (x - old_x) / elapsed
-                            self.velocity_x = max(-FLICK_MAX_SPEED, min(FLICK_MAX_SPEED, speed_x))
-                        else:
-                            self.velocity = 0.0
-                            self.velocity_x = 0.0
+                    if kind == 'move' and (x != old_x or y != old_y):
+                        self.estimated_velocity = (((x - old_x) / elapsed, (y - old_y) / elapsed)
+                                                   if 0 < elapsed <= FLICK_PAUSE else (0.0, 0.0))
                         self.last_motion = timestamp
                 if kind == 'end':
                     if self.mouse:
                         handler.feed_up('left_mouse', x, y, t=timestamp)
-                    elif not self.moved:
+                    elif not self.moved and not self.stopping:
                         if self.tap_target is not None:
                             # An immediate tap: mouse double-click deferral
                             # must not delay the caret or software keyboard.
@@ -136,26 +187,33 @@ class TouchInput(_InputState):
                         else:
                             handler.feed_down('left_mouse', x, y, t=timestamp)
                             handler.feed_up('left_mouse', x, y, t=timestamp)
-                    if timestamp - self.last_motion > FLICK_PAUSE:
-                        self.velocity = 0.0
-                        self.velocity_x = 0.0
+                    measured = release_velocity
+                    if measured is None:
+                        measured = self.estimated_velocity if timestamp - self.last_motion <= FLICK_PAUSE else (0.0, 0.0)
+                    axes = self.axes or (False, False)
+                    measured = tuple(v if enabled and math.isfinite(v) else 0.0
+                                     for v, enabled in zip(measured, axes))
+                    if math.hypot(*measured) >= MIN_FLING_SPEED:
+                        velocity = [flick_velocity(v) for v in measured]
+                        if self.carry is not None:
+                            targets, carry, interrupted = self.carry
+                            held = timestamp - self.contact_time
+                            if targets == (self.scroll_x_target, self.scroll_target) and 0 <= held <= REPEAT_FLICK_WINDOW:
+                                decay = math.exp(-FLICK_DECAY * max(held, timestamp - interrupted, 0.0))
+                                for axis, speed in enumerate(measured):
+                                    if abs(speed) >= REPEAT_FLICK_MIN and speed * carry[axis] > 0:
+                                        velocity[axis] += carry[axis] * decay
+                        self.velocity_x, self.velocity = velocity
+                    self.carry = None
                     self.active = False
-                    self.coast_time = now
+                    self.coast_time = timestamp
 
-        coasting = ((self.scroll_target is not None and self.velocity)
-                    or (self.scroll_x_target is not None and self.velocity_x))
-        if not self.active and coasting:
-            elapsed = max(0.0, now - self.coast_time)
-            decay = math.exp(-FLICK_DECAY * elapsed)
-            scroll(self.velocity_x * (1.0 - decay) / FLICK_DECAY,
-                   self.velocity * (1.0 - decay) / FLICK_DECAY, now)
-            self.velocity *= decay
-            self.velocity_x *= decay
+        if not self.active and (self.velocity or self.velocity_x):
+            remaining_x, remaining_y = self.remaining_velocity(now)
+            scroll((self.velocity_x - remaining_x) * FLICK_PROJECTION,
+                   (self.velocity - remaining_y) * FLICK_PROJECTION, now)
+            self.velocity_x, self.velocity = remaining_x, remaining_y
             self.coast_time = now
-            if abs(self.velocity) < FLICK_MIN_SPEED:
-                self.velocity = 0.0
-            if abs(self.velocity_x) < FLICK_MIN_SPEED:
-                self.velocity_x = 0.0
         for (target, key), event in totals.items():
             deliver(target, key, event)
         return not self.active and bool((self.scroll_target is not None and self.velocity)

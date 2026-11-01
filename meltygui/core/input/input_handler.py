@@ -368,11 +368,12 @@ class InputHandler:
         # already alive when this definition is hotswapped in place.
         return self._states.get('touch')
 
-    def feed_touch(self, kind, x=0.0, y=0.0, t=None):
+    def feed_touch(self, kind, x=0.0, y=0.0, t=None, velocity=None):
         """Feed a primary contact in logical pixels; never emulate mouse first.
 
         Backends retain contact identity and call cancel on suspension/loss.
         Routing waits for process_frame's current cached-view hit test.
+        End velocity is logical pixels/second; None uses move-sample estimation.
         """
         from meltygui.core.input.touch_input import TouchInput
         if self._touch_input is None:
@@ -380,7 +381,7 @@ class InputHandler:
         if kind == 'cancel':
             self._touch_input.cancel(self)
         elif kind in ('begin', 'move', 'end'):
-            self._touch_input.events.append((kind, x, y, time.perf_counter() if t is None else t))
+            self._touch_input.events.append((kind, x, y, time.perf_counter() if t is None else t, velocity))
         else:
             raise ValueError(f'Unknown touch phase: {kind}')
 

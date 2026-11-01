@@ -138,7 +138,11 @@ class CheckedApplication:
                         intervals_faster_than_60hz=sum(value < 0.015 for value in intervals))
                     if self.diagnostics:
                         first, last = self.diagnostics[0], self.diagnostics[-1]
+                        displayed = last['displayed_frames'] - first['displayed_frames']
+                        display_span = last['last_presentation_time'] - first['last_presentation_time']
                         self.report['cadence']['diagnostics'] = dict(
+                            displayed_frames=displayed,
+                            displayed_hz=displayed/display_span if display_span > 0 else 0,
                             maximum_fps=last['maximum_fps'], low_power=last['low_power'],
                             thermal_state=last['thermal_state'],
                             display_callbacks=last['display_callbacks']-first['display_callbacks'],

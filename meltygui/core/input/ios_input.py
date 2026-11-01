@@ -41,6 +41,7 @@ class IOSInput:
         self._last_presentation = None
         self._pressed_keys = set()
         self._touch_pressed = self._release_pending = False
+        self._suppress_touch_mouse = False
         self._pointer_cancelled = True
         self._modifiers = 0
         self._keyboard_visible = None
@@ -105,6 +106,8 @@ class IOSInput:
             if window.primary_touch != identity:
                 return
             self._frame_cursor = float(event['x']), float(event['y'])
+            touch = self.handler._touch_input
+            self._suppress_touch_mouse = bool(touch and touch.has_momentum(event['_time']))
             self._pointer_cancelled = False
             self._move(event)
             window.buttons[codes.MOUSE_BUTTON_LEFT] = codes.PRESS
@@ -128,7 +131,8 @@ class IOSInput:
                 return
             if kind == 'touch_end':
                 self._move(event)
-                self.handler.feed_touch('end', *window.cursor_pos, t=event['_time'])
+                self.handler.feed_touch('end', *window.cursor_pos, t=event['_time'],
+                                        velocity=event.get('velocity', (0.0, 0.0)))
                 window.emit('mouse_button', codes.MOUSE_BUTTON_LEFT, codes.RELEASE, self._modifiers)
             else:
                 self.handler.feed_touch('cancel')
@@ -249,7 +253,7 @@ class IOSInput:
         self.io.display_size = self.backend.get_window_size(self.window)
         self.io.display_fb_scale = self.backend.get_window_content_scale(self.window)
         self.io.mouse_pos = (-1e30, -1e30) if self._pointer_cancelled else self.window.cursor_pos
-        self.io.mouse_down[0] = bool(self.window.buttons.get(0, 0) or self._touch_pressed)
+        self.io.mouse_down[0] = bool(self.window.buttons.get(0, 0) or self._touch_pressed) and not self._suppress_touch_mouse
         for button in range(1, len(self.io.mouse_down)):
             self.io.mouse_down[button] = False
         for key in range(len(self.io.keys_down)):
@@ -267,7 +271,7 @@ class IOSInput:
         """Refresh held-input recency; queued native edges were already fed."""
         self._set_modifiers(self._modifiers)
         touch = self.handler._touch_input
-        origin = next(((x, y) for kind, x, y, _ in touch.events if kind == 'begin'), None) if touch else None
+        origin = next(((x, y) for kind, x, y, _, _velocity in touch.events if kind == 'begin'), None) if touch else None
         if origin is None:
             self._refresh_touch_targets()
         else:

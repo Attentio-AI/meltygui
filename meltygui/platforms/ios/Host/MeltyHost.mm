@@ -161,6 +161,9 @@ static const char *kindName(melty::InputKind kind) {
     BOOL _frameDiagnostics;
     NSInteger _maximumFramesPerSecond;
     uint64_t _displayCallbacks, _gpuWaits;
+    std::mutex _presentationMutex;
+    uint64_t _displayedFrames;
+    double _lastPresentationTime;
     std::atomic<double> _gpuDuration;
     double _nativeDuration, _gpuWaitDuration;
     PyObject *_bootstrap;
@@ -196,7 +199,7 @@ static const char *kindName(melty::InputKind kind) {
         _layer.framebufferOnly = YES;
         // Leave a drawable available while scanout/presentation owns the
         // others. The GPU semaphore still limits actual rendering to one
-        // frame in flight, and the display link requests one-frame latency.
+        // frame in flight; CPU preparation can overlap the preceding GPU frame.
         _layer.maximumDrawableCount = 3;
         _commands = [_device newCommandQueue];
         _gpuAvailable = dispatch_semaphore_create(1);
@@ -376,7 +379,11 @@ static const char *kindName(melty::InputKind kind) {
             }
             _displayLink = [[CAMetalDisplayLink alloc] initWithMetalLayer:_layer];
             _displayLink.delegate = self;
-            _displayLink.preferredFrameLatency = 1;
+            // CPU preparation and GPU execution may each fit an 8.3 ms frame
+            // without their sum fitting it. Give the display link two frames
+            // of scheduling time so it does not lower the callback rate when
+            // those stages can sustain 120 Hz by overlapping.
+            _displayLink.preferredFrameLatency = 2;
             // A lower minimum permits ProMotion to settle at 80 Hz even when
             // rendering keeps up. Request the native rate while frames are active.
             float maximumFPS = (float)_maximumFramesPerSecond;
@@ -576,11 +583,11 @@ static const char *kindName(melty::InputKind kind) {
     PyObject *inputs = PyList_New((Py_ssize_t)events.size());
     for (size_t i = 0; inputs && i < events.size(); ++i) {
         const auto &event = events[i];
-        PyObject *item = Py_BuildValue("{s:s,s:K,s:d,s:d,s:d,s:d,s:O,s:s}",
+        PyObject *item = Py_BuildValue("{s:s,s:K,s:d,s:d,s:d,s:d,s:O,s:s,s:(dd)}",
             "kind", kindName(event.kind), "touch_id", (unsigned long long)event.touch,
             "timestamp", event.timestamp, "x", event.x, "y", event.y,
             "pressure", event.pressure, "pencil", event.pencil ? Py_True : Py_False,
-            "text", event.text.c_str());
+            "text", event.text.c_str(), "velocity", event.velocityX, event.velocityY);
         if (!item) { Py_CLEAR(inputs); break; }
         PyList_SET_ITEM(inputs, (Py_ssize_t)i, item);
     }
@@ -588,11 +595,14 @@ static const char *kindName(melty::InputKind kind) {
         "deadline", update.targetTimestamp, "presentation_time", update.targetPresentationTimestamp,
         "now", CACurrentMediaTime(), "width", width, "height", height, "scale", scale);
     if (info && _frameDiagnostics) {
+        std::lock_guard<std::mutex> lock(_presentationMutex);
         CALayer *presentation = _layer.presentationLayer ?: _layer;
         CGSize canvas = _layer.bounds.size, presented = presentation.bounds.size;
-        PyObject *diagnostics = Py_BuildValue("{s:K,s:K,s:d,s:d,s:d,s:l,s:O,s:l,s:(dddddd),s:(dddd)}",
+        PyObject *diagnostics = Py_BuildValue("{s:K,s:K,s:K,s:d,s:d,s:d,s:d,s:l,s:O,s:l,s:(dddddd),s:(dddd)}",
             "display_callbacks", (unsigned long long)_displayCallbacks,
             "gpu_waits", (unsigned long long)_gpuWaits,
+            "displayed_frames", (unsigned long long)_displayedFrames,
+            "last_presentation_time", _lastPresentationTime,
             "gpu_seconds", _gpuDuration.load(), "native_seconds", _nativeDuration,
             "gpu_wait_seconds", _gpuWaitDuration,
             "maximum_fps", (long)_maximumFramesPerSecond,
@@ -645,6 +655,18 @@ static const char *kindName(melty::InputKind kind) {
             [self performSelector:@selector(fail:) onThread:self->_thread withObject:message waitUntilDone:NO];
         }
     }];
+    if (_frameDiagnostics) {
+        __weak MeltyHost *weakSelf = self;
+        [update.drawable addPresentedHandler:^(id<MTLDrawable> drawable) {
+            MeltyHost *host = weakSelf;
+            if (!host) return;
+            std::lock_guard<std::mutex> lock(host->_presentationMutex);
+            if (drawable.presentedTime > host->_lastPresentationTime) {
+                host->_lastPresentationTime = drawable.presentedTime;
+                ++host->_displayedFrames;
+            }
+        }];
+    }
     MeltyPresentFrame(commands, update.drawable);
     // Resource release/after-frame work belongs after encoding and submission,
     // while the persistent render thread still owns Python application state.
