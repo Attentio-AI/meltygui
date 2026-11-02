@@ -25,24 +25,80 @@ INFO_TEMPLATE = Path(__file__).parent / 'Host/Info.plist'
 PQ_ICC_FILE = Path(__file__).with_name('rec2020-pq.icc')
 REC2020_TO_P3 = np.linalg.solve(PRIMARIES_TO_SRGB[12], PRIMARIES_TO_SRGB[9])
 P3_TO_REC2020 = np.linalg.inv(REC2020_TO_P3)
+# Oklab's linear-sRGB basis, adapted to Display P3 (both use D65).
+# https://bottosson.github.io/posts/oklab/
+P3_TO_LMS = np.array([[.4122214708, .5363325363, .0514459929],
+                      [.2119034982, .6806995451, .1073969566],
+                      [.0883024619, .2817188376, .6299787005]]) @ PRIMARIES_TO_SRGB[12]
+LMS_TO_OKLAB = np.array([[.2104542553, .7936177850, -.0040720468],
+                         [1.9779984951, -2.4285922050, .4505937099],
+                         [.0259040371, .7827717662, -.8086757660]])
+OKLAB_TO_LMS = np.linalg.inv(LMS_TO_OKLAB)
+LMS_TO_P3 = np.linalg.inv(P3_TO_LMS)
+# Periodic perceptual hue correction for the Home Screen's compressed palette.
+# Pull yellow/gold toward orange and blue toward violet, fading to zero outside
+# those bands. Degrees in Oklab; neutrals retain their zero chroma.
+HOME_HUE_KNOTS = np.array([0, 35, 65, 95, 130, 220, 250, 280, 310, 340, 360])
+HOME_HUE_OFFSETS = np.array([0, 0, -18, -18, 0, 0, 18, 24, 12, 0, 0])
+
+
+def p3_to_oklab(rgb):
+    return np.cbrt(rgb @ P3_TO_LMS.T) @ LMS_TO_OKLAB.T
+
+
+def oklab_to_p3(lab):
+    return (lab @ OKLAB_TO_LMS.T) ** 3 @ LMS_TO_P3.T
+
+
+def home_screen_hue(lab):
+    """Apply the launcher hue LUT without changing lightness or chroma."""
+    hue = np.degrees(np.arctan2(lab[..., 2], lab[..., 1])) % 360
+    rotation = np.radians(np.interp(hue, HOME_HUE_KNOTS, HOME_HUE_OFFSETS))
+    result = lab.copy()
+    cosine, sine = np.cos(rotation), np.sin(rotation)
+    result[..., 1] = lab[..., 1] * cosine - lab[..., 2] * sine
+    result[..., 2] = lab[..., 1] * sine + lab[..., 2] * cosine
+    return result
+
+
+def fit_home_screen_gamut(p3):
+    """Reduce only out-of-gamut chroma, along a constant Oklab hue ray."""
+    outside = p3.min(axis=-1) < 0
+    result = p3.copy()
+    if outside.any():
+        lab = p3_to_oklab(p3[outside])
+        lab[:, 0] = np.clip(lab[:, 0], 0, 1)
+        low, high = np.zeros(len(lab)), np.ones(len(lab))
+        candidate = lab.copy()
+        for _ in range(24):
+            fraction = (low + high) / 2
+            candidate[:, 1:] = lab[:, 1:] * fraction[:, None]
+            rgb = oklab_to_p3(candidate)
+            fits = rgb.min(axis=-1) >= 0
+            low = np.where(fits, fraction, low)
+            high = np.where(fits, high, fraction)
+        lab[:, 1:] *= low[:, None]
+        result[outside] = oklab_to_p3(lab)
+    # Prefer a small common exposure reduction over losing saturation to an
+    # upper-channel clip. This preserves both hue and relative chroma.
+    result /= np.maximum(1, result.max(axis=-1, keepdims=True))
+    return np.clip(result, 0, 1)  # Numerical boundary noise only.
 
 
 def home_screen_nits(nits, alpha=None):
     """Fit the artwork to SpringBoard's standard-range Display P3 icon surface.
 
-    The system icon service clips bright PQ channels independently, turning
-    blue into lavender and gold into pale yellow. A filmic shoulder retains
-    bright midtones without clipping the highlights; chroma compensation keeps
-    that compression from lifting saturated blue/gold toward white. This
-    affects launcher copies, never the HDR master.
+    Restore the HDR artwork's relative chroma in Oklab, then correct yellow/gold
+    toward orange and blue toward purple with a localized hue LUT. Only
+    out-of-gamut chroma is reduced, keeping the corrected hue. This affects launcher copies,
+    never the HDR master or the project-list renderer.
     """
-    p3 = np.maximum(nits @ REC2020_TO_P3.T, 0)
+    source_p3 = nits @ REC2020_TO_P3.T
+    p3 = np.maximum(source_p3, 0)
     peak = float(p3.max()) if alpha is None else float(
         np.max(p3, where=alpha[..., None] > 0, initial=0))
     if peak > 203:
-        # Remove part of the neutral component only in colorful pixels before
-        # compression. Neutrals keep equal channels and are never color-tinted.
-        maximum = p3.max(axis=-1, keepdims=True)
+        maximum = np.maximum(p3.max(axis=-1, keepdims=True), 0)
         minimum = p3.min(axis=-1, keepdims=True)
         saturation = np.divide(maximum - minimum, maximum,
                                out=np.zeros_like(maximum), where=maximum > 0)
@@ -55,8 +111,22 @@ def home_screen_nits(nits, alpha=None):
             return ((x * (.15 * x + .10 * .50) + .20 * .02)
                     / (x * (.15 * x + .50) + .20 * .30)) - .02 / .30
 
-        p3 = np.clip(shoulder(colorful) / shoulder(peak), 0, 1) * 203
-    return np.maximum(p3 @ P3_TO_REC2020.T, 0)
+        # Restore chroma and refine hue in a perceptual space after tone mapping.
+        reference = np.clip(shoulder(colorful) / shoulder(peak), 0, 1)
+        lab = p3_to_oklab(reference)
+        source_lab = p3_to_oklab(source_p3 / 203)
+        source_chroma = np.linalg.norm(source_lab[..., 1:], axis=-1, keepdims=True)
+        relative_chroma = np.divide(source_chroma, source_lab[..., :1],
+                                    out=np.zeros_like(source_chroma), where=source_lab[..., :1] > 1e-8)
+        desired_chroma = relative_chroma * lab[..., :1]
+        current_chroma = np.linalg.norm(lab[..., 1:], axis=-1, keepdims=True)
+        scale = np.maximum(1, np.divide(desired_chroma, current_chroma,
+                                       out=np.ones_like(current_chroma), where=current_chroma > 1e-8))
+        lab[..., 1:] *= scale
+        p3 = oklab_to_p3(home_screen_hue(lab))
+    else:
+        p3 = source_p3 / 203
+    return np.maximum(fit_home_screen_gamut(p3) @ P3_TO_REC2020.T, 0) * 203
 
 
 def foreground_scale(alpha):
@@ -220,7 +290,7 @@ def prepare_icon(root, build, *, name=None):
         previous = json.loads(receipt.read_text())
     except (OSError, ValueError):
         previous = {}
-    if (previous.get('root') == str(root) and previous.get('version') == 11
+    if (previous.get('root') == str(root) and previous.get('version') == 14
             and previous.get('host_runtime') == host_runtime
             and previous.get('identity') == list(identity)
             and previous.get('auto_margin') == Toggles.Mobile.icon_auto_margin
@@ -233,7 +303,7 @@ def prepare_icon(root, build, *, name=None):
 
     probe = Probe()
     probe.exists(manifest)
-    candidates = folder_icon_candidates(artwork_root, probe, 1024, prefer_hdr=True)
+    candidates = folder_icon_candidates(artwork_root, probe, 1024)
     chosen = next(candidates, None)
     source = None
     if chosen is not None:
@@ -262,19 +332,21 @@ def prepare_icon(root, build, *, name=None):
     image = None
     if source is not None:
         hdr = png_pq_cicp(source)
-        if hdr:
-            if hdr != (16, 9):
-                raise ValueError(f'{source}: HDR app icons require a 16-bit Rec.2020/PQ PNG')
+        if hdr == (16, 9):
             rgb, alpha, cicp = read_png16(source)
             if cicp != bytes([9, 16, 0, 1]):
                 raise ValueError(f'{source}: HDR app icons require full-range RGB Rec.2020/PQ')
             nits = home_screen_nits(pq_decode(rgb.astype(np.float64) / 65535), alpha)
         else:
-            # A declared HDR icon must never silently fall through an SDR decoder.
-            if chosen is not None and probe.config(desktop).get('Desktop Entry', 'X-HDR-Icon', fallback='').strip():
-                raise ValueError(f'{source}: X-HDR-Icon must be a tagged 16-bit Rec.2020/PQ PNG')
             pixels = decode_icon(source, size=1024)
-            image = Image.frombytes('RGBA', (pixels.width, pixels.height), pixels.data)
+            if pixels.format == 'rgba16f':
+                rgba = np.frombuffer(pixels.data, np.float16).reshape(pixels.height, pixels.width, 4).astype(float)
+                rec2020 = rgba[..., :3] @ np.linalg.inv(PRIMARIES_TO_SRGB[9]).T * 203
+                alpha = np.rint(rgba[..., 3] * 65535).astype(np.uint16)
+                nits = home_screen_nits(rec2020, alpha)
+                cicp = bytes([9, 16, 0, 1])
+            else:
+                image = Image.frombytes('RGBA', (pixels.width, pixels.height), pixels.data)
 
     if source is None:
         image = fallback_icon(*identity)
@@ -312,7 +384,7 @@ def prepare_icon(root, build, *, name=None):
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     outputs.append(destination / 'Info.plist')
     receipt.touch(exist_ok=True)
-    receipt.write_text(json.dumps(dict(version=11, identity=identity, root=str(root), launchers=launchers, hdr=nits is not None,
+    receipt.write_text(json.dumps(dict(version=14, identity=identity, root=str(root), launchers=launchers, hdr=nits is not None,
         auto_margin=Toggles.Mobile.icon_auto_margin, host_runtime=host_runtime,
         source=str(source) if source else None,
         dependencies={str(path): stamp(path) for path in probe.dependencies if path != root},

@@ -10,6 +10,7 @@ import threading
 import time
 import math
 from types import SimpleNamespace
+from meltygui.core.diagnostics.fps_counter import PresentationFpsCounter
 
 
 class NativeApplication:
@@ -23,6 +24,7 @@ class NativeApplication:
         self.root_windows = {}
         self.closed = self.started = self.suspended = False
         self.frames = 0
+        self.fps_counter = PresentationFpsCounter()
         self.name = self.title = config.get('app_id', config.get('entry_module', 'Melty'))
         self.settings = None
         self.tint = None
@@ -134,7 +136,15 @@ class NativeApplication:
         from meltygui.core.runtime import app
         from meltygui.core.melty import Melty
         from meltygui.core.windowing import glfw_utils
+        from meltygui.core.runtime.toggles import Toggles
 
+        frame_started = self.fps_counter.frame_started()
+        if 'show_fps' in info:
+            if bool(info['show_fps']) != Toggles.show_fps:
+                self.fps_counter.reset_presentation()
+            Toggles.show_fps = bool(info['show_fps'])
+        if 'presentation' in info:
+            self.fps_counter.record_presentation(info['presentation'])
         imgui.set_current_context(self.ctx)
         previous_scope, glfw_utils.render_scope = glfw_utils.render_scope, self
         glfw_utils._needs_render.clear()
@@ -167,6 +177,7 @@ class NativeApplication:
             Melty.apply_ui_scale(self.renderer)
             self._draw_frame()
             self.input.update_keyboard()
+            self.fps_counter.frame_finished(frame_started)
             self.frames += 1
             if self.frames == 2:
                 self.cache.set_enabled(True)
@@ -184,7 +195,7 @@ class NativeApplication:
         from meltygui.core.melty import Melty
         from meltygui.core.windowing.surface_frame import draw_surface_frame
         self.tint = (self.root_config.get('view_kwargs') or {}).get('tint')
-        draw_surface_frame(self)
+        draw_surface_frame(self, fps_counter=self.fps_counter, fps_only=True)
         Melty.post_frame(self.renderer, self.window)
 
     def presented(self):

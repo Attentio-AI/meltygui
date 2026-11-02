@@ -93,7 +93,8 @@ def root_view_kwargs(name, /, **kwargs):
 
 
 
-def draw_surface_frame(surface, *, transparent=False, chrome=False, request=None, fps_counter=None):
+def draw_surface_frame(surface, *, transparent=False, chrome=False, request=None, fps_counter=None,
+                       fps_only=False):
     from meltygui.core.rendering.parameter_core import flush_deferred_writes
     root_flags = (imgui.WINDOW_NO_BACKGROUND | imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_NO_RESIZE
                   | imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_SCROLLBAR | imgui.WINDOW_NO_NAV_FOCUS
@@ -175,5 +176,6 @@ def draw_surface_frame(surface, *, transparent=False, chrome=False, request=None
     if Toggles.show_fps and fps_counter is not None:
         # Here in the root loop, outside every view and Melty.end_frame:
         # no cache, tile or invalidation decides whether it is current.
-        titlebar.paint_fps(Melty.overlay_top_channel(), chrome, fps_counter.frame_ms, fps_counter.fps)
+        titlebar.paint_fps(Melty.overlay_top_channel(), chrome, fps_counter.frame_ms,
+                           fps_counter.fps, fps_only=fps_only)
     views.end_frame()

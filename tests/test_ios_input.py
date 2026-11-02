@@ -37,6 +37,51 @@ def frame_info(index=0):
                 presentation_time=10 + (index + 1) / 60)
 
 
+def test_held_contact_keeps_pacing_until_release_or_cancel(native):
+    adapter = native.adapter
+    adapter.process_inputs(frame_info(), [touch('begin')])
+    assert adapter.has_pending_events
+    for index in range(1, 4):
+        wakes = native.host.frames
+        adapter.process_inputs(frame_info(index), [])
+        assert adapter.has_pending_events and native.host.frames == wakes + 1
+    adapter.process_inputs(frame_info(4), [touch('end')])
+    adapter.process_inputs(frame_info(5), [])
+    assert not adapter.has_pending_events
+    adapter.process_inputs(frame_info(6), [touch('begin', identity=2)])
+    adapter.process_inputs(frame_info(7), [dict(kind='cancel_all')])
+    assert not adapter.has_pending_events
+
+
+def test_touch_timestamps_do_not_include_variable_python_processing_delay(native, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr('meltygui.core.input.ios_input.time.perf_counter', lambda: clock[0])
+    native.adapter.process_inputs(frame_info(), [])  # Establish the native clock mapping.
+    delivered = []
+    for index, delay in enumerate((.002, .014, .001, .008), start=1):
+        timestamp = 10 + index / 120
+        clock[0] = timestamp + 90 + delay
+        event = touch('begin' if index == 1 else 'move', y=30 - index)
+        event['timestamp'] = timestamp
+        native.adapter.process_inputs(dict(frame_info(), now=timestamp,
+                                          presentation_time=timestamp + 1 / 120), [event])
+        delivered.append(native.handler._touch_input.events[-1][3])
+    assert delivered == pytest.approx([100 + index / 120 for index in range(1, 5)])
+
+
+def test_resume_recalibrates_clock_after_cancelling_contacts(native, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr('meltygui.core.input.ios_input.time.perf_counter', lambda: clock[0])
+    native.adapter.process_inputs(frame_info(), [touch('begin')])
+    native.adapter.suspend()
+    assert not native.adapter.has_pending_events
+    native.adapter.resume()
+    clock[0] = 200.0
+    event = dict(touch('begin', identity=2), timestamp=10.1)
+    native.adapter.process_inputs(dict(frame_info(), now=10.1), [event])
+    assert native.handler._touch_input.events[-1][3] == pytest.approx(200.0)
+
+
 def touch(kind, identity=1, x=20, y=30):
     return dict(kind='touch_' + kind, touch_id=identity, x=x, y=y,
                 timestamp=10.0, pressure=.5, pencil=False)

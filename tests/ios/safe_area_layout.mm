@@ -91,6 +91,8 @@
 - (void)close {}
 - (void)resizeTo:(CGSize)size scale:(CGFloat)scale {}
 - (void)enqueue:(melty::InputEvent)event {}
+- (void)enqueueBatch:(std::vector<melty::InputEvent>)events {}
+- (void)setFPSVisible:(BOOL)visible {}
 - (void)requestFrame {}
 - (void)setKeyboardVisible:(BOOL)visible {}
 - (void)setSafeZone:(CGFloat)top bottom:(CGFloat)bottom { _safeZone(top, bottom); }

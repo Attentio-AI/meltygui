@@ -1,5 +1,6 @@
 """Desktop-entry artwork for filesystem paths: cached I/O, background decode, owned textures."""
 import configparser
+import io
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import os
@@ -13,7 +14,7 @@ import tempfile
 
 from PIL import Image
 from meltygui.core.graphics import desktop_gl as GL
-from meltygui.model.texture_model import TextureId
+from meltygui.model.texture_model import TextureId, upload_native_rgba
 from meltygui.core.graphics.gl_state import GLTexture, tight_unpack
 
 
@@ -162,12 +163,50 @@ class IconPixels:
     width: int
     height: int
     data: bytes
+    format: str = 'rgba8srgb'
+
+
+def hdr_icon_pixels(path, size, rgb, alpha, primaries):
+    """Resize PQ artwork in premultiplied linear light, retaining HDR and gamut."""
+    import numpy as np
+    from meltygui.image_load import pq_to_linear
+
+    # PQ artwork uses the BT.2408 203-nit reference, like our image viewer.
+    linear, _ = pq_to_linear(rgb, primaries, 203)
+    opacity = (np.ones(rgb.shape[:2], dtype=np.float32) if alpha is None else
+               alpha.astype(np.float32) / np.iinfo(alpha.dtype).max)
+    rgba = np.concatenate((linear * opacity[..., None], opacity[..., None]), axis=-1)
+    height, width = opacity.shape
+    scale = min(1, size / max(width, height))
+    target = max(1, round(width * scale)), max(1, round(height * scale))
+    if target != (width, height):
+        # Positive area weights preserve radiance and avoid Lanczos ringing
+        # exploding when unpremultiplying a nearly transparent HDR edge.
+        rgba = np.stack([np.asarray(Image.fromarray(rgba[..., channel]).resize(
+            target, Image.Resampling.BOX)) for channel in range(4)], axis=-1)
+    opacity = np.clip(rgba[..., 3:4], 0, 1)
+    # Mesh blending consumes straight alpha. Do not clamp signed scRGB or HDR.
+    rgba[..., :3] = np.divide(rgba[..., :3], opacity, out=np.zeros_like(rgba[..., :3]),
+                              where=opacity > 1e-6)
+    rgba[..., 3:4] = opacity
+    return IconPixels(path, *target, rgba.astype(np.float16).tobytes(), 'rgba16f')
 
 
 def decode_icon(path, size=ICON_SIZE):
     """CPU only. GdkPixbuf supplies SVG support without starting a GUI or shell."""
     def pixels(source):
-        with Image.open(source) as image:
+        from meltygui.image_load import png_pq_cicp, read_png16, icc_pq_cicp
+        data = source.read_bytes()
+        pq = png_pq_cicp(None, data)
+        if pq and pq[0] == 16:
+            rgb, alpha, _ = read_png16(None, data)
+            return hdr_icon_pixels(path, size, rgb, alpha, pq[1])
+        with Image.open(io.BytesIO(data)) as image:
+            primaries = pq[1] if pq else icc_pq_cicp(image.info.get('icc_profile'))
+            if primaries is not None:
+                import numpy as np
+                rgba = np.asarray(image.convert('RGBA'))
+                return hdr_icon_pixels(path, size, rgba[..., :3], rgba[..., 3], primaries)
             image.thumbnail((size, size), Image.Resampling.LANCZOS)
             image = image.convert('RGBA')
             return IconPixels(path, image.width, image.height, image.tobytes())
@@ -184,7 +223,7 @@ def decode_icon(path, size=ICON_SIZE):
         return pixels(output)
 
 
-def folder_icon_candidates(folder, probe, size=ICON_SIZE, *, prefer_hdr=False):
+def folder_icon_candidates(folder, probe, size=ICON_SIZE):
     """Share launcher selection with packaging without decoding through an 8-bit preview."""
     probe.exists(folder)
     try:
@@ -198,8 +237,6 @@ def folder_icon_candidates(folder, probe, size=ICON_SIZE, *, prefer_hdr=False):
         if config.get('Desktop Entry', 'Hidden', fallback='false').lower() == 'true':
             continue
         value = config.get('Desktop Entry', 'Icon', fallback='').strip()
-        if prefer_hdr:
-            value = config.get('Desktop Entry', 'X-HDR-Icon', fallback='').strip() or value
         if not value:
             continue
         path = resolve_icon(value, folder, probe, size)
@@ -238,20 +275,23 @@ class FolderIconTexture(TextureId):
 
     def _upload(self, state):
         def create():
+            hdr = self.pixels.format == 'rgba16f'
+            internal = GL.GL_RGBA16F if hdr else GL.GL_SRGB8_ALPHA8
+            pixel_type = GL.GL_HALF_FLOAT if hdr else GL.GL_UNSIGNED_BYTE
             previous = int(GL.glGetIntegerv(GL.GL_TEXTURE_BINDING_2D))
             texture = int(GL.glGenTextures(1))
             try:
                 GL.glBindTexture(GL.GL_TEXTURE_2D, texture)
                 with tight_unpack():
-                    GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_SRGB8_ALPHA8,
+                    GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, internal,
                                     self.pixels.width, self.pixels.height, 0,
-                                    GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, self.pixels.data)
+                                    GL.GL_RGBA, pixel_type, self.pixels.data)
                 GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
                 GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
                 GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
                 GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
                 return GLTexture(texture, GL.GL_TEXTURE_2D,
-                                 (self.pixels.height, self.pixels.width), GL.GL_SRGB8_ALPHA8)
+                                 (self.pixels.height, self.pixels.width), internal)
             except Exception:
                 GL.glDeleteTextures([texture])
                 raise
@@ -263,8 +303,8 @@ class FolderIconTexture(TextureId):
         from types import SimpleNamespace
 
         def create():
-            return SimpleNamespace(texture_id=renderer.create_texture(
-                self.pixels.width, self.pixels.height, 'rgba8srgb', self.pixels.data))
+            return SimpleNamespace(texture_id=upload_native_rgba(
+                renderer, self.pixels.width, self.pixels.height, self.pixels.data, self.pixels.format))
 
         return state.get('icon', create, lambda texture: renderer.delete_texture(texture.texture_id))
 

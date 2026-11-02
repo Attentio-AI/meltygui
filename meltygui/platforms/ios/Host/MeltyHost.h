@@ -14,9 +14,11 @@
 - (void)close;
 - (void)resizeTo:(CGSize)size scale:(CGFloat)scale;
 - (void)enqueue:(melty::InputEvent)event;
+- (void)enqueueBatch:(std::vector<melty::InputEvent>)events;
 - (void)requestFrame;
 - (void)setKeyboardVisible:(BOOL)visible;
 - (void)setSafeZone:(CGFloat)top bottom:(CGFloat)bottom;
+- (void)setFPSVisible:(BOOL)visible;
 - (NSString *)clipboardText;
 - (void)setClipboardText:(NSString *)text;
 - (void)writeLog:(NSString *)text;

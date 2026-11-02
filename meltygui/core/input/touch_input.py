@@ -58,8 +58,9 @@ class TouchInput(_InputState):
         self.carry = None
         self.estimated_velocity = (0.0, 0.0)
 
-    def remaining_velocity(self, timestamp):
-        decay = math.exp(-FLICK_DECAY * max(0.0, timestamp - self.coast_time))
+    def remaining_velocity(self, timestamp, *, since=None):
+        origin = self.coast_time if since is None else since
+        decay = math.exp(-FLICK_DECAY * max(0.0, timestamp - origin))
         return tuple(v * decay if abs(v * decay * FLICK_PROJECTION) > STOP_DISTANCE else 0.0
                      for v in (self.velocity_x, self.velocity))
 
@@ -86,6 +87,7 @@ class TouchInput(_InputState):
         tap_key = ('touch', 'clicked')
         down_key = ('left_mouse', 'down')
         totals = {}
+        release_time = None
         if any((event.action == 'down' and event.input_id in ('left_mouse', 'right_mouse', 'middle_mouse'))
                or event.input_id in ('scroll_x', 'scroll_y') for event in handler._pending):
             self.velocity = self.velocity_x = 0.0
@@ -105,7 +107,10 @@ class TouchInput(_InputState):
         events, self.events = self.events, []
         for kind, x, y, timestamp, release_velocity in events:
             if kind == 'begin':
-                remaining = self.remaining_velocity(timestamp) if not self.active else (0.0, 0.0)
+                # Two contacts can be queued in one frame. Preserve their native
+                # timing for carry, even though visible coasting starts at now.
+                remaining = (self.remaining_velocity(timestamp, since=release_time)
+                             if not self.active else (0.0, 0.0))
                 self.stopping = any(remaining)
                 self.carry = ((self.scroll_x_target, self.scroll_target), remaining, timestamp) if self.stopping else None
                 self.axes = None
@@ -206,7 +211,10 @@ class TouchInput(_InputState):
                         self.velocity_x, self.velocity = velocity
                     self.carry = None
                     self.active = False
-                    self.coast_time = timestamp
+                    release_time = timestamp
+                    # Match the runner: queued input time is not animation time.
+                    # Show the final finger position before starting inertia.
+                    self.coast_time = now
 
         if not self.active and (self.velocity or self.velocity_x):
             remaining_x, remaining_y = self.remaining_velocity(now)

@@ -318,6 +318,36 @@ def test_frame_applies_worker_results_before_input_and_draw(native, monkeypatch)
     assert imgui.get_draw_data().total_vtx_count > 0
 
 
+def test_native_fps_setting_draws_presented_cadence_and_excludes_idle(native, monkeypatch):
+    from meltygui.core.diagnostics import fps_counter
+    from meltygui.core.runtime.toggles import Toggles
+
+    monkeypatch.setattr(Toggles, 'show_fps', False)
+    clock = [10.0]
+    monkeypatch.setattr(fps_counter.time, 'perf_counter', lambda: clock[0])
+    drawn_settings = []
+    draw = native.surface._draw_frame
+
+    def timed_draw():
+        drawn_settings.append(Toggles.show_fps)
+        draw()
+        clock[0] += 0.00625  # CPU throughput is 160, while the screen is 120 Hz.
+
+    monkeypatch.setattr(native.surface, '_draw_frame', timed_draw)
+    native.surface.start()
+    for index, visible in enumerate((False, True, True, False)):
+        clock[0] += 30
+        info = dict(frame_info(index), show_fps=visible)
+        if visible:
+            info['presentation'] = (1, index + 1, 20 + index / 120)
+        again = native.surface.frame(info, [])
+        assert native.surface.fps_counter.fps == pytest.approx(120 if index >= 2 else 0)
+        assert native.surface.fps_counter.frame_ms == pytest.approx(6.25)
+        if index >= 2:
+            assert not again  # Displaying FPS must not force continuous drawing.
+    assert drawn_settings == [False, True, True, False]
+
+
 def test_safe_zone_updates_native_layout_only_when_setting_changes(native, monkeypatch):
     from meltygui.core.runtime.toggles import Toggles
 
@@ -482,6 +512,20 @@ def test_queued_input_keeps_frames_until_ordered_edits_are_consumed(native):
     assert native.snapshots == [(['abc'], []), ([], [(codes.KEY_BACKSPACE, 0)]), (['d'], [])]
     assert surface.frame(frame_info(6), []) is False
     assert native.snapshots[-1] == ([], [])
+
+
+@pytest.mark.parametrize('ending', ['touch_end', 'touch_cancel', 'cancel_all'])
+def test_held_native_gesture_keeps_display_link_running_until_contact_ends(native, ending):
+    surface = native.surface
+    surface.start()
+    for index in range(3):
+        surface.frame(frame_info(index), [])
+    assert surface.frame(frame_info(3), [dict(kind='touch_begin', touch_id=1, x=20, y=30)])
+    # No new UIKit packet must not pause and rearm the display link mid-gesture.
+    for index in range(4, 8):
+        assert surface.frame(frame_info(index), [])
+    surface.frame(frame_info(8), [dict(kind=ending, touch_id=1, x=20, y=30)])
+    assert not surface.frame(frame_info(9), [])
 
 
 def test_request_during_draw_is_not_lost(native, monkeypatch):

@@ -16,6 +16,20 @@ same-direction repeat-flick carry for releases within 350 ms and at least
 800 pt/s. Carry stays with its captured pane; slow releases, reversals and holds
 discard it. Coast distance is independent of rendering frame rate.
 
+Each UIKit callback publishes its coalesced samples as one queue batch, so a
+render-thread drain cannot split the callback across frames. A held primary
+contact keeps display pacing active between input deliveries. UIKit timestamps
+use one clock mapping per foreground session, rather than absorbing Python's
+variable processing delay each frame. Visible inertia starts when the release is
+processed, avoiding a catch-up jump for queued input. Its subsequent positions
+use the display link's target presentation time, so variable CPU dispatch time
+cannot alternate long and short scroll steps at a steady display cadence.
+Repeated flicks still use native contact times to calculate carried velocity.
+Momentum remains input activity until its final scroll step, keeping deferred
+editor refreshes and cooperative background parsing out of the coast. The
+parser recognizes the native Metal render thread as well as OpenGL ownership;
+it resumes after interaction becomes quiet and never parks the render thread.
+
 Scrolling locks to one axis, preferring vertical motion unless horizontal intent
 is clear. A contact stops existing momentum immediately and consumes its tap,
 including on buttons, background and drag handles. The next tap activates
@@ -80,7 +94,7 @@ continues to choose its saved-session identity.
 The app's root `.desktop` launcher also supplies its iOS icon automatically, on
 project generation and before each device Run. No icon setting or resource glob
 is needed. Selection follows the folder icon resolver (matching launcher name
-first); `X-HDR-Icon` takes precedence over `Icon`. Absolute, project-relative and
+first); `Icon` accepts SDR or HDR artwork, detected from image metadata. Absolute, project-relative and
 theme icon paths are supported. When a checkout moves to the Mac, stale absolute
 paths can be rebased against the project name or a launcher `Exec` executable
 that also exists in the new checkout.
@@ -95,8 +109,14 @@ preserving full transparency with cICP and content-light metadata. The bundled
 `rec2020-pq.icc` profile (Google Inc. 2016, the same profile used by Hub's project
 list) is also embedded as iCCP, so ICC-based icon consumers interpret the PQ
 samples and Rec.2020 primaries consistently with the project-list artwork.
-Home Screen copies are fitted to standard-range Display P3 with a filmic
-highlight shoulder and chroma compensation. On the tested iPhone, SpringBoard exports an 8-bit
+Home Screen copies are fitted to standard-range Display P3. The established
+filmic curve supplies the reference lightness and palette. The source
+artwork's relative chroma is then restored in [Oklab](https://bottosson.github.io/posts/oklab/)
+before a localized hue LUT shifts yellow/gold toward orange and blue toward
+purple without changing lightness or chroma. Other hue bands fade smoothly to
+zero correction. Out-of-gamut chroma is reduced only as
+far as necessary at constant hue; an upper-range overflow uses a common exposure
+reduction instead of clipping channels or desaturating the color. On the tested iPhone, SpringBoard exports an 8-bit
 Display P3 icon and clips bright PQ channels, washing out blue and gold. Fitting
 the gamut and tone curve before packaging keeps colored midtones bright and
 saturated instead of letting the system clip each channel independently. Fully
@@ -325,6 +345,19 @@ adding a home-indicator reserve. Disable automatic mode to use `Toggles.Mobile.S
 Manual reserves persist with normal settings and may be zero. Side cutouts remain
 protected in both modes. Idle rendering pauses; active
 rendering requests the available cadence up to 120 Hz.
+In the native iOS launcher, tap the settings gear and choose **Show FPS** or
+**Hide FPS**. The choice persists on the device and updates immediately, including
+while rendering is idle. The native host forwards `show_fps` with the next frame;
+MeltyGUI applies it to `Toggles.show_fps` and draws its own compact `120 FPS`
+overlay at the top-right of the app's safe content viewport. There is no added
+top bar or content inset, and no UIKit FPS label or native sampling loop.
+The native host forwards completed presentation counts and timestamps.
+MeltyGUI's `PresentationFpsCounter` calculates displayed cadence over the last
+12 measurements, updating each frame. CPU render throughput is measured
+separately and cannot inflate this FPS value above the actual display cadence.
+A new display-link run excludes the idle gap and keeps the last measured rate
+until new presentations arrive. The toggle requests one redraw to show or hide
+it; the display does not keep the render loop awake.
 The Metal display link allows two frames of scheduling time so CPU preparation
 and GPU execution can overlap even when their combined time exceeds 8.3 ms.
 The GPU semaphore still permits only one submitted frame at a time. A single
@@ -340,7 +373,8 @@ For device profiling, set `frame_diagnostics` in `HostSettings.plist`. Each fram
 callback counts, and `displayed_frames` / `last_presentation_time`. Compute actual
 displayed FPS from the differences of the latter two values over a measurement
 window; submitted frames and requested refresh rate alone do not prove display
-cadence. Presentation callbacks and timing collection are disabled normally.
+cadence. Presentation callbacks run when the FPS setting or diagnostics are
+enabled; the remaining diagnostic timing collection requires `frame_diagnostics`.
 
 Project execution/debugging belongs to MeltyGUI Pro's `ProjectExecution` model.
 On iOS it runs Python modules in the embedded interpreter and rejects shell or

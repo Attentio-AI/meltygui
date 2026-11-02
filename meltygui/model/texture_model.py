@@ -10,6 +10,22 @@ from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.graphics.gl_state import GLState, current_context, is_gl_thread
 
 
+def upload_native_rgba(renderer, width, height, pixels, format='rgba8srgb'):
+    """Match GL's upload orientation for CPU images sampled by the native GPU.
+
+    ImGui image UVs address the uploaded first row at v=0. Metal's mesh shader
+    flips v to retain the GL texture contract used by render targets, so CPU
+    rows must be reversed once on upload. Keep channel bytes/alpha untouched;
+    SDR bytes use hardware sRGB decoding; linear HDR half floats pass through.
+    """
+    stride = width * {'rgba8srgb': 4, 'rgba16f': 8}[format]
+    data = memoryview(pixels)
+    if len(data) != stride * height:
+        raise ValueError('RGBA image byte count does not match its dimensions')
+    rows = b''.join(data[y * stride:(y + 1) * stride] for y in range(height - 1, -1, -1))
+    return renderer.create_texture(width, height, format, rows)
+
+
 @total_ordering
 class TextureId:
     """A texture ID proxy. Resolve it only where an OpenGL ID is needed.
@@ -155,8 +171,8 @@ class ImageTexture(TextureId):
             if self.gl_format == 0x1907:
                 from PIL import Image
                 pixels = Image.frombytes('RGB', (self.tex_width, self.tex_height), pixels).convert('RGBA').tobytes()
-            return SimpleNamespace(texture_id=renderer.create_texture(
-                self.tex_width, self.tex_height, 'rgba8srgb', pixels))
+            return SimpleNamespace(texture_id=upload_native_rgba(
+                renderer, self.tex_width, self.tex_height, pixels))
 
         return state.get('image', create, lambda texture: renderer.delete_texture(texture.texture_id))
 

@@ -791,14 +791,14 @@ FPS_TEXT_COLOR = (0.42, 0.46, 0.42)
 FPS_LABEL_TEMPLATE = "0000 fps  000.0 ms"
 
 
-def paint_fps(overlay, chrome, frame_ms, fps):
+def paint_fps(overlay, chrome, frame_ms, fps, *, fps_only=False):
     """Toggles.show_fps: average active-render rate and the previous
     frame's render-thread time, in a fixed-width pill right-aligned in the
     titlebar strip before the right control group (the top-right corner of
     a window without Melty chrome). Called by the root loop (Surface.frame)
     on the overlay's top channel, after the body, Melty.end_frame and the
     titlebar: it renders over the cached tiles' blits whatever the views'
-    caches did this frame."""
+    caches did this frame. fps_only uses a compact uppercase readout for iOS."""
     from meltygui.core.melty import Melty
     from meltygui.hdr_color import pack_color
     from meltygui.core.styling.fonts import Font
@@ -813,7 +813,8 @@ def paint_fps(overlay, chrome, frame_ms, fps):
     if font is not None:
         imgui.push_font(font)
     try:
-        slot = imgui.calc_text_size(FPS_LABEL_TEMPLATE)
+        label_template = "0000 FPS" if fps_only else FPS_LABEL_TEMPLATE
+        slot = imgui.calc_text_size(label_template)
         pad = Melty.px(FPS_PAD_X)
         height = min(Melty.px(_BTN_H), slot.y + Melty.px(6.0))
         x1 = right - Melty.px(FPS_GAP)
@@ -824,11 +825,14 @@ def paint_fps(overlay, chrome, frame_ms, fps):
         overlay.add_rect_filled(x0, y0, x1, y0 + height, pack_color(*FPS_PILL_COLOR), rounding=Melty.px(6.0))
         # Two right-aligned fields with fixed right edges: the ms field ends at
         # the pill's padding, the fps field where the template's fps part ends.
-        fps_label = f"{min(fps, 9999.0):.0f} fps"
+        fps_label = f"{min(fps, 9999.0):.0f} FPS" if fps_only else f"{min(fps, 9999.0):.0f} fps"
+        if fps_only and fps <= 0:
+            fps_label = "— FPS"  # No completed render to measure yet.
         ms_label = f"{min(frame_ms, 999.9):.1f} ms"
-        fps_right = x0 + pad + imgui.calc_text_size(FPS_LABEL_TEMPLATE.split("  ")[0]).x
+        fps_right = x0 + pad + imgui.calc_text_size(label_template.split("  ")[0]).x
         overlay.add_text(fps_right - imgui.calc_text_size(fps_label).x, text_y, color, fps_label)
-        overlay.add_text(x1 - pad - imgui.calc_text_size(ms_label).x, text_y, color, ms_label)
+        if not fps_only:
+            overlay.add_text(x1 - pad - imgui.calc_text_size(ms_label).x, text_y, color, ms_label)
     finally:
         if font is not None:
             imgui.pop_font()

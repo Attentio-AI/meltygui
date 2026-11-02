@@ -90,18 +90,71 @@ def test_hdr_icon_preserves_absolute_brightness_without_normalizing_or_capping(t
     assert cicp == bytes([9, 16, 0, 1])
 
 
-def test_home_screen_keeps_gold_and_blue_saturated_without_darkening_the_body():
+def test_home_screen_restores_saturation_with_orange_and_purple_hues():
     # Bright colored bodies, darker shading and a far brighter neutral glint.
     p3 = np.array([[[1800, 280, 32], [72, 75, 5200], [13000, 13000, 13000]],
                    [[450, 70, 8], [18, 18.75, 1300], [3250, 3250, 3250]]], dtype=float)
     source = p3 @ app_icon.P3_TO_REC2020.T
     result = (app_icon.home_screen_nits(source) @ app_icon.REC2020_TO_P3.T) / 203
     assert result.max() <= 1.00001 and result.min() >= -1e-6
-    gold, blue, white = result[0]
-    assert gold[0] > .8 and .35 < gold[1] < .6 and gold[2] < .05
-    assert max(blue[:2]) < .08 and blue[2] > .9
+    orange, purple, white = result[0]
+    assert orange[0] > .9 and orange[1] < .4 and orange[2] < .05
+    assert .1 < purple[0] < .3 and purple[1] < .05 and purple[2] > .85
+    # Recorded pre-LUT palette: saturation survives the requested hue shifts.
+    reference = np.array([[.8675621999313645, .45266313086364374, .020811785456523745],
+                          [.04539973006407065, .05398987393086033, .964446098474158]])
+    before = app_icon.p3_to_oklab(reference)
+    after = app_icon.p3_to_oklab(result[0, :2])
+    before_chroma = np.linalg.norm(before[:, 1:], axis=-1, keepdims=True)
+    after_chroma = np.linalg.norm(after[:, 1:], axis=-1, keepdims=True)
+    hue = lambda lab: np.degrees(np.arctan2(lab[:, 2], lab[:, 1])) % 360
+    shift = (hue(after) - hue(before) + 180) % 360 - 180
+    assert -19 < shift[0] < -17  # Gold moves toward orange.
+    assert 20 < shift[1] < 25  # Blue moves toward purple.
+    assert (after_chroma[:, 0] / after[:, 0] > before_chroma[:, 0] / before[:, 0]).all()
+    assert (after[:, 0] <= before[:, 0] + 1e-6).all()
+    assert (after[:, 0] > before[:, 0] * .9).all()
     np.testing.assert_allclose(white, [1, 1, 1], atol=1e-6)
-    assert (result[1] < result[0]).all()
+    assert (app_icon.p3_to_oklab(result[1])[:, 0] < app_icon.p3_to_oklab(result[0])[:, 0]).all()
+
+
+def test_home_screen_hue_lut_preserves_chroma_lightness_neutrals_and_other_hues():
+    hues = np.array([0, 20, 80, 160, 200, 270, 350, 360.])
+    radians = np.radians(hues)
+    lab = np.column_stack([np.full(len(hues), .6), .2 * np.cos(radians), .2 * np.sin(radians)])
+    result = app_icon.home_screen_hue(lab)
+    np.testing.assert_array_equal(result[:, 0], lab[:, 0])
+    np.testing.assert_allclose(np.linalg.norm(result[:, 1:], axis=-1), .2)
+    np.testing.assert_allclose(result[[0, 1, 3, 4, 6, 7]], lab[[0, 1, 3, 4, 6, 7]], atol=1e-12)
+    neutral = np.array([[0., 0, 0], [.5, 0, 0], [1., 0, 0]])
+    np.testing.assert_array_equal(app_icon.home_screen_hue(neutral), neutral)
+    # The circular seam has no discontinuity.
+    np.testing.assert_allclose(result[0], result[-1], atol=1e-12)
+
+
+def test_oklab_basis_matches_reference_srgb_red_and_round_trips_p3():
+    red_p3 = np.array([1., 0, 0]) @ np.linalg.inv(app_icon.PRIMARIES_TO_SRGB[12]).T
+    lab = app_icon.p3_to_oklab(red_p3)
+    np.testing.assert_allclose(lab, [.6279553606, .2248630611, .1258462985], atol=1e-9)
+    np.testing.assert_allclose(app_icon.oklab_to_p3(lab), red_p3, atol=1e-9)
+
+
+def test_home_screen_gamut_mapping_keeps_hue_and_only_limits_required_chroma():
+    source = np.array([[[10000., 0, 0], [0, 10000, 0], [0, 0, 10000],
+                        [10000, 10000, 0], [0, 10000, 10000]]])
+    p3 = source @ app_icon.REC2020_TO_P3.T / 203
+    p3 /= p3.max(axis=-1, keepdims=True)
+    before = app_icon.p3_to_oklab(p3)
+    output = app_icon.fit_home_screen_gamut(p3)
+    after = app_icon.p3_to_oklab(output)
+    assert output.min() >= -1e-7 and output.max() <= 1.000001
+    before_chroma = np.linalg.norm(before[..., 1:], axis=-1, keepdims=True)
+    after_chroma = np.linalg.norm(after[..., 1:], axis=-1, keepdims=True)
+    np.testing.assert_allclose(after[..., 1:] / after_chroma,
+                               before[..., 1:] / before_chroma, atol=1e-6)
+    # Gamut fitting may reduce relative chroma, but never boosts or rotates it.
+    assert (after_chroma[..., 0] / after[..., 0]
+            <= before_chroma[..., 0] / before[..., 0] + 1e-6).all()
 
 
 def test_home_screen_ignores_invisible_rgb_and_keeps_in_range_artwork():
@@ -116,7 +169,7 @@ def test_hdr_is_preferred_and_fitted_to_home_screen_in_primary_icon(tmp_path, ic
     (tmp_path / 'pyproject.toml').write_text('[tool.hub.ios]\nicon = "icon.png"\n')
     Image.new('RGB', (4, 4), 'blue').save(tmp_path / 'icon.png')
     hdr_png(tmp_path / 'hdr.png')
-    launcher(tmp_path, extra='X-HDR-Icon=./hdr.png\n')
+    launcher(tmp_path, icon='./hdr.png')
     build = tmp_path / 'build'
     project = icon_project(build)
     app_icon.sync_project_icon(tmp_path, build)
@@ -129,7 +182,7 @@ def test_hdr_is_preferred_and_fitted_to_home_screen_in_primary_icon(tmp_path, ic
     nits = pq_decode(rgb / 65535)
     p3 = nits @ app_icon.REC2020_TO_P3.T
     assert p3[90, 90, 0] == pytest.approx(203, abs=.2)
-    assert abs(p3[90, 90, 1]) < .2 and p3[90, 90, 2] / p3[90, 90, 0] < .02
+    assert p3[90, 90, 0] > 20 * max(p3[90, 90, 1:])
     assert alpha[90, 90] == pytest.approx(32768, abs=1)
     assert alpha[0, 0] == 0
     objects = plistlib.loads(project.read_bytes())['objects']
@@ -205,14 +258,15 @@ def test_new_launcher_and_deleted_output_are_detected(tmp_path, icon_project):
     assert output.is_file()
 
 
-def test_declared_hdr_never_silently_degrades_to_sdr(tmp_path):
+def test_icon_requires_a_resolvable_source_and_detects_sdr(tmp_path):
     Image.new('RGB', (8, 8), 'red').save(tmp_path / 'icon.png')
-    launcher(tmp_path, extra='X-HDR-Icon=./missing.png\n')
+    launcher(tmp_path, icon='./missing.png')
     with pytest.raises(ValueError, match='could not be resolved'):
         app_icon.prepare_icon(tmp_path, tmp_path / 'build')
-    launcher(tmp_path, extra='X-HDR-Icon=./icon.png\n')
-    with pytest.raises(ValueError, match='tagged 16-bit'):
-        app_icon.prepare_icon(tmp_path, tmp_path / 'build')
+    launcher(tmp_path, icon='./icon.png')
+    app_icon.prepare_icon(tmp_path, tmp_path / 'build')
+    receipt = json.loads((tmp_path / 'build/app-icon.json').read_text())
+    assert not receipt['hdr']
 
 
 def test_renamed_checkout_uses_launcher_exec_to_rebase_artwork(tmp_path):
@@ -220,8 +274,7 @@ def test_renamed_checkout_uses_launcher_exec_to_rebase_artwork(tmp_path):
     (tmp_path / 'art').mkdir()
     hdr_png(tmp_path / 'art/hdr.png')
     (tmp_path / 'app.desktop').write_text('[Desktop Entry]\nType=Application\n'
-        'Exec=/old/project/launch-app %F\nIcon=/old/project/art/sdr.png\n'
-        'X-HDR-Icon=/old/project/art/hdr.png\n')
+        'Exec=/old/project/launch-app %F\nIcon=/old/project/art/hdr.png\n')
     app_icon.prepare_icon(tmp_path, tmp_path / 'build')
     receipt = json.loads((tmp_path / 'build/app-icon.json').read_text())
     assert receipt['source'] == str(tmp_path / 'art/hdr.png') and receipt['hdr']

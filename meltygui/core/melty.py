@@ -1,5 +1,6 @@
 import math
 import os
+import sys
 import threading as _threading
 import time
 import types
@@ -152,7 +153,11 @@ from watchdog.events import FileSystemEventHandler
 
 class FileWatch:
     _start_lock = _threading.Lock()
-    observer = Observer()
+    if sys.platform == 'ios':
+        from meltygui.core.files.ios_file_observer import IOSFileObserver
+        observer = IOSFileObserver()
+    else:
+        observer = Observer()
     handler = FileSystemEventHandler()
     # Every directory events are expected from (by any means) - what the
     # debug logs call "scheduled"; NOT one emitter each: see watch_dir.
@@ -2955,7 +2960,9 @@ class Melty:
         #     if last_hovered is not None:
         #         Melty.cache.invalidate(last_hovered, do_store=False, force=True)
 
-        cls.backend.pump()
+        # A paced backend can supply the time this frame will be displayed.
+        # Desktop backends return None and keep the normal monotonic clock.
+        animation_time = cls.backend.pump()
         space_mouse.pump(cls.event_handler)
         cls.space_mouse_drag = space_mouse.active()
 
@@ -2978,7 +2985,8 @@ class Melty:
         cls.imgui_blockers = cls.pending_blockers
         cls.pending_blockers = [None] * cls.max_layer
 
-        cls.events, cls.events_by_type = cls.event_handler.process_frame(on_pointer_down=cls.raise_pressed_window)
+        cls.events, cls.events_by_type = cls.event_handler.process_frame(
+            on_pointer_down=cls.raise_pressed_window, animation_time=animation_time)
 
         # Pointer shape: the frame about to draw, pushed NOW against the
         # freshest pointer position rather than after the (possibly slow)

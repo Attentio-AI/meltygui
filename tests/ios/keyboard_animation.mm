@@ -104,6 +104,8 @@
 - (void)setActive:(BOOL)active { _link.paused = !active; }
 - (void)close { [_link invalidate]; }
 - (void)enqueue:(melty::InputEvent)event {}
+- (void)enqueueBatch:(std::vector<melty::InputEvent>)events {}
+- (void)setFPSVisible:(BOOL)visible {}
 - (void)requestFrame {}
 - (void)setKeyboardVisible:(BOOL)visible { _keyboard(visible); }
 - (void)setSafeZone:(CGFloat)top bottom:(CGFloat)bottom { _safeZone(top, bottom); }

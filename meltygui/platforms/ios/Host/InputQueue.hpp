@@ -27,13 +27,14 @@ public:
 
     void push(InputEvent event) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (events_.size() >= limit_) {
-            // A stalled Python callback must not accumulate unbounded input or
-            // leave a control pressed after dropping its corresponding release.
-            events_.clear();
-            events_.push_back({InputKind::CancelAll, 0, event.timestamp});
-        }
-        events_.push_back(std::move(event));
+        append(std::move(event));
+    }
+
+    void pushBatch(std::vector<InputEvent> events) {
+        // One UIKit callback is one publication. A concurrent drain must never
+        // split its coalesced history and defer the latest position a frame.
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto &event : events) append(std::move(event));
     }
 
     std::vector<InputEvent> drain() {
@@ -48,6 +49,16 @@ public:
     }
 
 private:
+    void append(InputEvent event) {
+        if (events_.size() >= limit_) {
+            // A stalled Python callback must not accumulate unbounded input or
+            // leave a control pressed after dropping its corresponding release.
+            events_.clear();
+            events_.push_back({InputKind::CancelAll, 0, event.timestamp});
+        }
+        events_.push_back(std::move(event));
+    }
+
     size_t limit_;
     std::mutex mutex_;
     std::deque<InputEvent> events_;

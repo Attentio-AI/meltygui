@@ -89,6 +89,7 @@
     }
 }
 - (void)sendTouches:(NSSet<UITouch *> *)touches event:(UIEvent *)event kind:(melty::InputKind)kind {
+    std::vector<melty::InputEvent> batch;
     for (UITouch *touch in touches) {
         if (kind == melty::InputKind::Begin && _touchIDs.count == 0) {
             _velocityTouch = touch;
@@ -122,7 +123,7 @@
                 input.velocityX = velocity.x;
                 input.velocityY = velocity.y;
             }
-            [self.host enqueue:std::move(input)];
+            batch.push_back(std::move(input));
         }
         if (kind == melty::InputKind::End || kind == melty::InputKind::Cancel) {
             [_touchIDs removeObjectForKey:touch];
@@ -132,6 +133,7 @@
             }
         }
     }
+    [self.host enqueueBatch:std::move(batch)];
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     [self sendTouches:touches event:event kind:melty::InputKind::Begin];
@@ -254,6 +256,8 @@
     }];
     view.host = self.host;
 #if __has_include("Launcher/HubLauncher.h")
+    __weak MeltyHost *weakHost = self.host;
+    HubConfigureFPSSetting(^(BOOL visible) { [weakHost setFPSVisible:visible]; });
     status.text = @"Choose launch inputs to start.";
     HubLaunchStart(self, ^{ [self.host start]; });
 #else

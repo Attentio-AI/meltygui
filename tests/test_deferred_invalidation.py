@@ -7,6 +7,7 @@ import pytest
 from meltygui.core.cache import deferred_invalidation as deferred
 from meltygui.core.melty import Melty
 from meltygui.core.windowing import glfw_utils
+from meltygui.editor import text_editor as editor
 
 
 class View:
@@ -137,7 +138,6 @@ def test_closed_or_replaced_view_is_never_invalidated_or_retained(clock, discard
 
 @pytest.mark.parametrize('kind', ['tints', 'usages'])
 def test_symbol_collectors_do_not_poll_frames_during_debounce(clock, monkeypatch, kind):
-    from meltygui.editor import text_editor as editor
     now, timers, posts, wakes = clock
     view = View()
     monkeypatch.setattr(Melty, 'cache', Cache(view))
@@ -171,7 +171,6 @@ def test_symbol_collectors_do_not_poll_frames_during_debounce(clock, monkeypatch
 
 
 def test_default_symbol_placeholder_is_not_an_inflight_parse(clock, monkeypatch):
-    from meltygui.editor import text_editor as editor
     now, timers, posts, wakes = clock
     view = View()
     monkeypatch.setattr(Melty, '_last_input_time', 0.0)

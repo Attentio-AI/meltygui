@@ -252,6 +252,84 @@ class MetalPixels(unittest.TestCase):
         self.assertGreater(max(p[0] for row in image for p in row),.5)
         cache.cleanup()
 
+    def test_hdr_png_icon_retains_radiance_gamut_and_alpha_through_metal(self):
+        import tempfile
+        import numpy as np
+        from types import SimpleNamespace
+        from meltygui.image_load import PRIMARIES_TO_SRGB
+        from meltygui.model.folder_icon_model import load_folder_icon, FolderIconTexture
+        from meltygui.platforms.ios.app_icon import write_hdr_icon
+
+        nits = np.array([[[1000., 0, 0], [0, 1000, 0]],
+                         [[0, 0, 1000], [1000, 1000, 1000]]])
+        alpha = np.array([[65535, 32768], [65535, 65535]], dtype=np.uint16)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_hdr_icon(root/'hdr.png', nits, 2, bytes([9, 16, 0, 1]), alpha)
+            (root/'app.desktop').write_text('[Desktop Entry]\nType=Application\nIcon=./hdr.png\n')
+            pixels, _ = load_folder_icon(root)
+        self.assertEqual(pixels.format, 'rgba16f')
+        r = self.renderer
+        state = SimpleNamespace(get=lambda key, create, delete: create())
+        handle = FolderIconTexture(pixels)._upload_native(state, r).texture_id
+        r.set_texture_sampling(handle, True, True)
+        r.begin_scene(64, 48, (0, 0, 0, 0))
+        r.draw_backgrounds([], (0, 0, 0, 0))
+        self.imgui.new_frame()
+        self.imgui.get_background_draw_list().add_image(handle, (8, 8), (24, 24))
+        r.begin_frame_split()
+        self.imgui.render()
+        r.render_except_overlay(self.imgui.get_draw_data())
+        image = self.pixels(r.scene_framebuffer)
+        expected = (nits @ PRIMARIES_TO_SRGB[9].T / 203) * (alpha[..., None] / 65535)
+        for y in range(2):
+            for x in range(2):
+                actual = image[12 + 8*y][12 + 8*x]
+                np.testing.assert_allclose(actual[:3], expected[y, x], rtol=.003, atol=.003)
+                self.assertAlmostEqual(actual[3], alpha[y, x]/65535, delta=.001)
+        self.assertGreater(image[12][12][0], 5)
+        self.assertLess(image[12][20][0], 0)
+        drawable = r.create_texture(64, 48, 'rgba16f')
+        self.native.set_scene(r.scene_framebuffer)
+        self.native._test_present(drawable)
+        presented = self.pixels(drawable)
+        for y, x in ((12, 12), (12, 20), (20, 12), (20, 20)):
+            self.assertEqual(presented[y][x], image[y][x])
+        r.delete_texture(drawable)
+        r.delete_texture(handle)
+
+    def test_cpu_icon_rows_and_srgb_colors_survive_native_upload(self):
+        from types import SimpleNamespace
+        from meltygui.model.folder_icon_model import FolderIconTexture, IconPixels
+        from meltygui.model.texture_model import ImageTexture
+        # Asymmetric rows expose a Y flip; midtones expose missing/double sRGB
+        # decoding. Use the two real CPU-image upload paths, not cached tiles.
+        pixels = bytes((255, 0, 0, 255, 128, 128, 128, 255,
+                        0, 0, 255, 255, 0, 255, 0, 128))
+        state = SimpleNamespace(get=lambda key, create, delete: create())
+        icons = (FolderIconTexture(IconPixels(Path('icon.png'), 2, 2, pixels)),
+                 ImageTexture('image', 2, 2, 0x1908, pixels))
+        r = self.renderer
+        for icon in icons:
+            with self.subTest(kind=type(icon).__name__):
+                handle = icon._upload_native(state, r).texture_id
+                r.set_texture_sampling(handle, True, True)
+                r.begin_scene(64, 48, (0, 0, 0, 0))
+                r.draw_backgrounds([], (0, 0, 0, 0))
+                self.imgui.new_frame()
+                self.imgui.get_background_draw_list().add_image(handle, (8, 8), (24, 24))
+                r.begin_frame_split()
+                self.imgui.render()
+                r.render_except_overlay(self.imgui.get_draw_data())
+                image = self.pixels(r.scene_framebuffer)
+                for actual, expected in ((image[12][12], (1, 0, 0, 1)),
+                                         (image[12][20], (.21586, .21586, .21586, 1)),
+                                         (image[20][12], (0, 0, 1, 1)),
+                                         (image[20][20], (0, 128/255, 0, 128/255))):
+                    for got, want in zip(actual, expected):
+                        self.assertAlmostEqual(got, want, delta=.002)
+                r.delete_texture(handle)
+
 
 if __name__=="__main__":
     unittest.main()

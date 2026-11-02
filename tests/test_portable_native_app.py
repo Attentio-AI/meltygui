@@ -55,10 +55,25 @@ def test_portable_app_boots_draws_and_checkpoints_without_pro_or_desktop_graphic
         native = start_native_application({'entry_module': 'main'}, host,
                                           lambda: MetalRenderer(gpu))
         assert native.config['app_id'] == 'melty-portable-counter'
+        paint_fps = titlebar.paint_fps
+        fps_calls = []
+        def record_fps(*args, **kwargs):
+            fps_calls.append((args[3], kwargs['fps_only']))
+            return paint_fps(*args, **kwargs)
+        titlebar.paint_fps = record_fps
         for frame in range(5):
-            native.frame(dict(width=640, height=480, scale=1, now=10+frame/60,
-                              presentation_time=10+(frame+1)/60), [])
+            info = dict(width=640, height=480, scale=1, now=10+frame/60,
+                        presentation_time=10+(frame+1)/60, show_fps=frame >= 2)
+            if frame >= 2:
+                info['presentation'] = (1, frame+1, 10+frame/60)
+            native.frame(info, [])
             native.presented()
+        assert len(fps_calls) == 3 and all(compact for _, compact in fps_calls)
+        assert fps_calls[0][0] == 0  # No presentation interval yet, rendered as a dash.
+        assert all(abs(rate - 60) < .001 for rate, _ in fps_calls[1:])
+        native.frame(dict(width=640, height=480, scale=1, now=10.1,
+                          presentation_time=10.11, show_fps=False), [])
+        assert len(fps_calls) == 3  # The native setting hides the real Melty overlay.
         assert gpu.meshes > 0
         assert native.cache._tiles
         import main

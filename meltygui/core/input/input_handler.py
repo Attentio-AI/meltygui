@@ -763,11 +763,13 @@ class InputHandler:
                 break
         return result
 
-    def process_frame(self, on_pointer_down=None):
+    def process_frame(self, on_pointer_down=None, *, animation_time=None):
         """Returns {view_id: {event_name: event}} for all matched subscriptions.
 
         on_pointer_down observes each left/right press before dispatch, even
         without subscribers. It must not consume events or change registrations.
+        animation_time is the target display time in the input clock's epoch.
+        Only animation uses it; input deadlines still use the current time.
         """
         self._hovered.sort(key=lambda x: x[1])
 
@@ -907,8 +909,17 @@ class InputHandler:
         from meltygui.core.windowing.glfw_utils import request_render
         get_latest_mouse = Melty.get_latest_mouse
 
-        if self._touch_input is not None:
-            if self._touch_input.dispatch(self, key_index, add_event, t, on_pointer_down):
+        touch = self._touch_input
+        if touch is not None:
+            was_coasting = not touch.active and bool(touch.velocity or touch.velocity_x)
+            coasting = touch.dispatch(self, key_index, add_event,
+                                      t if animation_time is None else animation_time,
+                                      on_pointer_down)
+            if was_coasting or coasting:
+                # The finger has lifted, but interaction continues. Keep idle
+                # parsing/refresh/GC deferred through the final momentum step.
+                Melty._last_input_time = Melty._last_presence_time = time.monotonic()
+            if coasting:
                 request_render()
         # Native contacts may have queued their release for this dispatch.
         # Consume it before the missed-mouse-release probe can synthesize one.

@@ -39,6 +39,7 @@ class IOSInput:
         self._edit_pending = deque()
         self.edit_events = []
         self._last_presentation = None
+        self._native_clock_offset = None
         self._pressed_keys = set()
         self._touch_pressed = self._release_pending = False
         self._suppress_touch_mouse = False
@@ -59,7 +60,10 @@ class IOSInput:
 
     @property
     def has_pending_events(self):
-        return bool(self._edit_pending or self._release_pending)
+        # A live gesture stays on the display cadence, including frames between
+        # UIKit deliveries. Release/cancellation restores demand-driven idle.
+        return bool(self._edit_pending or self._release_pending
+                    or self.window.primary_touch is not None)
 
     @property
     def allow_hovering(self):
@@ -221,7 +225,11 @@ class IOSInput:
         self._frame_cursor = self.window.cursor_pos
         self.io.mouse_wheel = self.io.mouse_wheel_horizontal = 0.0
         now = time.perf_counter()
-        offset = now - float(info.get('now', now))
+        if self._native_clock_offset is None:
+            # These monotonic clocks differ by a fixed epoch. Recomputing this
+            # every frame would turn variable Python work into timestamp jitter.
+            self._native_clock_offset = now - float(info.get('now', now))
+        offset = self._native_clock_offset
         presentation = float(info.get('presentation_time', info.get('now', now)))
         delta = presentation - self._last_presentation if self._last_presentation is not None else 1 / 60
         self.io.delta_time = delta if math.isfinite(delta) and delta > 0 else 1 / 60
@@ -268,7 +276,7 @@ class IOSInput:
             self.backend.post_empty_event()
 
     def pump(self):
-        """Refresh held-input recency; queued native edges were already fed."""
+        """Refresh held input and return this frame's target animation time."""
         self._set_modifiers(self._modifiers)
         touch = self.handler._touch_input
         origin = next(((x, y) for kind, x, y, _, _velocity in touch.events if kind == 'begin'), None) if touch else None
@@ -288,6 +296,10 @@ class IOSInput:
                 self.melty.bvh_hover_ids = hover_ids
         if self.window.primary_touch is not None or self.melty._keys_down:
             self._stamp()
+        # Advance inertia on display times, not variable Python dispatch times.
+        # Native contact times still determine velocity and repeat-flick carry.
+        if self._last_presentation is not None:
+            return self._last_presentation + self._native_clock_offset
 
     def _refresh_touch_targets(self):
         """Re-hit cached body actions before dispatching a new native touch.
@@ -396,11 +408,13 @@ class IOSInput:
         self._cancel_inputs()
         self.backend.set_active(False)
         self._last_presentation = None
+        self._native_clock_offset = None
         self.update_keyboard(False)
 
     def resume(self):
         self.backend.set_active(True)
         self._last_presentation = None
+        self._native_clock_offset = None
         self.backend.post_empty_event()
 
     def close(self):

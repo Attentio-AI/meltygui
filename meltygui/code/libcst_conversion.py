@@ -3813,9 +3813,14 @@ def _yield_to_ui():
     cur = threading.current_thread()
     if cur is threading.main_thread():
         return
-    import meltygui.core.graphics.gl_state as gl_state
-    glt = getattr(gl_state, "_gl_thread", None)  # read, don't claim (is_current_thread claims)
-    if glt is None or cur is glt:
+    # Native Metal has a registered render thread but no OpenGL thread. Use
+    # the same ownership check as _park_while_frame so its workers also defer
+    # between frames while a gesture or momentum animation remains active.
+    from meltygui.core.windowing import glfw_utils
+    render_id = glfw_utils._render_thread_id
+    gl_state = sys.modules.get("meltygui.core.graphics.gl_state")
+    glt = getattr(gl_state, "_gl_thread", None)
+    if cur.ident == render_id or cur is glt or (render_id is None and glt is None):
         return
     _t0 = time.monotonic()
     while Toggles.yield_to_ui:

@@ -165,6 +165,8 @@ static const char *kindName(melty::InputKind kind) {
     std::mutex _presentationMutex;
     uint64_t _displayedFrames;
     double _lastPresentationTime;
+    uint64_t _presentationRun, _presentedRun;
+    std::atomic<bool> _showFPS;
     std::atomic<double> _gpuDuration;
     double _nativeDuration, _gpuWaitDuration;
     PyObject *_bootstrap;
@@ -214,6 +216,7 @@ static const char *kindName(melty::InputKind kind) {
         _clipboardChangeCount = -1;
         _maximumFramesPerSecond = UIScreen.mainScreen.maximumFramesPerSecond;
         _gpuDuration = 0;
+        _showFPS = false;
     }
     return self;
 }
@@ -404,7 +407,11 @@ static const char *kindName(melty::InputKind kind) {
 
 - (void)wake {
     _wakeScheduled = false;
-    if (_active.load() && !_failed && _initialized) _displayLink.paused = NO;
+    if (_active.load() && !_failed && _initialized) {
+        // A fresh run excludes the demand-driven idle gap from displayed FPS.
+        if (_displayLink.paused) ++_presentationRun;
+        _displayLink.paused = NO;
+    }
 }
 
 - (void)requestFrame {
@@ -420,6 +427,12 @@ static const char *kindName(melty::InputKind kind) {
 
 - (void)setSafeZone:(CGFloat)top bottom:(CGFloat)bottom {
     dispatch_async(dispatch_get_main_queue(), ^{ self->_safeZone(top, bottom); });
+}
+
+- (void)setFPSVisible:(BOOL)visible {
+    // UIKit owns the setting; Python consumes it on its render thread.
+    // Wake once so toggling also works while the application is idle.
+    if (_showFPS.exchange(visible) != bool(visible)) [self requestFrame];
 }
 
 - (void)refreshClipboard {
@@ -464,6 +477,12 @@ static const char *kindName(melty::InputKind kind) {
 
 - (void)enqueue:(melty::InputEvent)event {
     _input.push(std::move(event));
+    [self requestFrame];
+}
+
+- (void)enqueueBatch:(std::vector<melty::InputEvent>)events {
+    if (events.empty()) return;
+    _input.pushBatch(std::move(events));
     [self requestFrame];
 }
 
@@ -592,9 +611,19 @@ static const char *kindName(melty::InputKind kind) {
         if (!item) { Py_CLEAR(inputs); break; }
         PyList_SET_ITEM(inputs, (Py_ssize_t)i, item);
     }
-    PyObject *info = Py_BuildValue("{s:d,s:d,s:d,s:d,s:d,s:d}",
+    PyObject *info = Py_BuildValue("{s:d,s:d,s:d,s:d,s:d,s:d,s:O}",
         "deadline", update.targetTimestamp, "presentation_time", update.targetPresentationTimestamp,
-        "now", CACurrentMediaTime(), "width", width, "height", height, "scale", scale);
+        "now", CACurrentMediaTime(), "width", width, "height", height, "scale", scale,
+        "show_fps", _showFPS.load() ? Py_True : Py_False);
+    if (info && _showFPS.load()) {
+        std::lock_guard<std::mutex> lock(_presentationMutex);
+        // Raw presentation facts only. Python measures cadence and draws FPS.
+        PyObject *presentation = Py_BuildValue("(KKd)",
+            (unsigned long long)_presentedRun,
+            (unsigned long long)_displayedFrames, _lastPresentationTime);
+        if (!presentation || PyDict_SetItemString(info, "presentation", presentation) < 0) Py_CLEAR(info);
+        Py_XDECREF(presentation);
+    }
     if (info && _frameDiagnostics) {
         std::lock_guard<std::mutex> lock(_presentationMutex);
         CALayer *presentation = _layer.presentationLayer ?: _layer;
@@ -656,8 +685,9 @@ static const char *kindName(melty::InputKind kind) {
             [self performSelector:@selector(fail:) onThread:self->_thread withObject:message waitUntilDone:NO];
         }
     }];
-    if (_frameDiagnostics) {
+    if (_frameDiagnostics || _showFPS.load()) {
         __weak MeltyHost *weakSelf = self;
+        const uint64_t run = _presentationRun;
         [update.drawable addPresentedHandler:^(id<MTLDrawable> drawable) {
             MeltyHost *host = weakSelf;
             if (!host) return;
@@ -665,6 +695,7 @@ static const char *kindName(melty::InputKind kind) {
             if (drawable.presentedTime > host->_lastPresentationTime) {
                 host->_lastPresentationTime = drawable.presentedTime;
                 ++host->_displayedFrames;
+                host->_presentedRun = run;
             }
         }];
     }

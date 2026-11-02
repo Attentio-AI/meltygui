@@ -23,6 +23,7 @@ import os
 import pathlib
 import struct
 import subprocess
+import sys
 import zlib
 
 import numpy as np
@@ -96,6 +97,10 @@ def _native_unfilter():
     if _native is not None:
         return _native or None
     _native = False
+    if sys.platform == 'ios':
+        # The embedded runtime cannot spawn a compiler. Use the portable
+        # decoder rather than letting subprocess abort HDR icon loading.
+        return None
     try:
         src = _UNFILTER_SRC.read_bytes()
         cache = pathlib.Path(os.environ.get('XDG_CACHE_HOME') or pathlib.Path.home() / '.cache') / 'meltygui'

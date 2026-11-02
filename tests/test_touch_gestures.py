@@ -11,6 +11,8 @@ def gesture(monkeypatch):
     clock = [10.0]
     monkeypatch.setattr('meltygui.core.input.input_handler.time.perf_counter', lambda: clock[0])
     monkeypatch.setattr(Melty, 'get_latest_mouse', lambda: handler.cursor())
+    monkeypatch.setattr(Melty, '_last_input_time', 0.0)
+    monkeypatch.setattr(Melty, '_last_presence_time', 0.0)
     monkeypatch.setattr('meltygui.core.windowing.glfw_utils.request_render', lambda: None)
     set_button_probe(None)
 
@@ -92,6 +94,40 @@ def test_flick_coasts_and_new_contact_stops_it(gesture):
     handler.begin_frame()
     clock[0] += 1/60
     assert not handler.process_frame()[0]
+
+
+def test_momentum_counts_as_activity_until_the_last_scroll_step(gesture, monkeypatch):
+    handler, clock, send, text = gesture
+    monkeypatch.setattr('meltygui.core.input.input_handler.time.monotonic', lambda: clock[0])
+    monkeypatch.setattr(Melty, '_last_input_time', 0.0)
+    monkeypatch.setattr(Melty, '_last_presence_time', 0.0)
+    monkeypatch.setattr(Melty, '_last_key_time', 7.0)
+    text()
+    send('begin')
+    handler.process_frame()
+    handler.begin_frame()
+    send('move', y=50)
+    send('end', y=50, velocity=(0, -240))
+    handler.process_frame()
+    moving_frames = 0
+    for _ in range(480):
+        handler.begin_frame()
+        clock[0] += 1 / 120
+        events = handler.process_frame()[0]
+        if 'scroll' not in events:
+            break
+        moving_frames += 1
+        # Idle refresh/parsing must stay deferred beyond its 0.5 s quiet gate.
+        assert Melty._last_input_time == clock[0]
+        assert Melty._last_presence_time == clock[0]
+        assert Melty._last_key_time == 7.0  # Scrolling is not typing.
+    assert 60 < moving_frames < 479
+    last_activity = Melty._last_input_time
+    for _ in range(10):
+        handler.begin_frame()
+        clock[0] += .1
+        assert not handler.process_frame()[0]
+        assert Melty._last_input_time == last_activity
 
 
 def test_pause_before_lift_and_cancel_stop_momentum(gesture):
@@ -242,6 +278,47 @@ def test_native_velocity_ignores_noisy_lift_off_sample(gesture):
     send('end', y=21, dt=.00001, velocity=(0, -500))
     handler.process_frame()
     assert handler._touch_input.velocity == -500
+
+
+@pytest.mark.parametrize('delay', [0.0, 0.05, 0.15])
+@pytest.mark.parametrize('fps', [60, 120])
+def test_delayed_release_starts_coasting_without_a_catch_up_jump(gesture, delay, fps):
+    import math
+    from meltygui.core.input.touch_input import FLICK_DECAY, FLICK_PROJECTION
+
+    handler, clock, send, text = gesture
+    text()
+    send('begin')
+    send('move', y=40)
+    handler.process_frame()
+    handler.begin_frame()
+    send('end', y=38, velocity=(0, -1000))
+    clock[0] += delay
+    released = handler.process_frame()[0]
+    # Render the final finger movement, without replaying queued time as inertia.
+    assert released['scroll']['touch_scroll_changed'].value == pytest.approx(-2)
+    assert handler._touch_input.velocity == -1000
+    handler.begin_frame()
+    clock[0] += 1 / fps
+    coast = handler.process_frame()[0]['scroll']['touch_scroll_changed'].value
+    assert coast == pytest.approx(-1000 * (1 - math.exp(-FLICK_DECAY / fps)) * FLICK_PROJECTION)
+
+
+def test_batched_second_flick_uses_native_gap_for_carried_velocity(gesture):
+    import math
+    from meltygui.core.input.touch_input import FLICK_DECAY, flick_velocity
+
+    handler, clock, send, text = gesture
+    text()
+    send('begin')
+    send('move', y=40)
+    send('end', y=40, velocity=(0, -1800))
+    send('begin', y=40, dt=.15)
+    clock[0] += .05  # Both gestures arrive in one delayed frame.
+    handler.process_frame()
+    assert handler._touch_input.carry[1][1] == pytest.approx(
+        flick_velocity(-1800) * math.exp(-FLICK_DECAY * .15))
+    assert handler._touch_input.velocity == 0  # The new contact stops visible coasting.
 
 
 def test_flick_gain_is_smooth_and_has_no_speed_ceiling(gesture):
