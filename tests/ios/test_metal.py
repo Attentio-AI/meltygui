@@ -55,6 +55,48 @@ class MetalPixels(unittest.TestCase):
             for x,pixel in enumerate(row):
                 self.assertEqual(pixel,(0.25,0.5,1,1) if 2<=x<5 and 5<=y<7 else (0,0,0,0))
 
+    def test_adjacent_draws_share_pass_and_preserve_blending_and_scissors(self):
+        r, native = self.renderer, self.native
+        native._test_flush()
+        target = r.create_texture(8, 8, "rgba32f")
+        native._test_flush()
+        native.clear_texture(target, (0, 0, 0, 0))
+        for _ in range(32):
+            r.quad(target, "solid_fragment", struct.pack("4f", 1, .5, .25, .5),
+                   rect=(0, 0, 8, 8), blend="over", clip=(2, 1, 3, 2))
+        # A clear and all 32 overlapping rectangles are one attachment pass.
+        self.assertEqual(native._test_flush(), 1)
+        image = self.pixels(target)
+        for y, row in enumerate(image):
+            for x, pixel in enumerate(row):
+                expected = (1, .5, .25, 1) if 2 <= x < 5 and 5 <= y < 7 else (0, 0, 0, 0)
+                for actual, value in zip(pixel, expected):
+                    self.assertAlmostEqual(actual, value, places=6)
+
+    def test_pass_batching_preserves_target_clear_upload_and_frame_boundaries(self):
+        r, native = self.renderer, self.native
+        native._test_flush()
+        a = r.create_texture(2, 2, "rgba32f")
+        b = r.create_texture(2, 2, "rgba32f")
+        native._test_flush()
+        native.clear_texture(a, (1, 0, 0, 1))
+        r.copy(a, b)
+        native.clear_texture(a, (0, 1, 0, 1))
+        r.copy(b, a, target_rect=(0, 0, 1, 2))
+        self.assertEqual(native._test_flush(), 3)
+        image = self.pixels(a)
+        self.assertEqual(image[0], [(1, 0, 0, 1), (0, 1, 0, 1)])
+        # An upload must finish the pass that sampled the old source first.
+        r.copy(a, b)
+        native.upload_texture(a, 2, 2, struct.pack("16f", *((0, 0, 1, 1) * 4)))
+        r.copy(a, b, target_rect=(1, 0, 1, 2))
+        self.assertEqual(native._test_flush(), 2)
+        self.assertEqual(self.pixels(b)[0], [(1, 0, 0, 1), (0, 0, 1, 1)])
+        # The same target on the next frame must get a fresh encoder.
+        r.clear_rect(b, (0, 0, 2, 2), (.5, .5, .5, 1))
+        self.assertEqual(native._test_flush(), 1)
+        self.assertEqual(self.pixels(b)[0], [(.5, .5, .5, 1)] * 2)
+
     def test_present_keeps_pixels_at_top_left_across_keyboard_and_drawable_resizes(self):
         # Distinct pixels expose stretching, Y flips and old exposed pixels.
         # Exercise both directions, including a drawable acquired before a
@@ -138,7 +180,7 @@ class MetalPixels(unittest.TestCase):
             backend.delete_tile(tile)
 
     def test_cached_images_move_by_quarter_physical_pixels(self):
-        from meltygui.core.cache.tile_cache import _tile_uv_rect
+        from meltygui.core.cache.tile_cache import _tile_image_uv
         from meltygui.core.graphics.metal_tiles import MetalTileBackend
         r, imgui = self.renderer, self.imgui
         backend = MetalTileBackend(r)
@@ -149,7 +191,6 @@ class MetalPixels(unittest.TestCase):
                 aw, ah, _ = r._textures[tile.tex]
                 values = [v for y in range(ah) for x in range(aw) for v in (x % 2, 0, 0, 1)]
                 r.redefine_texture(tile.tex, aw, ah, 'rgba32f', struct.pack(f'{len(values)}f', *values))
-                us, vs, u0, v0 = _tile_uv_rect(tile)
                 io = imgui.get_io()
                 io.display_size, io.display_fb_scale = (48, 48), (scale, scale)
                 previous = None
@@ -158,8 +199,9 @@ class MetalPixels(unittest.TestCase):
                     r.begin_scene(48 * scale, 48 * scale, (0, 0, 0, 0))
                     r.draw_backgrounds([], (0, 0, 0, 0))
                     imgui.new_frame()
+                    uv_a, uv_b = _tile_image_uv(tile, (x, y), align_to_pixels=False)
                     imgui.get_background_draw_list().add_image(tile.tex, (x, y), (x+8, y+8),
-                                                               (u0, v0+vs), (u0+us, v0))
+                                                               uv_a, uv_b)
                     r.begin_frame_split()
                     imgui.render()
                     r.render_except_overlay(imgui.get_draw_data())

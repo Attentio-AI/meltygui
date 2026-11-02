@@ -551,9 +551,9 @@ def test_suspend_cancels_input_checkpoints_once_and_resume_wakes(native):
     surface.frame(frame_info(), [dict(kind='touch_begin', touch_id=1, x=10, y=10),
                                 dict(kind='key', key=codes.KEY_S, action=codes.PRESS,
                                      modifiers=codes.MOD_SUPER)])
-    # This harness replaces drawing/dispatch. Native contact edges are queued
-    # until the shared dispatcher can choose between a tap and a scroll.
-    assert surface.input.handler._touch_input.events
+    # The first presented frame primes the contact before delivering its press.
+    assert surface.input._touch_pending
+    assert not imgui.get_io().mouse_down[0]
     assert Melty._keys_down
     surface.input.update_keyboard(True)
     native.calls.clear()
@@ -564,6 +564,7 @@ def test_suspend_cancels_input_checkpoints_once_and_resume_wakes(native):
     assert not surface.input.handler.is_down('left_mouse')
     assert not surface.input.handler._touch_input.events
     assert not surface.input.handler._touch_input.active
+    assert not surface.input._touch_pending
     assert not surface.window.touches and not Melty._keys_down
     assert native.calls == ['save-source', 'save-session', 'save-settings', 'save-overrides']
     assert surface.frame(frame_info(1), []) is False

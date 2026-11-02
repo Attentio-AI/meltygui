@@ -85,15 +85,15 @@ def test_cached_image_moves_in_quarter_physical_pixels(gl_context, monkeypatch, 
     fw = fh = int(48 * scale)
     output = tile_cache._create_color_tex(fw, fh)
     fbo, _ = tile_cache._create_fbo_with_tex(output, False, fw, fh)
-    us, vs, u0, v0 = tile_cache._tile_uv_rect(tile)
     rows = []
     try:
         io.display_size, io.display_fb_scale = (48, 48), (scale, scale)
         for physical_offset in (0, .25, .5, .75, 1):
             x, y = 16 + (.375 + physical_offset) / scale, 16 + .75 / scale
             imgui.new_frame()
+            uv_a, uv_b = tile_cache._tile_image_uv(tile, (x, y), align_to_pixels=False)
             imgui.get_background_draw_list().add_image(tile.tex, (x, y), (x + 8, y + 8),
-                                                       (u0, v0 + vs), (u0 + us, v0))
+                                                       uv_a, uv_b)
             imgui.render()
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo)
             gl.glClearColor(0, 0, 0, 0)

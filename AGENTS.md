@@ -44,6 +44,8 @@ menus, and status messages. Separate details with spacing, parentheses, or clear
 
 ## Runtime and changes
 
+- On-demand features such as screenshots must do capture work only after an explicit request. Do not add per-frame allocations, copies/readbacks, GPU waits, drawable retention, polling, or permanently relax render-target optimizations for an occasional action. Schedule one-shot work on the owning render thread, wake it if idle, and release capture resources afterwards. Verify the normal rendering path is unchanged; do not claim performance impact is negligible without measurement.
+
 - Consume background results before drawing; dispatch work afterwards. Call window
   lifecycles every frame with `open_requested`; both backends must behave alike.
 - A window's starting size / position is `initial={"width":, "height":, "window_pos":}`

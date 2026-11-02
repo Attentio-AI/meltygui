@@ -177,3 +177,34 @@ def test_fractional_capture_coverage_is_complete_without_repeated_redraw(monkeyp
     assert not cache._visible_unfilled(tile, ds)
     ds.clipped_by_rect = (0, 0, 0, 0)
     assert cache._visible_unfilled(tile, ds)
+
+
+@pytest.mark.parametrize('captured, clip, x, width, cached, expected', [
+    ((0, 0, 100, 100), (0, 0, 0, 0), 10, 100, True, False),
+    ((0, 0, 100, 40), (0, 0, 0, 60), 10, 100, True, False),
+    ((0, 0, 100, 40), (0, 0, 0, 50), 10, 100, True, True),
+    (None, (0, 0, 0, 0), 10, 100, True, True),
+    (None, (0, 0, 0, 120), 10, 100, True, False),
+    (None, (0, 0, 0, 0), 600, 100, True, False),
+    ((0, 0, 100, 100), (0, 0, 0, 0), 10, 120, True, True),
+    (None, (0, 0, 0, 0), 10, 100, False, False),
+])
+def test_scroll_sweep_invalidates_only_missing_visible_captures(
+        monkeypatch, captured, clip, x, width, cached, expected):
+    from unittest.mock import Mock
+    cache = tile_cache.TileCacheMasked()
+    ds = SimpleNamespace(_tile_id='child', width=width, height=100,
+                         abs_left=x, abs_top=10, clipped_by_rect=clip)
+    tile = SimpleNamespace(size=(100, 100), filled_bbox=captured,
+                           last_clean_frame=1, pixel_scale=(2, 2))
+    if cached:
+        cache._tiles['child'] = tile
+    parent = SimpleNamespace(abs_clip_rect=(0, 0, 500, 500),
+                             children_in_clip=lambda clip, **kwargs: [ds])
+    invalidate = Mock()
+    monkeypatch.setattr(cache, 'invalidate', invalidate)
+    monkeypatch.setattr(cache, '_display_rect_screen', lambda: (0, 0, 500, 500))
+    cache.invalidate_scrolled_in(parent)
+    assert invalidate.call_count == int(expected)
+    if expected:
+        assert invalidate.call_args.args == ('child',)

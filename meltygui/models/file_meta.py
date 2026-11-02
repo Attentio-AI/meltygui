@@ -335,7 +335,7 @@ class FileMetaProxy(dict):
         the inode never repeats."""
         try:
             st = self.path.stat()
-        except OSError:
+        except FileNotFoundError:
             return None
         return (st.st_ino, st.st_mtime_ns, st.st_size)
 
@@ -354,16 +354,19 @@ class FileMetaProxy(dict):
             os.close(fd)
 
     def _read_file(self):
-        """{path: stored dict} from disk, {} when absent / unreadable."""
+        """Read stored entries; only an absent file means an empty store.
+
+        A disconnected mount or corrupt snapshot must not become an empty
+        catalog that renderer registration can subsequently save over the file.
+        """
         try:
             with open(self.path, "rb") as fh:
                 data = pickle.load(fh)
-        except (OSError, EOFError, pickle.UnpicklingError, AttributeError,
-                ImportError, ValueError):
+        except FileNotFoundError:
             return {}
         entries = data.get("entries") if isinstance(data, dict) else None
         if not isinstance(entries, dict):
-            return {}
+            raise ValueError(f'Invalid file metadata store: {self.path}')
         return {str(k): dict(v) for k, v in entries.items() if isinstance(v, dict)}
 
     def load(self):
@@ -577,22 +580,45 @@ class FileMetaProxy(dict):
     def _ensure_poller(self):
         if self._poller is not None:
             return
+        # The iOS runtime publishes completed local mirror updates. Reading the
+        # catalog never needs a timer or an SSH request on that platform.
+        try:
+            import _hub_files
+        except ImportError:
+            _hub_files = None
+        watch = getattr(_hub_files, "watch", None)
+        if watch is not None:
+            import weakref
+            owner = weakref.ref(self)
+            def changed():
+                store = owner()
+                if store is not None:
+                    store._poll_once()
+            self._poller = changed  # Runtime holds only a weak callback reference.
+            watch(changed)
+            return
         self._poller = threading.Thread(target=self._poll, name="file-meta-poll",
                                         daemon=True)
         self._poller.start()
 
+    def _poll_once(self):
+        with self._lock:
+            if self._pending or self._timer is not None:
+                return
+            try:
+                sig = self._stat_sig()
+            except OSError:
+                return  # Keep the current catalog during an unavailable snapshot.
+            changed = sig != self._disk_sig
+            if changed:
+                self._pending = True
+        if changed:
+            self._queue_repaint()
+
     def _poll(self):
         while True:
             time.sleep(POLL_S)
-            with self._lock:
-                if self._pending or self._timer is not None:
-                    continue          # already flagged or our own write is coming
-                sig = self._stat_sig()
-                changed = sig != self._disk_sig
-                if changed:
-                    self._pending = True
-            if changed:
-                self._queue_repaint()
+            self._poll_once()
 
     def _sync(self):
         if self._pending:

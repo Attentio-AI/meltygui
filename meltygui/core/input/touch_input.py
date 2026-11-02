@@ -43,6 +43,7 @@ class TouchInput(_InputState):
         super().__init__()
         self.events = []
         self.active = False
+        self.contact_pending = False
         self.mouse = False
         self.moved = False
         self.origin = self.position = (0.0, 0.0)
@@ -54,7 +55,6 @@ class TouchInput(_InputState):
         self.last_motion = self.coast_time = 0.0
         self.contact_time = 0.0
         self.axes = None
-        self.stopping = self.stop_contact = False
         self.carry = None
         self.estimated_velocity = (0.0, 0.0)
 
@@ -70,7 +70,7 @@ class TouchInput(_InputState):
     def cancel(self, handler):
         self.events.clear()
         self.active = self.mouse = False
-        self.stopping = self.stop_contact = False
+        self.contact_pending = False
         self.carry = self.axes = None
         self.estimated_velocity = (0.0, 0.0)
         self.velocity = 0.0
@@ -107,12 +107,14 @@ class TouchInput(_InputState):
         events, self.events = self.events, []
         for kind, x, y, timestamp, release_velocity in events:
             if kind == 'begin':
+                self.contact_pending = False
                 # Two contacts can be queued in one frame. Preserve their native
                 # timing for carry, even though visible coasting starts at now.
                 remaining = (self.remaining_velocity(timestamp, since=release_time)
                              if not self.active else (0.0, 0.0))
-                self.stopping = any(remaining)
-                self.carry = ((self.scroll_x_target, self.scroll_target), remaining, timestamp) if self.stopping else None
+                # Stop visible momentum, but let this same contact click or
+                # drag. Retain velocity only for a qualifying repeat flick.
+                self.carry = ((self.scroll_x_target, self.scroll_target), remaining, timestamp) if any(remaining) else None
                 self.axes = None
                 self.estimated_velocity = (0.0, 0.0)
                 self.contact_time = timestamp
@@ -137,12 +139,16 @@ class TouchInput(_InputState):
                                 if p < tap_priority and not non_blocking(v, key)]
                     if controls:
                         self.tap_target = None
-                self.mouse = bool(drags and drags[0] not in taps)
+                drag_priority = next((p for v, p in index.get(('left_mouse', 'dragged'), ())
+                                      if drags and v == drags[0]), math.inf)
+                scroll_priority = min((p for key, targets in ((scroll_key, scrolls), (scroll_x_key, scrolls_x))
+                                       for v, p in index.get(key, ()) if targets and v == targets[0]),
+                                      default=math.inf)
+                # A row's background DnD target must not steal a list swipe.
+                # Explicit controls still drag when they outrank its scroll pane.
+                self.mouse = bool(drags and drags[0] not in taps and drag_priority <= scroll_priority)
                 self.scroll_target = scrolls[0] if scrolls and not self.mouse else None
                 self.scroll_x_target = scrolls_x[0] if scrolls_x and not self.mouse else None
-                self.stop_contact = self.stopping and (self.mouse or not (scrolls or scrolls_x))
-                if self.stop_contact:
-                    continue
                 if self.mouse or (self.tap_target is None and self.scroll_target is None
                                   and self.scroll_x_target is None):
                     self.mouse = True
@@ -154,10 +160,6 @@ class TouchInput(_InputState):
                 self.position = (x, y)
                 dx, dy = x - self.origin[0], y - self.origin[1]
                 self.moved |= dx * dx + dy * dy > TOUCH_SLOP * TOUCH_SLOP
-                if self.stop_contact:
-                    if kind == 'end':
-                        self.active = False
-                    continue
                 if self.moved and not self.mouse:
                     previous_axes = self.axes
                     if self.axes is None:
@@ -177,7 +179,7 @@ class TouchInput(_InputState):
                 if kind == 'end':
                     if self.mouse:
                         handler.feed_up('left_mouse', x, y, t=timestamp)
-                    elif not self.moved and not self.stopping:
+                    elif not self.moved:
                         if self.tap_target is not None:
                             # An immediate tap: mouse double-click deferral
                             # must not delay the caret or software keyboard.
@@ -216,7 +218,9 @@ class TouchInput(_InputState):
                     # Show the final finger position before starting inertia.
                     self.coast_time = now
 
-        if not self.active and (self.velocity or self.velocity_x):
+        # A native backend may present touchdown before dispatching its press.
+        # Freeze the content under that finger while retaining flick carry.
+        if not self.active and not self.contact_pending and (self.velocity or self.velocity_x):
             remaining_x, remaining_y = self.remaining_velocity(now)
             scroll((self.velocity_x - remaining_x) * FLICK_PROJECTION,
                    (self.velocity - remaining_y) * FLICK_PROJECTION, now)

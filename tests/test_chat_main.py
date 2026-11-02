@@ -28,11 +28,20 @@ def test_existing_instance_does_not_register_or_disconnect(monkeypatch):
     assert app.main([]) == 0
 
 
+@pytest.mark.parametrize("platform", ["linux", "darwin", "ios"])
 @pytest.mark.parametrize("fails", [False, True])
-def test_runner_owns_cleanup_and_project_context(monkeypatch, tmp_path, fails):
+def test_runner_owns_cleanup_and_project_context(monkeypatch, tmp_path, fails, platform):
     calls, roots = [], []
-    monkeypatch.setattr(app, "hand_over_to_running_instance", lambda path: False)
-    monkeypatch.setattr(app, "serve_instance", lambda path: lambda: calls.append("closed"))
+    monkeypatch.setattr(app, "sys", SimpleNamespace(platform=platform))
+    if platform == "ios":
+        monkeypatch.setattr(app, "hand_over_to_running_instance",
+                            lambda path: pytest.fail("attempted desktop handoff on iOS"))
+        monkeypatch.setattr(app, "serve_instance",
+                            lambda path: pytest.fail("started desktop server on iOS"))
+        monkeypatch.setattr(app.os, "getuid", lambda: pytest.fail("built desktop socket path on iOS"))
+    else:
+        monkeypatch.setattr(app, "hand_over_to_running_instance", lambda path: False)
+        monkeypatch.setattr(app, "serve_instance", lambda path: lambda: calls.append("closed"))
     monkeypatch.setattr(app, "disconnect_chats", lambda: calls.append("disconnected"))
     monkeypatch.setattr(app, "glfw_window", lambda **kw: lambda fn: roots.append(fn) or fn)
     monkeypatch.setattr(app, "draw_claude_chat", lambda value, **kw: calls.append(kw))
@@ -51,7 +60,10 @@ def test_runner_owns_cleanup_and_project_context(monkeypatch, tmp_path, fails):
     else:
         assert app.main([str(tmp_path)]) == 0
     assert calls[0]["new_project"] == str(tmp_path)
-    assert calls[-2:] == ["closed", "disconnected"]
+    if platform == "ios":
+        assert calls[1:] == ["disconnected"]
+    else:
+        assert calls[-2:] == ["closed", "disconnected"]
 
 
 def test_instance_socket_is_released(monkeypatch, tmp_path):

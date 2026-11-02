@@ -111,6 +111,7 @@ if phase == 'edit':
     # A native picker drag previews immediately and commits its source edit
     # on touch release, through the shared deferred-write lifecycle.
     frame([dict(kind='touch_begin', touch_id=1, x=320, y=240)])
+    frame()  # Present touchdown, then deliver the held picker press.
     ds.locate_tint = (0.1, 0.2, 0.3)
     assert config['view_kwargs']['tint'] == (0.1, 0.2, 0.3)
     frame([dict(kind='touch_end', touch_id=1, x=320, y=240)])

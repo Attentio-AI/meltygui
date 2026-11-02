@@ -7,6 +7,9 @@
 #include <mutex>
 #include "LocalNetworkAccess.h"
 #include "SSHAuthentication.h"
+#if __has_include("RemoteFiles/ScreenCapture.h")
+#import "RemoteFiles/ScreenCapture.h"
+#endif
 
 static __weak MeltyHost *gHost;
 PyMODINIT_FUNC PyInit__melty_metal(void);
@@ -205,6 +208,20 @@ static const char *kindName(melty::InputKind kind) {
         // frame in flight; CPU preparation can overlap the preceding GPU frame.
         _layer.maximumDrawableCount = 3;
         _commands = [_device newCommandQueue];
+#if __has_include("RemoteFiles/ScreenCapture.h")
+        __weak MeltyHost *weakHost = self;
+        HubScreenCaptureRegister(_layer, ^(HubScreenImageCompletion completion) {
+            MeltyHost *host = weakHost;
+            if (!host || !host->_thread || !host->_active.load()) {
+                completion(nil, @"The renderer is not active.");
+                return;
+            }
+            // The render run loop also services this selector while display
+            // ticks are paused. No frame-loop polling or drawable retention.
+            [host performSelector:@selector(captureScreenOnRenderThread:) onThread:host->_thread
+                withObject:[completion copy] waitUntilDone:NO];
+        });
+#endif
         _gpuAvailable = dispatch_semaphore_create(1);
         _scale = 1;
         _width = 0;
@@ -551,7 +568,33 @@ static const char *kindName(melty::InputKind kind) {
     [self performSelector:@selector(applyClose) onThread:_thread withObject:nil waitUntilDone:NO];
 }
 
+#if __has_include("RemoteFiles/ScreenCapture.h")
+- (void)captureScreenOnRenderThread:(HubScreenImageCompletion)completion {
+    if (!_initialized || !_active.load() || _failed) {
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, @"The renderer is not ready."); });
+        return;
+    }
+    CGSize size = _layer.drawableSize;
+    MTLTextureDescriptor *descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:_layer.pixelFormat
+        width:MAX(1, (NSUInteger)size.width) height:MAX(1, (NSUInteger)size.height) mipmapped:NO];
+    descriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    id<MTLTexture> target = [_device newTextureWithDescriptor:descriptor];
+    id<MTLCommandBuffer> commands = [_commands commandBuffer];
+    NSError *error = nil;
+    if (!target || !commands || ![_renderer encodeFrame:commands target:target error:&error]) {
+        NSString *message = error.localizedDescription ?: @"Could not render a screenshot.";
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, message); });
+        return;
+    }
+    [commands commit];
+    HubScreenCaptureTexture(target, commands, _layer.colorspace, completion);
+}
+#endif
+
 - (void)applyClose {
+#if __has_include("RemoteFiles/ScreenCapture.h")
+    HubScreenCaptureForget(_layer);
+#endif
     [_displayLink invalidate];
     if (_initialized) {
         PyGILState_STATE state = PyGILState_Ensure();

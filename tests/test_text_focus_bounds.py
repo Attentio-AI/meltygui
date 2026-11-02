@@ -134,6 +134,8 @@ ds = state['ds']
 x, y = ds.abs_left + 120, ds.abs_top + 150
 def contact(kind, at_y):
     frame([dict(kind='touch_' + kind, touch_id=1, x=x, y=at_y)])
+    while native.input._touch_pending:
+        frame()  # Present the staged contact before checking its visible effect.
 contact('begin', y)
 assert Melty.text_focused_ds is None
 contact('move', y - 45.5)
@@ -164,10 +166,11 @@ assert Melty.text_focused_ds is ds
 # Horizontal touch motion uses logical pixels too, without selecting text.
 Melty.text_focused_ds = None
 native.input.handler.feed_touch('cancel')
-state['text'] = 'long line ' * 80
+state['text'] = ('long line ' * 80 + '\n') * 2
 ds.invalidate()
 for _ in range(8): frame()
-x, y = ds.abs_left + 160, ds.abs_top + 10
+# Hit a text row below the window's top resize handle.
+x, y = ds.abs_left + 160, ds.abs_top + ds._diff_top_inset + 1.5 * ds._diff_line_px
 contact('begin', y)
 x -= 37.5
 contact('move', y)

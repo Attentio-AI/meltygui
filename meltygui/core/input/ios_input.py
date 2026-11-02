@@ -37,12 +37,13 @@ class IOSInput:
         self.handler, self.backend, self.io, self.melty = handler, backend, io, melty
         self.window = backend.window
         self._edit_pending = deque()
+        self._touch_pending = deque()
+        self._primed_touch = None
         self.edit_events = []
         self._last_presentation = None
         self._native_clock_offset = None
         self._pressed_keys = set()
         self._touch_pressed = self._release_pending = False
-        self._suppress_touch_mouse = False
         self._pointer_cancelled = True
         self._modifiers = 0
         self._keyboard_visible = None
@@ -62,7 +63,7 @@ class IOSInput:
     def has_pending_events(self):
         # A live gesture stays on the display cadence, including frames between
         # UIKit deliveries. Release/cancellation restores demand-driven idle.
-        return bool(self._edit_pending or self._release_pending
+        return bool(self._edit_pending or self._touch_pending or self._release_pending
                     or self.window.primary_touch is not None)
 
     @property
@@ -93,6 +94,8 @@ class IOSInput:
         x, y = float(event['x']), float(event['y'])
         if not math.isfinite(x) or not math.isfinite(y):
             raise ValueError('native touch coordinates must be finite')
+        if (x, y) == self.window.cursor_pos:
+            return  # Match mouse input: contact edges alone are not motion.
         self.window.cursor_pos = x, y
         self.window.cursor_motion_generation += 1
         self.handler.feed_move(x, y, x - self._frame_cursor[0], y - self._frame_cursor[1], t=event['_time'])
@@ -110,8 +113,6 @@ class IOSInput:
             if window.primary_touch != identity:
                 return
             self._frame_cursor = float(event['x']), float(event['y'])
-            touch = self.handler._touch_input
-            self._suppress_touch_mouse = bool(touch and touch.has_momentum(event['_time']))
             self._pointer_cancelled = False
             self._move(event)
             window.buttons[codes.MOUSE_BUTTON_LEFT] = codes.PRESS
@@ -150,6 +151,63 @@ class IOSInput:
             # Other fingers never inherit a completed primary gesture. A new
             # primary is chosen only after every contact has ended/cancelled.
         self._stamp()
+
+    def _queue_touch(self, event):
+        if event['kind'] != 'touch_cancel':
+            self._touch_pending.append(event)
+            return
+        identity = event['touch_id']
+        self._touch_pending = deque(item for item in self._touch_pending
+                                    if item['touch_id'] != identity)
+        if self._primed_touch == identity:
+            self._primed_touch = None
+            self.handler.feed_touch('cancel')
+            self._pointer_cancelled = True
+            self.window.hovered = False
+            self.melty._pointer_inside = False
+            self.window.emit('cursor_enter', False)
+        self._touch(event)
+
+    def _drain_touch_batch(self):
+        """Give each contact an origin, press, held motion and release frame.
+
+        Like thermostat's runtime override, prime hover-dependent controls at
+        touchdown before pressing. Retain native gesture samples and timestamps
+        instead of reducing a batch to its endpoint. Separate contacts cannot
+        share the first contact's target, even within one UIKit delivery.
+        """
+        moved = False
+        while self._touch_pending:
+            event = self._touch_pending[0]
+            kind, identity = event['kind'], event['touch_id']
+            if kind == 'touch_begin' and not self.window.touches:
+                if self._primed_touch != identity:
+                    self._primed_touch = identity
+                    touch = self.handler._touch_input
+                    if touch is not None:
+                        touch.contact_pending = True
+                    self._pointer_cancelled = False
+                    self._frame_cursor = float(event['x']), float(event['y'])
+                    self._move(event)
+                    self.window.hovered = True
+                    self.melty._pointer_inside = True
+                    self.window.emit('cursor_enter', True)
+                    self._stamp()
+                    return
+                self._primed_touch = None
+                self._touch(self._touch_pending.popleft())
+                return
+            primary = identity == self.window.primary_touch
+            if kind == 'touch_end' and primary:
+                if (event['x'], event['y']) != self.window.cursor_pos:
+                    self._touch(dict(event, kind='touch_move'))
+                    moved = True
+                if moved:
+                    return  # Render held motion before the release/drop.
+                self._touch(self._touch_pending.popleft())
+                return
+            self._touch(self._touch_pending.popleft())
+            moved |= primary and kind == 'touch_move'
 
     def _key(self, key, action, mods, timestamp):
         key, mods = int(key), int(mods)
@@ -241,7 +299,7 @@ class IOSInput:
                 raise ValueError('native input timestamps must be finite')
             kind = event['kind']
             if kind in ('touch_begin', 'touch_move', 'touch_end', 'touch_cancel'):
-                self._touch(event)
+                self._queue_touch(event)
             elif kind == 'cancel_all':
                 self._cancel_inputs()
             elif kind in ('text', 'key', 'backspace'):
@@ -257,18 +315,18 @@ class IOSInput:
                 self._stamp()
             else:
                 raise ValueError(f'unsupported native iOS input event {kind!r}')
+        self._drain_touch_batch()
         self._drain_edit_batch()
         self.io.display_size = self.backend.get_window_size(self.window)
         self.io.display_fb_scale = self.backend.get_window_content_scale(self.window)
         self.io.mouse_pos = (-1e30, -1e30) if self._pointer_cancelled else self.window.cursor_pos
-        self.io.mouse_down[0] = bool(self.window.buttons.get(0, 0) or self._touch_pressed) and not self._suppress_touch_mouse
+        self.io.mouse_down[0] = bool(self.window.buttons.get(0, 0) or self._touch_pressed)
         for button in range(1, len(self.io.mouse_down)):
             self.io.mouse_down[button] = False
         for key in range(len(self.io.keys_down)):
             self.io.keys_down[key] = bool(self.window.keys.get(key, 0) or key in self._pressed_keys)
-        # ImGui 1.82 has level-only IO. A tap entirely between frames still
-        # needs a visible down frame, followed by a release frame. InputHandler
-        # receives both native edges immediately, without this IO-only latch.
+        # ImGui 1.82 has level-only IO. Touch edges already occupy separate
+        # frames; short hardware key presses still need this IO-only latch.
         self._release_pending = bool(
             (self._touch_pressed and not self.window.buttons.get(0)) or
             any(not self.window.keys.get(key) for key in self._pressed_keys))
@@ -318,13 +376,11 @@ class IOSInput:
         # controls whose pixels survived the last render (including a cached
         # ancestor's snapshot); a replaced branch must not steal the tap.
         hits = tuple(view for view in hits if self.melty.cache._pixels_preserved(view))
-        views, descendants, current_views = {}, set(), set()
+        views, descendants = {}, set()
         for current, roots in ((True, hits), (False, previous)):
             pending = list(roots)
             while pending:
                 view = pending.pop()
-                if current:
-                    current_views.add(id(view))
                 if id(view) in views:
                     continue
                 views[id(view)] = view
@@ -362,11 +418,6 @@ class IOSInput:
         try:
             for view in roots:
                 view.replay_body_actions()
-            for identity in current_views:
-                view = views[identity]
-                names = getattr(view._wrapper, '__params__', ())
-                if names:
-                    view.register_parameter_actions(names, view._kwargs, view._event_rects, view.closable)
         finally:
             overlay.channels_merge()
 
@@ -384,6 +435,8 @@ class IOSInput:
         # Committed text is retained across suspension. Hardware edges from
         # before the cancellation must not resurrect a held key after resume.
         self._edit_pending = deque(event for event in self._edit_pending if event['kind'] != 'key')
+        self._touch_pending.clear()
+        self._primed_touch = None
         self.handler.feed_touch('cancel')
         for name in self._key_inputs.values():
             self.handler.feed_cancel(name)

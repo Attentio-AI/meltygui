@@ -3,6 +3,7 @@
 #include <vector>
 
 typedef void (^MetalOperation)(id<MTLCommandBuffer>);
+static MTLRenderPassDescriptor *passFor(id<MTLTexture> target);
 @interface MeltyMetalRenderer : NSObject <MeltyRenderer>
 @property(nonatomic, strong) id<MTLDevice> device;
 @property(nonatomic, strong) NSThread *owner;
@@ -13,6 +14,14 @@ typedef void (^MetalOperation)(id<MTLCommandBuffer>);
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *sampling;
 @property(nonatomic) uint64_t nextTexture;
 @property(nonatomic) uint64_t scene;
+@property(nonatomic, strong) id<MTLRenderCommandEncoder> renderEncoder;
+@property(nonatomic, strong) id<MTLTexture> renderTarget;
+#if MELTY_METAL_TESTING
+@property(nonatomic) NSUInteger renderPasses;
+#endif
+- (void)endRenderPass;
+- (id<MTLRenderCommandEncoder>)beginRenderPass:(MTLRenderPassDescriptor *)pass commands:(id<MTLCommandBuffer>)commands;
+- (id<MTLRenderCommandEncoder>)encoderFor:(id<MTLTexture>)target commands:(id<MTLCommandBuffer>)commands;
 - (id<MTLRenderPipelineState>)pipeline:(NSString *)fragment format:(MTLPixelFormat)format blend:(NSString *)blend;
 - (BOOL)encodeFrame:(id<MTLCommandBuffer>)commands target:(id<MTLTexture>)target error:(NSError **)error;
 @end
@@ -22,6 +31,28 @@ static NSString *testManifest;
 #endif
 
 @implementation MeltyMetalRenderer
+- (void)endRenderPass {
+    [self.renderEncoder endEncoding];
+    self.renderEncoder=nil;
+    self.renderTarget=nil;
+}
+- (id<MTLRenderCommandEncoder>)beginRenderPass:(MTLRenderPassDescriptor *)pass commands:(id<MTLCommandBuffer>)commands {
+    [self endRenderPass];
+    self.renderTarget=pass.colorAttachments[0].texture;
+    self.renderEncoder=[commands renderCommandEncoderWithDescriptor:pass];
+#if MELTY_METAL_TESTING
+    ++self.renderPasses;
+#endif
+    return self.renderEncoder;
+}
+- (id<MTLRenderCommandEncoder>)encoderFor:(id<MTLTexture>)target commands:(id<MTLCommandBuffer>)commands {
+    // Keep adjacent mask/shadow/content draws in one pass. Ending a pass for
+    // every rectangle repeatedly stores and reloads the same tile attachment.
+    // Target changes, clears and uploads remain ordered barriers.
+    if (!self.renderEncoder || self.renderTarget!=target)
+        [self beginRenderPass:passFor(target) commands:commands];
+    return self.renderEncoder;
+}
 - (instancetype)initWithDevice:(id<MTLDevice>)device error:(NSError **)error {
     if ((self = [super init])) {
         self.device=device; self.owner=NSThread.currentThread;
@@ -84,7 +115,7 @@ static NSString *testManifest;
         pass.colorAttachments[0].texture=target;
         pass.colorAttachments[0].loadAction=MTLLoadActionClear; pass.colorAttachments[0].storeAction=MTLStoreActionStore;
         pass.colorAttachments[0].clearColor=MTLClearColorMake(0,0,0,1);
-        id<MTLRenderCommandEncoder> encoder=[commands renderCommandEncoderWithDescriptor:pass];
+        id<MTLRenderCommandEncoder> encoder=[self beginRenderPass:pass commands:commands];
         // The keyboard animates a clip over a stable full-size drawable.
         // Copy the current scene at native pixel scale, anchored at top-left.
         // This also handles a drawable acquired before a rotation/resize.
@@ -95,9 +126,10 @@ static NSString *testManifest;
         [encoder setRenderPipelineState:[self pipeline:present format:target.pixelFormat blend:@"replace"]];
         [encoder setVertexBytes:quad length:sizeof(quad) atIndex:0];
         [encoder setFragmentTexture:scene atIndex:0];
-        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [encoder endEncoding];
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [self endRenderPass];
         return YES;
     } @catch(NSException *exception) {
+        [self endRenderPass];
         [self.pending removeAllObjects];
         if(error) *error=[NSError errorWithDomain:@"MeltyMetal" code:2 userInfo:@{NSLocalizedDescriptionKey:exception.reason ?: exception.name}];
         return NO;
@@ -179,6 +211,7 @@ static PyObject *uploadTexture(PyObject *,PyObject *args) {
     id<MTLBuffer> staging=[engine.device newBufferWithBytes:padded.bytes length:padded.length options:MTLResourceStorageModeShared];
     if(!staging) return PyErr_NoMemory();
     [engine.pending addObject:^(id<MTLCommandBuffer> commands) {
+        [engine endRenderPass];
         id<MTLBlitCommandEncoder> blit=[commands blitCommandEncoder];
         [blit copyFromBuffer:staging sourceOffset:0 sourceBytesPerRow:pitch sourceBytesPerImage:pitch*h
                  sourceSize:MTLSizeMake(w,h,1) toTexture:t destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0)];
@@ -193,7 +226,7 @@ static PyObject *clearTexture(PyObject *,PyObject *args) {
     MTLClearColor clear=MTLClearColorMake(c[0],c[1],c[2],c[3]);
     [engine.pending addObject:^(id<MTLCommandBuffer> commands) {
         MTLRenderPassDescriptor *p=passFor(target); p.colorAttachments[0].loadAction=MTLLoadActionClear; p.colorAttachments[0].clearColor=clear;
-        [[commands renderCommandEncoderWithDescriptor:p] endEncoding];
+        [engine beginRenderPass:p commands:commands];
     }]; Py_RETURN_NONE;
 }
 static PyObject *drawQuad(PyObject *,PyObject *args) {
@@ -217,13 +250,13 @@ static PyObject *drawQuad(PyObject *,PyObject *args) {
     @try { pipeline=[engine pipeline:[NSString stringWithUTF8String:shader] format:target.pixelFormat blend:[NSString stringWithUTF8String:blend]]; }
     @catch(NSException *e) { PyErr_SetString(PyExc_RuntimeError,e.reason.UTF8String); return nullptr; }
     [engine.pending addObject:^(id<MTLCommandBuffer> commands) {
-        id<MTLRenderCommandEncoder> encoder=[commands renderCommandEncoderWithDescriptor:passFor(target)];
+        id<MTLRenderCommandEncoder> encoder=[engine encoderFor:target commands:commands];
         [encoder setRenderPipelineState:pipeline]; [encoder setScissorRect:scissor];
         [encoder setVertexBytes:quad.bytes length:quad.length atIndex:0];
         [encoder setFragmentBytes:quad.bytes length:quad.length atIndex:0];
         if(params.length) [encoder setFragmentBytes:params.bytes length:params.length atIndex:1];
         for(NSUInteger i=0;i<textures.count;i++) [encoder setFragmentTexture:textures[i] atIndex:i];
-        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [encoder endEncoding];
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     }]; Py_RETURN_NONE;
 }
 static PyObject *setScene(PyObject *,PyObject *arg) {
@@ -270,7 +303,7 @@ static PyObject *drawMesh(PyObject *,PyObject *args) {
     @try { pipeline=[engine pipeline:@"mesh_fragment" format:target.pixelFormat blend:@"over"]; }
     @catch(NSException *e) { PyErr_SetString(PyExc_RuntimeError,e.reason.UTF8String); return nullptr; }
     [engine.pending addObject:^(id<MTLCommandBuffer> buffer) {
-        id<MTLRenderCommandEncoder> encoder=[buffer renderCommandEncoderWithDescriptor:passFor(target)];
+        id<MTLRenderCommandEncoder> encoder=[engine encoderFor:target commands:buffer];
         [encoder setRenderPipelineState:pipeline]; [encoder setVertexBuffer:vb offset:0 atIndex:0];
         [encoder setFragmentTexture:style atIndex:1]; [encoder setFragmentTexture:occlusion atIndex:2];
         for(NSDictionary *row in rows) {
@@ -281,7 +314,6 @@ static PyObject *drawMesh(PyObject *,PyObject *args) {
             [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:[row[@"count"] unsignedIntegerValue]
                                  indexType:MTLIndexTypeUInt32 indexBuffer:ib indexBufferOffset:[row[@"first"] unsignedIntegerValue]*4];
         }
-        [encoder endEncoding];
     }]; Py_RETURN_NONE;
 }
 static PyObject *drawShape(PyObject *,PyObject *args) {
@@ -303,14 +335,13 @@ static PyObject *drawShape(PyObject *,PyObject *args) {
     @try { pipeline=[engine pipeline:@"shadow_shape_fragment" format:target.pixelFormat blend:[NSString stringWithUTF8String:blend]]; }
     @catch(NSException *e) { PyErr_SetString(PyExc_RuntimeError,e.reason.UTF8String); return nullptr; }
     [engine.pending addObject:^(id<MTLCommandBuffer> commands) {
-        id<MTLRenderCommandEncoder> encoder=[commands renderCommandEncoderWithDescriptor:passFor(target)];
+        id<MTLRenderCommandEncoder> encoder=[engine encoderFor:target commands:commands];
         [encoder setRenderPipelineState:pipeline]; [encoder setScissorRect:scissor];
         [encoder setVertexBuffer:buffer offset:0 atIndex:0];
         [encoder setVertexBytes:params.bytes length:params.length atIndex:1];
         [encoder setFragmentBytes:params.bytes length:params.length atIndex:1];
         [encoder setFragmentTexture:win atIndex:0];
         [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:data.length/12];
-        [encoder endEncoding];
     }]; Py_RETURN_NONE;
 }
 static PyObject *programManifest(PyObject *,PyObject *) {
@@ -342,15 +373,17 @@ static PyObject *testInitialize(PyObject *,PyObject *args) {
 }
 static PyObject *testFlush(PyObject *,PyObject *) {
     if(!ready()) return nullptr;
+    engine.renderPasses=0;
     @try {
         id<MTLCommandQueue> queue=[engine.device newCommandQueue];
         id<MTLCommandBuffer> commands=[queue commandBuffer];
         NSArray<MetalOperation> *operations=[engine.pending copy];[engine.pending removeAllObjects];
         for(MetalOperation operation in operations) operation(commands);
+        [engine endRenderPass];
         [commands commit];[commands waitUntilCompleted];
         if(commands.error) { PyErr_SetString(PyExc_RuntimeError,commands.error.localizedDescription.UTF8String); return nullptr; }
-    } @catch(NSException *e) { PyErr_SetString(PyExc_RuntimeError,e.reason.UTF8String);return nullptr; }
-    Py_RETURN_NONE;
+    } @catch(NSException *e) { [engine endRenderPass];PyErr_SetString(PyExc_RuntimeError,e.reason.UTF8String);return nullptr; }
+    return PyLong_FromUnsignedLong(engine.renderPasses);
 }
 static PyObject *testPixels(PyObject *,PyObject *arg) {
     unsigned long long handle=PyLong_AsUnsignedLongLong(arg); if(PyErr_Occurred()||!ready()) return nullptr;
@@ -363,6 +396,7 @@ static PyObject *testPixels(PyObject *,PyObject *arg) {
 static PyObject *testPresent(PyObject *,PyObject *arg) {
     unsigned long long handle=PyLong_AsUnsignedLongLong(arg); if(PyErr_Occurred()||!ready()) return nullptr;
     id<MTLTexture> target=texture(handle); if(!target) return nullptr;
+    engine.renderPasses=0;
     id<MTLCommandQueue> queue=[engine.device newCommandQueue];
     id<MTLCommandBuffer> commands=[queue commandBuffer];
     NSError *error=nil;
@@ -371,7 +405,7 @@ static PyObject *testPresent(PyObject *,PyObject *arg) {
     }
     [commands commit]; [commands waitUntilCompleted];
     if(commands.error) { PyErr_SetString(PyExc_RuntimeError,commands.error.localizedDescription.UTF8String); return nullptr; }
-    Py_RETURN_NONE;
+    return PyLong_FromUnsignedLong(engine.renderPasses);
 }
 #endif
 static PyMethodDef methods[]={

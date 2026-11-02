@@ -1,4 +1,4 @@
-"""Moving a retained capture must not bilinearly filter already hinted text."""
+"""Native scrolling retains fractional motion; desktop keeps hinted text sharp."""
 from math import ceil, floor
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -11,7 +11,8 @@ from meltygui.core.melty import Melty
 
 @pytest.mark.parametrize('scale', [(1., 1.), (1.25, 1.5), (2., 2.), (3., 3.)])
 @pytest.mark.parametrize('move_pixels', [(0., 0.), (1., -2.), (.375, 0.), (0., .375)])
-def test_cache_repaints_only_when_capture_pixel_phase_changes(monkeypatch, scale, move_pixels):
+@pytest.mark.parametrize('native', [False, True])
+def test_cache_pixel_phase_policy(monkeypatch, scale, move_pixels, native):
     display_pos = (4.25, 7.125)
     captured = (20.125, 60.375)
     size = (200., 100.)
@@ -35,7 +36,8 @@ def test_cache_repaints_only_when_capture_pixel_phase_changes(monkeypatch, scale
 
     cache = tile_cache.TileCacheMasked()
     cache.enabled = True
-    cache.gpu = object()  # This test exercises the shared GL/Metal cache decision.
+    cache.gpu = object() if native else None
+    monkeypatch.setattr(tile_cache.gl, 'glDisable', Mock())
     cache._pixel_scale = scale
     cache._frame_id = 5
     cache._tiles['file'] = tile
@@ -53,12 +55,18 @@ def test_cache_repaints_only_when_capture_pixel_phase_changes(monkeypatch, scale
     monkeypatch.setattr(Melty, 'dnd_home_rect', None)
     monkeypatch.setattr(Melty, 'resize_gesture_live', lambda: False)
 
-    should_repaint = any(d != round(d) for d in move_pixels)
+    should_repaint = not native and any(d != round(d) for d in move_pixels)
     assert cache.mark_start_offscreen(ds) is should_repaint
     assert cache._is_dirty(tile) is should_repaint
     assert cache._stack[-1].drew_cached is not should_repaint
     assert draw_list.add_image_rounded.call_count == (0 if should_repaint else 1)
     assert (ds.abs_left, ds.abs_top) == destination  # Never round layout or input geometry.
+    if native:
+        # Sampling must translate with the rectangle, not snap back to a pixel.
+        us, vs, u0, v0 = tile_cache._tile_uv_rect(tile)
+        replay = draw_list.add_image_rounded.call_args.kwargs
+        assert replay['uv_a'] == pytest.approx((u0, v0 + vs))
+        assert replay['uv_b'] == pytest.approx((u0 + us, v0))
 
     if should_repaint:
         # Simulate completing that capture: the unchanged next frame must hit,

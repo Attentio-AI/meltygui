@@ -13,10 +13,11 @@ import pytest
 from meltygui.core.input.touch_input import FLICK_DECAY, FLICK_PROJECTION
 
 
-@pytest.mark.parametrize('view', ['text', 'settings'])
+@pytest.mark.parametrize('view', ['text', 'settings', 'cached_settings'])
 def test_cached_scroll_geometry_uses_presentation_time(tmp_path, view):
     program = r'''
 from pathlib import Path
+from collections import Counter
 import hashlib
 import json
 import sys
@@ -57,8 +58,22 @@ from meltygui import glfw_window, draw_any
 from meltygui.core.core_render import render_func
 from meltygui.core.melty import Melty
 from meltygui.view.text_view import draw_text
+from meltygui import imgui
 state = dict(text='\n'.join(f'line {i}' for i in range(150)),
              settings={f'Setting {i}': i for i in range(60)})
+rendered_rows = Counter()
+@render_func(use_cache=True)
+def cached_row(input_value: int):
+    rendered_rows[input_value] += 1
+    imgui.text('Setting value ' + str(input_value))
+    return False, input_value
+@render_func(use_cache=True)
+def settings_list(input_value: dict):
+    for name, value in input_value.items():
+        cached_row(value, name=name, width=340, height=26, use_cache=True,
+                   show_header=False, with_header=None, with_footer=None,
+                   is_tree=False, show_widgets=False)
+    return False, input_value
 @glfw_window(name='Scroll clock test', app_id='scroll-clock-test')
 @render_func(use_cache=False)
 def body(input_value):
@@ -69,6 +84,8 @@ def body(input_value):
         result = draw_text(state['text'], editable=True, autocomplete=False,
                            syntax_highlight=False, show_file_header=False,
                            show_jump_bar=False, **options)
+    elif sys.argv[2] == 'cached_settings':
+        result = settings_list(state['settings'], **options)
     else:
         result = draw_any(state['settings'], **options)
     state['ds'] = result[2]
@@ -96,12 +113,19 @@ x, y = ds.abs_left + 120, ds.abs_top + 200
 for kind, movement in [('begin', 0), ('move', 20), ('end', 24)]:
     frame([dict(kind='touch_' + kind, touch_id=1, x=x, y=y-movement,
                 timestamp=1000+(index+1)/120, velocity=(0, -240))])
+while native.input._touch_pending:  # Present held motion and release before measuring inertia.
+    frame()
 positions, geometry = [ds.scroll_offset[1]], []
+rendered_rows.clear()
 for i in range(90):  # Cross the parser's half-second input-quiet threshold.
     frame(delay=.005 if sys.argv[3] == 'jitter' and i % 2 else 0)
     positions.append(ds.scroll_offset[1])
     geometry.append(hashlib.sha256(gpu.positions).hexdigest())
 assert native.cache.enabled
+if sys.argv[2] == 'cached_settings':
+    assert rendered_rows[8] == 0, 'unchanged visible row repainted during momentum'
+    assert rendered_rows[59] == 0, 'fully hidden row repainted during momentum'
+    assert rendered_rows[18] > 0, 'newly exposed content was not captured'
 print('RESULT ' + json.dumps(dict(positions=positions, geometry=geometry)))
 '''
     outputs = []

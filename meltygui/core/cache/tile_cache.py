@@ -218,23 +218,23 @@ def _tile_matches_pixel_grid(tile, pos, display_pos):
     return True
 
 
-def _tile_image_uv(tile, pos, size=None, *, source_top=0.0):
-    """Replay native texels without filtering an already rasterized image.
+def _tile_image_uv(tile, pos, size=None, *, source_top=0.0, align_to_pixels=True):
+    """Replay the captured region, retaining its fractional capture offset.
 
-    Resize replay bypasses the normal capture-phase check and may move both
-    the body and a cropped toolbar by fractional pixels. Align the sampling
-    translation, not the logical rectangle, so neither replay nor an enclosing
-    cache capture can blur the retained text. Sizes and hit testing stay exact.
+    Desktop hinted text keeps pixel-aligned sampling, including during resize
+    replay. Native Metal uses fractional text and continuous image translation:
+    shifting the UVs to counter its motion would make momentum scrolls step.
     """
     aw, ah = _tile_pixel_size(tile, allocated=True)
     w, h = tile.size if size is None else size
     sx, sy = tile.pixel_scale
-    vx, vy = imgui.get_main_viewport().pos
-    dx, dy = (pos[0] - vx) * sx, (pos[1] - vy) * sy
     ox, oy = tile.capture_offset
     oy += source_top * sy
-    ox = dx - floor(dx - ox + 0.5)
-    oy = dy - floor(dy - oy + 0.5)
+    if align_to_pixels:
+        vx, vy = imgui.get_main_viewport().pos
+        dx, dy = (pos[0] - vx) * sx, (pos[1] - vy) * sy
+        ox = dx - floor(dx - ox + 0.5)
+        oy = dy - floor(dy - oy + 0.5)
     return ((ox / aw, 1.0 - oy / ah),
             ((ox + w * sx) / aw, 1.0 - (oy + h * sy) / ah))
 
@@ -1633,8 +1633,6 @@ class TileCacheMasked:
         off-screen capture recorded. Such a tile is re-rendered instead."""
         if t is None or draw_state is None:
             return False
-        if t.filled_bbox is None:
-            return t.last_clean_frame >= 0
         x, y = draw_state.abs_left, draw_state.abs_top
         if x is None or y is None:
             return False
@@ -1645,6 +1643,8 @@ class TileCacheMasked:
         vr, vb = min(vr, w - (cb[2] or 0)), min(vb, h - (cb[3] or 0))
         if vr <= vl or vb <= vt:
             return False            # nothing of this is visible: nothing to miss
+        if t.filled_bbox is None:
+            return t.last_clean_frame >= 0
         fl, ft, fr, fb = t.filled_bbox
         half_x, half_y = 0.5 / t.pixel_scale[0], 0.5 / t.pixel_scale[1]
         return fl > vl + half_x or ft > vt + half_y or fr < vr - half_x or fb < vb - half_y
@@ -2071,10 +2071,9 @@ class TileCacheMasked:
     
     # [tint=(0.72, 0.11, 0.11), show_tint=True]
     def invalidate_scrolled_in(self, draw_state, on_change: bool = False) -> None:
-        """Query the BVH for views currently overlapping the given scroll
-        view's clip rect and invalidate any whose tile isn't fully filled at
-        the live draw_state size. Catches views scrolled into view with stale
-        tiles (the chicken-and-egg) without per-view bookkeeping.
+        """Invalidate retained children whose newly visible area is uncaptured,
+        or whose live size no longer matches their capture. Partially captured
+        tiles can replay while the visible area remains inside that capture.
 
         ``on_change=True`` records the current frame for use by a follow-up
         catchup sweep one frame later — a child that just entered the clip
@@ -2114,9 +2113,10 @@ class TileCacheMasked:
             tile_id = getattr(ds, "_tile_id", None)
             if tile_id is None:
                 continue
-            # Only stale tiles need re-rendering; a fully-filled tile just
-            # translates, so leave the cache alone (its bbox was refreshed above).
-            if not self._tile_fully_filled(self._tiles.get(tile_id)):
+            tile = self._tiles.get(tile_id)
+            if tile is None:
+                continue  # Uncached controls are already drawn with their owner.
+            if tile.size != (ds.width, ds.height) or self._visible_unfilled(tile, ds):
                 self.invalidate(tile_id, frame_delta=0,
                                 stop_at_filled=False,
                                 note=Note(name="Scrolled in",
@@ -4063,12 +4063,14 @@ class TileCacheMasked:
         # enclosing draw-list clip handles the screen/parent intersection.
         visible_w, visible_h = min(resident_w, width), min(resident_h, height - footer)
         if visible_w > 0 and visible_h > 0:
-            uv_a, uv_b = _tile_image_uv(tile, (x, y), (visible_w, visible_h))
+            uv_a, uv_b = _tile_image_uv(tile, (x, y), (visible_w, visible_h),
+                                       align_to_pixels=self.gpu is None)
             dl.add_image(tile.tex, (x, y), (x + visible_w, y + visible_h),
                          uv_a, uv_b)
         if footer and visible_w > 0:
             uv_a, uv_b = _tile_image_uv(tile, (x, y + height - footer),
-                                       (visible_w, footer), source_top=resident_h)
+                                       (visible_w, footer), source_top=resident_h,
+                                       align_to_pixels=self.gpu is None)
             dl.add_image(tile.tex, (x, y + height - footer), (x + visible_w, y + height),
                          uv_a, uv_b)
         clipped = self._clip_rect(x, y, width, height, clip)
@@ -4167,7 +4169,7 @@ class TileCacheMasked:
             draw_background(draw_state)
             a = draw_state.abs_left, draw_state.abs_top
             b = draw_state.abs_left + size[0], draw_state.abs_top + size[1]
-            uv_a, uv_b = _tile_image_uv(t, a)
+            uv_a, uv_b = _tile_image_uv(t, a, align_to_pixels=self.gpu is None)
 
             imgui.get_window_draw_list().add_image_rounded(t.tex,
                                                            a=a,
@@ -4398,12 +4400,11 @@ class TileCacheMasked:
                          and (t.size == (size[0], size[1]))
                          and (not self._is_dirty(t))
                          and (not draw_state.size_change))
-            if use_image and not _tile_matches_pixel_grid(
+            if use_image and self.gpu is None and not _tile_matches_pixel_grid(
                     t, (draw_state.abs_left, draw_state.abs_top), imgui.get_main_viewport().pos):
-                # Position changes deliberately retain cached content. Only
-                # reuse those pixels when their capture grid still lines up
-                # with the destination; otherwise render and capture once at
-                # the new phase. Integer-pixel movement remains a cache hit.
+                # Desktop hinted glyphs need a fresh capture at a new pixel
+                # phase. Native Metal text and image replay are fractional;
+                # recapturing its moving children every frame defeats caching.
                 use_image = False
                 t.last_invalidated_frame = max(t.last_invalidated_frame, self._frame_id)
                 t.dirty = self._is_dirty(t)
@@ -4477,7 +4478,8 @@ class TileCacheMasked:
                 # crops the image only, leaving earlier-era content intact.
                 draw_size = (getattr(t, "content_size", None) or t.size) if frozen else size
                 b = draw_state.abs_left + draw_size[0], draw_state.abs_top + draw_size[1]
-                uv_a, uv_b = _tile_image_uv(t, a, draw_size)
+                uv_a, uv_b = _tile_image_uv(t, a, draw_size,
+                                           align_to_pixels=self.gpu is None)
 
                 dl = imgui.get_window_draw_list()
                 from meltygui.core.rendering.overlay import draw_background
@@ -4641,7 +4643,9 @@ class TileCacheMasked:
         # and rebuilds the tile. Edge-triggered on inset recede, deferred
         # until interaction settles; a shrinking clip needs no rebake (the
         # PASS 5 scissor crops).
-        if ctx.drew_cached:
+        # A receding inset can still leave the entire view outside the clip.
+        # There is no revealed mask to rebuild until some of it is visible.
+        if ctx.drew_cached and (clip is None or (clipped[2] > 0 and clipped[3] > 0)):
             t_reveal = self._tiles.get(ctx.key)
             if t_reveal is not None and t_reveal.mask_tex is not None:
                 if clip is not None:

@@ -30,6 +30,7 @@ The service must remain alive; rebooting or killing the service stops its work.
 import os
 import pathlib
 import socket
+import sys
 import threading
 
 import meltygui
@@ -169,12 +170,16 @@ def main(argv=None):
         parser.error(f'not a directory: {project}')
     state = dict(new_project=str(project) if project else None,
                  default_project=str(pathlib.Path.cwd()))
-    instance = os.environ.get('MELTY_CLAUDE_INSTANCE')
-    socket_path = (pathlib.Path(os.environ.get('XDG_RUNTIME_DIR') or '/tmp')
-                   / f"{APP_ID}-{os.getuid()}{('-' + instance) if instance else ''}.sock")
-    if hand_over_to_running_instance(socket_path):
-        return 0
-    close_instance = serve_instance(socket_path)
+    close_instance = None
+    # iOS owns the app lifecycle; the desktop activation socket under /tmp
+    # is outside the app sandbox and must not be created there.
+    if sys.platform != 'ios':
+        instance = os.environ.get('MELTY_CLAUDE_INSTANCE')
+        socket_path = (pathlib.Path(os.environ.get('XDG_RUNTIME_DIR') or '/tmp')
+                       / f"{APP_ID}-{os.getuid()}{('-' + instance) if instance else ''}.sock")
+        if hand_over_to_running_instance(socket_path):
+            return 0
+        close_instance = serve_instance(socket_path)
     try:
         # Window registration and runtime state belong to this invocation.
         @glfw_window(name='Claude Code', width=1180, height=820, app_id=APP_ID,
@@ -196,7 +201,8 @@ def main(argv=None):
         meltygui.run()
     finally:
         try:
-            close_instance()
+            if close_instance is not None:
+                close_instance()
         finally:
             disconnect_chats()
     return 0

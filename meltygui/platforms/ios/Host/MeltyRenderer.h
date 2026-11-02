@@ -12,6 +12,10 @@
 - (BOOL)encodeFrame:(id<MTLCommandBuffer>)commandBuffer
           drawable:(id<CAMetalDrawable>)drawable
              error:(NSError **)error;
+// One-off offscreen capture on the owning render thread.
+- (BOOL)encodeFrame:(id<MTLCommandBuffer>)commandBuffer
+            target:(id<MTLTexture>)target
+             error:(NSError **)error;
 @end
 
 // The adapter encodes only: the host owns commit/present and limits the GPU to

@@ -31,10 +31,13 @@ parser recognizes the native Metal render thread as well as OpenGL ownership;
 it resumes after interaction becomes quiet and never parks the render thread.
 
 Scrolling locks to one axis, preferring vertical motion unless horizontal intent
-is clear. A contact stops existing momentum immediately and consumes its tap,
-including on buttons, background and drag handles. The next tap activates
-normally. Explicit handles retain mouse dragging when scrolling is idle, and
-cached controls are re-hit at the contact origin so the first tap works.
+is clear. A contact stops existing momentum immediately and remains eligible
+to click or drag: buttons, text and handles respond to the first touch after
+scrolling. Explicit handles retain mouse dragging, and cached controls are
+re-hit at the contact origin so the first tap works.
+Cache replay retains declared click/release listeners as well as body actions
+through the whole contact. Native release and click edges wake their own cached
+receivers even while the recent-scroll buffer still suppresses hover redraws.
 
 ## Fractional rendering
 
@@ -55,9 +58,17 @@ without resampling it. Each tile stores its fractional capture origin and reserv
 an extra allocation point for the edge texel. Replay UVs account for that origin
 and the actual physical texture dimensions, including fractional display scales.
 Color images use linear sampling when moved; depth ranks retain nearest sampling.
+Metal reuses captures across fractional movement without snapping the replay UVs.
+The desktop-only pixel-phase repaint policy protects hinted desktop text; applying
+it to iOS momentum would repaint moving children on nearly every display frame.
 Cached subtree masks, frozen-resize previews, toolbars and clip rectangles share
 the same placement. A recapture with a different fractional origin clears stale
 pixels from the old origin rather than mixing the two coordinate grids.
+
+Scrolling invalidates the scrolling container and its ancestor compositions, not
+its entire child subtree. Child tiles repaint only for changed content, changed
+size, or uncaptured pixels becoming visible. Fully hidden tiles do not invalidate
+as their clipping insets recede, and uncached controls draw with their owner.
 
 Regression coverage includes native-resolution capture at fractional origins,
 first-live versus cached mask alignment, fractional text vertices and nested
@@ -367,6 +378,11 @@ The Metal renderer also retains the shadow-cast result while its depth mask,
 lighting parameters and texture allocation are unchanged. Mask rebuilds, margin
 clears and cleanup advance the mask generation. Scene color and glow still
 composite each frame, so updating content does not unnecessarily repeat the cast.
+Consecutive draws to the same texture share one Metal render pass, including
+the clear that starts it. Animated editor decorations still update their masks,
+but no longer store/reload the attachment for every mask or shadow rectangle.
+Texture changes, clears, uploads and presentation retain their original order;
+uploads and frame completion always finish the open render pass.
 
 For device profiling, set `frame_diagnostics` in `HostSettings.plist`. Each frame's
 `info['diagnostics']` includes CPU/native and GPU durations, GPU waits, display

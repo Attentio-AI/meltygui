@@ -148,7 +148,7 @@ import hashlib
 import difflib
 from pathlib import Path
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+from watchdog.events import FileSystemEventHandler, FileModifiedEvent
 
 
 class FileWatch:
@@ -343,10 +343,21 @@ class FileWatch:
             cls.handler.on_created = cls._on_event
             cls.handler.on_moved = cls._on_moved
             cls.handler.on_deleted = cls._on_deleted
+            cls.handler.on_overflow = cls._on_overflow
             try:
                 cls.observer.start()
             except OSError as error:
                 cls._polling_fallback(error)
+
+    @classmethod
+    def _on_overflow(cls, root, recursive):
+        """Recover a bounded native event buffer using only already-held files."""
+        prefix = root.rstrip(os.sep) + os.sep
+        paths = set(Melty.code_cache) | set(cls.path_to_draw_states) | set(cls.project_tracked)
+        for path in paths:
+            path = str(path)
+            if path == root or (path.startswith(prefix) if recursive else os.path.dirname(path) == root):
+                cls._on_event(FileModifiedEvent(path))
 
     @classmethod
     def _on_deleted(cls, event):
@@ -2639,10 +2650,18 @@ class Melty:
                            for event in evts.values()
                            if event.action is not None and event.tile_id is not None
                            # Touch has no preceding hover to wake its consumer.
-                           # Only the press edge bypasses the held-drag freeze.
-                           and (settled or event.action == EventAction.DOWN)}
+                           # Deliver discrete edges even while recent scrolling
+                           # freezes hover redraws. A click-only control has no
+                           # DOWN listener to wake its cached body on release.
+                           and (settled or event.action in (
+                               EventAction.DOWN, EventAction.UP,
+                               EventAction.CLICKED, EventAction.DOUBLE_CLICKED,
+                               EventAction.DRAG_RELEASED, EventAction.DOUBLE_DRAG_RELEASED))}
             for tile_id in event_tiles:
-                Melty.cache.invalidate_up(tile_id, max_depth=10, force=True)
+                # invalidate() wakes this receiver and its cached ancestors.
+                # invalidate_up() also dirties descendants: a nonblocking
+                # focus notification to the window would repaint every row.
+                Melty.cache.invalidate(tile_id, force=True)
 
     @classmethod
     @contextmanager

@@ -2219,6 +2219,12 @@ class DrawState(DictConversion):
         and priorities to the current z_pos, then go through the normal
         hover / blocker gauntlet — a covered or un-hovered rect registers
         nothing, exactly as the live call would."""
+        # Declared events belong to the cached body too. Replaying only
+        # on_action() drops click/release listeners between touchdown and
+        # release when scrolling keeps the body on its cached path.
+        names = getattr(self._wrapper, "__params__", ())
+        if names and not self.just_shadow:
+            self.register_parameter_actions(names, self._kwargs, self._event_rects, self.closable)
         # A fast host (fast_draw_collection: no tile of its own) paints into
         # this tile, so its rows' subscriptions come back with this tile's.
         for child in [*self._children.values(), *self._view_children.values()]:

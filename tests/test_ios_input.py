@@ -65,6 +65,8 @@ def test_touch_timestamps_do_not_include_variable_python_processing_delay(native
         event['timestamp'] = timestamp
         native.adapter.process_inputs(dict(frame_info(), now=timestamp,
                                           presentation_time=timestamp + 1 / 120), [event])
+        if index == 1:
+            native.adapter.process_inputs(frame_info(1), [])
         delivered.append(native.handler._touch_input.events[-1][3])
     assert delivered == pytest.approx([100 + index / 120 for index in range(1, 5)])
 
@@ -73,12 +75,14 @@ def test_resume_recalibrates_clock_after_cancelling_contacts(native, monkeypatch
     clock = [100.0]
     monkeypatch.setattr('meltygui.core.input.ios_input.time.perf_counter', lambda: clock[0])
     native.adapter.process_inputs(frame_info(), [touch('begin')])
+    native.adapter.process_inputs(frame_info(1), [])  # Present the primed contact.
     native.adapter.suspend()
     assert not native.adapter.has_pending_events
     native.adapter.resume()
     clock[0] = 200.0
     event = dict(touch('begin', identity=2), timestamp=10.1)
     native.adapter.process_inputs(dict(frame_info(), now=10.1), [event])
+    native.adapter.process_inputs(frame_info(1), [])  # Present the primed contact.
     assert native.handler._touch_input.events[-1][3] == pytest.approx(200.0)
 
 
@@ -137,11 +141,12 @@ def body_input(native, monkeypatch):
     return SimpleNamespace(native=native, hits=hits, view=view, overlay=overlay)
 
 
-def test_first_contact_rehits_body_without_a_hover_frame(body_input):
+def test_first_contact_rehits_body_after_priming(body_input):
     native, hits = body_input.native, body_input.hits
     target = body_input.view('fresh', x=100)
     hits.append(target)
     native.adapter.process_inputs(frame_info(), [touch('begin', x=120, y=30)])
+    native.adapter.process_inputs(frame_info(1), [])  # Present the primed contact.
     native.adapter.pump()
     result = native.handler.process_frame()[0]
     assert result['fresh_press']['left_mouse_down'].tile_id == 'fresh'
@@ -156,6 +161,12 @@ def test_fast_swipe_rehits_origin_even_when_it_leaves_before_the_frame(body_inpu
     native.adapter.process_inputs(frame_info(), [touch('begin', x=20, y=30),
                                                 touch('move', x=220, y=10),
                                                 touch('end', x=220, y=10)])
+    assert native.io.mouse_pos == (20, 30)
+    assert not native.io.mouse_down[0]
+    native.adapter.process_inputs(frame_info(1), [])
+    native.adapter.pump()
+    native.handler.process_frame()
+    native.adapter.process_inputs(frame_info(2), [])
     native.adapter.pump()
     event = native.handler.process_frame()[0]['pane_scroll']['touch_scroll_changed']
     assert event.value == -20
@@ -178,6 +189,7 @@ def test_new_contact_removes_old_named_body_target_and_keeps_wrapper(body_input)
     native.handler.feed_down('other', 20, 30)
     hits[:] = [target]
     native.adapter.process_inputs(frame_info(1), [touch('begin', x=120, y=30)])
+    native.adapter.process_inputs(frame_info(1), [])  # Present the primed contact.
     native.adapter.pump()
     assert 'old_press' not in native.handler._view_cursor
     assert native.handler._blocker_views == {'old'}
@@ -187,16 +199,23 @@ def test_new_contact_removes_old_named_body_target_and_keeps_wrapper(body_input)
     assert result['old']['other_down'].tile_id == 'old'
 
 
-def test_short_new_contact_keeps_both_edges_during_rehit(body_input):
+def test_short_new_contact_keeps_both_edges_across_presented_frames(body_input):
     native, hits = body_input.native, body_input.hits
     target = body_input.view('short', events=('left_mouse_down', 'left_mouse_up',
                                               'left_mouse_clicked'))
     hits.append(target)
     native.adapter.process_inputs(frame_info(), [touch('begin'), touch('end')])
     native.adapter.pump()
+    assert not native.handler.process_frame()[0]
+    native.adapter.process_inputs(frame_info(1), [])
+    native.adapter.pump()
+    assert set(native.handler.process_frame()[0]['short_press']) == {'left_mouse_down'}
+    native.handler.begin_frame()
+    target.replay_body_actions()
+    native.adapter.process_inputs(frame_info(2), [])
+    native.adapter.pump()
     result = native.handler.process_frame()[0]
-    assert set(result['short_press']) == {'left_mouse_down', 'left_mouse_up',
-                                         'left_mouse_clicked'}
+    assert set(result['short_press']) == {'left_mouse_up', 'left_mouse_clicked'}
     assert all(event.tile_id == 'short' for event in result['short_press'].values())
 
 
@@ -214,6 +233,7 @@ def test_first_contact_rehits_declared_parameters_and_removes_old_target(body_in
     native.handler.register_hovered('old', ['left_mouse_down', 'other_down'], tile_id='old')
     hits[:] = [target]
     native.adapter.process_inputs(frame_info(1), [touch('begin', x=120, y=30)])
+    native.adapter.process_inputs(frame_info(1), [])  # Present the primed contact.
     native.adapter.pump()
     native.handler.feed_down('other', 120, 30)
     events = native.handler.process_frame()[0]
@@ -232,6 +252,7 @@ def test_first_contact_respects_declared_parameter_rect(body_input):
     view.header_height = view.footer_height = 0
     hits.append(view)
     native.adapter.process_inputs(frame_info(), [touch('begin', x=120, y=30)])
+    native.adapter.process_inputs(frame_info(1), [])  # Present the primed contact.
     native.adapter.pump()
     assert 'text' not in native.handler.process_frame()[0]
 
@@ -243,6 +264,7 @@ def test_first_contact_does_not_revive_a_hidden_branch(body_input):
     native.melty.cache._pixels_preserved = lambda view: view is target
     hits[:] = [stale, target]
     native.adapter.process_inputs(frame_info(), [touch('begin')])
+    native.adapter.process_inputs(frame_info(1), [])  # Present the primed contact.
     native.adapter.pump()
     events = native.handler.process_frame()[0]
     assert 'hidden_press' not in events
@@ -264,6 +286,7 @@ def test_new_contact_replays_shared_fast_host_child_once(body_input, monkeypatch
         return replay(state)
     monkeypatch.setattr(DrawState, 'replay_body_actions', observe)
     native.adapter.process_inputs(frame_info(), [touch('begin', x=120, y=30)])
+    native.adapter.process_inputs(frame_info(1), [])  # Present the primed contact.
     native.adapter.pump()
     result = native.handler.process_frame()[0]
     assert calls == [parent, child]
@@ -276,6 +299,7 @@ def test_touch_rehit_preserves_captured_drag_after_leaving_the_body(body_input):
                                              'left_mouse_drag_released'))
     hits.append(target)
     native.adapter.process_inputs(frame_info(), [touch('begin', x=20, y=30)])
+    native.adapter.process_inputs(frame_info(1), [])  # Present the primed contact.
     native.adapter.pump()
     assert 'left_mouse_down' in native.handler.process_frame()[0]['drag_press']
     native.handler.begin_frame()
@@ -326,11 +350,13 @@ def test_primary_touch_keeps_cached_drag_owner_and_aggregates_motion(native):
     handler, adapter = native.handler, native.adapter
     handler.register_hovered('editor', ['left_mouse_down', 'left_mouse_drag'], tile_id='editor-tile')
     adapter.process_inputs(frame_info(), [touch('begin')])
+    adapter.process_inputs(frame_info(1), [])  # Present the primed contact.
     assert 'left_mouse_down' in handler.process_frame()[0]['editor']
     handler.begin_frame()
     handler.register_hovered('other', ['left_mouse_drag'], tile_id='other-tile')
     adapter.process_inputs(frame_info(1), [touch('begin', 2, 200, 220),
                                            touch('move', 1, 30, 40), touch('move', 1, 45, 50)])
+    adapter.process_inputs(frame_info(1), [])  # Present the primed contact.
     result = handler.process_frame()[0]
     drag = result['editor']['left_mouse_drag']
     assert drag.tile_id == 'editor-tile'
@@ -341,14 +367,31 @@ def test_primary_touch_keeps_cached_drag_owner_and_aggregates_motion(native):
     assert 'other' not in result
 
 
+def test_stationary_touch_edges_do_not_emit_cursor_motion(native):
+    adapter, handler = native.adapter, native.handler
+    generation = native.backend.window.cursor_motion_generation
+    batches = [[touch('begin')], [], [touch('move')],
+               [touch('move', x=40)], [touch('end', x=40)], []]
+    moved = []
+    for index, batch in enumerate(batches):
+        handler.register_hovered('motion', ['cursor_moved'])
+        adapter.process_inputs(frame_info(index), batch)
+        moved.append('motion' in handler.process_frame()[0])
+        handler.begin_frame()
+    assert moved == [True, False, False, True, False, False]
+    assert native.backend.window.cursor_motion_generation == generation + 2
+
+
 def test_secondary_contacts_do_not_take_over_after_primary_release(native):
     adapter = native.adapter
     adapter.process_inputs(frame_info(), [touch('begin'), touch('begin', 2)])
+    adapter.process_inputs(frame_info(), [])
     adapter.process_inputs(frame_info(1), [touch('end'), touch('move', 2, 99, 99), touch('begin', 3)])
     assert native.backend.window.primary_touch is None
     assert native.backend.window.cursor_pos == (20, 30)
     assert not native.handler.is_down('left_mouse')
     adapter.process_inputs(frame_info(2), [touch('end', 2), touch('cancel', 3), touch('begin', 4)])
+    adapter.process_inputs(frame_info(3), [])
     assert native.backend.window.primary_touch == 4
 
 
@@ -358,6 +401,7 @@ def test_cancel_clears_capture_without_click_release_or_drop(native):
                      'left_mouse_clicked', 'left_mouse_drag_released']
     handler.register_hovered('editor', subscriptions, tile_id='cached')
     adapter.process_inputs(frame_info(), [touch('begin')])
+    adapter.process_inputs(frame_info(1), [])  # Present the primed contact.
     handler.process_frame()
     handler.begin_frame()
     handler.register_hovered('editor', subscriptions, tile_id='cached')
@@ -383,19 +427,108 @@ def test_cancel_does_not_clear_another_input_or_cached_subscription(native):
     # Cancellation removes the gesture, not its view's subscriptions.
     handler._pending.clear()
     native.adapter.process_inputs(frame_info(1), [touch('begin', 2), touch('end', 2)])
+    native.adapter.process_inputs(frame_info(2), [])
+    handler.process_frame()
+    native.adapter.process_inputs(frame_info(3), [])
     assert handler.process_frame()[0]['button']['left_mouse_clicked'].tile_id == 'cached'
 
 
-def test_short_tap_delivers_both_handler_edges_and_latches_imgui_once(native):
+def test_short_tap_primes_then_presses_and_releases_once(native):
     native.handler.register_hovered('button', ['left_mouse_clicked'], tile_id='button-tile')
     native.adapter.process_inputs(frame_info(), [touch('begin'), touch('end')])
+    assert not native.io.mouse_down[0] and native.adapter.has_pending_events
+    assert not native.handler.process_frame()[0]
+    native.adapter.process_inputs(frame_info(1), [])
+    assert native.io.mouse_down[0] and native.adapter.has_pending_events
+    assert not native.handler.process_frame()[0]
+    native.adapter.process_inputs(frame_info(2), [])
     clicked = native.handler.process_frame()[0]['button']['left_mouse_clicked']
     assert clicked.tile_id == 'button-tile'
     assert not native.handler.is_down('left_mouse')
-    assert native.io.mouse_down[0] and native.adapter.has_pending_events
-    native.handler.begin_frame()
-    native.adapter.process_inputs(frame_info(1), [])
     assert not native.io.mouse_down[0] and not native.adapter.has_pending_events
+    native.handler.begin_frame()
+    native.adapter.process_inputs(frame_info(3), [])
+    assert not native.io.mouse_down[0] and not native.adapter.has_pending_events
+
+
+def test_batched_contacts_each_reach_their_newly_rendered_target(native):
+    # Window chrome discovers its subscriptions during drawing, after dispatch.
+    # Neither target has ever been hovered when UIKit delivers these two taps.
+    batches = [[touch('begin', 1, 20, 30), touch('end', 1, 20, 30),
+                touch('begin', 2, 220, 30), touch('end', 2, 220, 30)]] + [[]] * 6
+    clicks, positions, down = [], [], []
+    for index, batch in enumerate(batches):
+        native.adapter.process_inputs(frame_info(index), batch)
+        events = native.handler.process_frame()[0]
+        clicks.extend(view for view, actions in events.items() if 'left_mouse_clicked' in actions)
+        positions.append(native.io.mouse_pos)
+        down.append(native.io.mouse_down[0])
+        native.handler.begin_frame()
+        target = 'first' if native.io.mouse_pos[0] < 100 else 'second'
+        native.handler.register_hovered(target, ['left_mouse_clicked'], tile_id=target)
+    assert clicks == ['first', 'second']
+    assert positions == [(20, 30)] * 3 + [(220, 30)] * 4
+    assert down == [False, True, False, False, True, False, False]
+    assert not native.adapter.has_pending_events
+
+
+def test_fast_drag_presents_origin_and_held_motion_before_drop(native):
+    events = [touch('begin', x=20), touch('end', x=220)]
+    phases, positions = [], []
+    for index in range(4):
+        native.adapter.process_inputs(frame_info(index), events if index == 0 else [])
+        dispatched = native.handler.process_frame()[0]
+        phases.append(set(dispatched.get('handle', {})))
+        positions.append((native.io.mouse_pos, native.io.mouse_down[0]))
+        native.handler.begin_frame()
+        if native.io.mouse_pos[0] < 100:
+            native.handler.register_hovered('handle', ['left_mouse_down', 'left_mouse_drag',
+                'left_mouse_drag_released', 'left_mouse_clicked'], tile_id='handle')
+    assert phases == [set(), {'left_mouse_down'}, {'left_mouse_drag'}, {'left_mouse_drag_released'}]
+    assert positions == [((20, 30), False), ((20, 30), True),
+                         ((220, 30), True), ((220, 30), False)]
+    assert not native.handler._drag_capture
+    assert not native.adapter.has_pending_events
+
+
+@pytest.mark.parametrize('frames_before_cancel', [1, 2, 3])
+def test_cancel_discards_staged_press_motion_and_release(native, frames_before_cancel):
+    batch = [touch('begin'), touch('move', x=80), touch('end', x=80)]
+    native.handler.register_hovered('button', ['left_mouse_clicked', 'left_mouse_drag_released'])
+    for index in range(frames_before_cancel):
+        native.adapter.process_inputs(frame_info(index), batch if index == 0 else [])
+        native.handler.process_frame()
+        native.handler.begin_frame()
+    native.adapter.process_inputs(frame_info(3), [touch('cancel')])
+    for index in range(4, 7):
+        native.adapter.process_inputs(frame_info(index), [])
+        assert not native.handler.process_frame()[0]
+        assert not native.io.mouse_down[0]
+        assert native.io.mouse_pos[0] < 0
+        assert not native.adapter.has_pending_events
+        native.handler.begin_frame()
+
+
+def test_priming_freezes_momentum_then_delivers_the_same_contact(native):
+    import time
+    now = time.perf_counter()
+    native.handler.feed_touch('begin', t=now)
+    state = native.handler._touch_input
+    state.events.clear()
+    state.velocity, state.coast_time, state.scroll_target = -1000, now, 'list'
+    native.adapter.process_inputs(frame_info(), [touch('begin')])
+    assert not native.handler.process_frame(animation_time=now + .1)[0]
+    assert state.velocity == -1000
+    native.adapter.process_inputs(frame_info(1), [touch('end')])
+    native.handler.register_hovered('control', ['left_mouse_down', 'left_mouse_drag', 'left_mouse_clicked'])
+    assert 'left_mouse_down' in native.handler.process_frame(animation_time=now + .2)[0]['control']
+    assert native.io.mouse_down[0]
+    assert state.velocity == 0 and not state.contact_pending
+    native.handler.begin_frame()
+    native.handler.register_hovered('control', ['left_mouse_clicked'])
+    native.adapter.process_inputs(frame_info(2), [])
+    assert 'left_mouse_clicked' in native.handler.process_frame()[0]['control']
+    assert not native.io.mouse_down[0]
 
 
 def test_unicode_text_and_backspace_keep_batch_order_and_deliver_once(native):
@@ -501,6 +634,47 @@ def test_adapter_accepts_the_actual_imgui_binding():
         imgui.set_current_context(previous)
 
 
+@pytest.mark.parametrize('release_x, expected_clicks', [(20, 1), (220, 0)])
+@pytest.mark.parametrize('after_scroll', [False, True])
+def test_single_contact_with_real_imgui_button(release_x, expected_clicks, after_scroll):
+    previous = imgui.get_current_context()
+    context = imgui.create_context()
+    io = imgui.get_io()
+    io.ini_file_name = None
+    io.fonts.get_tex_data_as_rgba32()
+    backend = Backend(Host())
+    melty = SimpleNamespace(frame_key_events=[], frame_text_events=[], _keys_down=set(),
+                            text_focused_ds=None)
+    adapter = IOSInput(InputHandler(), backend, io, melty)
+    clicks = 0
+    try:
+        # Build the window with no pointer, then deliver a whole contact between
+        # frames. ImGui sees the same staged IO as the injected Melty controls.
+        for index in range(7):
+            if index == 2 and after_scroll:
+                import time
+                adapter.handler.feed_touch('begin')
+                state = adapter.handler._touch_input
+                state.events.clear()
+                state.velocity, state.coast_time = -1000, time.perf_counter()
+            batch = ([touch('begin', x=20, y=20), touch('end', x=release_x, y=20)]
+                     if index == 2 else [])
+            adapter.process_inputs(frame_info(index), batch)
+            imgui.new_frame()
+            imgui.set_next_window_position(0, 0)
+            imgui.set_next_window_size(400, 300)
+            imgui.begin('Touch test', flags=imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_NO_RESIZE)
+            clicks += bool(imgui.button('Tap once', 100, 50))
+            imgui.end()
+            imgui.render()
+        assert clicks == expected_clicks
+        assert not adapter.has_pending_events
+    finally:
+        adapter.close()
+        imgui.destroy_context(context)
+        imgui.set_current_context(previous)
+
+
 def test_native_adapter_import_graph_is_free_of_glfw_and_opengl():
     source = ('import sys; from meltygui.core.windowing.backends.native_ios import Backend; '
               'from meltygui.core.input.ios_input import IOSInput; '
@@ -512,10 +686,12 @@ def test_native_release_velocity_reaches_shared_gesture_handler(native):
     end = touch('end', y=10)
     end['velocity'] = (12.5, -1800.25)
     native.adapter.process_inputs(frame_info(), [touch('begin'), touch('move', y=10), end])
+    for index in range(1, 4):
+        native.adapter.process_inputs(frame_info(index), [])
     assert native.handler._touch_input.events[-1][-1] == (12.5, -1800.25)
 
 
-def test_native_stopping_contact_never_presses_raw_imgui_control(native):
+def test_first_contact_after_scroll_presses_raw_imgui_control(native):
     import time
     native.handler.feed_touch('begin', t=time.perf_counter())
     state = native.handler._touch_input
@@ -525,7 +701,8 @@ def test_native_stopping_contact_never_presses_raw_imgui_control(native):
     native.adapter.process_inputs(frame_info(), [touch('begin')])
     assert not native.io.mouse_down[0]
     native.adapter.process_inputs(frame_info(1), [touch('end')])
-    assert not native.io.mouse_down[0]
-    state.velocity = 0
-    native.adapter.process_inputs(frame_info(2), [touch('begin', identity=2)])
     assert native.io.mouse_down[0]
+    native.adapter.process_inputs(frame_info(2), [])
+    assert not native.io.mouse_down[0]
+    native.adapter.process_inputs(frame_info(3), [])
+    assert not native.io.mouse_down[0] and not native.adapter.has_pending_events

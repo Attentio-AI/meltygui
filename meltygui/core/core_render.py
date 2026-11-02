@@ -5542,13 +5542,12 @@ def render_func(*args, **o_kwargs):
                     except Exception:
                         pass
 
-            if scroll_y_changed is not None:
+            if scroll_y_changed is not None and draw_state.scroll_offset[1] != current_y:
                 note=Note(name=f"scroll change {draw_state.name}", tint=(1, 0, 1))
-                # Don't cascade the scroll invalidation into nested windows -
-                # a window owns its own scrollbar and doesn't scroll with us,
-                # so re-invalidating that subtree is wasted work.
-                Melty.cache.invalidate_up(draw_state._tile_id, max_depth=3, note=note,
-                                          include_windows=False)
+                # Recompose the scrolling view and its ancestors. Its children
+                # only moved: retain their pixels unless newly visible content
+                # was outside the captured area.
+                Melty.cache.invalidate(draw_state._tile_id, note=note)
                 Melty.cache.invalidate_scrolled_in(draw_state, on_change=False)
 
 

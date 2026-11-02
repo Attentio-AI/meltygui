@@ -151,8 +151,11 @@ def test_pause_before_lift_and_cancel_stop_momentum(gesture):
     assert not handler.process_frame()[0]
 
 
-def test_explicit_handle_keeps_mouse_drag_in_scroll_area(gesture):
+@pytest.mark.parametrize('after_scroll', [False, True])
+def test_explicit_handle_keeps_mouse_drag_in_scroll_area(gesture, after_scroll):
     handler, _, send, text = gesture
+    if after_scroll:
+        flick(gesture)
     text()
     handler.register_hovered('handle', ['left_mouse_down', 'left_mouse_drag'], priority=-10)
     send('begin')
@@ -162,6 +165,20 @@ def test_explicit_handle_keeps_mouse_drag_in_scroll_area(gesture):
     result = handler.process_frame()[0]
     assert 'left_mouse_drag' in result['handle']
     assert 'scroll' not in result
+
+
+def test_scroll_priority_beats_background_row_drag(gesture):
+    handler, _, send, _ = gesture
+    handler.register_hovered('scroll', ['touch_scroll_changed'], priority=0)
+    handler.register_hovered('row', ['left_mouse_drag', 'left_mouse_drag_released'], priority=10)
+    send('begin')
+    assert not handler.process_frame()[0]
+    handler.begin_frame()
+    send('move', y=40)
+    result = handler.process_frame()[0]
+    assert result['scroll']['touch_scroll_changed'].value == -40
+    assert 'row' not in result
+    assert not handler.is_down('left_mouse')
 
 
 def test_front_window_blocks_touch_scroll_behind_it(gesture):
@@ -346,10 +363,12 @@ def test_horizontal_intent_locks_without_later_axis_switch(gesture):
     assert handler._touch_input.velocity_x == -500
 
 
+@pytest.mark.parametrize('speed', [-1500, -1])
 @pytest.mark.parametrize('target', ['text', 'button', 'handle', 'background'])
-def test_stop_tap_consumes_every_control_and_next_tap_activates(gesture, target):
+def test_first_tap_after_scroll_activates_and_stops_momentum(gesture, target, speed):
     handler, _, send, text = gesture
     flick(gesture)
+    handler._touch_input.velocity = speed  # Include a barely visible coast tail.
     if target in ('text', 'button', 'handle'):
         text()
     if target == 'button':
@@ -360,16 +379,16 @@ def test_stop_tap_consumes_every_control_and_next_tap_activates(gesture, target)
         handler.register_hovered(target, ['left_mouse_down'], priority=-20, blocker=True)
     send('begin')
     send('end')
-    assert not handler.process_frame()[0]
+    result = handler.process_frame()[0]
+    expected = 'touch_clicked' if target == 'text' else 'left_mouse_down'
+    assert expected in result[target]
+    if target == 'button':
+        assert 'left_mouse_clicked' in result[target]
+    assert 'scroll' not in result
+    assert handler._touch_input.velocity == handler._touch_input.velocity_x == 0
     assert not handler.is_down('left_mouse')
     handler.begin_frame()
-    if target == 'text':
-        text()
-    else:
-        handler.register_hovered(target, ['left_mouse_down'], priority=-10)
-    send('begin')
-    send('end')
-    assert target in handler.process_frame()[0]
+    assert not handler.process_frame()[0]  # No delayed or duplicate activation.
 
 
 @pytest.mark.parametrize('hold,speed,other_pane,accelerates', [
@@ -405,7 +424,7 @@ def test_expired_coast_does_not_swallow_next_tap(gesture):
     assert 'touch_clicked' in handler.process_frame()[0]['text']
 
 
-def test_flick_and_stop_tap_batched_before_dispatch(gesture):
+def test_flick_and_activation_tap_batched_before_dispatch(gesture):
     handler, _, send, text = gesture
     text()
     send('begin')
@@ -414,5 +433,6 @@ def test_flick_and_stop_tap_batched_before_dispatch(gesture):
     send('begin', y=40)
     send('end', y=40)
     result = handler.process_frame()[0]
-    assert set(result) == {'scroll'}
+    assert set(result) == {'scroll', 'text'}
+    assert 'touch_clicked' in result['text']
     assert handler._touch_input.velocity == 0
