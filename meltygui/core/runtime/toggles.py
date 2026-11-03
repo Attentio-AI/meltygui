@@ -237,10 +237,11 @@ class Tint:
         hue_delta = 0.00
         saturation_factor = 0.958
         value_factor = 2.899
+        min_value = 0.85  # Keep the caret visible on black and very dark tints.
 
         active_hsv = ((active_hsv[0] + hue_delta),
                       scale_saturation(active_hsv[1], saturation_factor),
-                      min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
+                      min(max(active_hsv[2] * value_factor, min_value), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod
@@ -323,11 +324,12 @@ class Tint:
         hue_delta = 0.00
         saturation_factor = 1.313
         value_factor = 1.714
+        min_value = 0.4  # The selection wash must remain visible at 40% alpha.
         max_value = 0.6
 
         active_hsv = ((active_hsv[0] + hue_delta),
                       scale_saturation(active_hsv[1], saturation_factor),
-                      min(max(active_hsv[2] * value_factor, 0), max_value))
+                      min(max(active_hsv[2] * value_factor, min_value), max_value))
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod

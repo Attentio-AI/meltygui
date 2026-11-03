@@ -1602,6 +1602,7 @@ def _color_swatch_plain(s, vals, splice, width, height, name, editor_ds):
     imgui.set_cursor_screen_pos((x, y))
     color_changed, new_color, pick_ds = draw_color_picker(
         tuple(vals), name=f"{name}_picker", closed=not want_open,
+        opening_frame=Melty.frame_count if clicked and want_open else None,
         window_pos=(0, color_picker_top_offset()),
         parent_window=editor_ds, width=color_picker_width(), height=picker_h,
         mode=Mode.POPOVER, return_extras=True)

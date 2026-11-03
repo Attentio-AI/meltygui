@@ -380,7 +380,8 @@ def draw_view_icon_fast(owner, draw_state):
 
 @render_func(use_cache=False, show_bg=True, shadow=False, selectable=False, with_header=None)
 def draw_color_picker(input_value, wrap=True, draw_state=None, info=None,
-                      picker_state: ColorPickerState = None, gl_state: GLState = None, owner=None, **kwargs):
+                      picker_state: ColorPickerState = None, gl_state: GLState = None, owner=None,
+                      opening_frame=None, **kwargs):
     """The colour picker popover, three tabs: **Wide** (default) — a
     Display-P3 hue/saturation/value square whose value axis runs on above
     white (`Toggles.HDR.picker_max_stops`), rendered as an fp16 texture so
@@ -391,6 +392,9 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None,
     (hdr_color.py), so a colour picked on one tab reads back on the others
     (an out-of-sRGB value shows clipped on the sRGB tab)."""
     from meltygui.core.windowing.glfw_utils import request_render
+
+    picker_state.begin(input_value, opening_frame)
+    input_value = picker_state.color
 
     # The tab strip: draw-list flat_buttons (no wrapper per tab), neutral
     # grey like draw_tabs' untinted strip — the active tab gets the filled
@@ -419,15 +423,15 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None,
         draw_style_residuals_fast(owner, draw_state)
         return False, input_value
     if picker_state.tab == "extended":
-        result = _draw_extended_picker(input_value, draw_state, gl_state, info)
+        result = _draw_extended_picker(input_value, draw_state, gl_state, info, picker_state)
     else:
         # The band's room stays reserved: the square lands at the same pos on
         # every tab.
         imgui.dummy(0, Toggles.ColorPicker.exposure_band_height)
         if picker_state.tab == "srgb":
-            result = _draw_srgb_picker(input_value, draw_state, info)
+            result = _draw_srgb_picker(input_value, draw_state, info, picker_state)
         else:
-            result = _draw_wide_picker(input_value, draw_state, gl_state, info)
+            result = _draw_wide_picker(input_value, draw_state, gl_state, info, picker_state)
     if owner is not None:
         # Editing a VIEW's colour: its other paint knobs ride along under
         # the colour tabs (color_picker_height reserves their rows).
@@ -491,13 +495,12 @@ def color_picker_width() -> int:
     return 216 + Toggles.ColorPicker.extension_width
 
 
-def _draw_wide_picker(input_value, draw_state, gl_state, info):
+def _draw_wide_picker(input_value, draw_state, gl_state, info, picker_state):
     """The Wide tab: P3 HSV + exposure (hdr_color.p3_hsv_from_extended). The
     square's X is P3 saturation, its top `picker_top_fraction` is exposure
     (2^max_stops at the top, white at the seam), the rest the classic value
     axis. The sRGB outline is the gamut edge for the current hue
-    (hdr_color.srgb_region_outline). `draw_state._cpw_precise` echoes our own
-    edits back like the sRGB tab's `_cp_precise`."""
+    (hdr_color.srgb_region_outline). HSV belongs to picker_state."""
     from meltygui.model.color_model import _wide_marker
     from meltygui.model.color_model import _wide_pick
     from meltygui.core.windowing.glfw_utils import request_render
@@ -518,19 +521,7 @@ def _draw_wide_picker(input_value, draw_state, gl_state, info):
     a = float(vals[3]) if has_alpha else 1.0
     in_r, in_g, in_b, in_a = r, g, b, a
 
-    ECHO_TOL = 0.002
-    _prec = getattr(draw_state, '_cpw_precise', None)
-    is_echo = _prec is not None and all(abs(pc - c) <= ECHO_TOL for pc, c in zip(_prec[0], (r, g, b, a)))
-    if is_echo:
-        r, g, b, a = _prec[0]
-        h, s, v, exposure = _prec[1]
-    else:
-        h, s, v, exposure = hdr_color.p3_hsv_from_extended(r, g, b)
-        if _prec is not None:
-            if s <= 0.0 or v <= 0.0:
-                h = _prec[1][0]
-            if v <= 0.0:
-                s = _prec[1][1]
+    h, s, v, exposure = picker_state.current_coordinates("wide")
 
     dl = imgui.get_window_draw_list()
     white = pack_color(1, 1, 1, 1)
@@ -624,13 +615,9 @@ def _draw_wide_picker(input_value, draw_state, gl_state, info):
                 g = in_g
             if not edited[2]:
                 b = in_b
-            nh, ns, nv, ne = hdr_color.p3_hsv_from_extended(r, g, b)
-            if ns <= 0.0 or nv <= 0.0:
-                nh = h
-            if nv <= 0.0:
-                ns = s
-            h, s, v, exposure = nh, ns, nv, ne
-        draw_state._cpw_precise = ((r, g, b, a), (h, s, v, exposure))
+        color = (r, g, b, a) if has_alpha else (r, g, b)
+        picker_state.edit(color, (h, s, v, exposure)
+                          if hsv_changed or not any(edited[:3]) else None)
         request_render()
         return True, ((r, g, b, a) if has_alpha else (r, g, b))
     return False, input_value
@@ -681,7 +668,7 @@ def _wide_square_texture(gl_state, hue, size, top_fraction, max_stops):
                         deps=deps)
 
 
-def _draw_extended_picker(input_value, draw_state, gl_state, info):
+def _draw_extended_picker(input_value, draw_state, gl_state, info, picker_state):
     """The sRGB+ tab: the classic sRGB HSV square at its usual size and
     place, extended on two sides — to its RIGHT a PICKER_EXTENSION-wide
     strip that carries every row on past the sRGB gamut edge into Display
@@ -695,9 +682,8 @@ def _draw_extended_picker(input_value, draw_state, gl_state, info):
     is the depth into P3; above the top seam v = 1 and the height is
     exposure. The hue bar is sRGB hue (the square's). Below black there is
     nothing to extend into, so the square's bottom stays the bottom.
-    `draw_state._cpx_precise` echoes our own edits back like the other
-    tabs' caches; `_cpx_coords` memoizes the inverse for an external value
-    (a bisection, not a per-frame cost)."""
+    picker_state retains the exact coordinates; the inverse conversion
+    runs only on opening, switching tabs or editing RGB."""
     from meltygui.model.color_model import _srgb_plus_marker
     from meltygui.model.color_model import _srgb_plus_pick
     from meltygui.core.windowing.glfw_utils import request_render
@@ -715,25 +701,7 @@ def _draw_extended_picker(input_value, draw_state, gl_state, info):
     a = float(vals[3]) if has_alpha else 1.0
     in_r, in_g, in_b, in_a = r, g, b, a
 
-    ECHO_TOL = 0.002
-    _prec = getattr(draw_state, '_cpx_precise', None)
-    is_echo = _prec is not None and all(abs(pc - c) <= ECHO_TOL for pc, c in zip(_prec[0], (r, g, b, a)))
-    if is_echo:
-        r, g, b, a = _prec[0]
-        h, s, v, x, exposure = _prec[1]
-    else:
-        memo = getattr(draw_state, '_cpx_coords', None)
-        if memo is not None and memo[0] == (r, g, b):
-            h, s, v, x, exposure = memo[1]
-        else:
-            hint = _prec[1][0] if _prec is not None else None
-            h, s, v, x, exposure = hdr_color.srgb_extension_coords(r, g, b, hue_hint=hint)
-            if _prec is not None:
-                if s <= 0.0 or v <= 0.0:
-                    h = _prec[1][0]
-                if v <= 0.0:
-                    s = _prec[1][1]
-            draw_state._cpx_coords = ((r, g, b), (h, s, v, x, exposure))
+    h, s, v, x, exposure = picker_state.current_coordinates("extended")
 
     dl = imgui.get_window_draw_list()
     white = pack_color(1, 1, 1, 1)
@@ -831,13 +799,9 @@ def _draw_extended_picker(input_value, draw_state, gl_state, info):
                 g = in_g
             if not edited[2]:
                 b = in_b
-            nh, ns, nv, nx, ne = hdr_color.srgb_extension_coords(r, g, b, hue_hint=h)
-            if ns <= 0.0 or nv <= 0.0:
-                nh = h
-            if nv <= 0.0:
-                ns = s
-            h, s, v, x, exposure = nh, ns, nv, nx, ne
-        draw_state._cpx_precise = ((r, g, b, a), (h, s, v, x, exposure))
+        color = (r, g, b, a) if has_alpha else (r, g, b)
+        picker_state.edit(color, (h, s, v, x, exposure)
+                          if hsv_changed or not any(edited[:3]) else None)
         request_render()
         return True, ((r, g, b, a) if has_alpha else (r, g, b))
     return False, input_value
@@ -876,17 +840,11 @@ def _srgb_plus_texture(gl_state, hue, square, ext, band, max_stops):
                         deps=deps)
 
 
-def _draw_srgb_picker(input_value, draw_state, info):
+def _draw_srgb_picker(input_value, draw_state, info, picker_state):
     """The sRGB tab: the classic HSV picker (a saturation/value square plus a
     hue bar. `input_value` is a 3- or 4-float RGB(A) tuple in 0..1; returns
-    (changed, new_tuple). HSV is derived from the value each frame and the edit
-    written straight back (imgui's own is_item_active tracks the drag), so it
-    can be dropped anywhere; draw_tuple wraps it in Mode.POPOVER. The one piece
-    of state is `draw_state._cp_precise`: the last full-precision RGBA we
-    emitted plus its HSV. RGB→HSV loses hue at black/gray (h collapses to 0)
-    and a driven value can echo back quantized (save/parse round trip, %.3f
-    drag rounding) — so when the incoming value is just an echo of our own
-    edit, we resume from the cache instead of re-deriving."""
+    (changed, new_tuple). picker_state owns the colour and exact HSV
+    position for the whole opening, including hue at gray/black."""
     from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.view.control_view import button
 
@@ -895,41 +853,10 @@ def _draw_srgb_picker(input_value, draw_state, info):
     has_alpha = len(vals) >= 4
     r, g, b = float(vals[0]), float(vals[1]), float(vals[2])
     a = float(vals[3]) if has_alpha else 1.0
-    # Exact incoming channels - untouched channels are emitted as these, so
-    # an edit to one channel doesn't override the others' cached/rounded
-    # working copies.
+    # Untouched channels keep the picker's exact working values.
     in_r, in_g, in_b, in_a = r, g, b, a
 
-    # Tolerance for "this is our own value coming back"; covers %.3f drag
-    # rounding (±0.0005) and 1/255 hex quantization (±0.002).
-    ECHO_TOL = 0.002
-    _prec = getattr(draw_state, '_cp_precise', None)
-    is_echo = False
-    if _prec is not None:
-        p_rgba, p_hsv = _prec  # p_rgba is always stored as a 4-tuple
-        is_echo = (abs(p_rgba[0] - r) <= ECHO_TOL and
-                   abs(p_rgba[1] - g) <= ECHO_TOL and
-                   abs(p_rgba[2] - b) <= ECHO_TOL and
-                   abs(p_rgba[3] - a) <= ECHO_TOL)
-
-    if is_echo:
-        # Echo of our own edit - resume the full-precision working value so
-        # our SV/hue markers don't jump on quantization noise, and the cached
-        # hue survives even when the colour is currently black/gray.
-        r, g, b = p_rgba[0], p_rgba[1], p_rgba[2]
-        if has_alpha:
-            a = p_rgba[3]
-        h, s, v = p_hsv
-    else:
-        h, s, v = imgui.color_convert_rgb_to_hsv(r, g, b)
-        if _prec is not None:
-            # External change to black/gray: hue (and at black, saturation)
-            # are undefined in the new value - keep the cached ones for
-            # continuity rather than snapping the markers to red/top-left.
-            if s <= 0.0 or v <= 0.0:
-                h = _prec[1][0]
-            if v <= 0.0:
-                s = _prec[1][1]
+    h, s, v = picker_state.current_coordinates("srgb")
 
     SQ, BAR_W, GAP = 180, 18, 8
     dl = imgui.get_window_draw_list()
@@ -1025,9 +952,7 @@ def _draw_srgb_picker(input_value, draw_state, info):
         imgui.dummy(0, 2)
         imgui.text_colored(str(info), 1.0, 1.0, 1.0, 0.45)
     if changed:
-        # Untouched channels emit the EXACT incoming value - the working
-        # copies may be truncated/rounded and must never overwrite precise
-        # channels the user didn't edit. An SV/hue drag rewrites RGB
+        # Untouched channels keep the exact working value. An SV/hue drag rewrites RGB
         # wholesale (that edit scope is all three channels); alpha only
         # changes when its own row was dragged.
         if has_alpha and not edited[3]:
@@ -1039,15 +964,9 @@ def _draw_srgb_picker(input_value, draw_state, info):
                 g = in_g
             if not edited[2]:
                 b = in_b
-            # RGB drags edit the colour directly - refresh the cached HSV,
-            # keeping hue/saturation where the new value leaves them undefined.
-            nh, ns, nv = imgui.color_convert_rgb_to_hsv(r, g, b)
-            if ns <= 0.0 or nv <= 0.0:
-                nh = h
-            if nv <= 0.0:
-                ns = s
-            h, s, v = nh, ns, nv
-        draw_state._cp_precise = ((r, g, b, a), (h, s, v))
+        color = (r, g, b, a) if has_alpha else (r, g, b)
+        picker_state.edit(color, (h, s, v)
+                          if hsv_changed or not any(edited[:3]) else None)
         request_render()
         return True, ((r, g, b, a) if has_alpha else (r, g, b))
     return False, input_value

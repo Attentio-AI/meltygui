@@ -200,6 +200,9 @@ class Surface:
             glfw.window_hint_string(glfw.X11_CLASS_NAME, Surface.app_id)
         except Exception:
             pass
+        # Register the compositor opt-out before this window can map. CSD
+        # negotiation then starts with one bar, not a corrective second frame.
+        titlebar_buttons.prepare_client_decorations(Surface.app_id)
         share = Surface.owner_window
         self.window = glfw.create_window(width, height, self.title, None, share)
         if not self.window:

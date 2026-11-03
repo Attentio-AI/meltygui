@@ -321,6 +321,10 @@ def sync_decoration(window):
     if decorated != want_decorated:
         glfw.set_window_attrib(window, glfw.DECORATED,
                                glfw.TRUE if want_decorated else glfw.FALSE)
+    if titlebar_buttons.uses_system_buttons():
+        from meltygui.core.windowing import geometry_feed
+        frame = geometry_feed._current_frame() or {}
+        titlebar_buttons.sync_client_controls(frame.get("address"), want_bar)
     return want_bar
 
 
@@ -468,6 +472,13 @@ _ICONS = (_ICON_MINIMIZE, _ICON_MAXIMIZE, _ICON_RESTORE, _ICON_CLOSE, _ICON_MOVE
 
 
 def _button_icon(kind, maximized):
+    system = titlebar_buttons.system_button(kind)
+    if system is not None:
+        if system["role"] == "maximize" and maximized:
+            return _ICON_RESTORE
+        if system["state"] == "left_drag_move" and not hypr_left_drag.enabled() and system["alt_icon"]:
+            return system["alt_icon"]
+        return system["icon"] or "?"
     if kind == "minimize":
         return _ICON_MINIMIZE
     if kind == "maximize":
@@ -511,7 +522,8 @@ def drag_anywhere_enabled():
 
 
 def control_kinds():
-    """button_layout() plus the desktop's own extra: on Lukas's patched
+    """Use the compositor's complete button list when available. Otherwise
+    button_layout() plus the desktop's own extra: on Lukas's patched
     Hyprland (hypr_left_drag.available — the compositor has
     general:left_drag_move) a "move" toggle, the hyprbars
     `state = "left_drag_move"` button mirrored, unless
@@ -532,7 +544,7 @@ def control_kinds():
         return (), ("settings",) if settings_available() else ()
     from meltygui.core.runtime.toggles import Toggles
     left_kinds, right_kinds = tuple(button_layout()[0]), tuple(button_layout()[1])
-    if Toggles.Melty.titlebar_move_toggle and hypr_left_drag.available():
+    if (not titlebar_buttons.uses_system_buttons() or Toggles.Melty.titlebar_button_layout) and Toggles.Melty.titlebar_move_toggle and hypr_left_drag.available():
         if right_kinds or not left_kinds:
             right_kinds = ("move",) + right_kinds
         else:
@@ -577,9 +589,13 @@ def _button_metrics():
     button_margin = Melty.px(4.0)
     # [tint=(1.0, 0.55, 0.2)]
     button_gap = Melty.px(3.0)
-    sizes = {icon: imgui.calc_text_size(icon) for icon in _ICONS}
-    height = max(s.y for s in sizes.values()) + Melty.px(8.0)
-    return button_margin, button_gap, height, {icon: s.x + Melty.px(15.0) for icon, s in sizes.items()}
+    icons = set(_ICONS)
+    for kind in sum(control_kinds(), ()):
+        icons.add(_button_icon(kind, False))
+    sizes = {icon: ((imgui.get_font_size(), imgui.get_font_size())
+                    if icon.startswith("/") else imgui.calc_text_size(icon)) for icon in icons}
+    height = max(s[1] for s in sizes.values()) + Melty.px(8.0)
+    return button_margin, button_gap, height, {icon: s[0] + Melty.px(15.0) for icon, s in sizes.items()}
 
 
 def _button_layout(disp_w, maximized=None):
@@ -591,7 +607,7 @@ def _button_layout(disp_w, maximized=None):
     from meltygui.core.melty import Melty
     left_kinds, right_kinds = control_kinds()
     if maximized is None:
-        maximized = ("maximize" in left_kinds or "maximize" in right_kinds) and _maximized(_studio_window())
+        maximized = (any(kind == "maximize" or (titlebar_buttons.system_button(kind) or {}).get("role") == "maximize" for kind in left_kinds + right_kinds)) and _maximized(_studio_window())
     button_margin, button_gap, height, widths = _button_metrics()
     settings_gap = Melty.px(_SETTINGS_GAP)
     buttons = []
@@ -635,7 +651,7 @@ def chrome_insets():
         return 0.0, 0.0
     left_kinds, right_kinds = control_kinds()
     button_margin, button_gap, height, widths = _button_metrics()
-    maximized = ("maximize" in left_kinds or "maximize" in right_kinds) and _maximized(_studio_window())
+    maximized = (any(kind == "maximize" or (titlebar_buttons.system_button(kind) or {}).get("role") == "maximize" for kind in left_kinds + right_kinds)) and _maximized(_studio_window())
     from meltygui.core.melty import Melty
     settings_gap = Melty.px(_SETTINGS_GAP)
 
@@ -695,6 +711,20 @@ def _activate_button(kind, window):
     """What a control does: minimize / maximize / close (the close deferred
     to the merge window while pending state would be lost) / the desktop's
     left-drag-move toggle for this app (hypr_left_drag.toggle)."""
+    system = titlebar_buttons.system_button(kind)
+    if system is not None:
+        if system["role"] in ("close", "maximize", "minimize"):
+            kind = system["role"]
+        elif system["state"] == "left_drag_move":
+            hypr_left_drag.toggle()
+            return
+        else:
+            from meltygui.core.windowing import geometry_feed
+            frame = geometry_feed._current_frame() or {}
+            titlebar_buttons.activate_system_button(kind, frame.get("address"))
+            return
+    elif kind.startswith("system:"):
+        return  # A removed or replaced button must never fall through to Close.
     if kind == "minimize":
         glfw.iconify_window(window)
     elif kind == "maximize":
@@ -892,13 +922,25 @@ def _paint_buttons(dl, buttons, over_button):
             # flat-mask mark paint_window_controls stamped for the button).
             add_shadow((x0, y0, x1 - x0, y1 - y0), corner_radius=Melty.px(6.0), clip=False,
                        layer=Melty.nested_layer_max - 1, depth=2)
-            faded = kind == "move" and not hypr_left_drag.enabled()
-            flat_button(icon, None, view_id=f"titlebar_button_{i}",
+            system = titlebar_buttons.system_button(kind)
+            faded = (kind == "move" or (system and system["state"] == "left_drag_move")) and not hypr_left_drag.enabled()
+            artwork = icon.startswith("/")
+            flat_button("" if artwork else icon, None, view_id=f"titlebar_button_{i}",
                         width=x1 - x0, height=y1 - y0, pos=(x0, y0),
                         hovered=hovered, layout=False, draw_list=dl,
                         color=close_color,
                         **({"text_color": move_off_glyph, "tint_value": move_off_disc_value}
                            if faded else {}))
+            if artwork:
+                texture = titlebar_buttons.artwork_texture(icon)
+                if texture is not None:
+                    from meltygui.hdr_color import pack_color
+                    size = imgui.get_font_size()
+                    ratio = size / max(texture.pixels.width, texture.pixels.height)
+                    w, h = texture.pixels.width * ratio, texture.pixels.height * ratio
+                    x, y = (x0 + x1 - w) / 2, (y0 + y1 - h) / 2
+                    dl.add_image(int(texture), (x, y), (x + w, y + h),
+                                 col=pack_color(1, 1, 1, 0.4 if faded else 1))
     finally:
         if style_manager is not None and previous_tint is not None:
             style_manager.set_imgui_tint(*previous_tint)

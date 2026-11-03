@@ -740,12 +740,14 @@ def draw_color3_token(input_value, draw_state=None,
     # ALPHA_PREVIEW_HALF splits the swatch - half composited at the real alpha
     # over a checkerboard, half opaque - so RGBA transparency shows in the chip.
     flags = imgui.COLOR_EDIT_NO_TOOLTIP | (imgui.COLOR_EDIT_ALPHA_PREVIEW_HALF if has_alpha else 0)
+    opening_frame = None
     if imgui.color_button("##color3_tv", r, g, b, a,
                           flags=flags,
                           width=_sw, height=_sw):
         Melty.popover_focused_ds = None if is_open else draw_state
         if not is_open:
             Melty._popover_open_frame = Melty.frame_count  # grace the opening click
+            opening_frame = Melty.frame_count
         request_render()
     is_open = Melty.popover_focused_ds is draw_state  # reflect the close this frame
 
@@ -757,6 +759,7 @@ def draw_color3_token(input_value, draw_state=None,
     picker_h = color_picker_height(len(vals))
     color_changed, new_color = draw_color_picker(
         tuple(vals), name=f"{draw_state.name}_picker", closed=not is_open,
+        opening_frame=opening_frame,
         window_pos=(0, color_picker_top_offset()), parent_window=draw_state, width=color_picker_width(), height=picker_h,
         mode=Mode.POPOVER)
     if is_open:

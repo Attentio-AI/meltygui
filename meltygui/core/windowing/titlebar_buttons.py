@@ -5,7 +5,10 @@ button, put the controls on the left, ...), and GTK / Qt apps that draw
 their own header bars follow that setting. meltygui's frameless windows draw
 their own controls too (titlebar.py), so they read the same setting:
 
-    GNOME, Budgie, Hyprland / sway / ... with a dconf profile:
+    Hyprland with hyprbars-buttons v1:
+        the running plugin's ordered icons, actions and per-window state;
+        SVG/PNG artwork is decoded off-thread and cached by mtime/size.
+    GNOME, Budgie, stock Hyprland / sway / ... with a dconf profile:
         gsettings get org.gnome.desktop.wm.preferences button-layout
         -> 'appmenu:minimize,maximize,close'   (what GTK's header bars read)
     Cinnamon:   org.cinnamon.desktop.wm.preferences button-layout
@@ -37,6 +40,11 @@ no cwd / preexec_fn) — the studio must never fork (CLAUDE.md).
 from __future__ import annotations
 
 import configparser
+import json
+import sys
+import hashlib
+import logging
+from pathlib import Path
 import os
 import re
 import shutil
@@ -224,13 +232,180 @@ def detect(environ=None, run=_run):
 # A probe thread + the cached answer
 # ---------------------------------------------------------------------------
 
-def _probe():
+def parse_hyprbars(reply):
+    """Validate the compositor's versioned button manifest, in visual order."""
+    data = json.loads(reply)
+    if data.get("version") != 1 or data.get("side") not in ("left", "right"):
+        raise ValueError("Unsupported titlebar button manifest")
+    buttons = {}
+    order = []
+    for item in data["buttons"]:
+        if not isinstance(item, dict) or not all(isinstance(item.get(k), str) for k in
+                                                ("icon", "alt_icon", "action", "state", "role")):
+            raise ValueError("Invalid titlebar button")
+        key = "system:" + hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()[:20]
+        buttons[key] = item
+        order.append(key)
+    if data["side"] == "right":
+        order.reverse()  # Hyprbars stores buttons from the outer edge inward.
+    layout = ButtonLayout(tuple(order), ()) if data["side"] == "left" else ButtonLayout((), tuple(order))
+    return layout, buttons
+
+
+def _read_hyprbars():
+    if not sys.platform.startswith("linux"):
+        return None
+    from meltygui.core.windowing.geometry_feed import hypr_request
     try:
-        layout, source = detect()
+        return parse_hyprbars(hypr_request("j/hyprbars-buttons"))
+    except (ValueError, KeyError, TypeError, OSError, RuntimeError):
+        return None
+
+
+def _decode_artwork(buttons, previous):
+    """CPU/file work belongs to the existing background layout probe."""
+    from meltygui.model.folder_icon_model import decode_icon
+    result = {}
+    for item in buttons.values():
+        for icon in (item["icon"], item["alt_icon"]):
+            path = Path(icon)
+            if not path.is_absolute() or path.suffix.lower() not in (".svg", ".png"):
+                continue
+            try:
+                stat = path.stat()
+                stamp = (stat.st_mtime_ns, stat.st_size)
+                if icon in previous and previous[icon][0] == stamp:
+                    result[icon] = previous[icon]
+                    continue
+                pixels = decode_icon(path, size=48)
+                if "-symbolic" in path.stem and pixels.format == "rgba8srgb":
+                    rgba = bytearray(pixels.data)
+                    for offset in range(0, len(rgba), 4):
+                        rgba[offset:offset + 3] = b"\xff\xff\xff"
+                    pixels.data = bytes(rgba)
+                result[icon] = (stamp, pixels)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                continue
+    return result
+
+
+def system_button(kind):
+    return _state.get("buttons", {}).get(kind)
+
+
+def uses_system_buttons():
+    return _state.get("source") == "hyprbars"
+
+
+def activate_system_button(kind, address):
+    """Run exactly the configured action, scoped to the clicked window.
+
+    No focus manipulation, shell interpolation of window metadata, or main-seat
+    input. Helpers may use HYPRLAND_WINDOW_ADDRESS instead of activewindow.
+    """
+    item = system_button(kind)
+    if item is None or not item["action"] or not re.fullmatch(r"0x[0-9a-fA-F]+", address or ""):
+        return False
+    env = dict(os.environ, HYPRLAND_WINDOW_ADDRESS=address)
+    # Reap even quick actions; shell startup uses posix_spawn like other probes.
+    def run_action():
+        try:
+            result = subprocess.run(["/bin/sh", "-c", item["action"]], env=env, close_fds=False,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            if result.returncode:
+                logging.getLogger(__name__).warning("System titlebar action %s exited with %s", kind, result.returncode)
+        except OSError:
+            logging.getLogger(__name__).exception("Could not launch system titlebar action %s", kind)
+    threading.Thread(target=run_action, name="titlebar-action", daemon=True).start()
+    return True
+
+
+# CPU snapshots are published by the worker; texture ownership stays on the
+# render thread, and TextureId handles GL/native context-specific cleanup.
+_artwork = globals().get("_artwork") or {"snapshot": None, "textures": {}}
+
+
+def prepare_client_decorations(app_id):
+    """Before mapping a Melty window, let its CSD request win over force_bar.
+
+    This one startup request uses the real app ID, not a hardcoded app list.
+    Standard decorated windows still receive a server bar. Per-window tags
+    handle live chrome toggles after mapping without changing other apps.
+    """
+    if not sys.platform.startswith("linux") or not app_id:
+        return
+    from meltygui.core.windowing.geometry_feed import hypr_request
+    name = "melty-csd-" + hashlib.sha256(app_id.encode()).hexdigest()[:20]
+    rule = ('{name=' + json.dumps(name) + ',match={class=' +
+            json.dumps(re.escape(app_id), ensure_ascii=False) + '},["hyprbars:force_bar"]=false}')
+    try:
+        hypr_request('eval if hl.plugin.hyprbars then hl.window_rule(' + rule + ') end')
+    except (OSError, RuntimeError):
+        pass  # Other compositors already honor the normal CSD protocol.
+
+
+_claims_lock = globals().get("_claims_lock") or threading.Lock()
+
+
+def sync_client_controls(address, enabled):
+    """Announce custom chrome once per window/state/probe generation.
+
+    The normal frame path only checks cached values. IPC runs on a worker;
+    periodic/focus probes reassert ownership after a compositor plugin reload.
+    """
+    if not uses_system_buttons() or not re.fullmatch(r"0x[0-9a-fA-F]+", address or ""):
+        return
+    claims = _state.setdefault("client_controls", {})
+    value = (bool(enabled), _state["probed_at"])
+    if claims.get(address) == value:
+        return
+    claims[address] = value
+    def publish():
+        from meltygui.core.windowing.geometry_feed import hypr_request
+        try:
+            with _claims_lock:
+                if claims.get(address) != value:
+                    return
+                tag = ("+" if enabled else "-") + "melty-client-controls"
+                hypr_request(f'eval local w=hl.get_window("address:{address}"); '
+                             f'if w and w.pid=={os.getpid()} then '
+                             f'hl.dispatch(hl.dsp.window.tag({{window=w,tag="{tag}"}})) end')
+        except (OSError, RuntimeError):
+            pass  # Retry on the next existing focus/periodic probe, never per frame.
+    threading.Thread(target=publish, name="titlebar-decoration", daemon=True).start()
+
+
+def artwork_texture(icon):
+    snapshot = _state.get("artwork", {})
+    if snapshot is not _artwork["snapshot"]:
+        for path, (pixels, texture) in list(_artwork["textures"].items()):
+            if path not in snapshot or snapshot[path][1] is not pixels:
+                texture.release()
+                del _artwork["textures"][path]
+        _artwork["snapshot"] = snapshot
+    if icon not in snapshot:
+        return None
+    if icon not in _artwork["textures"]:
+        from meltygui.model.folder_icon_model import FolderIconTexture
+        pixels = snapshot[icon][1]
+        _artwork["textures"][icon] = (pixels, FolderIconTexture(pixels))
+    return _artwork["textures"][icon][1]
+
+
+def _probe():
+    buttons, artwork = {}, {}
+    try:
+        found = _read_hyprbars()
+        if found is not None:
+            layout, buttons = found
+            source = "hyprbars"
+            artwork = _decode_artwork(buttons, _state.get("artwork", {}))
+        else:
+            layout, source = detect()
     except Exception:
         layout, source = DEFAULT, "error"
-    changed = layout != _state["layout"]
-    _state.update(layout=layout, source=source, probed_at=time.monotonic())
+    changed = layout != _state["layout"] or artwork != _state.get("artwork", {})
+    _state.update(layout=layout, source=source, buttons=buttons, artwork=artwork, probed_at=time.monotonic())
     if changed:
         try:
             from meltygui.core.windowing.glfw_utils import request_render

@@ -1366,6 +1366,7 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
     is_open = owner and Melty.popover_focused_ds is not None and (
         Melty.popover_focused_ds is draw_state
         or Melty.popover_focused_ds is picker_ds)
+    opening_frame = None
     if draw_state.on_action("left_mouse_down", view_id=view_id, rect=rect,
                             priority_delta=priority_delta) is not None:
         if unpainted:
@@ -1382,6 +1383,7 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
             Melty.popover_focused_ds = draw_state
             draw_state._tint_edit_key = view_id
             Melty._popover_open_frame = Melty.frame_count  # grace the opening click
+            opening_frame = Melty.frame_count
             owner = True
         is_open = not is_open
         draw_state.invalidate()
@@ -1425,6 +1427,7 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
     imgui.set_cursor_screen_pos((x, y + size))
     color_changed, new_color, picker_ds = draw_color_picker(
         input_value, name=picker_name, closed=not is_open,
+        opening_frame=opening_frame,
         window_pos=(_pop_x, _pop_y), info=_info, parent_window=anchor,
         owner=view_owner,
         width=picker_w, height=picker_h, mode=Modes.POPOVER,

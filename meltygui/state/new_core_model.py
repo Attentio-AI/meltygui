@@ -107,16 +107,67 @@ class TabState(DictConversion):
         self.tab_icons = {}
 
 
+@no_save("initialized", "opening_frame")
 class ColorPickerState(DictConversion):
-    """draw_color_picker's persisted state (injected via
-    `picker_state: ColorPickerState = None`): which tab is showing —
-    "wide" (the P3 + brightness square, the default), "srgb" (the
-    classic square) or "extended" (the classic square with the P3
-    extension to its right, the sRGB+ tab)."""
+    """The picker owns its exact colour until the next opening.
+
+    Tab and HSV positions persist, including the hue at gray and saturation
+    at black. Opening tokens are process-local; a restored picker loads its
+    input once before taking ownership again.
+    """
 
     def __init__(self):
         super().__init__()
         self.tab = "wide"
+        self.color = None
+        self.coordinates = {}
+        self.coordinate_tab = None
+        self.initialized = False
+        self.opening_frame = None
+
+    def begin(self, input_value, opening_frame=None):
+        if not self.initialized or (opening_frame is not None
+                                    and opening_frame != self.opening_frame):
+            self.color = tuple(input_value)
+            self.coordinate_tab = None
+            self.opening_frame = opening_frame
+            self.initialized = True
+
+    def current_coordinates(self, tab):
+        if self.coordinate_tab != tab:
+            import colorsys
+            from meltygui import hdr_color
+
+            r, g, b = self.color[:3]
+            previous = self.coordinates.get(tab)
+            if tab == "wide":
+                coords = hdr_color.p3_hsv_from_extended(r, g, b)
+            elif tab == "extended":
+                coords = hdr_color.srgb_extension_coords(
+                    r, g, b, hue_hint=previous[0] if previous is not None else None)
+            else:
+                coords = colorsys.rgb_to_hsv(r, g, b)
+            h, s, v, *extra = coords
+            # Equal RGB channels are gray even if a gamut matrix introduces
+            # tiny channel differences. Hue zero is a valid stored hue.
+            if r == g == b:
+                s = 0.0
+            if s <= 0.0 or v <= 0.0:
+                h = previous[0] if previous is not None else 0.0
+            if v <= 0.0 and previous is not None:
+                s = previous[1]
+            self.coordinates[tab] = (h, s, v, *extra)
+            self.coordinate_tab = tab
+        return self.coordinates[tab]
+
+    def edit(self, color, coordinates=None):
+        self.color = tuple(color)
+        if coordinates is None:
+            # RGB rows need a fresh conversion; an HSV or alpha edit keeps
+            # the exact cursor position, even when RGB loses that position.
+            self.coordinate_tab = None
+        else:
+            self.coordinates[self.coordinate_tab] = tuple(coordinates)
 
 
 
