@@ -255,10 +255,55 @@ def folder_icon_candidates(folder, probe, size=ICON_SIZE):
         yield desktop, value, path
 
 
+def repo_artwork_candidates(folder, probe, size=ICON_SIZE):
+    launchers = list(folder_icon_candidates(folder, probe, size))
+    for desktop, _, _ in launchers:
+        value = probe.config(desktop).get('Desktop Entry', 'X-HDR-Icon', fallback='').strip()
+        if value:
+            yield resolve_icon(value, folder, probe, size)
+    for _, _, path in launchers:
+        yield path
+    for name in ('icon', 'icons'):
+        directory = folder / name
+        if not probe.exists(directory):
+            continue
+        try:
+            paths = sorted((path for path in directory.iterdir()
+                            if path.suffix.lower() in {'.png', '.svg', '.webp', '.ico'}),
+                           key=lambda path: ('hdr' not in path.stem.lower(),
+                                             path.stem != folder.name, path.name))
+        except OSError:
+            continue
+        for path in paths:
+            if probe.exists(path):
+                yield path
+    # Web apps declare their own artwork; do not pick arbitrary static assets.
+    import json
+    for directory in (folder, folder / 'static', folder / 'public'):
+        for name in ('manifest.webmanifest', 'manifest.json'):
+            manifest = directory / name
+            if not probe.exists(manifest):
+                continue
+            try:
+                data = json.loads(manifest.read_text(encoding='utf-8'))
+            except (OSError, UnicodeError, ValueError):
+                continue
+            icons = data.get('icons', []) if isinstance(data, dict) else []
+            if not isinstance(icons, list):
+                continue
+            for icon in icons:
+                source = icon.get('src') if isinstance(icon, dict) else None
+                if not isinstance(source, str) or ':' in source or source.startswith('//'):
+                    continue
+                path = (directory / source.lstrip('/')).resolve()
+                if path.is_relative_to(folder.resolve()) and probe.exists(path):
+                    yield path
+
+
 def load_folder_icon(folder, size=ICON_SIZE):
-    """Choose the first usable Application icon; prefer a matching desktop filename."""
+    """Prefer launcher artwork, then icon directories and local web manifests."""
     probe = Probe()
-    for desktop, value, path in folder_icon_candidates(folder, probe, size):
+    for path in repo_artwork_candidates(folder, probe, size):
         if path is None:
             continue
         try:

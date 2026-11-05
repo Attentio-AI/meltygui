@@ -226,3 +226,28 @@ def test_event_tracking_can_hotswap_onto_an_existing_cache(tmp_path):
     assert cache.entries is original_entries and not cache.pending
     assert str(tmp_path) in cache.watch_directories()
     cache.close()
+
+
+def test_repo_icon_directory_fallback_and_hdr_preference(tmp_path):
+    png(tmp_path / 'icon/plain.png')
+    preferred = png(tmp_path / 'icon/app-hdr.png')
+    pixels, dependencies = load_folder_icon(tmp_path)
+    assert pixels.path == preferred
+    assert preferred in dependencies and preferred.parent in dependencies
+
+
+def test_web_manifest_icon_and_dependency_tracking(tmp_path):
+    import json
+    icon = png(tmp_path / 'static/icon-192.png')
+    manifest = tmp_path / 'static/manifest.webmanifest'
+    manifest.write_text(json.dumps({'icons': [{'src': '/icon-192.png'}]}))
+    pixels, dependencies = load_folder_icon(tmp_path)
+    assert pixels.path == icon
+    assert manifest in dependencies and icon in dependencies
+
+
+def test_hdr_launcher_precedes_standard_icon(tmp_path):
+    standard = png(tmp_path / 'standard.png')
+    hdr = png(tmp_path / 'hdr.png')
+    desktop(tmp_path, standard, extra=f'X-HDR-Icon={hdr}\n')
+    assert load_folder_icon(tmp_path)[0].path == hdr

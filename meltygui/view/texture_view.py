@@ -158,7 +158,7 @@ def draw_texture(input_value: numpy.uint32 | ImageTexture, hovered, scroll_y_cha
             zoom_state.hue, zoom_state.saturation = 0.0, 1.0
     # The dispatcher emits a double click on release only if it did not drag,
     # leaving double-click-and-drag available for an enclosing crop control.
-    if left_mouse_double_clicked is not None:
+    if Melty.is_touch and left_mouse_double_clicked is not None:
         native_zoom = max(width / view_width, height / view_height)
         native_zoom = max(min_zoom, min(native_zoom, max_zoom))
         at_native = abs(math.log2(zoom_state.zoom / native_zoom)) < 0.01

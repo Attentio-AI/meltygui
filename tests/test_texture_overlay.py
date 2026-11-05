@@ -148,3 +148,26 @@ def test_views_of_same_input_keep_independent_filtered_pixels(gl_context, monkey
         texture.release()
         filters.cleanup()
         GLState.flush_deletes()
+
+
+@pytest.mark.parametrize('touch, expected', [(False, (1., 1.)), (True, (2., 1.))])
+def test_double_click_zoom_is_touch_only(monkeypatch, touch, expected):
+    from meltygui.core.melty import Melty
+    from meltygui.view import texture_view
+
+    renderer = SimpleNamespace(_textures={1: (800, 600, None)}, draw=Mock())
+    monkeypatch.setattr(Melty, 'graphics_backend', renderer)
+    monkeypatch.setattr(Melty, 'is_touch', touch)
+    monkeypatch.setattr(imgui, 'dummy', Mock())
+    monkeypatch.setattr(imgui, 'get_text_line_height', lambda: 18)
+    monkeypatch.setattr(texture_view, 'texture_filter_target', lambda *args: 2)
+    monkeypatch.setattr(texture_view, 'pack_color', lambda *args: 0)
+    zoom = SimpleNamespace(zoom=1., center_u=.5, center_v=.5,
+                           brightness=0., contrast=1., hue=0., saturation=1.)
+    ds = SimpleNamespace(width=400, height=300, on_action=lambda name: None)
+    for value in expected:
+        inspect.unwrap(draw_texture)(np.uint32(1), True, None, None, None, zoom, .3,
+                                     draw_state=ds, _texture_state=TextureViewState(),
+                                     gl_state=SimpleNamespace(drop=Mock()),
+                                     left_mouse_double_clicked=object())
+        assert zoom.zoom == value

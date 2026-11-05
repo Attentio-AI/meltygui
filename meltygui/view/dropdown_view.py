@@ -82,6 +82,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     from meltygui.core.layout.dropdown_core import _dd_close
     from meltygui.core.layout.dropdown_core import _dd_handle_keys
     from meltygui.model.dropdown_model import _dd_label_for_path
+    from meltygui.model.dropdown_model import _dd_row_lookup
     from meltygui.model.dropdown_model import _dd_path_for_value
     from meltygui.model.dropdown_model import _dd_walk
     import meltygui.core.windowing.window_api as glfw
@@ -180,8 +181,8 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     trigger_left, trigger_top = imgui.get_cursor_screen_pos()
     # Draw-list trigger: the click is claimed through this dropdown's own
     # draw_state (no nested render_func). It fires on press, as the old button did.
-    # An embedded tint colours the trigger; otherwise flat_button's default hue applies.
-    embedded_tint = _dd_obj_tint(input_value)
+    # The selected row's tint also colours the closed trigger; embedded tints win.
+    embedded_tint = _dd_obj_tint(input_value, _dd_row_lookup(kwargs.get("row_tints"), input_value))
     trigger_color = {} if embedded_tint is None else {"color": embedded_tint}
     label_width = min(_label_px, imgui.calc_text_size(drop_down_display_str.split("##")[0]).x)
     if trigger_align == "left":
@@ -195,9 +196,23 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     text_clip_rect = (trigger_left + trigger_text_offset, trigger_top,
                       trigger_left + trigger_w - 1, trigger_top + trigger_h)
     display_paths = kwargs.get("display_paths")
+    tinted_background = embedded_tint is not None and kwargs.get("show_button_bg", True)
+    if tinted_background and kwargs.get("paint_trigger", True):
+        rgb = embedded_tint[:3]
+        scale = min(1.0, 0.55 / max(max(rgb), 0.001))
+        background = tuple(c * scale for c in rgb) + (Toggles.Dropdown.row_tint_alpha,)
+        rect = (trigger_left, trigger_top, trigger_w, trigger_h)
+        if Toggles.dynamic_styles:
+            from meltygui.core.styling.style import Style
+            Melty.add_background(Style(background, absolute=True), rect=rect,
+                                 corner_radius=6, draw_state=draw_state)
+        else:
+            imgui.get_window_draw_list().add_rect_filled(
+                trigger_left, trigger_top, trigger_left+trigger_w, trigger_top+trigger_h,
+                pack_color(*background), rounding=6)
     clicked = flat_button("" if display_paths else drop_down_display_str, draw_state, view_id=f"{name}_dd_trigger{unique}",
                           width=trigger_w, height=trigger_h,
-                          alpha=1.0 if kwargs.get("show_button_bg", True) else 0.0,
+                          alpha=1.0 if kwargs.get("show_button_bg", True) and not tinted_background else 0.0,
                           shadow=shadow, text_value=trigger_text_value, text_pad=trigger_pad,
                           text_offset_x=trigger_text_offset, text_clip_rect=text_clip_rect, event="left_mouse_down",
                           text_color=trigger_text_color, paint=kwargs.get("paint_trigger", True), **trigger_color)
@@ -301,6 +316,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         width=menu_width, height=menu_height,
         parent_window=draw_state, swoosh=False, disable_scroll=False,
         row_tags=kwargs.get("row_tags"),
+        row_columns=kwargs.get("row_columns"),
         row_tints=kwargs.get("row_tints"), row_text_colors=kwargs.get("row_text_colors"),
         row_actions=kwargs.get("row_actions"),
         row_previews=kwargs.get("row_previews"), preview_owner=draw_state,
@@ -441,13 +457,13 @@ def fast_draw_dropdown(input_value=None, **kwargs):
 
 
 @render_func(use_cache=True, show_bg=True, shadow=True, selectable=False, temp=True,
-             closable=True, popover=True, melty_window=False, auto_resize=True, with_header=None,
+             closable=True, popover=True, melty_window=False, auto_resize=False, with_header=None,
              max_height=420, min_width=300, swoosh=False, min_height=33, keep_in_view=True,
              on_cleanup=cleanup_path_icon)
 @with_path_icons
 def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix=(), tint=None,
                  show_search=None, text_align="right", row_tags=None, row_tints=None, row_text_colors=None,
-                 row_suffixes=None, row_actions=None, text_toward_bg=0.0,
+                 row_suffixes=None, row_actions=None, text_toward_bg=0.0, row_columns=None,
                  full_render=False, row_code=None, menu_title=None,
                  row_previews=None, preview_owner=None, menu_columns=None, row_paths=None,
                  icon_state: PathIconState = None, **kwargs):
@@ -650,6 +666,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
                                   tuple(path_prefix), cursor_path, tint=tint,
                                   row_tags=row_tags, row_tints=row_tints, row_text_colors=row_text_colors,
                                   row_suffixes=row_suffixes,
+                                  row_columns=row_columns,
                                   row_actions=row_actions,
                                   text_toward_bg=text_toward_bg,
                                   row_code=row_code,
@@ -970,7 +987,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                  text_toward_bg=0.0, row_code=None, code_label_w=None,
                  row_width=None, row_previews=None, preview_owner=None,
                  selected=False, selection_gutter=False, tint_background=True, row_paths=None, icon_state=None,
-                 row_text_colors=None):
+                 row_text_colors=None, row_columns=None):
     """Render ONE leaf menu row inline with raw imgui — NO per-row render_func.
     Leaves are the bulk of a big menu, so skipping the dd_menu_row wrapper (its
     own draw_state / cache / BVH / hover machinery, tens of µs each) is the whole
@@ -1117,7 +1134,23 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
 
     tag = _dd_row_lookup(row_tags, value)
     code_row = _dd_row_lookup(row_code, value)
-    if code_row is not None:
+    columns = _dd_row_lookup(row_columns, value)
+    if columns:
+        total = sum(column[1] for column in columns)
+        scale = min(1.0, max(0.0, w-left_pad-160) / max(1, total))
+        column_x = x+w-10-total*scale
+        cells = [(str(label), x+left_pad, column_x-10, 'left', 1.0)]
+        for text, width, align in columns:
+            cells.append((str(text), column_x, column_x+width*scale-10, align, .65))
+            column_x += width*scale
+        for text, cell_left, cell_right, align, alpha in cells:
+            dl.push_clip_rect(cell_left, y, max(cell_left, cell_right), y+h, True)
+            text_x = max(cell_left, cell_right-imgui.calc_text_size(text)[0]) if align == 'right' else cell_left
+            dl.add_text(text_x, y+(h-line_h)*.5, pack_color(*color[:3], alpha), text)
+            dl.pop_clip_rect()
+        imgui.dummy(w-left_pad, h)
+        imgui.set_cursor_screen_pos((x, y+h))
+    elif code_row is not None:
         # GlobalSearch-mirrored code row (the quick-jump popup): the row
         # label as a dim prefix, then the ACTUAL code line rendered through the
         # real editor - draw_text with the file's live cst-dict parse and a
