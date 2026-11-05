@@ -28,7 +28,7 @@ From the meltygui checkout:
 The ordinary tile-manager example is unchanged without `--rust-gui`. The
 experiment has its own app ID (`meltygui-rust-prototype`) and saved session.
 The build is opt-in, uses the invoking Python interpreter, and does not alter
-the normal package dependencies. Rust 1.77.2 and Python 3.12 were tested.
+the normal package dependencies. Rust 10.99.2 and Python 3.12 were tested.
 `MELTY_RUST_TOOLCHAIN` can select another installed rustup toolchain.
 
 Choose 25, 100, 300, or 1000 rows. Drag the integer/float fields, click collection
