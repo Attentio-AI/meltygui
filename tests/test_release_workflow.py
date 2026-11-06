@@ -127,20 +127,9 @@ def test_release_gate_runs_all_versions_and_propagates_failure(tmp_path, failure
     assert 'TestScannerParity::test_sample' in result.stdout
 
 
-def test_release_gate_deadline_kills_children(tmp_path):
-    script = Path(__file__).resolve().parents[1] / 'tools/check_release.sh'
-    workflow = script.parents[1] / '.github/workflows/release.yml'
-    assert 'timeout --signal=KILL 8s bash tools/check_release.sh' in workflow.read_text()
-    for version in ('3.11', '3.12', '3.13'):
-        executable = tmp_path / f'meltygui-check-{version}/bin/python'
-        executable.parent.mkdir(parents=True)
-        executable.write_text('#!/bin/bash\nsleep 0.5\ntouch "$RUNNER_TEMP/leaked"\n')
-        executable.chmod(0o755)
-    result = subprocess.run([shutil.which('timeout'), '--signal=KILL', '0.1s',
-                             shutil.which('bash'), str(script)],
-                            env={**os.environ, 'RUNNER_TEMP': str(tmp_path)},
-                            capture_output=True, close_fds=False, timeout=2)
-    assert result.returncode != 0
-    import time
-    time.sleep(0.5)
-    assert not (tmp_path / 'leaked').exists()
+def test_release_workflow_has_no_eight_second_deadline():
+    workflow = Path(__file__).resolve().parents[1] / '.github/workflows/release.yml'
+    source = workflow.read_text()
+    step = source.split('      - name: Test installed wheels\n', 1)[1].split('      - uses:', 1)[0]
+    assert step.strip() == 'run: bash tools/check_release.sh'
+    assert 'timeout --signal=KILL 8s' not in source

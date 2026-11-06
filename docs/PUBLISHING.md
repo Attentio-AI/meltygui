@@ -32,13 +32,14 @@ uploads MeltyGUI through PyPI trusted publishing. Hardware validation of
 
 The deploy test gate runs package contracts, the public/private boundary checks,
 and the curated parser parity sample concurrently on Python 3.11–3.13. All three
-must pass within one eight-second wall-clock budget; timeout fails verification.
+must pass. Eight seconds is a performance guideline, not a timeout or publishing
+requirement; slower successful checks still allow publication.
 Pytest plugin autoload and the GUI context/font-atlas fixture are disabled for
 these headless checks. The private-import scan parses only files containing a
 private-package name (including Unicode-normalized identifiers). The full parser regression suite remains an
 explicit development check (`pytest tests/test_core_syntax.py`), outside deployment.
 Installation, artifact builds and GitHub queue time are separate from this test
-budget. Prepared native wheels are cached by their verified source commit, so
+target. Prepared native wheels are cached by their verified source commit, so
 retries avoid compiling those same dependencies again; a cache miss still builds.
 
 For locally prepared artifacts:

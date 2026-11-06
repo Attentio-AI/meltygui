@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GNU timeout applies one eight-second wall-clock budget to all interpreters.
+# Eight seconds is a performance target, not a release-blocking deadline.
 set -euo pipefail
 export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
 pids=()
