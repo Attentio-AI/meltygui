@@ -103,3 +103,43 @@ def test_staged_source_resolution_requires_successful_owned_commit(tmp_path, mon
     else:
         exec(compile(script, '<workflow-support-source>', 'exec'), {})
         assert (tmp_path / 'output').read_text() == 'imgui_sha=' + 'a' * 40 + '\n'
+
+
+@pytest.mark.parametrize('failure', ['', '3.12'])
+def test_release_gate_runs_all_versions_and_propagates_failure(tmp_path, failure):
+    script = Path(__file__).resolve().parents[1] / 'tools/check_release.sh'
+    for version in ('3.11', '3.12', '3.13'):
+        executable = tmp_path / f'meltygui-check-{version}/bin/python'
+        executable.parent.mkdir(parents=True)
+        executable.write_text('#!/bin/bash\n'
+                              'test "$PYTEST_DISABLE_PLUGIN_AUTOLOAD" = 1 || exit 99\n'
+                              'echo "$*"\n'
+                              f'exit {1 if version == failure else 0}\n')
+        executable.chmod(0o755)
+    result = subprocess.run([shutil.which('bash'), str(script)],
+                            env={**os.environ, 'RUNNER_TEMP': str(tmp_path)},
+                            capture_output=True, text=True, close_fds=False, timeout=2)
+    assert result.returncode == bool(failure), result.stdout + result.stderr
+    for version in ('3.11', '3.12', '3.13'):
+        assert f'Python {version}' in result.stdout
+    assert '-I -m pytest' in result.stdout
+    assert 'TestScannerParity::test_sample' in result.stdout
+
+
+def test_release_gate_deadline_kills_children(tmp_path):
+    script = Path(__file__).resolve().parents[1] / 'tools/check_release.sh'
+    workflow = script.parents[1] / '.github/workflows/release.yml'
+    assert 'timeout --signal=KILL 8s bash tools/check_release.sh' in workflow.read_text()
+    for version in ('3.11', '3.12', '3.13'):
+        executable = tmp_path / f'meltygui-check-{version}/bin/python'
+        executable.parent.mkdir(parents=True)
+        executable.write_text('#!/bin/bash\nsleep 0.5\ntouch "$RUNNER_TEMP/leaked"\n')
+        executable.chmod(0o755)
+    result = subprocess.run([shutil.which('timeout'), '--signal=KILL', '0.1s',
+                             shutil.which('bash'), str(script)],
+                            env={**os.environ, 'RUNNER_TEMP': str(tmp_path)},
+                            capture_output=True, close_fds=False, timeout=2)
+    assert result.returncode != 0
+    import time
+    time.sleep(0.5)
+    assert not (tmp_path / 'leaked').exists()

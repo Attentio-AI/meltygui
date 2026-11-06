@@ -30,6 +30,15 @@ tests a fresh installation against the support wheels on PyPI. A publish run
 uploads MeltyGUI through PyPI trusted publishing. Hardware validation of
 `meltygui[tensor]` is performed locally and remains a release check for CUDA changes.
 
+The deploy test gate runs package contracts, the public/private boundary checks,
+and the curated parser parity sample concurrently on Python 3.11–3.13. All three
+must pass within one eight-second wall-clock budget; timeout fails verification.
+Pytest plugin autoload is disabled. The full parser regression suite remains an
+explicit development check (`pytest tests/test_core_syntax.py`), outside deployment.
+Installation, artifact builds and GitHub queue time are separate from this test
+budget. Prepared native wheels are cached by their verified source commit, so
+retries avoid compiling those same dependencies again; a cache miss still builds.
+
 For locally prepared artifacts:
 
 ```sh

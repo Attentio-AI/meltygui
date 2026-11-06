@@ -86,8 +86,14 @@ jobs:
           ref: ${{ steps.support.outputs.imgui_sha }}
           path: .release-sources/imgui
           persist-credentials: false
-      - name: Build staged ImGui wheels
+      - uses: actions/cache@v4
         if: steps.support.outputs.imgui_sha != ''
+        id: imgui_wheels
+        with:
+          path: dist/support/imgui
+          key: staged-imgui-${{ runner.os }}-${{ runner.arch }}-${{ steps.support.outputs.imgui_sha }}
+      - name: Build staged ImGui wheels
+        if: steps.support.outputs.imgui_sha != '' && steps.imgui_wheels.outputs.cache-hit != 'true'
         run: python .release-sources/imgui/tools/build.py --output "$GITHUB_WORKSPACE/dist/support/imgui"
       - uses: actions/checkout@v4
         if: steps.support.outputs.pycuda_sha != ''
@@ -96,15 +102,21 @@ jobs:
           ref: ${{ steps.support.outputs.pycuda_sha }}
           path: .release-sources/pycuda
           persist-credentials: false
-      - name: Extract pinned CUDA toolkit for staged PyCUDA
+      - uses: actions/cache@v4
         if: steps.support.outputs.pycuda_sha != ''
+        id: pycuda_wheels
+        with:
+          path: dist/support/pycuda
+          key: staged-pycuda-${{ runner.os }}-${{ runner.arch }}-${{ steps.support.outputs.pycuda_sha }}
+      - name: Extract pinned CUDA toolkit for staged PyCUDA
+        if: steps.support.outputs.pycuda_sha != '' && steps.pycuda_wheels.outputs.cache-hit != 'true'
         run: |
           image=nvidia/cuda@sha256:327c9e046fbf662275be0934742f7e5412f9b24402ee90bf4d649c1a21707912
           container=$(docker create "$image")
           trap 'docker rm "$container"' EXIT
           docker cp "$container:/usr/local/cuda-12.1" "$RUNNER_TEMP/cuda-12.1"
       - name: Build staged PyCUDA wheels
-        if: steps.support.outputs.pycuda_sha != ''
+        if: steps.support.outputs.pycuda_sha != '' && steps.pycuda_wheels.outputs.cache-hit != 'true'
         run: python .release-sources/pycuda/tools/build.py --cuda-root "$RUNNER_TEMP/cuda-12.1" --output "$GITHUB_WORKSPACE/dist/support/pycuda"
       - name: Install the wheel with published or staged support wheels
         run: |
@@ -120,8 +132,16 @@ jobs:
               fi
             done
             uv pip install --python "$RUNNER_TEMP/meltygui-check-$version/bin/python" --only-binary :all: dist/release/meltygui-*.whl "${support[@]}" pytest
-            "$RUNNER_TEMP/meltygui-check-$version/bin/python" -I -m pytest tests/test_package_contract.py tests/test_public_boundary.py tests/test_core_syntax.py -q
           done
+      - name: Test installed wheels (8 second total budget)
+        run: |
+          status=0
+          timeout --signal=KILL 8s bash tools/check_release.sh || status=$?
+          if [ "$status" -eq 137 ]; then
+            echo '::error::Release tests exceeded the shared 8 second budget'
+            tail -n 40 "$RUNNER_TEMP"/meltygui-test-*.log
+          fi
+          exit "$status"
       - uses: actions/upload-artifact@v4
         with:
           name: release
