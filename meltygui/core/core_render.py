@@ -2922,32 +2922,15 @@ def render_func(*args, **o_kwargs):
                 if (_live_clip is not None and parent_wrap_width is not None
                         and _live_clip[2] < parent_wrap_left + parent_wrap_width):
                     parent_wrap_width = max(0, _live_clip[2] - parent_wrap_left)
-            elif draw_state.clip_rect is not None:
-                clip_size = draw_state.clip_size
-                clip_rect = draw_state.abs_clip_rect
-                if clip_size is not None:
-                    parent_wrap_width = clip_size[0]
-                    parent_wrap_left = clip_rect[0]
-                    parent_wrap_top = clip_rect[1]
-                    parent_wrap_height = clip_size[1]
-                else:
-                    parent_wrap_width = imgui.get_io().display_size[0]
-                    parent_wrap_left = 0
-                    parent_wrap_top = 0
-                    parent_wrap_height = imgui.get_io().display_size[1]
             else:
-                clip_size = draw_state.clip_size
-                clip_rect = draw_state.abs_clip_rect
-                if clip_size is not None:
-                    parent_wrap_width = clip_size[0]
-                    parent_wrap_left = clip_rect[0]
-                    parent_wrap_top = clip_rect[1]
-                    parent_wrap_height = clip_size[1]
-                else:
-                    parent_wrap_width = imgui.get_io().display_size[0]
-                    parent_wrap_left = 0
-                    parent_wrap_top = 0
-                    parent_wrap_height = imgui.get_io().display_size[1]
+                # Size against the enclosing clip, not this view's box-clamped
+                # abs_clip_rect: a new auto-sized view starts at width zero.
+                clip_rect = Melty.get_clip_rect()
+                if clip_rect is None:
+                    clip_rect = (0, 0, *imgui.get_io().display_size)
+                parent_wrap_left, parent_wrap_top = clip_rect[:2]
+                parent_wrap_width = clip_rect[2] - parent_wrap_left
+                parent_wrap_height = clip_rect[3] - parent_wrap_top
 
             column_parent = draw_state._parent if len(Melty.fixed_size_stack) > 1 else draw_state._parent
 
@@ -3004,10 +2987,13 @@ def render_func(*args, **o_kwargs):
                 _depth_margin = 0.0 if draw_state.freeze_resize else content_margin
                 available_width = (parent_wrap_width - x_offset - _depth_margin)
 
-            if len(Melty.fixed_size_stack) > 0:
-                if (draw_state.auto_resize and not closable and not
-                Melty.is_wrapped() and passed_width is None) and (kwargs.get("fill_height", None) is None):
-                    draw_state.width = available_width
+            # Plain app bodies have no fixed-size Melty ancestor. Their
+            # available width comes from the clip/viewport above and must
+            # size unwrapped views too, otherwise collections stay zero-wide.
+            if (draw_state.auto_resize and not closable and not
+                    Melty.is_wrapped() and passed_width is None
+                    and kwargs.get("fill_height", None) is None):
+                draw_state.width = available_width
 
             if column is not None and column_parent is not None:
                 max_height = column_max_height(column_parent)

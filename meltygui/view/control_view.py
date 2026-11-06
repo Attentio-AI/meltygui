@@ -362,6 +362,7 @@ def draw_str(input_value: str, draw_state, editable=True, wrap=False, min_width=
         # disable scrolling
         changed, value = draw_text(str(input_value), name=draw_state.name + "##innder", show_bg=True,
                                    editable=True, with_header=draw_header, width=draw_state.content_width - 10,
+                                   height=height,
                                    show_name=False, is_tree=False, temp=True,
                                    # A VALUE field holds prose/data, not code -
                                    # the auto-suggestion popup is noise here

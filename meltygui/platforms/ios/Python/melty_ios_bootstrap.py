@@ -176,9 +176,14 @@ def _application_source(bundle, support):
             if (payload.is_dir() and payload.name != token and len(payload.name) == 32
                     and all(c in '0123456789abcdef' for c in payload.name)):
                 shutil.rmtree(payload)
-    index = next(i for i, path in enumerate(sys.path)
-                 if Path(path).resolve() == bundle / 'app')
-    sys.path[index] = str(source)
+    # The first launch replaces the signed bundle path. In-process restart
+    # and rollback already have the writable source path instead.
+    source_paths = {bundle / 'app', source}
+    indices = [i for i, path in enumerate(sys.path) if Path(path).resolve() in source_paths]
+    index = indices[0] if indices else 0
+    for i in reversed(indices):
+        del sys.path[i]
+    sys.path.insert(index, str(source))
     importlib.invalidate_caches()
     return source
 

@@ -292,7 +292,13 @@ class NativeApplication:
 
         if self.started:
             release(FileWatch.stop)
+            # Melty.init warms autocomplete in an iOS executor. Stopping the
+            # file observer alone leaves its idle worker alive across reloads.
+            from meltygui.code.libcst_conversion import shutdown_jedi_pool
+            release(shutdown_jedi_pool)
             release(save)
+            from meltygui.core.diagnostics.monitor_core import Monitor
+            release(Monitor.shutdown)
         self.closed = True
         if self.input is not None:
             release(self.input.close)

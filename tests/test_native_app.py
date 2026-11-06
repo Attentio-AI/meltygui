@@ -610,6 +610,63 @@ def test_close_saves_before_releasing_resources_and_is_idempotent(native):
     assert native.calls == calls and len(native.host.wakes) == wakes
 
 
+def test_consecutive_native_closes_stop_ios_autocomplete_workers(native, monkeypatch):
+    from meltygui.code import libcst_conversion as code
+    # Real executor threads exercise the leak masked by a one-launch test.
+    monkeypatch.setattr(code, '_jedi_pools', {})
+    workers = []
+    for _ in range(3):
+        with monkeypatch.context() as platform:
+            platform.setattr(sys, 'platform', 'ios')
+            pool = code._get_jedi_pool()
+        pool.submit(lambda: None).result(timeout=2)
+        workers.extend(pool._threads)
+        surface = NativeApplication({'app_id': 'native-test'}, native.host,
+                                    lambda: RecordingRenderer(native.calls))
+        try:
+            surface.start()
+            surface.close()
+            for thread in workers:
+                thread.join(timeout=2)
+                assert not thread.is_alive(), thread.name
+            assert not code._jedi_pools
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+            surface.close()
+
+
+def test_native_close_stops_brightness_worker_and_allows_another_session(native, monkeypatch):
+    from meltygui.core.diagnostics import monitor_core
+    class SessionMonitor(metaclass=monitor_core._MonitorMeta):
+        pass
+    monkeypatch.setattr(monitor_core, 'Monitor', SessionMonitor)
+    changed = threading.Event()
+    values = []
+    def set_brightness(command):
+        values.append(command[-1])
+        changed.set()
+    monkeypatch.setattr(monitor_core.subprocess, 'run', set_brightness)
+    assert SessionMonitor._thread is None  # No import-time worker.
+    SessionMonitor.shutdown()  # Closing an unused service is safe.
+    for value in (20, 40, 60):
+        surface = NativeApplication({'app_id': 'native-test'}, native.host,
+                                    lambda: RecordingRenderer(native.calls))
+        surface.start()
+        try:
+            changed.clear()
+            SessionMonitor.brightness = value
+            assert changed.wait(2)
+            worker = SessionMonitor._thread
+            surface.close()
+            assert not worker.is_alive()
+            assert SessionMonitor._thread is None
+            surface.close()
+        finally:
+            SessionMonitor.shutdown()
+            surface.close()
+    assert values == ['20', '40', '60']
+
+
 def test_failed_frame_does_not_save_broken_state_and_close_still_releases(native, monkeypatch):
     surface = native.surface
     surface.start()

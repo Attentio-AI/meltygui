@@ -18,33 +18,26 @@ class _MonitorMeta(type):
 
     def __init__(cls, *args):
         super().__init__(*args)
+        # Importing the render runtime must not start a desktop DDC worker.
+        cls._brightness = 30
+        cls._pending = None
+        cls._event = threading.Event()
+        cls._thread = None
+        cls._lock = threading.Lock()
 
-        def _worker():
-            while True:
-                cls._event.wait()
-                cls._event.clear()
-                with cls._lock:
-                    value = cls._pending
-                if value is _SENTINEL:
-                    break
-                try:
-                    value = min(max(1, value), 100)
-                    subprocess.run(["ddcutil", "setvcp", "10", str(value)])
-                except Exception as e:
-                    print(f"Monitor error: {e}")
-
-        cls._thread = threading.Thread(target=_worker, daemon=True)
-        cls._thread.start()
-
-        def _fetch():
-            # result = subprocess.run(["ddcutil", "getvcp", "10"], capture_output=True, text=True)
-            # for part in result.stdout.split(","):
-            #     if "current value" in part:
-            #         cls._brightness = int(part.split("=")[1].strip())
-            #         return
-            cls._brightness = 30
-
-        threading.Thread(target=_fetch, daemon=True).start()
+    def _work(cls):
+        while True:
+            cls._event.wait()
+            cls._event.clear()
+            with cls._lock:
+                value = cls._pending
+            if value is _SENTINEL:
+                break
+            try:
+                value = min(max(1, value), 100)
+                subprocess.run(["ddcutil", "setvcp", "10", str(value)])
+            except Exception as e:
+                print(f"Monitor error: {e}")
 
     @property
     def brightness(cls):
@@ -55,13 +48,21 @@ class _MonitorMeta(type):
         cls._brightness = value
         with cls._lock:
             cls._pending = value
+            if cls._thread is None:
+                cls._thread = threading.Thread(target=cls._work, name="monitor-brightness", daemon=True)
+                cls._thread.start()
         cls._event.set()
 
     def shutdown(cls):
         with cls._lock:
+            thread = cls._thread
+            if thread is None:
+                return
             cls._pending = _SENTINEL
         cls._event.set()
-        cls._thread.join()
+        thread.join()
+        with cls._lock:
+            cls._thread = None
 
 
 class Monitor(metaclass=_MonitorMeta):

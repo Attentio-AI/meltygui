@@ -11,6 +11,10 @@
 #import "RemoteFiles/ScreenCapture.h"
 #endif
 
+#if __has_include("RemoteFiles/Console.h")
+#import "RemoteFiles/Console.h"
+#endif
+
 // A purgeable, private cache. Absolute source paths and CPython cache tags
 // separate installed code; retire old bundle trees after a full reinstall.
 static NSString *pythonBytecodeCache(NSString *bundle) {
@@ -834,6 +838,9 @@ static const char *kindName(melty::InputKind kind) {
 }
 
 - (void)writeLog:(NSString *)text {
+#if __has_include("RemoteFiles/Console.h")
+    HubConsoleAppend(text);
+#endif
     NSLog(@"%@", text);
     @synchronized(self) {
         if (!_logPath) return;

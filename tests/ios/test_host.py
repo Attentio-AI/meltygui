@@ -370,6 +370,35 @@ class BootstrapTests(unittest.TestCase):
             self.bootstrap.initialize(self.config)
             self.assertIs(self.launch.call_args.args[1], host)
 
+    def test_in_process_restarts_reuse_the_writable_source_path(self):
+        with self.environment():
+            self.bootstrap.initialize(self.config)
+            source = Path(importlib.util.find_spec('test_ios_application').origin)
+            index = sys.path.index(str(source.parent))
+            self.assertNotIn(str(self.bundle / 'app'), sys.path)
+            for value in (2, 3):
+                source.write_text(f'value = {value}\n')
+                self.bootstrap.close()
+                self.bootstrap.initialize(self.config)
+                self.assertEqual(sys.path[index], str(source.parent))
+                self.assertEqual(sys.path.count(str(source.parent)), 1)
+                self.assertEqual(source.read_text(), f'value = {value}\n')
+            self.assertEqual(self.launch.call_count, 3)
+
+    def test_restart_failure_can_initialize_previous_code_on_the_same_path(self):
+        with self.environment():
+            self.bootstrap.initialize(self.config)
+            source = Path(importlib.util.find_spec('test_ios_application').origin)
+            self.bootstrap.close()
+            self.launch.side_effect = [RuntimeError('updated app failed'), self.app]
+            source.write_text('value = 2\n')
+            with self.assertRaisesRegex(RuntimeError, 'updated app failed'):
+                self.bootstrap.initialize(self.config)
+            source.write_text('value = 1\n')  # Update runner restores prior code.
+            self.bootstrap.initialize(self.config)
+            self.assertEqual(sys.path.count(str(source.parent)), 1)
+            self.assertEqual(source.read_text(), 'value = 1\n')
+
     def test_native_library_and_certificate_paths_follow_the_installed_container(self):
         installed = self.root / "new-container/Melty.app"
         installed.parent.mkdir()
