@@ -136,10 +136,12 @@ def view_tile_id(name, unique, draw_state):
     return f"{name}##{strhash(str(unique) + str(draw_state.id))}"
 
 
-def place_in_parent_window(draw_state, parent_window=None, left=None, view_offset=True):
+def place_in_parent_window(draw_state, parent_window=None, left=None, view_offset=True,
+                           closable=None):
     """Resolve draw_state.parent_window and stamp left_offset / top_offset
-    from the imgui cursor. No-op at the true root (no melty window, no
-    enclosing view, no explicit parent). Never call on a deferred re-entry:
+    from the imgui cursor. Inline surface widgets capture the surface cursor
+    even without an enclosing view. Root windows retain their own window_pos.
+    Never call on a deferred re-entry:
     Melty.draw parks the cursor at the window's abs position, which already
     carries window_pos.
 
@@ -151,6 +153,18 @@ def place_in_parent_window(draw_state, parent_window=None, left=None, view_offse
     enclosing_view = Melty.draw_state_stack[-1] if Melty.draw_state_stack else None
     if not (Melty.melty_window_stack or parent_window is not None
             or enclosing_view is not None):
+        if (Melty.root_fill is not None
+                and not (draw_state.closable if closable is None else closable)):
+            # A plain @glfw_window body has no parent DrawState. Its cursor
+            # includes chrome and preceding widgets; leaving these offsets
+            # at zero makes the tile/clip geometry disagree with the drawing.
+            draw_state.parent_window = None
+            if view_offset:
+                cursor_x, cursor_y = imgui.get_cursor_screen_pos()
+                draw_state.left_offset = cursor_x if left is None else left
+                draw_state.top_offset = cursor_y
+            else:
+                draw_state.left_offset, draw_state.top_offset = (left if left is not None else 0, 0)
         return
     if parent_window is None:
         if Melty.melty_window_stack:

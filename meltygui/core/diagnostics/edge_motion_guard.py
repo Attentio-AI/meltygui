@@ -38,7 +38,8 @@ gesture; entries name the surface. A violation writes one
 with the offending edges, a summary of every window and the native model, and
 the detection stack; for the following WATCH_FRAMES frames edge_constraints
 also captures the stack of every solve that moves one of those edges, so the
-next entry names the writer. One console line per entry, capped per gesture.
+next entry names the writer. Entries are capped per gesture and stay in the
+resize log without printing to the console.
 
 The pointer is read in model screen coordinates (applied surface origin plus
 the content-local position). While a native move is in flight the origin and
@@ -609,13 +610,6 @@ def _emit(report):
     from meltygui.core.diagnostics import resize_trace
     roots = _roots()
     resize_trace.record("edge-motion-violation", roots[0] if roots else None, **report)
-    worst = max(report["violations"], key=lambda v: abs(abs(v["step"]) - v["pointer_step"]))
-    print(f"[edge-motion-guard] {report['surface'] or 'studio'} frame {report['frame']}: "
-          f"{len(report['violations'])} edge(s) off the "
-          f"{'pointer' if report['driver'] == 'pointer' else 'native edge'}'s motion; worst {worst['edge']} {worst['axis']} {worst['kind']} "
-          f"step {worst['step']:+.1f} (pointer {worst['pointer_step']:.1f}, allowed up to "
-          f"{worst['allowance']:.1f}) travel {worst['travel']:+.1f} (pointer {worst['pointer_path']:.1f}); "
-          f"see resize_trace log", flush=True)
 
 
 def watching():

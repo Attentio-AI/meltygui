@@ -1115,7 +1115,8 @@ def render_func(*args, **o_kwargs):
         explicit_parent = kwargs.get("parent_window") is not None
         if _has_imgui and not deferred_entry:
             place_in_parent_window(draw_state, parent_window=kwargs.get("parent_window"),
-                                   left=kwargs.get("left"), view_offset=kwargs.get("view_offset", True))
+                                   left=kwargs.get("left"), view_offset=kwargs.get("view_offset", True),
+                                   closable=closable)
 
         if closable:
             if draw_state.parent_window is None and not kwargs.get("unmanaged", False):

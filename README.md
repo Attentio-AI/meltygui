@@ -21,6 +21,20 @@ bindings install as prebuilt wheels on those targets; elsewhere installers
 compile them, see [when no wheel matches](docs/SUPPORT_WHEELS.md#when-no-wheel-matches).
 CUDA rendering is unavailable on macOS.
 
+## Public render functions
+
+Every module-level function decorated with `@render_func` in the library is
+automatically available as `meltygui.<function_name>`, including
+`meltygui.draw_bool(True)`. No export list needs updating when adding a renderer.
+Discovery reads source on the first render-function lookup or `dir(meltygui)`;
+individual view modules still load only when accessed. Newly added functions
+are discovered on the next interpreter run. `dir(meltygui)` and `__all__` include
+the discovered names; static IDE completion may not enumerate these dynamic exports.
+
+Render function names must be unique across library modules. Duplicate names
+raise an error identifying both modules. Nested functions, class methods and
+bundled examples are not package-level library exports.
+
 ## Use ImGui directly
 
 The bundled ImGui bindings are public as `meltygui.imgui` (also available with

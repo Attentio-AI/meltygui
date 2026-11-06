@@ -36,69 +36,25 @@ if TYPE_CHECKING:   # IDE / type checkers only; never executed
     import meltygui_imgui as imgui
     from meltygui.core.rendering.gui_prototype import gui, os_window
     from meltygui.state.new_core_model import DrawState
-    from meltygui.view.text_view import draw_text
     from meltygui.model.tile_model import multi_instance
     from meltygui.view.chat_view import draw_claude_chat
-    from meltygui.view.texture_view import draw_texture
     from meltygui.core.rendering.render_dispatch import draw_any
-    from meltygui.view.control_view import draw_button
-    from meltygui.view.control_view import draw_str
-    from meltygui.view.control_view import draw_float
-    from meltygui.view.control_view import draw_int
-    from meltygui.view.control_view import draw_int_slider
-    from meltygui.view.control_view import draw_enum
-    from meltygui.view.dropdown_view import draw_dropdown
-    from meltygui.view.inspection_view import draw_view_func_selector
-    from meltygui.view.color_view import draw_color_picker
-    from meltygui.view.collection_view import draw_collection_as_tabs
-    from meltygui.view.layout_view import draw_columns
-    from meltygui.view.layout_view import draw_rows
     from meltygui.view.menu_view import draw_menu_bar
-    from meltygui.view.file_view import draw_file_selector
-    from meltygui.view.file_view import draw_fast_file_explorer
-    from meltygui.view.file_view import draw_shortcuts
     from meltygui.view.file_view import draw_breadcrumbs
-    from meltygui.core.files.file_core import draw_folder_files
-    from meltygui.view.terminal_view import draw_terminal
 
-_NCV = 'meltygui.core.rendering.render_dispatch'
-_VIEWS = {
+# Non-render helpers keep explicit locations; @render_func views are discovered.
+_LAZY_EXPORTS = {
     'columns': ('meltygui.core.rendering.gui_layout_prototype', 'columns'),
     'rows': ('meltygui.core.rendering.gui_layout_prototype', 'rows'),
     'gui': ('meltygui.core.rendering.gui_prototype', 'gui'),
     'os_window': ('meltygui.core.rendering.gui_prototype', 'os_window'),
     'DrawState': ('meltygui.state.new_core_model', 'DrawState'),
-    'draw_voxels': ('meltygui.view.voxel_view', 'draw_voxels'),
-    'draw_voxels_opengl': ('meltygui.view.voxel_view', 'draw_voxels_opengl'),
-    'draw_voxels_cuda': ('meltygui.view.voxel_view', 'draw_voxels_cuda'),
-    'draw_tensor_slices': ('meltygui.view.tensor_view', 'draw_tensor_slices'),
-    'draw_tensor_error': ('meltygui.view.tensor_view', 'draw_tensor_error'),
-    'draw_line_graph': ('meltygui.view.graph_view', 'draw_line_graph'),
     'render_func': ('meltygui.core.core_render', 'render_func'),
     'multi_instance': ('meltygui.model.tile_model', 'multi_instance'),
     'draw_claude_chat': ('meltygui.view.chat_view', 'draw_claude_chat'),
-    'draw_text': ('meltygui.view.text_view', 'draw_text'),
-    'draw_texture': ('meltygui.view.texture_view', 'draw_texture'),
-    'draw_any': (_NCV, 'draw_any'),
-    'draw_button': ('meltygui.view.control_view', 'draw_button'),
-    'draw_str': ('meltygui.view.control_view', 'draw_str'),
-    'draw_float': ('meltygui.view.control_view', 'draw_float'),
-    'draw_int': ('meltygui.view.control_view', 'draw_int'),
-    'draw_int_slider': ('meltygui.view.control_view', 'draw_int_slider'),
-    'draw_enum': ('meltygui.view.control_view', 'draw_enum'),
-    'draw_dropdown': ('meltygui.view.dropdown_view', 'draw_dropdown'),
-    'draw_view_func_selector': ('meltygui.view.inspection_view', 'draw_view_func_selector'),
-    'draw_color_picker': ('meltygui.view.color_view', 'draw_color_picker'),
-    'draw_collection_as_tabs': ('meltygui.view.collection_view', 'draw_collection_as_tabs'),
-    'draw_columns': ('meltygui.view.layout_view', 'draw_columns'),
-    'draw_rows': ('meltygui.view.layout_view', 'draw_rows'),
+    'draw_any': ('meltygui.core.rendering.render_dispatch', 'draw_any'),
     'draw_menu_bar': ('meltygui.view.menu_view', 'draw_menu_bar'),
-    'draw_file_selector': ('meltygui.view.file_view', 'draw_file_selector'),
-    'draw_fast_file_explorer': ('meltygui.view.file_view', 'draw_fast_file_explorer'),
-    'draw_shortcuts': ('meltygui.view.file_view', 'draw_shortcuts'),
     'draw_breadcrumbs': ('meltygui.view.file_view', 'draw_breadcrumbs'),
-    'draw_folder_files': ('meltygui.core.files.file_core', 'draw_folder_files'),
-    'draw_terminal': ('meltygui.view.terminal_view', 'draw_terminal'),
 }
 
 
@@ -112,7 +68,13 @@ def __getattr__(name):
     if name == 'window_api':
         import meltygui.core.windowing.window_api as window_api
         return window_api
-    spec = _VIEWS.get(name)
+    if name == '__all__':
+        value = list(dict.fromkeys([*_PUBLIC_NAMES, *_LAZY_EXPORTS, *_render_exports()]))
+        globals()[name] = value
+        return value
+    spec = _LAZY_EXPORTS.get(name)
+    if spec is None:
+        spec = _render_exports().get(name)
     if spec is None:
         raise AttributeError(name)
     import importlib
@@ -123,10 +85,17 @@ def __getattr__(name):
     return value
 
 
-__all__ = ['Style', 'boot', 'embedded_imports', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', 'after_first_frame', 'checkpoint',
-           'toggles', 'window_api', 'imgui',
-           *_VIEWS]
+_PUBLIC_NAMES = [
+    'Style', 'boot', 'embedded_imports', 'glfw_window', 'run', 'pressed',
+    'content_size', 'mark', 'persisted', 'after_first_frame', 'checkpoint',
+    'toggles', 'window_api', 'imgui',
+]
+
+
+def _render_exports():
+    from meltygui.core.runtime.public_exports import render_exports
+    return render_exports()
 
 
 def __dir__():
-    return sorted(set(globals()) | set(__all__))
+    return sorted(set(globals()) | set(_PUBLIC_NAMES) | set(_LAZY_EXPORTS) | set(_render_exports()))

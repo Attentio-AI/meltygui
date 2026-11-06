@@ -26,6 +26,7 @@ def _legacy_ui_id(suffix, idx=0):
 
 @pytest.fixture
 def stacks(monkeypatch):
+    monkeypatch.setattr(Melty, "root_fill", None)
     monkeypatch.setattr(Melty, "depth", 0)
     monkeypatch.setattr(Melty, "unique_stack", [])
     monkeypatch.setattr(Melty, "melty_window_stack", [])
@@ -88,4 +89,40 @@ def test_place_in_parent_window_without_view_offset(stacks):
     view, parent = DrawState(), DrawState()
     place_in_parent_window(view, parent_window=parent, left=12, view_offset=False)
     assert view.parent_window is parent
+    assert (view.left_offset, view.top_offset) == (12, 0)
+
+
+@pytest.mark.parametrize('cursor', [(0., 30.), (15., 80.), (0., 0.)])
+def test_inline_surface_view_captures_cursor_without_a_parent(stacks, monkeypatch, cursor):
+    monkeypatch.setattr(Melty, 'root_fill', (600., 320., 30.))
+    monkeypatch.setattr(view_identity.imgui, 'get_cursor_screen_pos', lambda: cursor)
+    view = DrawState()
+    place_in_parent_window(view)
+    assert view.parent_window is None
+    assert (view.left_offset, view.top_offset) == cursor
+    assert (view.abs_left, view.abs_top) == cursor
+    # Flow layout can move the same view next frame (e.g. after a sibling).
+    moved = (cursor[0] + 10., cursor[1] + 40.)
+    monkeypatch.setattr(view_identity.imgui, 'get_cursor_screen_pos', lambda: moved)
+    place_in_parent_window(view)
+    assert (view.abs_left, view.abs_top) == moved
+
+
+def test_root_window_does_not_add_surface_cursor_to_its_position(stacks, monkeypatch):
+    monkeypatch.setattr(Melty, 'root_fill', (600., 320., 30.))
+    monkeypatch.setattr(view_identity.imgui, 'get_cursor_screen_pos', lambda: (0., 30.))
+    view = DrawState()
+    view.window_pos = (20., 30.)
+    place_in_parent_window(view, closable=True)
+    assert (view.left_offset, view.top_offset) == (0, 0)
+    assert (view.abs_left, view.abs_top) == (20., 30.)
+
+
+def test_inline_surface_view_respects_explicit_offset_policy(stacks, monkeypatch):
+    monkeypatch.setattr(Melty, 'root_fill', (600., 320., 30.))
+    monkeypatch.setattr(view_identity.imgui, 'get_cursor_screen_pos', lambda: (0., 30.))
+    view = DrawState()
+    place_in_parent_window(view, left=12)
+    assert (view.left_offset, view.top_offset) == (12, 30)
+    place_in_parent_window(view, left=12, view_offset=False)
     assert (view.left_offset, view.top_offset) == (12, 0)
