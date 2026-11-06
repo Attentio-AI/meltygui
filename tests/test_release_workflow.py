@@ -131,5 +131,6 @@ def test_release_workflow_has_no_eight_second_deadline():
     workflow = Path(__file__).resolve().parents[1] / '.github/workflows/release.yml'
     source = workflow.read_text()
     step = source.split('      - name: Test installed wheels\n', 1)[1].split('      - uses:', 1)[0]
-    assert step.strip() == 'run: bash tools/check_release.sh'
+    assert "if: steps.prepared.outputs.run_id == ''" in step
+    assert 'run: bash tools/check_release.sh' in step
     assert 'timeout --signal=KILL 8s' not in source

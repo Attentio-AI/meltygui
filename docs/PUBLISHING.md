@@ -26,8 +26,11 @@ Official references:
 
 `.github/workflows/release.yml` is manually dispatched. Leave `publish=false`
 for the first CI run; it builds MeltyGUI, checks licenses and metadata, and
-tests a fresh installation against the support wheels on PyPI. A publish run
-uploads MeltyGUI through PyPI trusted publishing. Hardware validation of
+tests a fresh installation against the support wheels on PyPI. A publish run selects a successful build of the exact source commit from this
+repository's release workflow and downloads its existing release artifacts for
+PyPI trusted publishing. It does not rebuild, reinstall, or rerun tests. ImGui
+(including Windows) and PyCUDA use the same approach. If verified artifacts have
+expired or are missing, run preparation again; publishing never silently retests. Hardware validation of
 `meltygui[tensor]` is performed locally and remains a release check for CUDA changes.
 
 The deploy test gate runs package contracts, the public/private boundary checks,
