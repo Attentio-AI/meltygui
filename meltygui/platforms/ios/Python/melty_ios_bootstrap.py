@@ -34,6 +34,9 @@ class Host:
     def set_keyboard_visible(self, visible):
         self._native.set_keyboard_visible(bool(visible))
 
+    def set_window_tabs(self, titles):
+        self._native.set_window_tabs(titles)
+
     def set_safe_zone(self, top, bottom):
         """Set edge reserves (-1 uses automatic layout); frames report real bounds."""
         self._native.set_safe_zone(float(top), float(bottom))

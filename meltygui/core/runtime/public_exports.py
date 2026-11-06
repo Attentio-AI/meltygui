@@ -1,7 +1,8 @@
 """Discover library render functions without executing their modules.
 
 Discovery runs once, on first public view lookup/introspection, not on package
-import or per frame. Source edits are discovered by the next interpreter run.
+import or per frame. Editable source changes are discovered by the next
+interpreter run; packaged builds can supply an index generated during packaging.
 """
 from functools import cache
 from pathlib import Path
@@ -74,6 +75,21 @@ def discover_render_exports(root):
     return exports
 
 
+def write_render_exports(root):
+    """Generate the export index for an immutable packaged dependency tree."""
+    import json
+    root = Path(root)
+    exports = discover_render_exports(root)
+    (root / '_render_exports.json').write_text(json.dumps(exports, sort_keys=True))
+
+
 @cache
 def render_exports():
-    return discover_render_exports(Path(__file__).resolve().parents[2])
+    root = Path(__file__).resolve().parents[2]
+    index = root / '_render_exports.json'
+    if index.is_file():
+        # Packaging generates this from the exact bundled dependency sources.
+        # Editable checkouts have no index and retain source discovery.
+        import json
+        return {name: tuple(spec) for name, spec in json.loads(index.read_text()).items()}
+    return discover_render_exports(root)

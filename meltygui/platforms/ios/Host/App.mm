@@ -149,12 +149,15 @@
 }
 @end
 
-@interface MeltyController : UIViewController
+@interface MeltyController : UIViewController <UITabBarDelegate>
 @property(nonatomic, strong) MeltyHost *host;
 @property(nonatomic, strong) NSLayoutConstraint *automaticBottom;
 @property(nonatomic) BOOL runtimeFullscreen;
 @end
 @implementation MeltyController
+- (void)tabBar:(UITabBar *)tabBar didSelectItem:(UITabBarItem *)item {
+    [self.host selectWindowTab:item.tag];
+}
 - (BOOL)prefersStatusBarHidden { return self.runtimeFullscreen; }
 - (void)viewSafeAreaInsetsDidChange {
     [super viewSafeAreaInsetsDidChange];
@@ -262,6 +265,38 @@
         requestedTop = top; requestedBottom = bottom;
         applyViewport();
     }];
+    self.host.windowTabsChanged = ^(NSArray<NSString *> *titles) {
+        MeltyController *controller = weakController;
+        if (!controller || titles.count < 2) return;
+        UIView *root = controller.view;
+        UIView *container = weakView.superview;
+        UITabBar *tabs = [[UITabBar alloc] initWithFrame:CGRectZero];
+        tabs.translatesAutoresizingMaskIntoConstraints = NO;
+        tabs.delegate = controller;
+        tabs.translucent = NO;
+        // The viewport prefers the full screen at priority 999. Preserve the
+        // native bar's height so that preference cannot collapse it to zero.
+        [tabs setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                             forAxis:UILayoutConstraintAxisVertical];
+        NSMutableArray<UITabBarItem *> *items = [NSMutableArray array];
+        for (NSUInteger i = 0; i < titles.count; ++i) {
+            UITabBarItem *item = [[UITabBarItem alloc] initWithTitle:titles[i]
+                image:[UIImage systemImageNamed:@"macwindow"] tag:i];
+            [items addObject:item];
+        }
+        tabs.items = items;
+        tabs.selectedItem = items.firstObject;
+        [root addSubview:tabs];
+        // Required containment wins over either automatic or manual reserves.
+        // UIKit supplies the bar's intrinsic height and bottom safe-area padding.
+        [NSLayoutConstraint activateConstraints:@[
+            [tabs.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
+            [tabs.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],
+            [tabs.bottomAnchor constraintEqualToAnchor:root.bottomAnchor],
+            [container.bottomAnchor constraintLessThanOrEqualToAnchor:tabs.topAnchor],
+        ]];
+        [root setNeedsLayout];
+    };
     view.host = self.host;
 #if __has_include("Launcher/HubLauncher.h")
     __weak MeltyHost *weakHost = self.host;
@@ -271,7 +306,7 @@
         applyViewport();
     });
     HubConfigureFPSSetting(^(BOOL visible) { [weakHost setFPSVisible:visible]; });
-    status.text = @"Choose launch inputs to start.";
+    status.text = @"";
     HubLaunchStart(self, ^{
         status.text = @"Starting app…";
         [self.host start];

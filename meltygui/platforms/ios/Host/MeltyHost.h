@@ -9,6 +9,9 @@
                        status:(void (^)(NSString *))status
                      keyboard:(void (^)(BOOL))keyboard
                      safeZone:(void (^)(CGFloat, CGFloat))safeZone;
+@property(nonatomic, copy) void (^windowTabsChanged)(NSArray<NSString *> *);
+- (void)setWindowTabs:(NSArray<NSString *> *)titles;
+- (void)selectWindowTab:(NSInteger)index;
 - (void)start;
 - (void)setActive:(BOOL)active;
 - (void)close;

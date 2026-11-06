@@ -177,9 +177,9 @@ the installed toolkit.
 The Python running staging, project generation and packaging does not have to
 match the device Python. The project interpreter defaults to `.venv/bin/python`;
 `stage` and `generate` accept `--project-python` for a different project venv.
-That interpreter selects dependency markers, the runtime version and bytecode
-format. It is also used directly for build-time compilation, without needing
-MeltyGUI installed in it. Its major/minor version selects the iOS runtime;
+That interpreter selects dependency markers and the runtime version. Python
+bytecode is compiled by that runtime on the device, then cached for later launches.
+The project's major/minor version selects the iOS runtime;
 the desktop executable itself is never bundled. This includes the BeeWare
 backports for Python 3.10, 3.11 and 3.12. The application's and dependencies'
 declared Python compatibility still applies.
@@ -274,15 +274,15 @@ entry module and bundle identity. The host installs the native runtime before
 importing that module; its normal decorators and `run()` then use the shared
 MeltyGUI lifecycle.
 
-The packaging phase precompiles the standard library, bootstrap and dependencies
-using the project venv's compiler, retaining their sources for inspection.
-These signed, read-only resources use unchecked hash-based caches, so installation
-timestamp changes do not invalidate them and imports do not reread source files.
-The writable application's sources are deliberately not precompiled; on-device
-edits always load from source. Invalid Python test fixtures/templates remain
-source-only. All Python selection, compatibility checks and bytecode compilation
-happen on the build machine; there is no startup version reconciliation or
-bytecode repair. The native host derives its library paths from the framework's
+The packaging phase ships Python source and a generated public render-function
+index, without bundled bytecode. The native host configures a private writable
+`Library/Caches/PythonBytecode-v1` directory before initializing CPython. Imports
+compile only when needed and atomically save checked-hash caches for later
+launches; same-size, same-timestamp edits invalidate cached modules correctly.
+Caches are separated by Python version and retired when the installed bundle
+path changes. iOS may purge them, in which case the next import recompiles.
+Application sources stay unchanged. Native extensions are still built and signed
+on the build machine. The native host derives its library paths from the framework's
 headers. A change to the project venv's Python version automatically prepares
 matching iOS artifacts and regenerates the project, preserving signing and
 native source/framework settings. Existing generated projects locate the
@@ -326,6 +326,14 @@ render-host pump and frame drawing. Desktop surfaces and the UIKit owner supply
 input, geometry, graphics targets and presentation. Fonts, styles and session
 initialization are shared in `core/runtime/app.py`. Platform resources are
 released by their owning host.
+
+Applications registering multiple `@glfw_window` roots get a native UIKit tab
+bar named after those windows. A single root keeps the full-screen layout.
+Only the selected root draws; each root retains its view state and tile cache.
+Switching tabs cancels the previous root's touch, keyboard and focus state,
+and the bar reserves space outside the content and keyboard viewport. This is
+host/runtime behavior and requires no iOS-specific application code. Updating
+this feature requires rebuilding the native host, not just refreshing Python.
 
 The image inspector uses native Metal filters for brightness/contrast, hue and
 saturation, false color, and crop dimming. Each view owns its filter textures;

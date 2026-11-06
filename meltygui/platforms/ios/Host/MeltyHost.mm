@@ -11,11 +11,42 @@
 #import "RemoteFiles/ScreenCapture.h"
 #endif
 
+// A purgeable, private cache. Absolute source paths and CPython cache tags
+// separate installed code; retire old bundle trees after a full reinstall.
+static NSString *pythonBytecodeCache(NSString *bundle) {
+    NSString *base = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *cache = [[base stringByAppendingPathComponent:@"PythonBytecode-v1"]
+        stringByAppendingPathComponent:[NSString stringWithFormat:@"cpython-%d.%d", PY_MAJOR_VERSION, PY_MINOR_VERSION]];
+    NSString *marker = [cache stringByAppendingPathComponent:@"bundle-path"];
+    NSString *previous = [NSString stringWithContentsOfFile:marker encoding:NSUTF8StringEncoding error:nil];
+    if (![previous isEqualToString:bundle]) {
+        [NSFileManager.defaultManager removeItemAtPath:cache error:nil];
+        [NSFileManager.defaultManager createDirectoryAtPath:cache withIntermediateDirectories:YES attributes:nil error:nil];
+        [bundle writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
+    // Cache failures are nonfatal: CPython can still import directly from source.
+    return cache;
+}
+
 static __weak MeltyHost *gHost;
 PyMODINIT_FUNC PyInit__melty_metal(void);
 
 static PyObject *requestFrame(PyObject *, PyObject *) {
     [gHost requestFrame];
+    Py_RETURN_NONE;
+}
+
+static PyObject *setWindowTabs(PyObject *, PyObject *value) {
+    PyObject *titles = PySequence_Fast(value, "window titles must be a sequence");
+    if (!titles) return nullptr;
+    NSMutableArray<NSString *> *items = [NSMutableArray array];
+    for (Py_ssize_t i = 0; i < PySequence_Fast_GET_SIZE(titles); ++i) {
+        const char *title = PyUnicode_AsUTF8(PySequence_Fast_GET_ITEM(titles, i));
+        if (!title) { Py_DECREF(titles); return nullptr; }
+        [items addObject:[NSString stringWithUTF8String:title]];
+    }
+    Py_DECREF(titles);
+    [gHost setWindowTabs:items];
     Py_RETURN_NONE;
 }
 
@@ -64,6 +95,7 @@ static PyObject *setClipboardText(PyObject *, PyObject *args) {
 }
 
 static PyMethodDef nativeMethods[] = {
+    {"set_window_tabs", setWindowTabs, METH_O, "Present OS roots as native tabs."},
     {"configure_ssh", configureSSH, METH_VARARGS, "Configure SSH using secure native inputs and Keychain."},
     {"ssh_configuration_status", sshConfigurationStatus, METH_O, "Read non-secret SSH configuration status."},
     {"ssh_credentials", sshCredentials, METH_VARARGS, "Read SSH credentials from this device's Keychain."},
@@ -170,6 +202,7 @@ static const char *kindName(melty::InputKind kind) {
     double _lastPresentationTime;
     uint64_t _presentationRun, _presentedRun;
     std::atomic<bool> _showFPS;
+    std::atomic<long> _selectedTab;
     std::atomic<double> _gpuDuration;
     double _nativeDuration, _gpuWaitDuration;
     PyObject *_bootstrap;
@@ -234,6 +267,8 @@ static const char *kindName(melty::InputKind kind) {
         _maximumFramesPerSecond = UIScreen.mainScreen.maximumFramesPerSecond;
         _gpuDuration = 0;
         _showFPS = false;
+        _selectedTab = 0;
+        _selectedTab = 0;
     }
     return self;
 }
@@ -311,10 +346,11 @@ static const char *kindName(melty::InputKind kind) {
     }
 
     NSString *bundle = NSBundle.mainBundle.resourcePath;
+    NSString *bytecodeCache = pythonBytecodeCache(bundle);
     PyConfig config;
     PyConfig_InitIsolatedConfig(&config);
     config.buffered_stdio = 0;
-    config.write_bytecode = 0;
+    config.write_bytecode = 1;
     config.install_signal_handlers = 1;
     config.parse_argv = 0;
     config.site_import = 0;  // No ambient .pth/sitecustomize code during bootstrap.
@@ -336,6 +372,8 @@ static const char *kindName(melty::InputKind kind) {
         status = PyWideStringList_Append(&config.module_search_paths, path);
         PyMem_RawFree(path);
     }
+    if (!PyStatus_Exception(status))
+        status = PyConfig_SetBytesString(&config, &config.pycache_prefix, bytecodeCache.fileSystemRepresentation);
     if (!PyStatus_Exception(status)) status = Py_InitializeFromConfig(&config);
     NSString *failure = PyStatus_Exception(status)
         ? [NSString stringWithUTF8String:status.err_msg ?: "Python initialization failed"] : nil;
@@ -347,6 +385,12 @@ static const char *kindName(melty::InputKind kind) {
     const double interpreterReady = CACurrentMediaTime();
     [self writeLog:[NSString stringWithFormat:@"[startup] CPython initialization: %.1f ms\n",
         (interpreterReady - started) * 1000]];
+
+    PyObject *cachePolicy = PyImport_ImportModule("ios_bytecode_cache");
+    PyObject *cacheReady = cachePolicy ? PyObject_CallMethod(cachePolicy, "install", nullptr) : nullptr;
+    Py_XDECREF(cachePolicy);
+    if (!cacheReady) { [self fail:pythonError()]; PyEval_SaveThread(); return NO; }
+    Py_DECREF(cacheReady);
 
     _bootstrap = PyImport_ImportModule("melty_ios_bootstrap");
     if (!_bootstrap) {
@@ -444,6 +488,15 @@ static const char *kindName(melty::InputKind kind) {
 
 - (void)setSafeZone:(CGFloat)top bottom:(CGFloat)bottom {
     dispatch_async(dispatch_get_main_queue(), ^{ self->_safeZone(top, bottom); });
+}
+
+- (void)setWindowTabs:(NSArray<NSString *> *)titles {
+    NSArray *snapshot = [titles copy];
+    dispatch_async(dispatch_get_main_queue(), ^{ if (self.windowTabsChanged) self.windowTabsChanged(snapshot); });
+}
+
+- (void)selectWindowTab:(NSInteger)index {
+    if (_selectedTab.exchange(index) != index) [self requestFrame];
 }
 
 - (void)setFPSVisible:(BOOL)visible {
@@ -654,10 +707,11 @@ static const char *kindName(melty::InputKind kind) {
         if (!item) { Py_CLEAR(inputs); break; }
         PyList_SET_ITEM(inputs, (Py_ssize_t)i, item);
     }
-    PyObject *info = Py_BuildValue("{s:d,s:d,s:d,s:d,s:d,s:d,s:O}",
+    PyObject *info = Py_BuildValue("{s:d,s:d,s:d,s:d,s:d,s:d,s:O,s:l}",
         "deadline", update.targetTimestamp, "presentation_time", update.targetPresentationTimestamp,
         "now", CACurrentMediaTime(), "width", width, "height", height, "scale", scale,
-        "show_fps", _showFPS.load() ? Py_True : Py_False);
+        "show_fps", _showFPS.load() ? Py_True : Py_False,
+        "selected_tab", _selectedTab.load());
     if (info && _showFPS.load()) {
         std::lock_guard<std::mutex> lock(_presentationMutex);
         // Raw presentation facts only. Python measures cadence and draws FPS.

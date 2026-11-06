@@ -457,8 +457,10 @@ class IOSInput:
         for key in range(len(self.io.keys_down)):
             self.io.keys_down[key] = False
 
-    def suspend(self):
+    def suspend(self, *, discard_text=False):
         self._cancel_inputs()
+        if discard_text:
+            self._edit_pending.clear()
         self.backend.set_active(False)
         self._last_presentation = None
         self._native_clock_offset = None

@@ -39,12 +39,16 @@ class Host:
         self.keyboard = []
         self.clipboard = ''
         self.safe_zones = []
+        self.tabs = []
 
     def request_frame(self):
         self.wakes.append(threading.get_ident())
 
     def set_keyboard_visible(self, visible):
         self.keyboard.append(visible)
+
+    def set_window_tabs(self, titles):
+        self.tabs = titles
 
     def set_safe_zone(self, top, bottom):
         self.safe_zones.append((top, bottom))
@@ -268,10 +272,9 @@ def test_native_start_owns_real_context_and_shared_runtime(native):
     assert len(native.host.wakes) == 1
 
 
-@pytest.mark.parametrize('count', [0, 2])
-def test_start_requires_one_root_before_allocating_resources(native, monkeypatch, count):
-    monkeypatch.setattr(app, '_ROOTS', [(lambda: None, {})] * count)
-    with pytest.raises(RuntimeError, match='exactly one'):
+def test_start_requires_a_root_before_allocating_resources(native, monkeypatch):
+    monkeypatch.setattr(app, '_ROOTS', [])
+    with pytest.raises(RuntimeError, match='at least one'):
         native.surface.start()
     assert native.surface.ctx is None
     assert not native.surface.started
@@ -713,3 +716,55 @@ def test_first_presented_callback_waits_for_host_submission_and_runs_once(native
     assert submitted == ['presented'] and app._state['presented']
     app.after_first_frame(lambda: submitted.append('late callback'))
     assert submitted == ['presented', 'late callback']
+
+
+def test_native_tabs_preserve_root_state_and_cleanup(native, monkeypatch):
+    second = dict(name='Preview', settings=object(), view_kwargs={})
+    monkeypatch.setattr(app, '_ROOTS', [app._ROOTS[0], (lambda: None, second)])
+    caches = []
+    def create_cache():
+        cache = RecordingCache(native.calls)
+        caches.append(cache)
+        return cache
+    monkeypatch.setattr(RecordingRenderer, 'create_tile_cache', lambda self: create_cache())
+    surface = native.surface
+    surface.start()
+    assert native.host.tabs == ['Editor', 'Preview']
+    first_body = surface.body
+    surface.frames = 7
+    surface.root_windows['saved'] = object()
+    first_roots = surface.root_windows
+    surface.select_tab(1)
+    assert surface.name == 'Preview'
+    assert surface.settings is second['settings']
+    assert surface.frames == 0 and surface.root_windows == {}
+    assert surface.cache is caches[1] and Melty.cache is caches[1]
+    surface.select_tab(0)
+    assert surface.body is first_body
+    assert surface.frames == 7 and surface.root_windows is first_roots
+    assert surface.cache is caches[0] and Melty.cache is caches[0]
+    surface.select_tab(0)
+    surface.select_tab(999)
+    assert len(caches) == 2
+    surface.close()
+    assert native.calls.count('cache-cleanup') == 2
+    assert all(cache not in TileCacheMasked.window_caches for cache in caches)
+
+
+def test_single_root_does_not_show_tab_bar(native):
+    native.surface.start()
+    assert native.host.tabs == []
+
+
+def test_tab_frame_drops_previous_window_input(native, monkeypatch):
+    monkeypatch.setattr(app, '_ROOTS', [app._ROOTS[0],
+        (lambda: None, dict(name='Preview', settings=None, view_kwargs={}))])
+    surface = native.surface
+    surface.start()
+    surface.input._edit_pending.append(dict(kind='text', text='old queued text'))
+    surface.frame(frame_info() | {'selected_tab': 1},
+                  [dict(kind='text', text='old native text')])
+    assert surface.name == 'Preview'
+    assert native.snapshots[-1] == ([], [])
+    surface.frame(frame_info(1), [dict(kind='text', text='new text')])
+    assert native.snapshots[-1][0] == ['new text']

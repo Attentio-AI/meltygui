@@ -63,60 +63,37 @@ class PackagingTests(unittest.TestCase):
                            packages_dir=str(self.packages), bootstrap_dir=str(ROOT / "Python"),
                            bundle_id="local.melty.counter", entry_module="main")
 
-    def test_precompiled_libraries_load_after_install_without_reading_source(self):
-        (self.packages / 'cached.py').write_text('def value():\n    return __debug__\n')
-        # Build-machine cache settings must not send bytecode outside the app.
-        with mock.patch.object(sys, 'pycache_prefix', str(self.root / 'outside-cache')):
-            bundle.prepare(self.config, self.target, signing_allowed=False)
-        self.assertFalse((self.root / 'outside-cache').exists())
-        self.assertTrue(list((self.target / 'host').rglob('*.pyc')))
-        self.assertTrue(list((self.target / f'python/lib/python{PYTHON_VERSION}').rglob('*.pyc')))
-        self.assertFalse(list((self.target / 'app').rglob('*.pyc')))
-
-        installed = self.root / 'installed.app'
-        shutil.move(self.target, installed)
-        source = installed / 'app_packages/cached.py'
-        os.utime(source, (1000, 1000))  # Installation can change source metadata.
-        spec = importlib.util.spec_from_file_location('cached', source)
-        module = importlib.util.module_from_spec(spec)
-        get_data = spec.loader.get_data
-
-        def read_bytecode_only(path):
-            self.assertTrue(path.endswith('.pyc'), f'Unexpected source read: {path}')
-            return get_data(path)
-
-        with mock.patch.object(spec.loader, 'get_data', side_effect=read_bytecode_only), \
-             mock.patch.object(sys, 'dont_write_bytecode', True):
-            spec.loader.exec_module(module)
-        self.assertIs(module.value(), True)  # -O on the build host must not strip assertions.
-        self.assertEqual(module.__file__, str(source))
-        self.assertEqual(module.value.__code__.co_filename, str(source))
-        self.assertIn('def value', source.read_text())
-
-    def test_rebuild_replaces_bytecode_and_leaves_app_edits_uncached(self):
+    def test_packaging_ships_source_without_build_machine_bytecode(self):
         source = self.packages / 'cached.py'
         source.write_text('value = 1\n')
+        (self.packages / '__pycache__').mkdir()
+        (self.packages / '__pycache__/cached.cpython-999.pyc').write_bytes(b'old cache')
+        (self.packages / 'invalid.py').write_text('def broken(\n')
+        original = (self.app / 'main.py').read_bytes()
         bundle.prepare(self.config, self.target, signing_allowed=False)
+        self.assertFalse(list(self.target.rglob('*.pyc')))
+        self.assertEqual((self.target / 'app/main.py').read_bytes(), original)
+        self.assertTrue((self.target / 'host/ios_bytecode_cache.py').is_file())
+        self.assertEqual((self.target / 'app_packages/invalid.py').read_text(), 'def broken(\n')
         source.write_text('value = 2\n')
         bundle.prepare(self.config, self.target, signing_allowed=False)
-        with mock.patch.object(sys, 'dont_write_bytecode', True):
-            library = load('cached', self.target / 'app_packages/cached.py')
-            self.assertEqual(library.value, 2)
-            app_source = self.target / 'app/main.py'
-            for value in (1, 2):
-                app_source.write_text(f'value = {value}\n')
-                os.utime(app_source, (1000, 1000))
-                self.assertEqual(load('main', app_source).value, value)
-        self.assertFalse(list((self.target / 'app').rglob('*.pyc')))
+        self.assertEqual((self.target / 'app_packages/cached.py').read_text(), 'value = 2\n')
+        self.assertFalse(list(self.target.rglob('*.pyc')))
 
-    def test_invalid_test_fixtures_remain_source_only(self):
-        (self.packages / 'invalid.py').write_text('def broken(\n')
-        (self.packages / 'valid.py').write_text('value = 1\n')
-        with contextlib.redirect_stdout(io.StringIO()):
+    def test_packaging_keeps_render_index_without_importing_views(self):
+        toolkit = self.packages / 'meltygui'
+        discovery = toolkit / 'core/runtime/public_exports.py'
+        discovery.parent.mkdir(parents=True)
+        shutil.copy2(ROOT.parents[1] / 'core/runtime/public_exports.py', discovery)
+        view = toolkit / 'view/example.py'
+        view.parent.mkdir()
+        for name in ('draw_first', 'draw_replacement'):
+            view.write_text(f'from meltygui import render_func\n@render_func\ndef {name}(): pass\n'
+                            'raise AssertionError("must not import views while packaging")\n')
             bundle.prepare(self.config, self.target, signing_allowed=False)
-        self.assertEqual((self.target / 'app_packages/invalid.py').read_text(), 'def broken(\n')
-        self.assertFalse(list((self.target / 'app_packages').rglob('invalid.*.pyc')))
-        self.assertTrue(list((self.target / 'app_packages').rglob('valid.*.pyc')))
+            index = self.target / 'app_packages/meltygui/_render_exports.json'
+            self.assertEqual(json.loads(index.read_text()), {name: ['meltygui.view.example', name]})
+        self.assertFalse((toolkit / '_render_exports.json').exists())
 
     def test_mismatched_runtime_fails_before_modifying_bundle(self):
         sentinel = self.target / 'host/keep.txt'
@@ -127,23 +104,7 @@ class PackagingTests(unittest.TestCase):
             bundle.prepare(self.config, self.target, signing_allowed=False)
         self.assertEqual(sentinel.read_text(), 'previous build')
 
-    def test_optimized_build_python_produces_unoptimized_device_bytecode(self):
-        (self.packages / 'cached.py').write_text('value = __debug__\n')
-        program = ('import json, sys; from meltygui.platforms.ios.prepare_bundle import prepare; '
-                   'prepare(json.loads(sys.argv[1]), sys.argv[2], signing_allowed=False)')
-        result = subprocess.run([sys.executable, '-I', '-O', '-c', program,
-                                 json.dumps(self.config), str(self.target)],
-                                close_fds=False, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        source = self.target / 'app_packages/cached.py'
-        spec = importlib.util.spec_from_file_location('cached', source)
-        module = importlib.util.module_from_spec(spec)
-        with mock.patch.object(spec.loader, 'source_to_code', side_effect=AssertionError('cache miss')), \
-             mock.patch.object(sys, 'dont_write_bytecode', True):
-            spec.loader.exec_module(module)
-        self.assertIs(module.value, True)
-
-    def test_compiles_with_project_venv_when_build_python_differs(self):
+    def test_packages_other_project_python_without_compiling_on_build_machine(self):
         from meltygui.platforms.ios.runtime import python_info
         other_version = '3.13' if PYTHON_VERSION != '3.13' else '3.12'
         other_python = shutil.which(f'python{other_version}')
@@ -161,21 +122,9 @@ class PackagingTests(unittest.TestCase):
         self.config['project_python'] = str(compiler)
         (self.packages / 'cached.py').write_text('value = 42\n')
         bundle.prepare(self.config, self.target, signing_allowed=False)
-        caches = list((self.target / 'app_packages').rglob('*.pyc'))
-        self.assertEqual(len(caches), 1)
-        self.assertEqual(caches[0].read_bytes()[:4].hex(), info['magic'])
-        self.assertIn(info['cache_tag'], caches[0].name)
-        program = '''import importlib.util, sys
-spec = importlib.util.spec_from_file_location('cached', sys.argv[1])
-def no_compile(*args, **kwargs):
-    raise AssertionError('device should use precompiled bytecode')
-spec.loader.source_to_code = no_compile
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-assert module.value == 42
-'''
-        subprocess.run([str(compiler), '-I', '-B', '-c', program,
-                        str(self.target / 'app_packages/cached.py')], check=True, close_fds=False)
+        self.assertFalse(list(self.target.rglob('*.pyc')))
+        self.assertTrue((self.target / f'python/lib/python{other_version}').is_dir())
+        self.assertEqual((self.target / 'app_packages/cached.py').read_text(), 'value = 42\n')
 
     def test_rejects_native_modules_from_another_python(self):
         (self.packages / '_wrong.cpython-399-iphoneos.so').write_bytes(binary())
@@ -392,6 +341,7 @@ class BootstrapTests(unittest.TestCase):
         self.output = []
         self.native = types.SimpleNamespace(write_log=self.output.append, request_frame=mock.Mock(),
                                             set_keyboard_visible=mock.Mock(), set_safe_zone=mock.Mock(),
+                                            set_window_tabs=mock.Mock(),
                                             get_clipboard_text=mock.Mock(return_value="cached paste \N{SNOWMAN}"),
                                             set_clipboard_text=mock.Mock())
         self.config = {name: str(self.root / name) for name in ("documents", "workspace", "application_support", "cache")}
@@ -583,6 +533,8 @@ class BootstrapTests(unittest.TestCase):
             self.native.request_frame.assert_called_once()
             self.bootstrap._host.set_keyboard_visible(True)
             self.native.set_keyboard_visible.assert_called_once_with(True)
+            self.bootstrap._host.set_window_tabs(['Files', 'Preview'])
+            self.native.set_window_tabs.assert_called_once_with(['Files', 'Preview'])
             self.bootstrap._host.set_safe_zone(64, 24)
             self.native.set_safe_zone.assert_called_once_with(64.0, 24.0)
             self.bootstrap._host.set_safe_zone(-1, -1)

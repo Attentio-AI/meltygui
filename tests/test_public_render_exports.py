@@ -7,6 +7,24 @@ import pytest
 from meltygui.core.runtime.public_exports import discover_render_exports
 
 
+def test_packaged_index_avoids_discovery_and_preserves_specs(tmp_path, monkeypatch):
+    import meltygui.core.runtime.public_exports as exports
+    module = tmp_path / 'core/runtime/public_exports.py'
+    module.parent.mkdir(parents=True)
+    monkeypatch.setattr(exports, '__file__', str(module))
+    expected = {'draw_bool': ('meltygui.view.control_view', 'draw_bool')}
+    view = tmp_path / 'view/control_view.py'
+    view.parent.mkdir()
+    view.write_text('from meltygui import render_func\n@render_func\ndef draw_bool(): pass\n')
+    exports.write_render_exports(tmp_path)
+    monkeypatch.setattr(exports, 'discover_render_exports', lambda root: pytest.fail('source scan'))
+    exports.render_exports.cache_clear()
+    try:
+        assert exports.render_exports() == expected
+    finally:
+        exports.render_exports.cache_clear()
+
+
 def test_discovery_handles_decorator_forms_and_ignores_local_functions(tmp_path):
     (tmp_path / 'views.py').write_text('''
 from meltygui.core.core_render import render_func as render

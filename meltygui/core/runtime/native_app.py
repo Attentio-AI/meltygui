@@ -22,6 +22,8 @@ class NativeApplication:
         self.window = self.ctx = self.input = self.cache = None
         self.window_backend = None
         self.root_windows = {}
+        self._tabs = []
+        self._selected_tab = 0
         self.closed = self.started = self.suspended = False
         self.frames = 0
         self.fps_counter = PresentationFpsCounter()
@@ -70,8 +72,8 @@ class NativeApplication:
         if self.started:
             return
         from meltygui.core.runtime import app
-        if len(app._ROOTS) != 1:
-            raise RuntimeError('An iOS app must register exactly one root window')
+        if not app._ROOTS:
+            raise RuntimeError('An iOS app must register at least one root window')
         self.boot()
         import meltygui_imgui as imgui
         from meltygui.core.melty import Melty
@@ -93,15 +95,50 @@ class NativeApplication:
         TileCacheMasked.window_caches[self.cache] = self.request_frame
         # Match desktop warm-up: collect two frames of geometry, then cache.
         self.cache.enabled = False
-        fn, config = app._ROOTS[0]
-        self.name = self.title = config['name']
-        self.root_config = config
-        self.settings = config.get('settings')
-        self.body = app._searchable_body(app._root_body(fn, self.name, config=config), config)
+        for fn, config in app._ROOTS:
+            name = config['name']
+            self._tabs.append(dict(
+                name=name, title=name, root_config=config, settings=config.get('settings'),
+                body=app._searchable_body(app._root_body(fn, name, config=config), config),
+                root_windows={}, cache=None, frames=0))
+        self._tabs[0]['cache'] = self.cache
+        self.__dict__.update(self._tabs[0])
+        if len(self._tabs) > 1:
+            self.host.set_window_tabs([tab['title'] for tab in self._tabs])
         glfw_utils.register_surface(self)
         self.started = True
         self._sync_mobile_settings()
         app.mark('native Melty runtime configured')
+        self.request_frame()
+
+    def select_tab(self, index):
+        """Switch registered OS roots on the render thread, keeping their caches."""
+        self._check_thread()
+        if index == self._selected_tab or not 0 <= index < len(self._tabs):
+            return
+        from meltygui.core.melty import Melty
+        from meltygui.core.cache.tile_cache import TileCacheMasked
+        previous = self._tabs[self._selected_tab]
+        for key in previous:
+            previous[key] = getattr(self, key)
+        self.input.suspend(discard_text=True)
+        Melty.clear_focus()
+        # A tab switch also ends focus granted during the last drawn frame;
+        # clear_focus normally protects such grants from that frame's click.
+        for slot in ('focused_ds', 'text_focused_ds', 'popover_focused_ds'):
+            focused = getattr(Melty, slot)
+            if focused is not None:
+                focused.invalidate_up()
+                setattr(Melty, slot, None)
+        tab = self._tabs[index]
+        if tab['cache'] is None:
+            tab['cache'] = self.renderer.create_tile_cache()
+            tab['cache'].enabled = False
+            TileCacheMasked.window_caches[tab['cache']] = self.request_frame
+        self.__dict__.update(tab)
+        self._selected_tab = index
+        Melty.cache = self.cache
+        self.input.resume()
         self.request_frame()
 
     def _sync_mobile_settings(self):
@@ -138,6 +175,10 @@ class NativeApplication:
         from meltygui.core.windowing import glfw_utils
         from meltygui.core.runtime.toggles import Toggles
 
+        selected = info.get('selected_tab', self._selected_tab)
+        if selected != self._selected_tab:
+            self.select_tab(selected)
+            events = []  # Pending touches belonged to the previous root.
         frame_started = self.fps_counter.frame_started()
         if 'show_fps' in info:
             if bool(info['show_fps']) != Toggles.show_fps:
@@ -255,9 +296,12 @@ class NativeApplication:
         self.closed = True
         if self.input is not None:
             release(self.input.close)
+        caches = {tab['cache'] for tab in self._tabs if tab['cache'] is not None}
         if self.cache is not None:
-            TileCacheMasked.window_caches.pop(self.cache, None)
-            release(self.cache.cleanup)
+            caches.add(self.cache)
+        for cache in caches:
+            TileCacheMasked.window_caches.pop(cache, None)
+            release(cache.cleanup)
         if self.renderer is not None:
             release(self.renderer.shutdown)
         glfw_utils.forget_surface(self)
