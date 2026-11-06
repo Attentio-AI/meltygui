@@ -123,6 +123,7 @@ def test_release_gate_runs_all_versions_and_propagates_failure(tmp_path, failure
     for version in ('3.11', '3.12', '3.13'):
         assert f'Python {version}' in result.stdout
     assert '-I -m pytest' in result.stdout
+    assert '--noconftest' in result.stdout
     assert 'TestScannerParity::test_sample' in result.stdout
 
 

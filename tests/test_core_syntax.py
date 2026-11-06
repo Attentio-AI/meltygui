@@ -13,8 +13,6 @@ import ast
 import unittest
 from pathlib import Path
 
-import conftest  # noqa: F401
-
 from meltygui.code.core_syntax import parse_to_dict
 from meltygui.code.core_syntax import general_parse_to_str
 from meltygui.code.core_syntax import diff

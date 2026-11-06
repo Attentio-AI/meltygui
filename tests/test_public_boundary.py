@@ -3,16 +3,39 @@ import ast
 from pathlib import Path
 import subprocess
 import sys
+import unicodedata
 import meltygui
+
+
+def private_imports(source):
+    # Python normalizes identifiers to NFKC. Reject the same imports as the AST
+    # check, while avoiding parsing thousands of files with no private names.
+    prefixes = ('meltygui_pro', 'meltyprivate')
+    normalized = unicodedata.normalize('NFKC', source)
+    if not any(prefix in normalized for prefix in prefixes):
+        return []
+    names = []
+    for node in ast.walk(ast.parse(source)):
+        imports = ([node.module or ''] if isinstance(node, ast.ImportFrom) else
+                   [alias.name for alias in node.names] if isinstance(node, ast.Import) else [])
+        names.extend(name for name in imports if name.startswith(prefixes))
+    return names
 
 
 def test_public_sources_have_no_private_imports():
     for path in Path(meltygui.__file__).parent.rglob('*.py'):
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            names = ([node.module or ''] if isinstance(node, ast.ImportFrom) else
-                     [a.name for a in node.names] if isinstance(node, ast.Import) else [])
-            assert not any(name.startswith(('meltygui_pro', 'meltyprivate')) for name in names), path
+        assert not private_imports(path.read_text()), path
+
+
+def test_private_import_prefilter_preserves_ast_checks():
+    for source in ('import meltygui_pro.editor', 'from meltyprivate import secret',
+                   'import public, meltygui_pro as hidden',
+                   'def f():\n    import meltyprivate.nested',
+                   'import ｍeltygui_pro'):
+        assert private_imports(source), source
+    for source in ('import meltygui', '# import meltygui_pro',
+                   'description = "meltyprivate"', 'from public import meltygui_pro'):
+        assert not private_imports(source), source
 
 
 def test_standalone_text_inspection_and_symbol_usage(tmp_path):

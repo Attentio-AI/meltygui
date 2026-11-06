@@ -7,7 +7,7 @@ for version in 3.11 3.12 3.13; do
   "$RUNNER_TEMP/meltygui-check-$version/bin/python" -I -m pytest \
     tests/test_package_contract.py tests/test_public_boundary.py \
     tests/test_core_syntax.py::TestScannerParity::test_sample \
-    -q --tb=short > "$RUNNER_TEMP/meltygui-test-$version.log" 2>&1 &
+    --noconftest -q --tb=short --durations=3 > "$RUNNER_TEMP/meltygui-test-$version.log" 2>&1 &
   pids+=("$!")
 done
 status=0
