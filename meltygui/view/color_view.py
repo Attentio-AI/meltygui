@@ -629,12 +629,15 @@ def _native_picker_texture(renderer, state, key, width, height, data_factory, de
         import numpy as np
         # Metal's rgba16f upload takes half-float bytes. Keep negative and
         # above-white linear channels: these squares include P3 and HDR.
-        pixels = data_factory().astype(np.float16, copy=False).tobytes(order='C')
+        # The factories return top-down rows; Metal's image sampler flips V
+        # for non-font textures. Upload bottom-up so the gradient matches
+        # the top-down hit coordinates and gamut outline.
+        pixels = data_factory()[::-1].astype(np.float16, copy=False).tobytes(order='C')
         return types.SimpleNamespace(texture_id=renderer.create_texture(
             width, height, 'rgba16f', pixels))
 
     return state.get(key, create, lambda texture: renderer.delete_texture(texture.texture_id),
-                     deps=(renderer, *deps))
+                     deps=(renderer, "bottom-up", *deps))
 
 
 def _wide_square_texture(gl_state, hue, size, top_fraction, max_stops):

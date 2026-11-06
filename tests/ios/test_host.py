@@ -411,6 +411,15 @@ class BootstrapTests(unittest.TestCase):
              contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             yield
 
+    def test_automatic_backend_host_is_reused_by_native_initialization(self):
+        with self.environment():
+            host = self.bootstrap.get_host()
+            self.assertIs(self.bootstrap.get_host(), host)
+            host.request_frame()
+            self.native.request_frame.assert_called_once_with()
+            self.bootstrap.initialize(self.config)
+            self.assertIs(self.launch.call_args.args[1], host)
+
     def test_native_library_and_certificate_paths_follow_the_installed_container(self):
         installed = self.root / "new-container/Melty.app"
         installed.parent.mkdir()

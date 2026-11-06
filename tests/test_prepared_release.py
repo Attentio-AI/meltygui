@@ -71,3 +71,27 @@ def test_pagination_finds_older_preparation():
                 head_repository={'full_name': REPO})] * count}
         return {'artifacts': [{'name': 'release'}]}
     assert module.prepared_run(read, REPO, 456, SHA, {'release'}) == 123
+
+
+def test_publish_path_uses_original_artifacts_and_skips_build_steps():
+    import re
+    source = (ROOT / '.github/workflows/release.yml').read_text()
+    job = 'verify' if ROOT.name == 'meltygui' else 'build'
+    build = source.split(f'  {job}:\n', 1)[1].split('\n  windows:', 1)[0].split('\n  publish:', 1)[0]
+    steps = re.split(r'(?=^      - )', build, flags=re.M)[1:]
+    exempt = ('      - uses: actions/checkout@v4', '      - uses: astral-sh/setup-uv@v6',
+              '      - name: Reuse prepared release', '      - name: Check confirmed release version')
+    for step in steps:
+        if step.startswith(exempt) and 'path: .release-sources' not in step:
+            continue
+        assert "if: steps.prepared.outputs.run_id == ''" in step, step
+    publish = source.split('\n  publish:', 1)[1]
+    assert f'run-id: ${{{{ needs.{job}.outputs.prepared_run }}}}' in publish
+    assert 'github-token: ${{ github.token }}' in publish
+    assert 'actions: read' in publish
+    if '\n  windows:' in source:
+        windows = source.split('\n  windows:', 1)[1].split('\n  publish:', 1)[0]
+        for step in re.split(r'(?=^      - )', windows, flags=re.M)[1:]:
+            if 'name: Reuse prepared Windows artifacts' not in step:
+                assert "if: needs.build.outputs.prepared_run == ''" in step
+        assert 'tools/prepared_release.py release release-windows' in build

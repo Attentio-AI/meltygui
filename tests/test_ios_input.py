@@ -586,10 +586,12 @@ def test_native_clipboard_callbacks_and_keyboard_service(native):
 
 def test_backend_selection_never_imports_glfw_or_accepts_a_second_host(monkeypatch):
     monkeypatch.setattr(window_api, '_state', dict(backend=None, selected=False))
-    monkeypatch.setattr(window_api, 'sys', SimpleNamespace(platform='ios'))
-    with pytest.raises(RuntimeError, match='select_ios_backend'):
-        window_api.select_backend(True)
+    monkeypatch.setattr(window_api, 'sys', SimpleNamespace(platform='ios', builtin_module_names=()))
     host = Host()
+    get_host = Mock(return_value=host)
+    monkeypatch.setitem(sys.modules, 'melty_ios_bootstrap', SimpleNamespace(get_host=get_host))
+    assert window_api.select_backend(True) == 'ios'
+    get_host.assert_called_once_with()
     backend = window_api.select_ios_backend(host)
     assert window_api.select_ios_backend(host) is backend
     assert window_api.select_backend(False) == 'ios'
@@ -604,6 +606,22 @@ def test_backend_selection_never_imports_glfw_or_accepts_a_second_host(monkeypat
     with pytest.raises(NotImplementedError):
         window_api.set_window_size(backend.window, 100, 100)
     window_api.terminate()
+    assert window_api.select_backend(False) == 'ios'
+    assert window_api._state['backend'].host is host
+    window_api.terminate()
+
+
+def test_ios_selection_automatically_binds_hub_graphics(monkeypatch):
+    monkeypatch.setattr(window_api, '_state', dict(backend=None, selected=False))
+    monkeypatch.setattr(window_api, 'sys', SimpleNamespace(
+        platform='ios', builtin_module_names=('_hub_graphics',)))
+    backend = SimpleNamespace(name='glfw')
+    bind = Mock(side_effect=lambda: window_api._state.update(backend=backend, selected=True))
+    monkeypatch.setitem(sys.modules, 'hub_ios_glfw', SimpleNamespace(_bind_melty=bind))
+    assert window_api.select_backend(True) == 'glfw'
+    assert window_api.select_backend(False) == 'glfw'
+    assert window_api._state['backend'] is backend
+    bind.assert_called_once_with()
 
 
 def test_backend_callbacks_and_missing_services_are_explicit(native):

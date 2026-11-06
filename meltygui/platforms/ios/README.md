@@ -356,6 +356,20 @@ adding a home-indicator reserve. Disable automatic mode to use `Toggles.Mobile.S
 Manual reserves persist with normal settings and may be zero. Side cutouts remain
 protected in both modes. Idle rendering pauses; active
 rendering requests the available cadence up to 120 Hz.
+In a Hub-hosted build, the native settings gear also offers **Enter fullscreen**
+and **Exit fullscreen**. This per-app device preference applies immediately,
+hides the status bar and relocates the runtime controls. The content keeps its
+automatic or manual safe-area settings, including the Island/cutout clearance;
+keyboard avoidance remains active in both modes.
+No changes to the application's Python source are needed. In fullscreen, phones
+with Island-sized safe-area clearance place the controls beside the Island in
+portrait, or above and below it in the side reserve in either landscape orientation.
+Non-fullscreen mode uses a translucent bottom-right half-pill: tap to reveal the
+controls and tap again to tuck them offscreen. Fullscreen layouts without an Island
+also use the half-pill. Duo keeps its system-managed safe-zone column in both modes.
+Geometry is recalculated only when
+UIKit lays out the overlay, not on each rendered frame.
+
 In the native iOS launcher, tap the settings gear and choose **Show FPS** or
 **Hide FPS**. The choice persists on the device and updates immediately, including
 while rendering is idle. The native host forwards `show_fps` with the next frame;

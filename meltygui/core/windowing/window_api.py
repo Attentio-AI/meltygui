@@ -23,7 +23,15 @@ def select_backend(enabled):
     if _state['selected']:
         return backend_name()
     if sys.platform == 'ios':
-        raise RuntimeError('the native iOS host must call select_ios_backend(host) before boot')
+        # Host setup is a runtime responsibility, including ordinary desktop
+        # entry points and a fresh boot after terminate() cleared the backend.
+        if '_hub_graphics' in sys.builtin_module_names:
+            from hub_ios_glfw import _bind_melty
+            _bind_melty()
+        else:
+            from melty_ios_bootstrap import get_host
+            select_ios_backend(get_host())
+        return backend_name()
     if use_native_windows(enabled):
         from meltygui.core.windowing.backends.native_wayland import Backend
         _state['backend'] = Backend()

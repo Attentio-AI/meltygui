@@ -105,7 +105,7 @@ for factory, args, expected in (
     texture = factory(state, *args)
     assert factory(state, *args) is texture, 'Unchanged hue recreated its texture'
     pixels = np.frombuffer(gpu._test_pixels(texture.texture_id), dtype=np.float16).reshape(expected.shape)
-    assert np.array_equal(pixels, expected.astype(np.float16)), 'GPU pixels differ from the HDR gradient'
+    assert np.array_equal(pixels[::-1], expected.astype(np.float16)), 'GPU pixels differ from the HDR gradient'
     assert pixels.min() < 0 and pixels.max() > 1, 'P3/HDR channels were clipped'
     replacement = factory(state, 1/3, *args[1:])
     assert replacement.texture_id != texture.texture_id

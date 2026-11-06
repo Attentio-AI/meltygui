@@ -12,6 +12,15 @@ _app = None
 _host = None
 
 
+def get_host():
+    """Return the native owner, also when an ordinary entry boots Melty first."""
+    global _host
+    if _host is None:
+        import _melty_ios
+        _host = Host(_melty_ios)
+    return _host
+
+
 class Host:
     """The only native services the Python application needs during bootstrap."""
 
@@ -184,7 +193,7 @@ def initialize(config):
 
     sys.stdout = sys.stderr = _Log(_melty_ios)
     started = time.perf_counter()
-    _host = Host(_melty_ios)
+    _host = get_host()
     for key in ("documents", "workspace", "application_support", "cache"):
         Path(config[key]).mkdir(parents=True, exist_ok=True)
     os.chdir(config["workspace"])

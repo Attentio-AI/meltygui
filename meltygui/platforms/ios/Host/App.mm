@@ -152,8 +152,10 @@
 @interface MeltyController : UIViewController
 @property(nonatomic, strong) MeltyHost *host;
 @property(nonatomic, strong) NSLayoutConstraint *automaticBottom;
+@property(nonatomic) BOOL runtimeFullscreen;
 @end
 @implementation MeltyController
+- (BOOL)prefersStatusBarHidden { return self.runtimeFullscreen; }
 - (void)viewSafeAreaInsetsDidChange {
     [super viewSafeAreaInsetsDidChange];
     [self updateBottomInset];
@@ -183,12 +185,27 @@
     self.automaticBottom = automaticBottom;
     [self updateBottomInset];
     automaticTop.priority = automaticBottom.priority = UILayoutPriorityRequired - 1;
+    NSArray *safeSides = @[
+        [container.leadingAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.leadingAnchor],
+        [container.trailingAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.trailingAnchor],
+    ];
+    [NSLayoutConstraint activateConstraints:safeSides];
+    __block CGFloat requestedTop = -1, requestedBottom = -1;
+    __weak MeltyController *weakController = self;
+    void (^applyViewport)(void) = ^{
+        [NSLayoutConstraint deactivateConstraints:@[automaticTop, automaticBottom, safeZoneTop, safeZoneBottom]];
+        safeZoneTop.constant = MAX(0, requestedTop);
+        safeZoneBottom.constant = -MAX(0, requestedBottom);
+        [NSLayoutConstraint activateConstraints:@[
+            requestedTop == -1 ? automaticTop : safeZoneTop,
+            requestedBottom == -1 ? automaticBottom : safeZoneBottom,
+        ]];
+        [weakController.view setNeedsLayout];
+    };
     [NSLayoutConstraint activateConstraints:@[
         automaticTop,
         [container.topAnchor constraintGreaterThanOrEqualToAnchor:root.topAnchor],
         [container.heightAnchor constraintGreaterThanOrEqualToConstant:1],
-        [container.leadingAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.leadingAnchor],
-        [container.trailingAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.trailingAnchor],
         automaticBottom,
         [container.bottomAnchor constraintLessThanOrEqualToAnchor:root.bottomAnchor],
     ]];
@@ -235,7 +252,6 @@
         [status.bottomAnchor constraintEqualToAnchor:view.safeAreaLayoutGuide.bottomAnchor constant:-20],
     ]];
     __weak MeltyView *weakView = view;
-    __weak UIView *weakRoot = root;
     self.host = [[MeltyHost alloc] initWithLayer:view.metalLayer viewport:view.layer status:^(NSString *message) {
         status.text = message;
         status.hidden = message.length == 0;
@@ -243,23 +259,23 @@
     } keyboard:^(BOOL visible) {
         if (visible) [weakView becomeFirstResponder]; else [weakView resignFirstResponder];
     } safeZone:^(CGFloat top, CGFloat bottom) {
-        // Switch anchors, not a sampled inset: rotation and scene changes then
-        // update the viewport immediately, without a Python-frame round trip.
-        [NSLayoutConstraint deactivateConstraints:@[automaticTop, automaticBottom, safeZoneTop, safeZoneBottom]];
-        safeZoneTop.constant = MAX(0, top);
-        safeZoneBottom.constant = -MAX(0, bottom);
-        [NSLayoutConstraint activateConstraints:@[
-            top == -1 ? automaticTop : safeZoneTop,
-            bottom == -1 ? automaticBottom : safeZoneBottom,
-        ]];
-        [weakRoot setNeedsLayout];
+        requestedTop = top; requestedBottom = bottom;
+        applyViewport();
     }];
     view.host = self.host;
 #if __has_include("Launcher/HubLauncher.h")
     __weak MeltyHost *weakHost = self.host;
+    HubConfigureFullscreenSetting(^(BOOL full) {
+        weakController.runtimeFullscreen = full;
+        [weakController setNeedsStatusBarAppearanceUpdate];
+        applyViewport();
+    });
     HubConfigureFPSSetting(^(BOOL visible) { [weakHost setFPSVisible:visible]; });
     status.text = @"Choose launch inputs to start.";
-    HubLaunchStart(self, ^{ [self.host start]; });
+    HubLaunchStart(self, ^{
+        status.text = @"Starting app…";
+        [self.host start];
+    });
 #else
     [self.host start];
 #endif

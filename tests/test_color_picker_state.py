@@ -11,6 +11,44 @@ from meltygui.state.new_core_model import ColorPickerState
 TABS = ("wide", "srgb", "extended")
 
 
+@pytest.mark.parametrize("tab", ("wide", "extended"))
+def test_native_picker_upload_matches_top_down_picking_coordinates(monkeypatch, tab):
+    import numpy as np
+    from meltygui.core.graphics.gl_state import GLState
+    from meltygui.view import color_view
+
+    uploads, deleted = [], []
+
+    def upload(width, height, format, pixels):
+        assert format == "rgba16f"
+        uploads.append(np.frombuffer(pixels, np.float16).reshape(height, width, 4))
+        return len(uploads)
+
+    renderer = SimpleNamespace(create_texture=upload, delete_texture=deleted.append)
+    monkeypatch.setattr(color_view.Melty, "graphics_backend", renderer)
+    if tab == "wide":
+        factory, args = color_view._wide_square_texture, (0.0, 16, 0.2, 4.0)
+        expected = hdr_color.wide_square_linear(*args)
+    else:
+        factory, args = color_view._srgb_plus_texture, (0.0, 16, 4, 4, 4.0)
+        expected = hdr_color.srgb_plus_linear(*args)
+    state = GLState()
+    try:
+        texture = factory(state, *args)
+        assert factory(state, *args) is texture
+        assert len(uploads) == 1
+        # mesh_fragment samples (u, 1-v): screen top reads the last row.
+        displayed = uploads[0][::-1]
+        np.testing.assert_array_equal(displayed, expected.astype(np.float16))
+        assert displayed[0, 0, 0] > 1
+        np.testing.assert_array_equal(displayed[-1, :, :3], 0)
+        assert displayed.min() < 0
+    finally:
+        state.release()
+        GLState.flush_deletes()
+    assert deleted == [texture.texture_id]
+
+
 def picked(tab, h, s, v):
     if tab == "wide":
         return hdr_color.extended_from_p3_hsv(h, s, v), (h, s, v, 1.0)

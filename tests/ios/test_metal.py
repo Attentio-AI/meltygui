@@ -55,6 +55,38 @@ class MetalPixels(unittest.TestCase):
             for x,pixel in enumerate(row):
                 self.assertEqual(pixel,(0.25,0.5,1,1) if 2<=x<5 and 5<=y<7 else (0,0,0,0))
 
+    def test_picker_gradients_match_screen_rows(self):
+        import numpy as np
+        from meltygui import hdr_color
+        from meltygui.core.graphics.gl_state import GLState
+        from meltygui.view.color_view import _native_picker_texture
+
+        r = self.renderer
+        state = GLState()
+        try:
+            for key, expected in (
+                ('wide', hdr_color.wide_square_linear(0.0, 16, 0.2, 4.0)),
+                ('extended', hdr_color.srgb_plus_linear(0.0, 16, 4, 4, 4.0)),
+            ):
+                height, width = expected.shape[:2]
+                texture = _native_picker_texture(
+                    r, state, key, width, height, lambda: expected, ())
+                r.set_texture_sampling(texture.texture_id, True, True)
+                r.begin_scene(64, 48, (0, 0, 0, 0))
+                r.draw_backgrounds([], (0, 0, 0, 0))
+                self.imgui.new_frame()
+                self.imgui.get_background_draw_list().add_image(
+                    texture.texture_id, (8, 8), (8 + width, 8 + height))
+                r.begin_frame_split()
+                self.imgui.render()
+                r.render_except_overlay(self.imgui.get_draw_data())
+                displayed = np.asarray(self.pixels(r.scene_framebuffer))[
+                    8:8 + height, 8:8 + width]
+                np.testing.assert_allclose(displayed, expected, rtol=.003, atol=.003)
+        finally:
+            state.release()
+            GLState.flush_deletes()
+
     def test_adjacent_draws_share_pass_and_preserve_blending_and_scissors(self):
         r, native = self.renderer, self.native
         native._test_flush()
