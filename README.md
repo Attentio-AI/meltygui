@@ -21,6 +21,20 @@ bindings install as prebuilt wheels on those targets; elsewhere installers
 compile them, see [when no wheel matches](docs/SUPPORT_WHEELS.md#when-no-wheel-matches).
 CUDA rendering is unavailable on macOS.
 
+## Use ImGui directly
+
+The bundled ImGui bindings are public as `meltygui.imgui` (also available with
+`from meltygui import imgui`). They load on first access and share the same
+ImGui context as MeltyGUI. Call drawing functions inside a window callback:
+
+```python
+import meltygui
+
+@meltygui.glfw_window
+def some_window():
+    meltygui.imgui.text("Hello")
+```
+
 ## Visualize a tensor
 
 Create a small volume on the GPU and tag `draw_voxels` as an OS window with

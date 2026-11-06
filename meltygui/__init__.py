@@ -33,6 +33,7 @@ from meltygui.core.runtime.app import after_first_frame
 from meltygui.core.runtime.app import checkpoint
 
 if TYPE_CHECKING:   # IDE / type checkers only; never executed
+    import meltygui_imgui as imgui
     from meltygui.core.rendering.gui_prototype import gui, os_window
     from meltygui.state.new_core_model import DrawState
     from meltygui.view.text_view import draw_text
@@ -125,3 +126,7 @@ def __getattr__(name):
 __all__ = ['Style', 'boot', 'embedded_imports', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', 'after_first_frame', 'checkpoint',
            'toggles', 'window_api', 'imgui',
            *_VIEWS]
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
