@@ -123,3 +123,27 @@ def test_narrow_trigger_clips_one_pixel_inside_button_edge(melty, monkeypatch, l
         trigger_caret=('', ''), show_header=False))
     assert seen['text'] == label
     assert seen['text_clip_rect'][2] == seen['pos'][0] + seen['width'] - 1
+
+
+def test_dropdown_retains_dragged_size_when_reopened_and_filtered(melty):
+    from meltygui.view.dropdown_view import fast_draw_dropdown
+    options = {f"Choice {n}": n for n in range(8)}
+    def draw():
+        return fast_draw_dropdown(0, collection=options, name="resize-menu",
+                                  width=200, show_header=False, return_extras=True)
+    ds = _frames(melty, draw)[2]
+    state = ds.misc["drop_down_state"]
+    melty.popover_focused_ds = ds
+    _frames(melty, draw)
+    menu = state._menu_ds
+    resized = (menu.width + 80, menu.height + 30)
+    menu.width, menu.height = resized
+    _frames(melty, draw)
+    assert state.menu_size == resized
+    assert (menu.width, menu.height) == resized
+    melty.popover_focused_ds = None
+    _frames(melty, draw)
+    melty.popover_focused_ds = ds
+    state.search_query = 'Choice 1'
+    _frames(melty, draw)
+    assert (menu.width, menu.height) == resized

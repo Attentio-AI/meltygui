@@ -301,6 +301,22 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         collection, getattr(drop_down_state, "search_query", ""),
         trigger_top, trigger_h, open_upwards, max(trigger_w, menu_min_width or 0), menu_title,
         kwargs.get("menu_columns"))
+    previous_menu = drop_down_state._menu_ds
+    if is_open and previous_menu is not None:
+        current = (previous_menu.width, previous_menu.height)
+        if (drop_down_state._menu_fit is not None and current != drop_down_state._menu_fit
+                and all(current)):
+            drop_down_state.menu_size = current
+    if drop_down_state.menu_size is not None:
+        menu_width, saved_height = drop_down_state.menu_size
+        menu_width = min(menu_width, imgui.get_io().display_size[0])
+        upwards = menu_top < trigger_top
+        available = trigger_top if upwards else imgui.get_io().display_size[1] - trigger_top - trigger_h
+        menu_height = min(saved_height, available)
+        menu_top = trigger_top - menu_height if upwards else trigger_top + trigger_h
+    if is_open and previous_menu is not None:
+        previous_menu.width, previous_menu.height = menu_width, menu_height
+    drop_down_state._menu_fit = (menu_width, menu_height)
     revision = kwargs.get("menu_revision")
     if drop_down_state.column_signature != revision:
         drop_down_state.column_signature = revision
@@ -313,7 +329,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         name=f"{unique}_menu",
         closed=not is_open, temp=True, shadow=False, auto_resize=False,
         window_pos=(menu_left - imgui.get_cursor_screen_pos()[0], menu_top - imgui.get_cursor_screen_pos()[1]),
-        width=menu_width, height=menu_height,
+        initial={"width": menu_width, "height": menu_height},
         parent_window=draw_state, swoosh=False, disable_scroll=False,
         row_tags=kwargs.get("row_tags"),
         row_columns=kwargs.get("row_columns"),

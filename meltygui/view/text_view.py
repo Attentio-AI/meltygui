@@ -1245,7 +1245,7 @@ def draw_text(input_value: str, height=None,
               ctrl_shift_minus_down=False, ctrl_shift_equal_down=False,
               single_line=False, is_search_box=False, focusable=True, editable=True,
               draw_state=None, text_editor_state: TextEditorState = None,
-              request_focus=False, select_all_on_focus=False,
+              request_focus=False, select_all_on_focus=False, on_submit=None,
               wrap=False, line_height=1.2, font=Font.FONTAWESOME_MONO_19, jump_to=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
               live_store=None, debugger_state=None,
@@ -1264,7 +1264,9 @@ def draw_text(input_value: str, height=None,
               roster_world=None, roster_table=None,
               fim="", fim_state: FimState = None,
               source_tools: SourceToolsState = None, source_context=None):
-    """`editable=False` keeps caret navigation, selection and copy while disabling
+    """`on_submit(text)` makes Enter submit and Shift+Enter insert a plain newline
+    at the caret, for message composers. The default retains code editing behavior.
+    `editable=False` keeps caret navigation, selection and copy while disabling
     text edits, completion and inline editing widgets. Native touch hosts do not
     open the software keyboard for this view. Selection uses normal saved state.
     Touch contacts focus on completed taps; swipes scroll without moving the
@@ -4207,7 +4209,19 @@ def draw_text(input_value: str, height=None,
         # don't insert a newline when Ctrl is held.
         if editable and (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)) and not single_line and not ctrl:
             ds.text_cursor_blink_time = time.time()
-            if shift:
+            if on_submit is not None:
+                if shift:
+                    if _has_selection(ds):
+                        text, ds.text_cursor_pos = _delete_selection(text, ds)
+                    pos = ds.text_cursor_pos
+                    text = text[:pos] + '\n' + text[pos:]
+                    ds.text_cursor_pos = pos + 1
+                    ds.text_selection_start = ds.text_cursor_pos
+                    ds.text_selection_end = ds.text_cursor_pos
+                    changed = True
+                else:
+                    on_submit(text)
+            elif shift:
                 # Shift+Enter: start a new line BELOW without splitting the
                 # current one - the caret escapes trailing closers like `)]`
                 # instead of dragging them along. Indent is computed at the

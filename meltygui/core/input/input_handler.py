@@ -81,7 +81,7 @@ _DOUBLE_PROMOTE = {
 # ALSO sets how long a deferred single click waits before firing (only on inputs
 # with a double subscriber - see process_frame), so it's the single↔double
 # trade-off here: lower = snappier single click but flakier double detection.
-DOUBLE_CLICK_WINDOW = 0.25
+DOUBLE_CLICK_WINDOW = 0.30
 CLICK_MAX_DISTANCE = 5.0
 DRAG_THRESHOLD = 2.0  # Minimum distance before drag activates
 
