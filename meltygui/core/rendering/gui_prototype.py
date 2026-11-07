@@ -13,6 +13,12 @@ enable_imgui_import()
 _window = ContextVar('prototype_gui_window', default=None)
 
 
+def _check_position_arguments(arguments, no_save=()):
+    if ('window_pos' in arguments or 'window_pos' in (arguments.get('initial') or {})
+            or 'window_pos' in no_save):
+        raise TypeError('@gui uses relative left and top, not window_pos')
+
+
 def os_window(func=None, **decoration):
     """An OS-window @gui root: shorthand for ``gui(glfw_window=True, ...)``."""
     return gui(func, **{**decoration, 'glfw_window': True})
@@ -33,8 +39,16 @@ def gui(func=None, *, glfw_window=False, **decoration):
     signed 128-bit int, or tuples of these. ``state_id="..."`` overrides the
     renderer's module/qualified name to preserve identity through source moves.
     Declared parameters persist with the state object; ``no_save=("field",)``
-    excludes transient fields. Geometry and framework context never persist.
+    excludes transient fields. Relative placement, size and scroll are ordinary
+    state parameters; framework context and derived measurements are transient.
+
+    ``scroll=True`` makes a cached viewport over child @gui views. Child
+    ``left`` and ``top`` are unscrolled content coordinates. Each axis resolves
+    independently; an omitted axis follows the existing flow/default placement.
+    ``initial={"left": ..., "top": ...}`` seeds placement once. Raw ImGui drawing
+    in the viewport body is fixed chrome; put scrolling content in child views.
     """
+    _check_position_arguments(decoration, decoration.get('no_save', ()))
     if func is None:
         return lambda function: gui(function, glfw_window=glfw_window, **decoration)
     if glfw_window:
@@ -79,6 +93,7 @@ def _new_native(*, graphics=True, identities=None):
 
 def _bind_native(native, func=None, *, inject=None, events=(), state_id=None, no_save=(), **decoration):
     """Compile the Python signature for Rust dispatch, once per function/engine."""
+    _check_position_arguments(decoration, no_save)
     if func is None:
         return lambda function: _bind_native(native, function, inject=inject, events=events,
                                             state_id=state_id, no_save=no_save, **decoration)
@@ -92,6 +107,8 @@ def _bind_native(native, func=None, *, inject=None, events=(), state_id=None, no
         parameters = []
         var_kwargs = False
         for name, parameter in signature.parameters.items():
+            if name == 'window_pos':
+                raise TypeError('@gui parameters use left and top, not window_pos')
             if parameter.kind is inspect.Parameter.VAR_KEYWORD:
                 var_kwargs = True
                 continue

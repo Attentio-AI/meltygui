@@ -52,7 +52,7 @@ def floating(input_value: object):
         with layout.cell('right'):panel(None,key='right',label='Floating right')
     if input_value.show_nested:
         panel(None,key='nested',label='Parent-relative child',melty_window=True,
-              initial={'window_pos':(90,130),'width':200,'height':100},min_width=100,min_height=60)
+              initial={'left': 90, 'top': 130,'width':200,'height':100},min_width=100,min_height=60)
 
 
 @os_window(name='Rust collision lab',width=1040,height=700,app_id='meltygui-collision-lab')
@@ -62,4 +62,4 @@ def app(state: LabState=None):
         with layout.cell('rows'):split_panel(None)
         with layout.cell('panel'):panel(None,label='Right panel')
     if state.show_window:
-        floating(state,melty_window=True,initial={'window_pos':(390,270),'width':370,'height':260})
+        floating(state,melty_window=True,initial={'left': 390, 'top': 270,'width':370,'height':260})

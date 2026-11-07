@@ -5,8 +5,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyTuple};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::Instant;
+mod geometry;
 mod identity;
 mod retained;
 mod texture;
@@ -15,11 +16,15 @@ mod edges;
 #[derive(Default)]
 struct Shape {
     slots: HashMap<String, usize>,
+    effects: Vec<u8>,
 }
 impl Shape {
     fn slot(&mut self, name: &str) -> usize {
-        let next = self.slots.len();
-        *self.slots.entry(name.to_owned()).or_insert(next)
+        if let Some(slot) = self.slots.get(name) { return *slot; }
+        let slot = self.slots.len();
+        self.slots.insert(name.to_owned(), slot);
+        self.effects.push(geometry::effect(name));
+        slot
     }
 }
 
@@ -28,9 +33,40 @@ enum Value {
     Bool(bool),
     Int(i64),
     Float(f64),
+    Point(f64, f64),
     Object(Py<PyAny>),
 }
 impl Value {
+    fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::None, Self::None) => true,
+            (Self::Bool(a), Self::Bool(b)) => a == b,
+            (Self::Int(a), Self::Int(b)) => a == b,
+            (Self::Float(a), Self::Float(b)) => a == b,
+            (Self::Point(x,y), Self::Point(a,b)) => x==a && y==b,
+            (Self::Object(a), Self::Object(b)) => a.as_ptr()==b.as_ptr(),
+            _ => false,
+        }
+    }
+    fn field(name: &str, value: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if matches!(name, "left" | "top") && !value.is_none() {
+            let number=value.extract::<f64>()?;
+            if !number.is_finite() {return Err(PyTypeError::new_err("position must be finite"));}
+            return Ok(Self::Float(number));
+        }
+        if matches!(name, "width" | "height") && !value.is_none() {
+            let number=value.extract::<f64>()?;
+            if !number.is_finite() || number<0. {return Err(PyTypeError::new_err("size must be finite and nonnegative"));}
+            return Ok(Self::Float(number));
+        }
+        if matches!(name, "scroll_offset" | "content_offset") && !value.is_none() {
+            let (x,y)=value.extract::<(f64,f64)>()?;
+            if !x.is_finite() || !y.is_finite() {return Err(PyTypeError::new_err("geometry must be finite"));}
+            return Ok(Self::Point(x,y));
+        }
+        Ok(Self::from_py(value))
+    }
+    fn point(&self) -> Option<(f64,f64)> { if let Self::Point(x,y)=self {Some((*x,*y))} else {None} }
     fn from_py(value: &Bound<'_, PyAny>) -> Self {
         if value.is_none() {
             Self::None
@@ -54,6 +90,7 @@ impl Value {
             Self::Int(v) => v.into_pyobject(py).unwrap().into_any().unbind(),
             Self::Float(v) => v.into_pyobject(py).unwrap().into_any().unbind(),
             Self::Object(v) => v.clone_ref(py),
+            Self::Point(x,y) => (*x,*y).into_pyobject(py).unwrap().into_any().unbind(),
         }
     }
     fn number(&self) -> Option<f64> {
@@ -74,10 +111,12 @@ struct NativeState {
     revision: u64,
     excluded: HashSet<String>,
     renderer: u128,
+    observer: Option<(u64, Weak<RefCell<HashMap<u64,u8>>>)>,
+    rendering: bool,
 }
 const TRANSIENT_STATE: &[&str] = &[
     "input_value", "draw_state", "cache", "view_events", "font_manager", "style_manager",
-    "width", "height", "content_width", "content_height", "abs_left", "abs_top",
+    "content_width", "content_height", "abs_left", "abs_top",
     "measured_width", "depth", "unique_events",
 ];
 impl NativeState {
@@ -90,6 +129,8 @@ impl NativeState {
             revision: 0,
             excluded: TRANSIENT_STATE.iter().map(|v| v.to_string()).collect(),
             renderer: 0,
+            observer: None,
+            rendering: false,
         };
         state.put("unique", Value::Int(0));
         state.put("dlt_count", Value::Int(0));
@@ -109,7 +150,7 @@ impl NativeState {
     }
     fn release_transients(&mut self) {
         for (name, slot) in self.shape.borrow().slots.iter() {
-            if name.starts_with('_') || self.excluded.contains(name) {
+            if matches!(name.as_str(), "cache" | "view_events" | "font_manager" | "style_manager") {
                 if let Some(value) = self.values.get_mut(*slot) { *value = None; }
                 self.owned.remove(slot);
                 self.overrides.remove(slot);
@@ -120,8 +161,15 @@ impl NativeState {
         if self.values.len() <= slot {
             self.values.resize_with(slot + 1, || None);
         }
+        if self.at(slot).is_some_and(|old| old.same(&value)) { return; }
         self.values[slot] = Some(value);
         self.revision += 1;
+        if let Some((node, queue)) = &self.observer {
+            let effect = self.shape.borrow().effects[slot];
+            if effect != 0 && !(self.rendering && effect == geometry::CONTENT) {
+                if let Some(queue) = queue.upgrade() { *queue.borrow_mut().entry(*node).or_default() |= effect; }
+            }
+        }
     }
     fn put(&mut self, name: &str, value: Value) {
         let slot = self.shape.borrow_mut().slot(name);
@@ -143,20 +191,25 @@ impl NativeState {
     #[new]
     fn py_new() -> Self { Self::new(Rc::new(RefCell::new(Shape::default()))) }
 
-    #[pyo3(signature = (rect, excluded=Vec::new()))]
-    fn save_window_geometry(&mut self, py: Python<'_>, rect: (f64, f64, f64, f64), excluded: Vec<String>) -> PyResult<()> {
-        // The retained graph owns window placement; capture it only at save/close.
-        self.put("window_pos", Value::Object((rect.0, rect.1).into_pyobject(py)?.into_any().unbind()));
-        self.put("width", Value::Float(rect.2));
-        self.put("height", Value::Float(rect.3));
-        for name in ["window_pos", "width", "height"] {
-            if let Some(slot) = self.shape.borrow().slots.get(name) { self.overrides.remove(slot); }
-            if excluded.iter().any(|field| field == name) { self.excluded.insert(name.to_string()); }
-            else { self.excluded.remove(name); }
+    fn configure(&mut self, defaults: &Bound<'_, PyDict>, caller: &Bound<'_, PyDict>, initial: &Bound<'_, PyDict>) -> PyResult<()> {
+        for (name, value) in initial.iter() {
+            let name=name.extract::<String>()?;
+            let slot=self.shape.borrow_mut().slot(&name);
+            if self.at(slot).is_none() {
+                self.overrides.insert(slot, Value::field(&name,&value)?);
+                self.put_slot(slot, Value::field(&name,&value)?);
+            }
+        }
+        for (name, value) in defaults.iter() {
+            let name=name.extract::<String>()?;
+            let slot=self.shape.borrow_mut().slot(&name);
+            let value=if let Some(explicit)=caller.get_item(&name)? {Value::field(&name,&explicit)?}
+                else if let Some(authored)=self.overrides.get(&slot) {Value::field(&name,authored.to_py(defaults.py()).bind(defaults.py()))?}
+                else {Value::field(&name,&value)?};
+            self.put_slot(slot,value);
         }
         Ok(())
     }
-
     #[pyo3(signature = (excluded=Vec::new()))]
     fn save_state(&self, py: Python<'_>, excluded: Vec<String>) -> PyResult<Py<PyAny>> {
         let values = PyDict::new(py);
@@ -175,11 +228,28 @@ impl NativeState {
         for (index, item) in state.iter().enumerate() {
             for (key, value) in item.downcast::<PyDict>()?.iter() {
                 let name = key.extract::<String>()?;
+                // Translate saved identifiers only; live state has no tuple-position alias.
+                if name == "window_pos" {
+                    let (left,top)=value.extract::<(f64,f64)>()?;
+                    for (axis,number) in [("left",left),("top",top)] {
+                        if item.downcast::<PyDict>()?.contains(axis)? {continue;}
+                        let slot=self.shape.borrow_mut().slot(axis);
+                        match index {
+                            0 => {
+                                self.put_slot(slot,Value::Float(number));
+                                self.overrides.insert(slot,Value::Float(number));
+                            },
+                            2 => {self.overrides.insert(slot,Value::Float(number));},
+                            _ => {},
+                        }
+                    }
+                    continue;
+                }
                 let slot = self.shape.borrow_mut().slot(&name);
                 match index {
-                    0 => self.put_slot(slot, Value::from_py(&value)),
+                    0 => self.put_slot(slot, Value::field(&name, &value)?),
                     1 => { self.owned.insert(slot, value.unbind()); },
-                    2 => { self.overrides.insert(slot, Value::from_py(&value)); },
+                    2 => { self.overrides.insert(slot, Value::field(&name, &value)?); },
                     _ => return Err(PyTypeError::new_err("invalid native draw state")),
                 }
             }
@@ -191,10 +261,12 @@ impl NativeState {
             .map(|v| v.to_py(py))
             .ok_or_else(|| PyAttributeError::new_err(name.to_owned()))
     }
-    fn __setattr__(&mut self, name: &str, value: &Bound<'_, PyAny>) {
+    fn __setattr__(&mut self, name: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        if name=="window_pos" {return Err(PyAttributeError::new_err("use left and top for relative position"));}
         let slot = self.shape.borrow_mut().slot(name);
-        self.put_slot(slot, Value::from_py(value));
-        self.overrides.insert(slot, Value::from_py(value));
+        self.put_slot(slot, Value::field(name,value)?);
+        self.overrides.insert(slot, Value::field(name,value)?);
+        Ok(())
     }
     fn __delattr__(&mut self, name: &str) -> PyResult<()> {
         let slot = self.shape.borrow().slots.get(name).copied();
@@ -270,8 +342,31 @@ struct Runtime {
     wrapper_ns: u64,
     body_ns: u64,
 }
+impl Runtime {
+    fn ensure_state(&mut self, py: Python<'_>, unique: u128) -> PyResult<()> {
+            if !self.nodes.contains_key(&unique) {
+                let identities = self.identities.clone_ref(py);
+                let mut ids = identities.borrow_mut(py);
+                let saved = ids.registry.bind(py).get_item(unique)?;
+                let state = match saved.and_then(|s| s.extract::<Py<NativeState>>().ok()) {
+                    Some(state) => { state.borrow_mut(py).rebind(self.shape.clone()); state },
+                    None => Py::new(py, NativeState::new(self.shape.clone()))?,
+                };
+                ids.registry.bind(py).set_item(unique, &state)?;
+                ids.states.insert(unique);
+                let unique_value=unique.into_pyobject(py)?.into_any().unbind();
+                state.borrow_mut(py).put("unique",Value::Object(unique_value.clone_ref(py)));
+                self.nodes.insert(unique, (state, unique_value));
+            }
+        Ok(())
+    }
+}
 #[pymethods]
 impl Runtime {
+    fn state(&mut self, py: Python<'_>, unique: u128) -> PyResult<Py<NativeState>> {
+        self.ensure_state(py,unique)?;
+        Ok(self.nodes[&unique].0.clone_ref(py))
+    }
     #[getter]
     fn identities(&self, py: Python<'_>) -> Py<identity::Identities> {
         self.identities.clone_ref(py)
@@ -346,8 +441,8 @@ impl Runtime {
         }
         for (unique, (state, _)) in &self.nodes {
             state.borrow_mut(py).release_transients();
-            let ids = self.identities.borrow(py);
-            if !ids.persistent { ids.registry.bind(py).del_item(unique).ok(); }
+            let ids=self.identities.borrow(py);
+            if !ids.persistent {ids.registry.bind(py).del_item(unique).ok();}
         }
         self.nodes.clear();
         self.owner = None;
@@ -479,6 +574,10 @@ impl Renderer {
         if let Some(kwargs) = kwargs {
             args.update(kwargs.as_mapping())?;
         }
+        if args.contains("window_pos")? {
+            return Err(PyTypeError::new_err("gui uses relative left and top, not window_pos"));
+        }
+        let captured = args.contains("_gui_unique")?;
         // Cached calls carry defaults for layout; only caller keys outrank state.
         let explicit_keys = args.get_item("_gui_explicit")?;
         if explicit_keys.is_some() { args.del_item("_gui_explicit")?; }
@@ -491,22 +590,13 @@ impl Renderer {
             } else {
                 rt.identities.borrow_mut(py).resolve(self.id, args.get_item("key")?.as_ref(), args.get_item("name")?.as_ref(), args.contains("key")?)?
             };
-            if !rt.nodes.contains_key(&unique) {
-                let identities = rt.identities.clone_ref(py);
-                let mut ids = identities.borrow_mut(py);
-                let saved = ids.registry.bind(py).get_item(unique)?;
-                let state = match saved.and_then(|s| s.extract::<Py<NativeState>>().ok()) {
-                    Some(state) => { state.borrow_mut(py).rebind(rt.shape.clone()); state },
-                    None => Py::new(py, NativeState::new(rt.shape.clone()))?,
-                };
-                {
-                    let mut ds = state.borrow_mut(py);
-                    ds.renderer = self.id;
-                    ds.excluded = TRANSIENT_STATE.iter().map(|v| v.to_string()).chain(self.excluded.iter().cloned()).collect();
+            rt.ensure_state(py, unique)?;
+            {
+                let mut ds=rt.nodes[&unique].0.borrow_mut(py);
+                if ds.renderer != self.id {
+                    ds.renderer=self.id;
+                    ds.excluded=TRANSIENT_STATE.iter().map(|v|v.to_string()).chain(self.excluded.iter().cloned()).collect();
                 }
-                ids.registry.bind(py).set_item(unique, &state)?;
-                ids.states.insert(unique);
-                rt.nodes.insert(unique, (state, unique.into_pyobject(py)?.into_any().unbind()));
             }
             let (state, unique_value) = rt.nodes.get(&unique).unwrap();
             let state = state.clone_ref(py);
@@ -529,7 +619,17 @@ impl Renderer {
         }
         let width = kw_number(&args, "width", inherited_width).max(1.0);
         let height = kw_number(&args, "height", state.borrow(py).number("height", 24.0)).max(1.0);
-        let (left, top) = if let Some(imgui) = &imgui {
+        if !captured {
+            if let Some(initial) = args.get_item("initial")? {
+                let initial = initial.downcast::<PyDict>()?;
+                if initial.contains("window_pos")? {
+                    return Err(PyTypeError::new_err("initial uses left and top, not window_pos"));
+                }
+                let empty = PyDict::new(py);
+                state.borrow_mut(py).configure(&empty, &empty, initial)?;
+            }
+        }
+        let cursor = if let Some(imgui) = &imgui {
             imgui
                 .bind(py)
                 .call_method0("get_cursor_screen_pos")?
@@ -537,16 +637,43 @@ impl Renderer {
         } else {
             (0.0, 0.0)
         };
+        let resolve_axis = |name: &str, flow: f64| -> PyResult<f64> {
+            let explicit = kwargs.map(|kw| kw.get_item(name)).transpose()?.flatten();
+            let authored = {
+                let ds = state.borrow(py);
+                let slot = ds.shape.borrow().slots.get(name).copied();
+                slot.and_then(|slot| ds.overrides.get(&slot)).map(|v| v.to_py(py))
+            };
+            let value = explicit.map(Bound::unbind).or(authored)
+                .or(args.get_item(name)?.map(Bound::unbind))
+                .or_else(|| self.parameters.iter().find(|p| p.name == name)
+                    .and_then(|p| p.default.as_ref()).map(|v| v.clone_ref(py)));
+            let number = match value {
+                Some(v) if !v.is_none(py) => v.extract::<f64>(py)?,
+                _ => flow,
+            };
+            if !number.is_finite() {return Err(PyTypeError::new_err("position must be finite"));}
+            Ok(number)
+        };
+        let left = resolve_axis("left", cursor.0)?;
+        let top = resolve_axis("top", cursor.1)?;
+        if !captured && (left, top) != cursor {
+            if let Some(imgui) = &imgui {
+                imgui.bind(py).call_method1("set_cursor_screen_pos", ((left, top),))?;
+            }
+        }
+        args.set_item("left", left)?;
+        args.set_item("top", top)?;
         {
             let mut ds = state.borrow_mut(py);
             ds.put("unique", Value::Object(unique_value.clone_ref(py)));
             ds.put("dlt_count", Value::Int(1));
             ds.put("width", Value::Float(width));
             ds.put("height", Value::Float(height));
+            ds.put("left", Value::Float(left));
+            ds.put("top", Value::Float(top));
             ds.put("content_width", Value::Float(width));
             ds.put("content_height", Value::Float(height));
-            ds.put("abs_left", Value::Float(left));
-            ds.put("abs_top", Value::Float(top));
         }
         args.set_item("input_value", &input_value)?;
         args.set_item("draw_state", &state)?;
@@ -556,7 +683,8 @@ impl Renderer {
             if let Some(owner) = owner {
                 let event_args = PyDict::new(py);
                 event_args.set_item("view_id", format!("gui-{unique}"))?;
-                event_args.set_item("rect", (left, top, left + width, top + height))?;
+                let (x,y) = if captured {cursor} else {(left,top)};
+                event_args.set_item("rect", (x, y, x + width, y + height))?;
                 event_args.set_item("priority_delta", 0)?;
                 let events =
                     owner
@@ -592,7 +720,9 @@ impl Renderer {
                 .transpose()?
                 .flatten()
                 .filter(|_| explicit_keys.as_ref().map_or(true, |keys| keys.contains(&parameter.name).unwrap_or(false)));
-            let value = if let Some(value) = explicit {
+            let value = if matches!(parameter.name.as_str(), "left" | "top") {
+                args.get_item(&parameter.name)?.unwrap().unbind()
+            } else if let Some(value) = explicit {
                 value.unbind()
             } else if let Some(value) = authored {
                 value
@@ -625,10 +755,13 @@ impl Renderer {
             };
             clean.set_item(&parameter.name, &value)?;
             // Framework-injected self references are transient, not persisted in state.
-            if parameter.name != "draw_state" && parameter.name != "input_value" {
+            // None requests automatic sizing; it is not a measured dimension.
+            let automatic_size = matches!(parameter.name.as_str(), "width" | "height")
+                && value.bind(py).is_none();
+            if parameter.name != "draw_state" && parameter.name != "input_value" && !automatic_size {
                 state
                     .borrow_mut(py)
-                    .put_slot(parameter.slot, Value::from_py(value.bind(py)));
+                    .put_slot(parameter.slot, Value::field(&parameter.name, value.bind(py))?);
             }
         }
         if let Some(imgui) = &imgui {
@@ -663,10 +796,9 @@ impl Renderer {
                     .extract::<(f64, f64)>()?;
                 let mut ds = state.borrow_mut(py);
                 ds.put("content_height", Value::Float(measured_h));
-                ds.put(
-                    "height",
-                    Value::Float(kw_number(&args, "height", measured_h)),
-                );
+                if ds.observer.is_none() {
+                    ds.put("height", Value::Float(kw_number(&args, "height", measured_h)));
+                }
                 ds.put("measured_width", Value::Float(measured_w));
             }
             Ok(())

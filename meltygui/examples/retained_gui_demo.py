@@ -88,9 +88,9 @@ def owner(input_value: dict, draw_state=None, cache=None, demo=None):
     # predicate or a call kept alive by the old window replay registry.
     if not input_value['closed']:
         window_content(demo.window_data, demo=demo, melty_window=True,
-                       initial={'window_pos': (555, 190)})
+                       initial={'left': 555, 'top': 190})
     if input_value.get('peer', True):
-        peer(None, demo=demo, melty_window=True, initial={'window_pos': (755, 325)})
+        peer(None, demo=demo, melty_window=True, initial={'left': 755, 'top': 325})
     text(12, 236, f'Value after result replay: {value}', muted)
     return changed, input_value
 

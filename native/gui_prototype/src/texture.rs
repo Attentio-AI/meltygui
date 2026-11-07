@@ -227,6 +227,7 @@ pub struct TextureCache {
     resolve_loc: i32,
     targets: HashMap<u64, Target>,
     packets: HashMap<u64, Vec<Packet>>,
+    children: HashMap<u64, Vec<(u64,f32,f32,f32,f32)>>,
     scratch: Vec<Target>,
     scratch_allocations: u64,
     renders: u64,
@@ -290,6 +291,7 @@ impl TextureCache {
                 resolve_loc: glGetUniformLocation(p, b"resolve\0".as_ptr().cast()),
                 targets: HashMap::new(),
                 packets: HashMap::new(),
+                children: HashMap::new(),
                 scratch: Vec::new(),
                 scratch_allocations: 0,
                 renders: 0,
@@ -364,6 +366,7 @@ impl TextureCache {
     fn begin_packet(&mut self, id: u64) {
         self.packets.insert(id, vec![]);
     }
+    fn children(&mut self, id:u64, children:Vec<(u64,f32,f32,f32,f32)>) { self.children.insert(id,children); }
     fn place_child(
         &mut self,
         parent: u64,
@@ -473,6 +476,7 @@ impl TextureCache {
     }
     fn remove(&mut self, id: u64) {
         self.packets.remove(&id);
+        self.children.remove(&id);
         if let Some(t) = self.targets.remove(&id) {
             unsafe {
                 t.delete();
@@ -503,6 +507,7 @@ impl TextureCache {
                 t.delete();
             }
             self.packets.clear();
+            self.children.clear();
             for t in self.scratch.drain(..) {
                 t.delete();
             }
@@ -602,6 +607,31 @@ impl TextureCache {
                         (offset * 4) as *const c_void,
                         *base,
                     );
+                }
+            }
+            // Viewport contents are selected by the local spatial index. Never
+            // scan or rewrite the parent's captured packet for offscreen children.
+            if let Some(children)=self.children.get(&id) {
+                let indices:[u32;6]=[0,1,2,0,2,3];
+                glBufferData(ELEMENT,24,indices.as_ptr().cast(),0x88E0);
+                for (child,x,y,cw,ch) in children {
+                    let target=self.targets.get(child).ok_or_else(||PyRuntimeError::new_err("visible child has no texture"))?;
+                    let left=(x+0.5).floor();let top=(y+0.5).floor();
+                    let right=(x+cw+0.5).floor().min(w as f32);let bottom=(y+ch+0.5).floor().min(h as f32);
+                    let clip_left=left.max(0.);let clip_top=top.max(0.);
+                    if right<=clip_left || bottom<=clip_top {continue;}
+                    let mut vertices=[0_u8;80];
+                    for (i,(px,py,u,v)) in [(left,top,0_f32,1_f32),
+                        (left+target.w as f32,top,1.,1.),
+                        (left+target.w as f32,top+target.h as f32,1.,0.),
+                        (left,top+target.h as f32,0.,0.)].into_iter().enumerate() {
+                        for (j,f) in [px,py,u,v].into_iter().enumerate() {vertices[i*20+j*4..i*20+j*4+4].copy_from_slice(&f.to_ne_bytes());}
+                        vertices[i*20+16..i*20+20].fill(255);
+                    }
+                    glBufferData(ARRAY,80,vertices.as_ptr().cast(),0x88E0);
+                    glScissor(clip_left as i32,h-bottom as i32,(right-clip_left) as i32,(bottom-clip_top) as i32);
+                    glBindTexture(TEX,target.tex);
+                    glDrawElementsBaseVertex(4,6,0x1405,ptr::null(),0);
                 }
             }
             // Resolve premultiplied accumulation to straight-alpha ImGui textures.

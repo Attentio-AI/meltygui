@@ -158,7 +158,7 @@ def window_scene():
     @cache.gui(width=200,height=120)
     def middle():
         ids['middle']=cache.current
-        if model['nested']:leaf(melty_window=True,initial={'window_pos':(30,25)})
+        if model['nested']:leaf(melty_window=True,initial={'left': 30, 'top': 25})
     @cache.gui(width=250,height=180,min_width=100,min_height=60)
     def window():
         ids['window']=cache.current
@@ -166,7 +166,7 @@ def window_scene():
     @cache.gui(width=600,height=450)
     def root():
         ids['root']=cache.current
-        window(melty_window=True,initial={'window_pos':(80,50)})
+        window(melty_window=True,initial={'left': 80, 'top': 50})
     root()
     return cache,ids,model
 
@@ -248,8 +248,8 @@ def test_native_containment_keeps_interleaved_window_edges():
     def window(input_value):ids[input_value]=cache.current
     @cache.gui(width=600,height=450)
     def root():
-        window('a',key='a',melty_window=True,initial={'window_pos':(20,40)})
-        window('b',key='b',melty_window=True,initial={'window_pos':(90,120)})
+        window('a',key='a',melty_window=True,initial={'left': 20, 'top': 40})
+        window('b',key='b',melty_window=True,initial={'left': 90, 'top': 120})
     try:
         root();native=attach_native(cache,600,450)
         native.observe((((100,700),(100,320)),((0,1200),(0,900)),'feed',1,((),())))
@@ -285,12 +285,12 @@ def test_child_opposite_edge_does_not_carry_native_resize(native_y,framed_root,n
     @cache.gui(width=250,height=180)
     def child():ids['child']=cache.current
     @cache.gui(width=350,height=280)
-    def parent():child(melty_window=True,initial={'window_pos':(20,40)})
+    def parent():child(melty_window=True,initial={'left': 20, 'top': 40})
     @cache.gui(width=600,height=450)
     def root():
         if framed_root:
             with cache.geometry.declare(('body',),axis=0,key='body',padding=0):pass
-        (parent if nested else child)(melty_window=True,initial={'window_pos':(80,50)})
+        (parent if nested else child)(melty_window=True,initial={'left': 80, 'top': 50})
     try:
         root()
         g=cache.geometry
@@ -532,7 +532,7 @@ def test_ordinary_view_reflow_carries_cached_portal_without_reexecution():
     @cache.gui(width=200,height=160)
     def ordinary():
         calls['ordinary']+=1
-        window(melty_window=True,initial={'window_pos':(30,40)})
+        window(melty_window=True,initial={'left': 30, 'top': 40})
     @cache.gui(width=600,height=300)
     def root():
         ids['root']=cache.current

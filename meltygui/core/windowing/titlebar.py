@@ -769,7 +769,10 @@ def _main_window_ds():
     return next((d for entries in roots.values() for d in entries), None)
 
 
-def paint_window_controls(draw_list):
+_AUTO_MASK_OWNER = globals().get('_AUTO_MASK_OWNER', object())
+
+
+def paint_window_controls(draw_list, *, owner=_AUTO_MASK_OWNER):
     """Paint the min/max/close controls — from draw_melty_windows, on the
     MAIN WINDOW draw list's top channel just before Melty.end_frame, i.e.
     BEFORE the capture/shadow passes (draw_titlebar keeps the hit logic).
@@ -798,7 +801,8 @@ def paint_window_controls(draw_list):
     # Top-most of everything painted: the highest paint rank + a little depth.
     layer = Melty.nested_layer_max - 1
     rank = shadow_depth_at(2, layer)
-    owner = _main_window_ds()
+    if owner is _AUTO_MASK_OWNER:
+        owner = _main_window_ds()
     if Melty.cache is not None and owner is not None:
         for i, (kind, icon, (x0, y0, x1, y1)) in enumerate(buttons):
             Melty.cache.mask_mark_rect(owner, layer, rank, x0, y0, x1 - x0, y1 - y0,

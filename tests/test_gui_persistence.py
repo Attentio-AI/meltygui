@@ -53,7 +53,7 @@ def test_object_roundtrip_owned_state_exclusions_and_default_precedence():
     session = restore(session)
     restored = session.draw_state_registry[state.unique]
     assert restored.level == 9 and restored.dlt_count == 0
-    assert not {'scratch', 'cache', 'width', 'height', 'abs_left', 'abs_top', 'depth'} & restored.as_dict().keys()
+    assert not {'scratch', 'cache', 'abs_left', 'abs_top', 'depth'} & restored.as_dict().keys()
     assert restored.local == ['saved']
 
     cache = RetainedGui(graphics=False, state_registry=session.draw_state_registry)
@@ -181,14 +181,14 @@ def test_named_window_geometry_survives_restart_and_initial_does_not_pin():
         @cache.gui
         def root(input_value):
             view({'hello', 1}, name='view1', melty_window=True,
-                 initial={'width': 200, 'height': 90, 'window_pos': (10, 20)})
+                 initial={'width': 200, 'height': 90, 'left': 10, 'top': 20})
             view({'hello', 1}, name='view2', melty_window=True)
         return root, view
 
     cache = RetainedGui(graphics=False, state_registry=session.draw_state_registry)
     root, _ = bind(cache)
     with cache.frame(): root(None)
-    windows = tuple(cache.window_ids.values())
+    windows = tuple(cache.graph.windows())
     rectangles = ((55.25, 80.5, 420.75, 180.25), (510., 160., 350., 220.))
     for node, rect in zip(windows, rectangles):
         cache.graph.allocate(node, rect)
@@ -204,7 +204,7 @@ def test_named_window_geometry_survives_restart_and_initial_does_not_pin():
         cache = RetainedGui(graphics=False, state_registry=loaded.draw_state_registry)
         root, _ = bind(cache)
         with cache.frame(): root(None)
-        assert tuple(cache.graph.info(n)['rect'] for n in cache.window_ids.values()) == rectangles
+        assert tuple(cache.graph.info(n)['rect'] for n in cache.graph.windows()) == rectangles
         cache.close()
 
 
@@ -215,26 +215,26 @@ def test_explicit_window_geometry_wins_and_geometry_can_be_excluded():
         def view(input_value): pass
         return view
     cache = RetainedGui(graphics=False, state_registry=session.draw_state_registry)
-    view = bind(cache, ('window_pos', 'width', 'height'))
+    view = bind(cache, ('left', 'top', 'width', 'height'))
     with cache.frame(): view(None, melty_window=True)
-    node = next(iter(cache.window_ids.values()))
+    node = next(iter(cache.graph.windows()))
     cache.graph.allocate(node, (80, 90, 500, 250))
     cache.flush()
     cache.close()
     loaded = restore(session)
     state = next(iter(loaded.draw_state_registry.values()))
-    assert not {'window_pos', 'width', 'height'} & state.as_dict().keys()
+    assert not {'left', 'top', 'width', 'height'} & state.as_dict().keys()
 
     cache = RetainedGui(graphics=False, state_registry=loaded.draw_state_registry)
     view = bind(cache)
-    with cache.frame(): view(None, melty_window=True, width=450, height=200, window_pos=(60, 70))
-    node = next(iter(cache.window_ids.values()))
+    with cache.frame(): view(None, melty_window=True, width=450, height=200, left=60, top=70)
+    node = next(iter(cache.graph.windows()))
     assert cache.graph.info(node)['rect'] == (60, 70, 450, 200)
     cache.close()
     loaded = restore(loaded)
     cache = RetainedGui(graphics=False, state_registry=loaded.draw_state_registry)
     view = bind(cache)
-    with cache.frame(): view(None, melty_window=True, width=275, height=125, window_pos=(25, 35))
-    node = next(iter(cache.window_ids.values()))
+    with cache.frame(): view(None, melty_window=True, width=275, height=125, left=25, top=35)
+    node = next(iter(cache.graph.windows()))
     assert cache.graph.info(node)['rect'] == (25, 35, 275, 125)
     cache.close()

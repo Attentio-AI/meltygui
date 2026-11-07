@@ -47,4 +47,4 @@ def example_app():
         with layout.cell('content'):
             table(label='OS window table', key='native-table')
     table(label='Nested window table', key='nested-table', melty_window=True,
-          initial={'window_pos': (420, 240), 'width': 700, 'height': 460})
+          initial={'left': 420, 'top': 240, 'width': 700, 'height': 460})

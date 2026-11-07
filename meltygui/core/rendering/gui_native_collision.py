@@ -85,7 +85,7 @@ class NativeCollision:
         if not info['parent'] and not info['portal']:
             # The hosted root fills the surface below its native title strip.
             for axis,(graph,(n,f),(a,b)) in enumerate(zip(geometry.axes,self.pairs,pairs)):
-                gap=0. if axis==0 else geometry.cache.graph.info(node)['rect'][1]
+                gap=0. if axis==0 else geometry.cache.graph.rect(node)[1]
                 graph.replace_cells(serial+2*10**9,[(n,a,gap,gap),(b,f,0.,0.)])
         elif info['portal']:
             outer=geometry.windows.get(node)
@@ -133,9 +133,8 @@ class NativeCollision:
         geometry=self.geometry
         pairs=tuple(tuple(g.position(e) for e in p) for g,p in zip(geometry.axes,self.pairs))
         geometry.offset=tuple(p[0] for p in pairs)
-        geometry.cache._positions.clear()
         for node in geometry.cache.root_ids:
-            if node in geometry.frames and not geometry.cache.graph.info(node)['portal']:
+            if node in geometry.frames and not geometry.cache.graph.is_portal(node):
                 x,y,w,h=geometry.frame_rect(node)
                 rect=(x-geometry.offset[0],y-geometry.offset[1],max(1.,w),max(0.,h))
                 geometry.cache.graph.allocate(node,rect)

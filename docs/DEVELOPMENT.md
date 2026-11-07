@@ -5,6 +5,10 @@ boundaries and render-function contract. This page covers the environment and
 verification workflow. [Architecture gaps](ARCHITECTURE_DEBT.md) records the
 remaining migration work and deliberate deferrals.
 
+The opt-in Rust `@gui` work is documented in the
+[prototype overview and usage guide](GUI_PROTOTYPE.md), with
+[scrolling design and measurements](GUI_SCROLL_PROTOTYPE.md).
+
 ## Setup
 
 Linux x86-64 uses CPython 3.11, 3.12 or 3.13 and OpenGL 4.3. macOS on Apple

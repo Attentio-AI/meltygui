@@ -56,9 +56,16 @@ class ImGuiInput:
         self.pressed_keys = frozenset(i for i, down in enumerate(keys) if down)
         modifiers = tuple(getattr(io, 'key_' + name) for name in ('ctrl', 'shift', 'alt', 'super'))
         wheel = (io.mouse_wheel, io.mouse_wheel_horizontal)
+        scrolled = any(wheel) and not any(buttons) and self.cache.scroll_at(position, (-wheel[1]*40., -wheel[0]*40.))
+        if scrolled:
+            wheel = (0., 0.)
         old = self.sample
         self.sample = (position, buttons, keys, modifiers, wheel)
         self.text, self.characters = tuple(self.characters), []
+        # During a wheel gesture keep cached content frozen. Settle hover once
+        # the wheel stops; keyboard edits and captured widgets still get input.
+        if scrolled and old is not None and old[2:4] == self.sample[2:4] and not self.text and not self.active:
+            return
         previous_hover, previous_focus, previous_blur = self.hover, self.focus, self.blur
         self.blur = None
         self.hover = None if self.cache.drag else self.hit(position)

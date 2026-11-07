@@ -12,7 +12,7 @@ def test_retained_window_claims_drag_but_background_still_moves_host(position, c
     def view(input_value: object):
         return False, input_value
 
-    view(None, melty_window=True, window_pos=(50, 50))
+    view(None, melty_window=True, left=50, top=50)
     handler = InputHandler()
     handler.begin_frame()
     handler.register_hovered('os-background', ['non_blocking_left_mouse_dragged'], priority=10000)
@@ -282,7 +282,7 @@ def test_window_movement_is_compositor_only_and_does_not_poll_owners():
     owner(None)
     node = cache.graph.windows()[0]
     for x in range(20):
-        cache.graph.move_window(node, x, 30)
+        cache.states[node].left, cache.states[node].top = (x, 30)
         cache.flush()
     assert count == [2]
     assert cache.graph.info(node)['rect'][:2] == (19, 30)
@@ -310,7 +310,6 @@ def test_native_hit_query_matches_clipping_and_z_order_after_mutations():
     g.commit(upper, (False, None), False)
     g.commit(root, (False, None), False)
     def check():
-        cache._positions.clear()
         for x in range(-10, 300, 7):
             for y in range(-10, 300, 9):
                 portal = next((n for n in reversed(g.windows())
@@ -332,7 +331,7 @@ def test_native_hit_query_matches_clipping_and_z_order_after_mutations():
         check()
         g.raise_window(escaped)
         check()
-        g.move_window(escaped, -8.25, 12.5)
+        g.state(escaped).left, g.state(escaped).top = (-8.25, 12.5)
         g.allocate(root, (20.5, 40.25, 100, 90))
         check()
         g.retire(upper)

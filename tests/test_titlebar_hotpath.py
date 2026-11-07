@@ -10,6 +10,21 @@ from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.windowing import glfw_utils, titlebar
 
 
+def test_explicit_ownerless_controls_do_not_scan_view_states(monkeypatch):
+    monkeypatch.setattr(titlebar, '_hosted_frame', -1)
+    monkeypatch.setattr(Melty, 'frame_count', 42)
+    monkeypatch.setattr(Melty, 'channels_split', False)
+    monkeypatch.setattr(titlebar, 'controls_enabled', lambda: True)
+    monkeypatch.setattr(titlebar, '_button_layout', lambda width: ())
+    lookup = Mock(side_effect=AssertionError('unexpected registry scan'))
+    paint = Mock()
+    monkeypatch.setattr(titlebar, '_main_window_ds', lookup)
+    monkeypatch.setattr(titlebar, '_paint_buttons', paint)
+    titlebar.paint_window_controls(Mock(), owner=None)
+    lookup.assert_not_called()
+    paint.assert_called_once()
+
+
 @pytest.mark.parametrize('platform', ['darwin', 'win32'])
 def test_native_decoration_policy_needs_no_per_frame_platform_or_attribute_queries(monkeypatch, platform):
     monkeypatch.setattr(titlebar, 'sys', SimpleNamespace(platform=platform))

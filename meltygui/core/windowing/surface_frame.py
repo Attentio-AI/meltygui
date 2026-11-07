@@ -163,7 +163,14 @@ def draw_surface_frame(surface, *, transparent=False, chrome=False, request=None
         Melty.bg_stack.pop()
         Melty.bg_color_stack.pop()
         Melty.style_manager.set_imgui_tint(*previous_tint)
-    titlebar.paint_window_controls(draw_list)
+    if getattr(surface, '_gui_prototype', None) is not None:
+        # Native @gui has no legacy Main Window. Only mixed-in legacy hosts can
+        # supply a mask owner; never scan the native state registry to find one.
+        owner = next((state for entries in Melty.root_draw_states.values()
+                      for state in entries), None)
+        titlebar.paint_window_controls(draw_list, owner=owner)
+    else:
+        titlebar.paint_window_controls(draw_list)
     Melty.end_frame()
     if request is not None:
         Melty.finish_surface_root(request, surface)

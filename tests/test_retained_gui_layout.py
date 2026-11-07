@@ -68,7 +68,7 @@ def scene(model, *, fixed_parent=False, horizontal=False):
 
 def raster(cache, node):
     _, _, w, h = cache.graph.info(node)['rect']
-    return pixels(cache.gpu.texture(node), int(w), max(1, int(h)))
+    return pixels(cache.gpu.texture(node), math.ceil(w), max(1, math.ceil(h)))
 
 
 @pytest.mark.parametrize('fixed_parent', [False, True])
@@ -88,11 +88,11 @@ def test_grow_shrink_zero_and_fractional_match_full_render(graphics, fixed_paren
             cache.flush()
             assert ids == original_ids
             assert cache.gpu.texture(ids['leaf']) == texture
-            # ImGui snaps item extents to pixels; use its measured layout extent.
-            assert cache.graph.info(ids['leaf'])['rect'][3] == math.floor(height)
+            # Logical geometry retains fractions; only texture allocation rounds.
+            assert cache.graph.info(ids['leaf'])['rect'][3] == height
             assert calls['leaf'] == before['leaf'] + 1
             assert calls['sibling'] == before['sibling']
-            assert calls['owner'] == before['owner'] + int(old_leaf_h != math.floor(height))
+            assert calls['owner'] == before['owner'] + int(old_leaf_h != height)
             owner_h = cache.graph.info(ids['owner'])['rect'][3]
             assert calls['root'] == before['root'] + int(owner_h != old_owner_h)
             fresh, _, _, fresh_ids = scene(model, fixed_parent=fixed_parent, horizontal=horizontal)
@@ -205,13 +205,13 @@ def test_measured_portal_resize_does_not_reexecute_owner(graphics):
     def owner(input_value: object, cache=None):
         calls['owner'] += 1
         ids['owner'] = cache.current
-        portal(None, melty_window=True, initial={'window_pos': (200, 100)})
+        portal(None, melty_window=True, initial={'left': 200, 'top': 100})
         imgui.dummy(60, 12)
         return False, input_value
 
     try:
         owner(None)
-        cache.graph.move_window(ids['portal'], 250, 130)
+        cache.states[ids['portal']].left, cache.states[ids['portal']].top = (250, 130)
         height[0] = 45
         cache.invalidate_id(ids['portal'])
         cache.flush()

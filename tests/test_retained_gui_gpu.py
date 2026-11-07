@@ -93,14 +93,13 @@ def test_window_title_and_cached_body_move_on_the_same_pixel_grid(gl_context):
         ids['child']=cache.current
         imgui.text('Pixel sharp')
     @cache.gui(width=200,height=150)
-    def parent():child(melty_window=True,initial={'window_pos':(10.2,12.2)})
+    def parent():child(melty_window=True,initial={'left': 10.2, 'top': 12.2})
     try:
         parent()
         target=output.target(1,200,150)
         reference=None
         for x,y in ((10.2,12.2),(10.7,12.7),(30.35,45.8),(10.2,12.2)):
-            cache.graph.move_window(ids['child'],x,y)
-            cache._positions.clear()
+            cache.states[ids['child']].left, cache.states[ids['child']].top = (x, y)
             begin_frame()
             cache._begin_window(200,150)
             cache.present((0,0))
@@ -159,6 +158,94 @@ def test_native_packets_alpha_clipping_and_gl_state(gl_context):
     finally:
         cache.close()
         gl.glDeleteTextures([white])
+
+
+@pytest.mark.parametrize('warm_height', [None, 100])
+def test_recursive_auto_height_scroll_survives_recapture(gl_context, warm_height):
+    cache = RetainedGui()
+    ids = {}
+    calls = []
+    requested_height = [warm_height]
+
+    @cache.gui(width=100, height=None, tint=(0., 1., 0., 1.))
+    def nested(input_value=None, v_depth=0, height=None):
+        calls.append(v_depth)
+        if v_depth == 0:
+            ids['child'] = cache.current
+        for _ in range(3):
+            if v_depth < 4:
+                nested(v_depth=v_depth + 1, height=None)
+            else:
+                imgui.text('4')
+
+    @cache.gui(width=100, height=200, scroll=True)
+    def viewport(draw_state=None):
+        ids['root'] = cache.current
+        nested(height=requested_height[0])
+        return False, draw_state
+
+    try:
+        state = viewport()[1]
+        requested_height[0] = None
+        cache.invalidate(nested)
+        cache.invalidate_id(ids['root'])
+        cache.flush()
+        height = cache.graph.rect(ids['child'])[3]
+        assert height > 3000
+        for offset in (0, 240, 360, 1200, 3000, 0):
+            state.scroll_offset = (0, offset)
+            # Recapturing the tree must not corrupt its spatial index.
+            cache.invalidate(nested)
+            cache.invalidate_id(ids['root'])
+            cache.flush()
+            assert cache.graph.rect(ids['child'])[3] == height
+            assert [c[0] for c in cache.graph.visible_children(ids['root'])] == [ids['child']]
+            output = pixels(cache.gpu.texture(ids['root']), 100, 200)
+            assert output[100, 90, 1] == 255
+            count = len(calls)
+            cache.flush()
+            assert len(calls) == count
+    finally:
+        cache.close()
+
+
+def test_scroll_tile_captures_nested_children_beyond_viewport(gl_context):
+    cache = RetainedGui()
+    calls = []
+    ids = {}
+
+    @cache.gui(width=40, height=20)
+    def leaf():
+        calls.append('leaf')
+        imgui.get_window_draw_list().add_rect_filled(0, 0, 40, 20, 0xFF0000FF)
+
+    @cache.gui(width=40, height=120)
+    def tile(input_value):
+        calls.append(input_value)
+        imgui.set_cursor_screen_pos((0, 80))
+        leaf()
+
+    @cache.gui(width=40, height=40, scroll=True)
+    def viewport(draw_state=None):
+        ids['viewport'] = cache.current
+        tile('visible', left=0, top=0)
+        tile('hidden', left=0, top=120)
+        return False, draw_state
+
+    try:
+        state = viewport()[1]
+        assert calls == ['visible', 'leaf']
+        state.scroll_offset = (0, 80)
+        cache.flush()
+        output = pixels(cache.gpu.texture(ids['viewport']), 40, 40)
+        assert output[30, 10, 0] == 255
+        assert output[30, 10, 1] == 0
+        assert calls == ['visible', 'leaf']
+        state.scroll_offset = (0, 120)
+        cache.flush()
+        assert calls == ['visible', 'leaf', 'hidden', 'leaf']
+    finally:
+        cache.close()
 
 
 def test_child_texture_updates_without_ancestor_execution_and_window_retires(gl_context):

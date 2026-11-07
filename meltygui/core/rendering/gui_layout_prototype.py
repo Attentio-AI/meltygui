@@ -73,6 +73,7 @@ class GuiGeometry:
         self.cache = cache
         self.axes = (EdgeGraph(), EdgeGraph())
         self.layouts = {}
+        self.owner_layouts = {}
         self.frames = {}
         self.bindings = {}
         self.staged = {}
@@ -100,12 +101,18 @@ class GuiGeometry:
             return self.offset
         if node in self.frames:return self.frame_rect(node)[:2]
         if node in self.bindings:return self.cell_rect(*self.bindings[node])[:2]
-        info=self.cache.graph.info(node)
-        x,y=self.projected_position(info['parent'])
-        return x+info['rect'][0],y+info['rect'][1]+(28 if info['portal'] else 0)
+        graph=self.cache.graph
+        parent=graph.parent(node)
+        x,y=self.projected_position(parent)
+        if parent:
+            sx,sy=graph.state(parent).scroll_offset
+            x,y=x-sx,y-sy
+        state=graph.state(node)
+        px,py=state.left,state.top;ox,oy=state.content_offset
+        return x+px+ox,y+py+oy
 
     def carry_origin(self,node):
-        parent=self.cache.graph.info(node)['parent']
+        parent=self.cache.graph.parent(node)
         position=self.projected_position(parent)
         if self.portal(parent) is None:
             # Native near-edge resize rebases local coordinates; the Rust
@@ -127,7 +134,7 @@ class GuiGeometry:
 
     def carry_windows(self,baseline):
         for node in sorted(self.windows,key=self.depth):
-            parent=self.cache.graph.info(node)['parent']
+            parent=self.cache.graph.parent(node)
             if not parent:continue
             old=baseline[node]
             new=self.carry_origin(node)
@@ -178,7 +185,7 @@ class GuiGeometry:
         binding = self.bindings.get(node)
         if node not in self.frames:
             x, y = self.position(node)
-            _, _, w, h = self.cache.graph.info(node)['rect']
+            _, _, w, h = self.cache.graph.rect(node)
             serial = self._id()
             pairs = tuple((g.edge(serial, 'near', p), g.edge(serial, 'far', p+s))
                           for g, p, s in zip(self.axes, (x,y), (w,h)))
@@ -194,7 +201,27 @@ class GuiGeometry:
             self.native.connect(node)
         return self.frames[node][1]
 
+    def sync_projection(self, node):
+        owner=self._frame_owner(node)
+        if owner not in self.frames:return
+        current=self.frame_rect(owner)
+        desired=self.position(owner)
+        for axis,graph in enumerate(self.axes):
+            delta=desired[axis]-current[axis]
+            if not delta:continue
+            edges={e for child,(serial,_,_) in self.frames.items() if self._frame_owner(child)==owner
+                   for e in graph.owner_edges(serial)}
+            edges.update(e for layout in self.layouts.values() if self._frame_owner(layout.owner)==owner
+                         for e in graph.owner_edges(layout.serial))
+            graph.set_positions({e:graph.position(e)+delta for e in edges})
+
+    def projection_delta(self, node):
+        live=self.position(node);projected=self.projected_position(node)
+        return live[0]-projected[0],live[1]-projected[1]
+
     def begin(self, node):
+        if not self.transactions and self.gesture is None:
+            for window in self.windows:self.sync_projection(window)
         # Prototype transactions favor correctness over copying cost. Geometry
         # commits with the declaration owner; failed bodies leave no dividers.
         saved = {}
@@ -209,7 +236,7 @@ class GuiGeometry:
             serial, pairs, old = self.frames[node]
             old=self.frame_rect(node)
             x, y = self.position(node)
-            _, _, w, h = self.cache.graph.info(node)['rect']
+            _, _, w, h = self.cache.graph.rect(node)
             rect = (x,y,w,h)
             if rect != old:
                 for axis, (graph, pair) in enumerate(zip(self.axes, pairs)):
@@ -230,7 +257,7 @@ class GuiGeometry:
 
     def captured(self,node):
         if node not in self.frames:return
-        _,_,w,h=self.cache.graph.info(node)['rect']
+        _,_,w,h=self.cache.graph.rect(node)
         for graph,(near,far),size in zip(self.axes,self.frames[node][1],(w,h)):
             graph.solve(far,graph.position(near)+size,[near])
 
@@ -243,7 +270,7 @@ class GuiGeometry:
                 self.bindings.pop(child)
         graph = self.cache.graph
         for window in sorted((w for w in self.windows if graph.contains(w)),key=self.depth):
-            parent=self.cache.graph.info(window)['parent']
+            parent=self.cache.graph.parent(window)
             if window!=node and self.descendant(parent,node):
                 desired=self.position(window)
                 current=self.frame_rect(window)
@@ -260,6 +287,8 @@ class GuiGeometry:
         if snapshot:
             self.axes, saved, self.frames, self.bindings, self.windows = snapshot
             self.layouts = {key:layout for key,(layout,state) in saved.items()}
+            self.owner_layouts = {}
+            for key,layout in self.layouts.items():self.owner_layouts.setdefault(layout.owner,set()).add(key)
             for layout,state in saved.values():
                 layout.__dict__.update(state)
 
@@ -324,6 +353,7 @@ class GuiGeometry:
             edges.append(pair[1])
             layout = Layout(self,owner,identity,serial,axis,keys,edges,cross,float(padding),minima,maxima)
             self.layouts[identity] = layout
+            self.owner_layouts.setdefault(owner,set()).add(identity)
         graph.replace_cells(layout.serial, [(a,b,float(lo),None if hi is None else float(hi))
                             for a,b,lo,hi in zip(layout.edges,layout.edges[1:],minima,maxima)])
         layout.cross, layout.padding = cross, float(padding)
@@ -411,38 +441,41 @@ class GuiGeometry:
         for node in sorted((n for n in self.windows if graph.contains(n)),key=lambda n:self.depth(n)):
             if node not in cache.records:continue
             x,y,w,h=self.frame_rect(node)
-            parent=cache.graph.info(node)['parent']
+            parent=cache.graph.parent(node)
             ox,oy=self.position(parent) if parent else self.offset
-            rect=(x-ox,y-oy-28,max(1.,w),max(0.,h))
-            if cache.graph.allocate(node,rect):cache._positions.clear()
-            value,args=cache.invocations[node]
-            cache.invocations[node]=(value,{**args,'width':rect[2],'height':rect[3]})
+            sx,sy=cache.graph.state(parent).scroll_offset if parent else (0.,0.)
+            cx,cy=cache.graph.state(node).content_offset
+            rect=(x-ox+sx-cx,y-oy+sy-cy,max(1.,w),max(0.,h))
+            cache.graph.allocate(node,rect)
         for node,(layout,index) in tuple(self.bindings.items()):
             if not graph.contains(node) or not graph.contains(layout.owner): continue
             x,y,w,h=self.cell_rect(layout,index)
+            dx,dy=self.projection_delta(layout.owner)
+            x,y=x+dx,y+dy
             ox,oy=self.position(layout.owner)
-            rect=(x-ox,y-oy,max(1.,w),h)
+            sx,sy=cache.graph.state(layout.owner).scroll_offset
+            cx,cy=cache.graph.state(node).content_offset
+            rect=(x-ox+sx-cx,y-oy+sy-cy,max(1.,w),h)
             freeze=(self.gesture and cache.invocations[node][1].get('freeze_resize',False)
                     and (node in self.frozen or not cache.graph.dirty(node))
                     and not cache.graph.pending(node) and node not in cache.events)
             if cache.graph.allocate(node,rect):
                 if freeze:self.frozen.add(node)
-                cache._positions.clear()
                 cache._last_pointer=None
-                if node in cache.invocations:
-                    value,args=cache.invocations[node]
-                    cache.invocations[node]=(value,{**args,'width':rect[2],'height':h})
-            if cache.graphics and cache.gpu and node in cache.states:
+            if cache.graphics and cache.gpu and node in cache.backgrounds:
                 cache.gpu.place_child(layout.owner,node,rect,(x-ox,y-oy,x-ox+w,y-oy+h))
 
     def depth(self,node):
         depth=0
         while node:
             depth+=1
-            node=self.cache.graph.info(node)['parent']
+            node=self.cache.graph.parent(node)
         return depth
 
     def drag(self, layout, index, displacement, *, token=1):
+        if self.gesture is None:
+            for window in self.windows:self.sync_projection(window)
+            self.sync_projection(layout.owner)
         graph=self.axes[layout.axis]
         root=self._frame_owner(layout.owner)
         key=(token,layout.serial,index,tuple(g.stats()[2] for g in self.axes))
@@ -459,24 +492,17 @@ class GuiGeometry:
         return changed
 
     def portal(self,node):
-        while node:
-            info=self.cache.graph.info(node)
-            if info['portal']:return node
-            node=info['parent']
-        return None
+        return self.cache.graph.portal_owner(node)
 
     def hit(self,x,y):
-        portal=None
-        for node in reversed(self.cache.graph.windows()):
-            px,py,w,h=self.cache.window_rect(node)
-            px+=self.offset[0];py+=self.offset[1]
-            if px<=x<px+w and py<=y<py+h+28:
-                portal=node;break
+        portal,hits=self.cache.graph.hits(x-self.offset[0],y-self.offset[1])
         layouts=[]
-        for layout in reversed(tuple(self.layouts.values())):
-            if self.portal(layout.owner)!=portal:continue
-            rx,ry,w,h=self.layout_rect(layout)
-            if rx<=x<rx+w and ry<=y<ry+h:layouts.append(layout)
+        for node,_,_ in hits:
+            for key in reversed(sorted(self.owner_layouts.get(node,()),key=lambda k:self.layouts[k].serial)):
+                layout=self.layouts[key]
+                dx,dy=self.projection_delta(node)
+                rx,ry,w,h=self.layout_rect(layout)
+                if rx+dx<=x<rx+dx+w and ry+dy<=y<ry+dy+h:layouts.append(layout)
         return portal,layouts
 
     def pointer(self, position, *, down=False, pressed=False, released=False,
@@ -495,6 +521,9 @@ class GuiGeometry:
         if self.gesture and self.gesture['versions']!=tuple(g.stats()[2] for g in self.axes):
             self.end_gesture()
         portal,layouts=self.hit(*point)
+        if not self.gesture and (pressed or right_pressed):
+            for window in self.windows:self.sync_projection(window)
+            for layout in layouts:self.sync_projection(layout.owner)
         # Unclaimed native background belongs to the host's WM move gesture.
         # Driving it through os_frame queues a next-frame surface move and mixes
         # asynchronous native origins with local pointer samples. Only retained
@@ -585,7 +614,7 @@ class GuiGeometry:
     def descendant(self,node,ancestor):
         while node:
             if node==ancestor:return True
-            node=self.cache.graph.info(node)['parent']
+            node=self.cache.graph.parent(node)
         return False
 
     def invalidate_raw(self):
@@ -609,19 +638,32 @@ class GuiGeometry:
             for axis in range(2):
                 at=position[axis]+origin[axis]
                 shift[axis]+=math.floor(at+.5)-at
-        for layout in self.layouts.values():
-            if self.portal(layout.owner)!=portal:continue
-            rx,ry,w,h=self.layout_rect(layout)
-            rx+=shift[0];ry+=shift[1]
-            left,top,right,bottom=(math.floor(v+.5) for v in (rx,ry,rx+w,ry+h))
-            for edge in layout.edges[1:-1]:
-                at=math.floor(self.axes[layout.axis].position(edge)+shift[layout.axis]+.5)
-                if layout.axis==0:draw_list.add_rect_filled(at-1,top,at+1,bottom,0xFF777777)
-                else:draw_list.add_rect_filled(left,at-1,right,at+1,0xFF777777)
+        if not self.layouts:return
+        for node in self.cache.graph.visible_nodes():
+            if self.portal(node)!=portal:continue
+            keys=self.owner_layouts.get(node,())
+            if not keys:continue
+            clip=self.cache.graph.clip_rect(node)
+            if clip[2]<=clip[0] or clip[3]<=clip[1]:continue
+            dx,dy=self.projection_delta(node)
+            draw_list.push_clip_rect(clip[0]+origin[0],clip[1]+origin[1],clip[2]+origin[0],clip[3]+origin[1],True)
+            try:
+                for key in keys:
+                    layout=self.layouts[key]
+                    rx,ry,w,h=self.layout_rect(layout)
+                    rx+=shift[0]+dx;ry+=shift[1]+dy
+                    left,top,right,bottom=(math.floor(v+.5) for v in (rx,ry,rx+w,ry+h))
+                    for edge in layout.edges[1:-1]:
+                        at=math.floor(self.axes[layout.axis].position(edge)+shift[layout.axis]+(dx,dy)[layout.axis]+.5)
+                        if layout.axis==0:draw_list.add_rect_filled(at-1,top,at+1,bottom,0xFF777777)
+                        else:draw_list.add_rect_filled(left,at-1,right,at+1,0xFF777777)
+            finally:draw_list.pop_clip_rect()
 
     def remove_layout(self, identity):
         layout=self.layouts.pop(identity,None)
         if layout is None:return
+        self.owner_layouts[layout.owner].discard(identity)
+        if not self.owner_layouts[layout.owner]:self.owner_layouts.pop(layout.owner)
         dependents=self.axes[layout.axis].remove(layout.serial)
         for key,other in tuple(self.layouts.items()):
             if other.serial in dependents:self.remove_layout(key)

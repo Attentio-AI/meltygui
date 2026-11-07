@@ -31,7 +31,7 @@ def test_table_move_resize_and_native_origin_changes(monkeypatch,moving,point,na
         # rebase. This was the original demo shape that grew 60px on every pass.
         demo['table'](label='OS table',width=draw_state.width,height=draw_state.height)
         demo['table'](key='nested',label='Nested',melty_window=True,
-                      initial={'window_pos':(420,240),'width':700,'height':460})
+                      initial={'left': 420, 'top': 240,'width':700,'height':460})
 
     root=demo['example_app'] if fill_cell else ordinary_parent
     begin_frame()

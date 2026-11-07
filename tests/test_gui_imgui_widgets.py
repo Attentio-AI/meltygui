@@ -284,7 +284,7 @@ def test_portal_widgets_occlude_underlying_views(cache):
 
     control(label='background')
     control(key='portal', label='portal', melty_window=True,
-            initial={'window_pos': (0, 0)})
+            initial={'left': 0, 'top': 0})
     click(cache, (10, 38))  # portal content starts after its 28px titlebar
     assert clicks == ['portal']
     assert cache.imgui_input.hit((10, 10)) is None  # titlebar is not a widget

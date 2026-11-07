@@ -3,7 +3,9 @@ use pyo3::class::gc::{PyTraverseError, PyVisit};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyString, PyTuple};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use crate::geometry::{Geometry, POSITION, SIZE, SCROLL, CONTENT};
+use crate::{NativeState, Value};
 
 struct Node {
     identity: Py<PyAny>,
@@ -20,8 +22,11 @@ struct Node {
     portal: bool,
     // Keep logical geometry at collision-solver precision: rounded captures
     // would otherwise feed changed spans back into shared layout edges.
-    rect: (f64, f64, f64, f64),
-    constraints: (f64, f64), // negative height requests content measurement
+    auto_height: bool,
+    rendered_size: (f64,f64),
+    depth: usize,
+    scrollable: bool,
+    in_scroll: bool,
     layout_changes: u64,
     z: u64,
     executions: u64,
@@ -54,29 +59,19 @@ pub struct RetainedGraph {
     rank: u64,
     aliases: HashMap<String, HashSet<u64>>,
     retired: Vec<u64>,
+    geometry: Geometry,
+    dirty_set: HashSet<u64>,
+    unclipped_dirty: HashSet<u64>,
+    compose_set: HashSet<u64>,
+    portals: BTreeSet<(u64,u64)>,
+    placements: HashMap<u64, HashSet<u64>>,
 }
 
 impl RetainedGraph {
-    fn position(&self, id: u64, positions: &mut HashMap<u64, (f64, f64)>) -> (f64, f64) {
-        if let Some(p) = positions.get(&id) {
-            return *p;
-        }
-        let n = &self.nodes[&id];
-        let (px, py) = if n.parent != 0 {
-            self.position(n.parent, positions)
-        } else {
-            (0., 0.)
-        };
-        let p = (
-            px + n.rect.0,
-            py + n.rect.1 + if n.portal { 28. } else { 0. },
-        );
-        positions.insert(id, p);
-        p
-    }
     fn composition(&mut self, mut id: u64) {
         while let Some(node) = self.nodes.get_mut(&id) {
             node.compose = true;
+            if node.executions>0 {self.compose_set.insert(id);}
             if node.portal {
                 break;
             }
@@ -85,6 +80,10 @@ impl RetainedGraph {
     }
     fn remove_node(&mut self, py: Python<'_>, id: u64) -> PyResult<()> {
         if let Some(n) = self.nodes.remove(&id) {
+            self.placements.remove(&id);
+            if let Some(children)=self.placements.get_mut(&n.parent) {children.remove(&id);}
+            self.geometry.remove(py,id);
+            self.dirty_set.remove(&id);self.unclipped_dirty.remove(&id);self.compose_set.remove(&id);self.portals.remove(&(n.z,id));
             for child in n.children {
                 self.remove_node(py, child)?;
             }
@@ -101,13 +100,36 @@ impl RetainedGraph {
         }
         Ok(())
     }
-    fn depth(&self, mut id: u64) -> usize {
-        let mut depth = 0;
-        while let Some(n) = self.nodes.get(&id) {
-            depth += 1;
-            id = n.parent;
+    fn depth(&self, id:u64) -> usize { self.nodes.get(&id).map_or(0,|n|n.depth) }
+    fn sync(&mut self, py: Python<'_>) {
+        for (id, flags) in self.geometry.sync(py) {
+            if !self.nodes.contains_key(&id) {continue;}
+            let parent=self.nodes[&id].parent;
+            if parent!=0 && !self.nodes[&id].portal && flags & (POSITION|SIZE)!=0 {
+                self.placements.entry(parent).or_default().insert(id);
+            }
+            if flags & (SIZE|CONTENT)!=0 && self.nodes[&id].declared.is_none() {self.invalidate_node(id);}
+            if flags & (SIZE|SCROLL|CONTENT)!=0 {self.composition(id);}
+            if flags & POSITION!=0 && !self.nodes[&id].portal {self.composition(parent);}
         }
-        depth
+    }
+    fn collect_visible(&mut self, py: Python<'_>, id:u64, out:&mut Vec<u64>) {
+        out.push(id);
+        for child in self.geometry.visible_children(py,id) {
+            if !self.nodes[&child].portal {self.collect_visible(py,child,out);}
+        }
+    }
+    fn hit_branch(&mut self, py: Python<'_>, id:u64, x:f64,y:f64, origin:(f64,f64), out:&mut Vec<(u64,f64,f64)>) {
+        let r=self.geometry.rect(py,id);
+        if x<origin.0 || y<origin.1 || x>=origin.0+r.2 || y>=origin.1+r.3 {return;}
+        let scroll=self.geometry.scroll(py,id);
+        let local=(x-origin.0+scroll.0,y-origin.1+scroll.1);
+        for child in self.geometry.children(py,id,(local.0,local.1,0.000001,0.000001)).into_iter().rev() {
+            if self.nodes[&child].portal {continue;}
+            let c=self.geometry.rect(py,child);let o=self.geometry.offset(py,child);
+            self.hit_branch(py,child,x,y,(origin.0-scroll.0+c.0+o.0,origin.1-scroll.1+c.1+o.1),out);
+        }
+        out.push((id,origin.0,origin.1));
     }
 }
 
@@ -122,9 +144,16 @@ impl RetainedGraph {
             rank: 0,
             aliases: HashMap::new(),
             retired: vec![],
+            geometry: Geometry::default(),
+            dirty_set: HashSet::new(),
+            unclipped_dirty: HashSet::new(),
+            compose_set: HashSet::new(),
+            portals: BTreeSet::new(),
+            placements: HashMap::new(),
         }
     }
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (parent, renderer, key, input, kwargs, rect, portal, state=None, scrollable=false))]
     fn declare(
         &mut self,
         py: Python<'_>,
@@ -135,7 +164,12 @@ impl RetainedGraph {
         kwargs: Py<PyDict>,
         rect: (f64, f64, f64, f64),
         portal: bool,
+        state: Option<Py<NativeState>>,
+        scrollable: bool,
     ) -> PyResult<u64> {
+        self.sync(py);
+        let supplied_state=state.is_some();
+        let in_scroll=scrollable || self.nodes.get(&parent).is_some_and(|n|n.in_scroll);
         if parent != 0 && !self.nodes.contains_key(&parent) {
             return Err(PyRuntimeError::new_err("missing owner"));
         }
@@ -147,6 +181,20 @@ impl RetainedGraph {
             self.rank += 1;
             let id = self.serial;
             self.identities.bind(py).set_item(&identity, id)?;
+            let state=match state {Some(s)=>s,None=>Py::new(py,NativeState::py_new())?};
+            {
+                let mut state=state.borrow_mut(py);
+                if !supplied_state {
+                    state.put("left",Value::Float(rect.0));state.put("top",Value::Float(rect.1));
+                    state.put("width",Value::Float(rect.2));state.put("height",Value::Float(rect.3.max(0.)));
+                }
+                if state.lookup("scroll_offset").is_none() {state.put("scroll_offset",Value::Point(0.,0.));}
+                if state.lookup("content_offset").is_none() {state.put("content_offset",Value::Point(0.,if portal {28.}else{0.}));}
+            }
+            self.geometry.attach(py,id,parent,state);
+            self.dirty_set.insert(id);
+            if !in_scroll {self.unclipped_dirty.insert(id);}
+            if portal {self.portals.insert((self.rank,id));}
             self.nodes.insert(
                 id,
                 Node {
@@ -162,8 +210,11 @@ impl RetainedGraph {
                     dirty: true,
                     compose: true,
                     portal,
-                    rect: (rect.0, rect.1, rect.2, rect.3.max(0.0)),
-                    constraints: (rect.2, rect.3),
+                    auto_height: rect.3<0.,
+                    rendered_size: (rect.2,rect.3.max(0.)),
+                    depth: self.depth(parent)+1,
+                    scrollable,
+                    in_scroll,
                     layout_changes: 0,
                     z: self.rank,
                     executions: 0,
@@ -189,14 +240,19 @@ impl RetainedGraph {
         // Argument change detection is supplied by the bridge: identity/scalar checks,
         // never content hashing or inspection of arbitrary mutable Python objects.
         let node = self.nodes.get_mut(&id).unwrap();
-        if node.portal != portal || node.constraints != (rect.2, rect.3) {
-            node.dirty = true;
+        if node.portal != portal || node.scrollable != scrollable || node.auto_height != (rect.3<0.) {
+            node.dirty = true;self.dirty_set.insert(id);if !in_scroll {self.unclipped_dirty.insert(id);}
         }
-        node.constraints = (rect.2, rect.3);
-        node.portal = portal;
-        if !portal {
-            node.rect.0 = rect.0;
-            node.rect.1 = rect.1;
+        if node.portal != portal {
+            if portal {self.portals.insert((node.z,id));} else {self.portals.remove(&(node.z,id));}
+        }
+        node.auto_height = rect.3<0.;
+        node.portal = portal;node.scrollable=scrollable;node.in_scroll=in_scroll;
+        if !supplied_state {
+            let state=self.geometry.state(py,id);let mut state=state.borrow_mut(py);
+            if !portal {state.put("left",Value::Float(rect.0));state.put("top",Value::Float(rect.1));}
+            state.put("width",Value::Float(rect.2));
+            if rect.3>=0. {state.put("height",Value::Float(rect.3));}
         }
         if !node.pending {
             // A caller can echo its pre-edit scalar while processing a returned
@@ -212,14 +268,20 @@ impl RetainedGraph {
         node.kwargs = kwargs;
         Ok(id)
     }
-    fn invocation(&self, py: Python<'_>, id: u64) -> PyResult<(Py<PyAny>, Py<PyDict>)> {
+    fn invocation(&mut self, py: Python<'_>, id: u64) -> PyResult<(Py<PyAny>, Py<PyDict>)> {
         let n = self
             .nodes
             .get(&id)
             .ok_or_else(|| PyRuntimeError::new_err("retired view"))?;
-        Ok((n.input.clone_ref(py), n.kwargs.clone_ref(py)))
+        let args=n.kwargs.bind(py).copy()?;
+        let r=self.geometry.rect(py,id);
+        args.set_item("width",r.2)?;
+        if n.auto_height {args.set_item("height",py.None())?;} else {args.set_item("height",r.3)?;}
+        args.set_item("left",r.0)?;args.set_item("top",r.1)?;
+        args.set_item("scroll_offset",self.geometry.scroll(py,id))?;
+        Ok((n.input.clone_ref(py),args.unbind()))
     }
-    fn begin(&mut self, id: u64) -> PyResult<()> {
+    fn begin(&mut self, py:Python<'_>, id: u64) -> PyResult<()> {
         let n = self
             .nodes
             .get_mut(&id)
@@ -228,12 +290,17 @@ impl RetainedGraph {
             return Err(PyRuntimeError::new_err("recursive retained-node execution"));
         }
         n.declared = Some(vec![]);
+        let rect=self.geometry.rect(py,id);
+        n.rendered_size=(rect.2,rect.3);
         n.dirty = false;
+        self.dirty_set.remove(&id);self.unclipped_dirty.remove(&id);
+        self.geometry.state(py,id).borrow_mut(py).rendering=true;
         Ok(())
     }
     fn abort(&mut self, py: Python<'_>, id: u64) -> PyResult<()> {
         if let Some(n) = self.nodes.get_mut(&id) {
-            n.dirty = true;
+            n.dirty = true;self.dirty_set.insert(id);if !n.in_scroll {self.unclipped_dirty.insert(id);}
+            self.geometry.state(py,id).borrow_mut(py).rendering=false;
             let staged = n.declared.take().unwrap_or_default();
             let abandoned: Vec<_> = staged
                 .into_iter()
@@ -268,6 +335,8 @@ impl RetainedGraph {
             .copied()
             .collect();
         n.children = fresh;
+        self.geometry.state(py,id).borrow_mut(py).rendering=false;
+        self.geometry.extent(py,id,&n.children);
         n.executions += 1;
         n.value = result.get_item(1)?.unbind();
         if changed {
@@ -284,6 +353,7 @@ impl RetainedGraph {
         if changed && independent {
             if let Some(p) = self.nodes.get_mut(&parent) {
                 p.dirty = true;
+                self.dirty_set.insert(parent);if !p.in_scroll {self.unclipped_dirty.insert(parent);}
             }
         }
         Ok(())
@@ -302,40 +372,32 @@ impl RetainedGraph {
     fn dirty(&self, id: u64) -> bool {
         self.nodes.get(&id).is_some_and(|n| n.dirty)
     }
-    fn measured(&mut self, id: u64, width: f64, height: f64) -> PyResult<bool> {
-        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height < 0.0 {
-            return Err(PyRuntimeError::new_err("invalid measured extent"));
-        }
-        let n = self
-            .nodes
-            .get_mut(&id)
-            .ok_or_else(|| PyRuntimeError::new_err("retired view"))?;
-        if (n.rect.2, n.rect.3) == (width, height) {
-            return Ok(false);
-        }
-        n.rect.2 = width;
-        n.rect.3 = height;
-        n.layout_changes += 1;
-        let parent = n.parent;
-        let portal = n.portal;
-        self.composition(id);
-        // Only the immediate layout consumer must execute. A currently executing
-        // owner consumes the new extent at its call site. Portals occupy no space.
-        if !portal {
-            if let Some(owner) = self.nodes.get_mut(&parent) {
-                if owner.declared.is_none() {
-                    owner.dirty = true;
+    fn measured(&mut self, py:Python<'_>, id:u64, width:f64,height:f64)->PyResult<bool> {
+        if !width.is_finite() || !height.is_finite() || width<=0. || height<0. {return Err(PyRuntimeError::new_err("invalid measured extent"));}
+        let n=self.nodes.get_mut(&id).ok_or_else(||PyRuntimeError::new_err("retired view"))?;
+        let changed=n.rendered_size!=(width,height);
+        n.rendered_size=(width,height);
+        let parent=n.parent;let portal=n.portal;
+        let state=self.geometry.state(py,id);let mut state=state.borrow_mut(py);
+        state.put("width",Value::Float(width));state.put("height",Value::Float(height));drop(state);
+        if let Some(flags)=self.geometry.changes.borrow_mut().get_mut(&id) {*flags &= !SIZE;}
+        if changed {
+            n.layout_changes+=1;self.geometry.refresh(py,id);self.composition(id);
+            if !portal {
+                if let Some(owner)=self.nodes.get_mut(&parent) {
+                    if owner.declared.is_none() && !owner.scrollable {owner.dirty=true;self.dirty_set.insert(parent);if !owner.in_scroll {self.unclipped_dirty.insert(parent);}}
                 }
             }
         }
-        Ok(true)
+        Ok(changed)
     }
     fn pending(&self, id: u64) -> bool {
         self.nodes.get(&id).is_some_and(|n| n.pending)
     }
+    fn in_scroll(&self, id:u64)->bool {self.nodes.get(&id).is_some_and(|n|n.in_scroll)}
     fn invalidate_node(&mut self, id: u64) {
         if let Some(n) = self.nodes.get_mut(&id) {
-            n.dirty = true;
+            n.dirty = true;self.dirty_set.insert(id);if !n.in_scroll {self.unclipped_dirty.insert(id);}
         }
     }
     fn associate(&mut self, id: u64, key: String, anchor: Py<PyAny>) {
@@ -373,83 +435,124 @@ impl RetainedGraph {
         }
         count
     }
-    fn dirty_nodes(&self) -> Vec<u64> {
-        let mut ids: Vec<_> = self
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.dirty)
-            .map(|(id, _)| *id)
-            .collect();
-        ids.sort_by_key(|id| (self.depth(*id), *id));
-        ids
+    fn dirty_nodes(&mut self,py:Python<'_>) -> Vec<u64> {
+        self.sync(py);
+        if self.dirty_set.is_empty() {return vec![];}
+        let mut visible=vec![];
+        for id in self.geometry.roots() {if !self.nodes[&id].portal {self.collect_visible(py,id,&mut visible);}}
+        for id in self.windows() {self.collect_visible(py,id,&mut visible);}
+        visible.retain(|id|self.dirty_set.contains(id));
+        visible.extend(self.unclipped_dirty.iter().copied());
+        visible.sort_unstable();visible.dedup();
+        visible.sort_by_key(|id|(self.depth(*id),*id));visible
     }
-    fn composition_order(&self) -> Vec<u64> {
-        let mut ids: Vec<_> = self
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.compose && n.executions > 0)
-            .map(|(id, _)| *id)
-            .collect();
-        ids.sort_by_key(|id| (std::cmp::Reverse(self.depth(*id)), *id));
-        ids
+    fn composition_order(&mut self,py:Python<'_>) -> Vec<u64> {
+        self.sync(py);
+        let mut ids:Vec<_>=self.compose_set.iter().copied().filter(|id| self.nodes[id].executions>0).collect();
+        ids.sort_by_key(|id|(std::cmp::Reverse(self.depth(*id)),*id));ids
     }
     fn composed(&mut self, id: u64) {
         if let Some(n) = self.nodes.get_mut(&id) {
-            n.compose = false;
+            n.compose = false;self.compose_set.remove(&id);
         }
     }
-    fn move_window(&mut self, id: u64, x: f64, y: f64) {
-        if let Some(n) = self.nodes.get_mut(&id) {
-            if n.portal {
-                n.rect.0 = x;
-                n.rect.1 = y;
+    fn take_placements(&mut self,py:Python<'_>,parent:u64)->Vec<(u64,f64,f64,f64,f64)> {
+        self.sync(py);
+        self.placements.remove(&parent).unwrap_or_default().into_iter()
+            .filter(|id|self.nodes.contains_key(id)).map(|id|{
+                let r=self.geometry.rect(py,id);
+                (id,r.0,r.1,r.2,r.3)
+            }).collect()
+    }
+    fn state(&self,py:Python<'_>,id:u64) -> Py<NativeState> {self.geometry.state(py,id)}
+    #[pyo3(signature = (id, **parameters))]
+    fn set_parameters(&mut self,py:Python<'_>,id:u64,parameters:Option<&Bound<'_,PyDict>>)->PyResult<()> {
+        if !self.nodes.contains_key(&id) {return Err(PyRuntimeError::new_err("retired view"));}
+        if let Some(parameters)=parameters {
+            let state=self.geometry.state(py,id);let mut state=state.borrow_mut(py);
+            for (name,value) in parameters.iter() {state.__setattr__(&name.extract::<String>()?,&value)?;}
+        }
+        self.sync(py);Ok(())
+    }
+    #[pyo3(signature = (id, relative_to=0, content=false))]
+    fn origin(&mut self,py:Python<'_>,id:u64,relative_to:u64,content:bool)->PyResult<(f64,f64)> {
+        if !self.nodes.contains_key(&id) || (relative_to!=0 && !self.nodes.contains_key(&relative_to)) {return Err(PyRuntimeError::new_err("unknown coordinate space"));}
+        self.sync(py);
+        let a=self.geometry.origin(py,id);let mut b=self.geometry.origin(py,relative_to);
+        if content && relative_to!=0 {let s=self.geometry.scroll(py,relative_to);b.0-=s.0;b.1-=s.1;}
+        Ok((a.0-b.0,a.1-b.1))
+    }
+    fn visible_children(&mut self,py:Python<'_>,id:u64)->Vec<(u64,f64,f64,f64,f64)> {
+        self.sync(py);let scroll=self.geometry.scroll(py,id);
+        self.geometry.visible_children(py,id).into_iter().filter(|c|!self.nodes[c].portal).map(|c|{
+            let r=self.geometry.rect(py,c);(c,r.0-scroll.0,r.1-scroll.1,r.2,r.3)
+        }).collect()
+    }
+    fn visible(&mut self,py:Python<'_>,id:u64)->bool {
+        self.sync(py);let p=self.geometry.origin(py,id);let r=self.geometry.rect(py,id);
+        let mut clip=(p.0,p.1,p.0+r.2,p.1+r.3);
+        let mut current=id;
+        while let Some(n)=self.nodes.get(&current) {
+            if n.portal || n.parent==0 {break;}
+            current=n.parent;let p=self.geometry.origin(py,current);let r=self.geometry.rect(py,current);
+            clip=(clip.0.max(p.0),clip.1.max(p.1),clip.2.min(p.0+r.2),clip.3.min(p.1+r.3));
+        }
+        clip.2>clip.0 && clip.3>clip.1
+    }
+    fn scroll_at(&mut self,py:Python<'_>,x:f64,y:f64,dx:f64,dy:f64)->bool {
+        let (_,hits)=self.hits(py,x,y);
+        for (id,_,_) in hits {
+            if !self.nodes[&id].scrollable {continue;}
+            let old=self.geometry.scroll(py,id);let max=self.geometry.scroll_limit(py,id);
+            let next=((old.0+dx).clamp(0.,max.0),(old.1+dy).clamp(0.,max.1));
+            if old!=next {
+                let state=self.geometry.state(py,id);let mut state=state.borrow_mut(py);
+                let slot=state.shape.borrow_mut().slot("scroll_offset");
+                state.put_slot(slot,Value::Point(next.0,next.1));state.overrides.insert(slot,Value::Point(next.0,next.1));
+                drop(state);self.sync(py);return true;
             }
         }
+        false
     }
-    fn allocate(&mut self, py: Python<'_>, id: u64, rect: (f64, f64, f64, f64)) -> PyResult<bool> {
-        if ![rect.0, rect.1, rect.2, rect.3]
-            .iter()
-            .all(|x| x.is_finite())
-            || rect.2 <= 0.
-            || rect.3 < 0.
-        {
-            return Err(PyRuntimeError::new_err("invalid layout allocation"));
+    fn geometry_stats(&self)->(u64,u64) {(self.geometry.candidates,self.geometry.transforms)}
+    #[pyo3(signature = (point, source=0, target=0, source_content=false, target_content=false))]
+    fn convert_point(&mut self,py:Python<'_>,point:(f64,f64),source:u64,target:u64,source_content:bool,target_content:bool)->PyResult<(f64,f64)> {
+        if (source!=0 && !self.nodes.contains_key(&source)) || (target!=0 && !self.nodes.contains_key(&target)) {return Err(PyRuntimeError::new_err("unknown coordinate space"));}
+        self.sync(py);
+        let mut a=self.geometry.origin(py,source);let mut b=self.geometry.origin(py,target);
+        if source_content && source!=0 {let s=self.geometry.scroll(py,source);a.0-=s.0;a.1-=s.1;}
+        if target_content && target!=0 {let s=self.geometry.scroll(py,target);b.0-=s.0;b.1-=s.1;}
+        Ok((point.0+a.0-b.0,point.1+a.1-b.1))
+    }
+    fn allocate(&mut self,py:Python<'_>,id:u64,rect:(f64,f64,f64,f64))->PyResult<bool> {
+        if ![rect.0,rect.1,rect.2,rect.3].iter().all(|v|v.is_finite()) || rect.2<=0. || rect.3<0. {return Err(PyRuntimeError::new_err("invalid layout allocation"));}
+        if !self.nodes.contains_key(&id) {return Err(PyRuntimeError::new_err("retired layout child"));}
+        if self.geometry.rect(py,id)==rect {return Ok(false);}
+        let s=self.geometry.state(py,id);let mut s=s.borrow_mut(py);
+        for (name,value) in [("left",Value::Float(rect.0)),("top",Value::Float(rect.1)),("width",Value::Float(rect.2)),("height",Value::Float(rect.3))] {
+            let python=value.to_py(py);
+            s.__setattr__(name,python.bind(py))?;
         }
-        let n = self
-            .nodes
-            .get_mut(&id)
-            .ok_or_else(|| PyRuntimeError::new_err("retired layout child"))?;
-        if n.rect == rect {
-            return Ok(false);
-        }
-        let resized = (n.rect.2, n.rect.3) != (rect.2, rect.3);
-        n.rect = rect;
-        if resized {
-            n.constraints = (rect.2, rect.3);
-            n.kwargs.bind(py).set_item("width", rect.2)?;
-            n.kwargs.bind(py).set_item("height", rect.3)?;
-            n.dirty = true;
-        }
-        self.composition(id);
-        Ok(true)
+        self.nodes.get_mut(&id).unwrap().auto_height=false;
+        drop(s);self.sync(py);Ok(true)
     }
     fn raise_window(&mut self, id: u64) {
         self.rank += 1;
         if let Some(n) = self.nodes.get_mut(&id) {
-            n.z = self.rank;
+            self.portals.remove(&(n.z,id));n.z = self.rank;self.portals.insert((n.z,id));
         }
     }
-    fn info(&self, py: Python<'_>, id: u64) -> PyResult<Py<PyDict>> {
-        let n = self
-            .nodes
-            .get(&id)
-            .ok_or_else(|| PyRuntimeError::new_err("retired view"))?;
+    fn info(&mut self, py: Python<'_>, id: u64) -> PyResult<Py<PyDict>> {
+        self.sync(py);
+        let n = self.nodes.get(&id).ok_or_else(|| PyRuntimeError::new_err("retired view"))?;
         let d = PyDict::new(py);
         d.set_item("parent", n.parent)?;
-        d.set_item("rect", n.rect)?;
+        let r=self.geometry.rect(py,id);
+        d.set_item("rect",r)?;
+        d.set_item("scrollable",n.scrollable)?;
         d.set_item("portal", n.portal)?;
         d.set_item("executions", n.executions)?;
-        d.set_item("constraints", n.constraints)?;
+        d.set_item("constraints",(r.2,if n.auto_height {-1.}else{r.3}))?;
         d.set_item("layout_changes", n.layout_changes)?;
         d.set_item("children", &n.children)?;
         d.set_item("z", n.z)?;
@@ -458,52 +561,57 @@ impl RetainedGraph {
     fn contains(&self, id: u64) -> bool {
         self.nodes.contains_key(&id)
     }
+    fn rect(&mut self,py:Python<'_>,id:u64)->(f64,f64,f64,f64) {self.sync(py);self.geometry.rect(py,id)}
+    fn parent(&self,id:u64)->u64 {self.nodes[&id].parent}
+    fn is_portal(&self,id:u64)->bool {self.nodes[&id].portal}
+    fn is_scrollable(&self,id:u64)->bool {self.nodes[&id].scrollable}
+    fn has_children(&self,id:u64)->bool {!self.nodes[&id].children.is_empty()}
+    fn portal_owner(&self,mut id:u64)->Option<u64> {
+        while let Some(n)=self.nodes.get(&id) {if n.portal {return Some(id);} id=n.parent;}
+        None
+    }
+    fn visible_nodes(&mut self,py:Python<'_>)->Vec<u64> {
+        self.sync(py);let mut out=vec![];
+        for id in self.geometry.roots() {if !self.nodes[&id].portal {self.collect_visible(py,id,&mut out);}}
+        for id in self.windows() {self.collect_visible(py,id,&mut out);}
+        out
+    }
+    fn clip_rect(&mut self,py:Python<'_>,id:u64)->(f64,f64,f64,f64) {
+        self.sync(py);let p=self.geometry.origin(py,id);let r=self.geometry.rect(py,id);
+        let mut clip=(p.0,p.1,p.0+r.2,p.1+r.3);let mut current=id;
+        while let Some(n)=self.nodes.get(&current) {
+            if n.portal || n.parent==0 {break;}
+            current=n.parent;let p=self.geometry.origin(py,current);let r=self.geometry.rect(py,current);
+            clip=(clip.0.max(p.0),clip.1.max(p.1),clip.2.min(p.0+r.2),clip.3.min(p.1+r.3));
+        }
+        clip
+    }
+    fn constraints(&mut self,py:Python<'_>,id:u64)->(f64,f64) {
+        self.sync(py);let r=self.geometry.rect(py,id);
+        (r.2,if self.nodes[&id].auto_height {-1.}else{r.3})
+    }
     /// One native query for ImGui and retained regions. Portals escape ancestor
     /// clips and occlude lower windows even when their body has no hit region.
-    fn hits(&self, x: f64, y: f64) -> (Option<u64>, Vec<(u64, f64, f64)>) {
-        let mut positions = HashMap::new();
-        let portal = self.windows().into_iter().rev().find(|id| {
-            let (px, py) = self.position(*id, &mut positions);
-            let r = self.nodes[id].rect;
-            px <= x && x < px + r.2 as f64 && py - 28. <= y && y < py + r.3 as f64
-        });
-        let mut hits = Vec::new();
-        for id in self.nodes().into_iter().rev() {
-            let mut ancestor = id;
-            let mut owner = None;
-            let mut inside = true;
-            while ancestor != 0 {
-                let n = &self.nodes[&ancestor];
-                let (px, py) = self.position(ancestor, &mut positions);
-                inside &= px <= x && x < px + n.rect.2 && py <= y && y < py + n.rect.3;
-                if n.portal {
-                    owner = Some(ancestor);
-                    break;
-                }
-                ancestor = n.parent;
-            }
-            if inside && owner == portal {
-                let (px, py) = self.position(id, &mut positions);
-                hits.push((id, px, py));
-            }
+    fn hits(&mut self,py:Python<'_>,x:f64,y:f64)->(Option<u64>,Vec<(u64,f64,f64)>) {
+        self.sync(py);
+        let mut portal=None;
+        for id in self.windows().into_iter().rev() {
+            let p=self.geometry.origin(py,id);let r=self.geometry.rect(py,id);let o=self.geometry.offset(py,id);
+            if p.0<=x && x<p.0+r.2 && p.1-o.1<=y && y<p.1+r.3 {portal=Some(id);break;}
         }
-        (portal, hits)
+        let mut hits=vec![];
+        if let Some(id)=portal {let p=self.geometry.origin(py,id);self.hit_branch(py,id,x,y,p,&mut hits);}
+        else {for id in self.geometry.roots().into_iter().rev() {
+            if !self.nodes[&id].portal {let p=self.geometry.origin(py,id);self.hit_branch(py,id,x,y,p,&mut hits);}
+        }}
+        (portal,hits)
     }
     fn nodes(&self) -> Vec<u64> {
         let mut ids: Vec<_> = self.nodes.keys().copied().collect();
         ids.sort();
         ids
     }
-    fn windows(&self) -> Vec<u64> {
-        let mut ids: Vec<_> = self
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.portal)
-            .map(|(id, _)| *id)
-            .collect();
-        ids.sort_by_key(|id| self.nodes[id].z);
-        ids
-    }
+    fn windows(&self)->Vec<u64> {self.portals.iter().map(|(_,id)|*id).collect()}
     fn take_retired(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.retired)
     }
@@ -511,14 +619,18 @@ impl RetainedGraph {
         self.remove_node(py, id)
     }
     fn clear(&mut self, py: Python<'_>) {
+        self.placements.clear();
         self.retired.extend(self.nodes.keys().copied());
+        for id in self.nodes.keys() {self.geometry.remove(py,*id);}
+        self.dirty_set.clear();self.unclipped_dirty.clear();self.compose_set.clear();self.portals.clear();
         self.nodes.clear();
         self.aliases.clear();
         self.identities = PyDict::new(py).unbind();
     }
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
         visit.call(&self.identities)?;
-        for n in self.nodes.values() {
+        for (id,n) in &self.nodes {
+            visit.call(self.geometry.state_ref(*id))?;
             visit.call(&n.identity)?;
             visit.call(&n.input)?;
             visit.call(&n.caller_input)?;
@@ -531,6 +643,8 @@ impl RetainedGraph {
         Ok(())
     }
     fn __clear__(&mut self, py: Python<'_>) {
+        self.placements.clear();
+        self.geometry=Geometry::default();self.dirty_set.clear();self.unclipped_dirty.clear();self.compose_set.clear();self.portals.clear();
         self.nodes.clear();
         self.aliases.clear();
         self.identities.bind(py).clear();
