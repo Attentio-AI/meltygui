@@ -140,7 +140,7 @@ def test_owner_removal_wins_over_queued_resize_and_frees_texture(graphics):
         cache.flush()
         assert calls['leaf'] == before['leaf']
         assert leaf_id not in cache.graph.nodes()
-        assert leaf_id not in cache.contexts and leaf_id not in cache.records
+        assert leaf_id not in cache.captures and leaf_id not in cache.records
         assert cache.gpu.texture(leaf_id) is None
         fresh, _, _, fresh_ids = scene(model)
         try:
@@ -568,7 +568,7 @@ def test_seeded_layout_transitions_match_fresh_render_and_retire_resources(graph
                 np.testing.assert_array_equal(raster(cache, ids['root']), raster(fresh, fresh_ids['root']),
                                               err_msg=f'transition {step}: {model}')
                 assert len(cache.records) == len(fresh.records)
-                assert set(cache.contexts) == set(cache.records) == set(cache.graph.nodes())
+                assert set(cache.captures) == set(cache.records) == set(cache.graph.nodes())
             finally:
                 fresh.close()
             calls = {node: cache.graph.info(node)['executions'] for node in cache.graph.nodes()}

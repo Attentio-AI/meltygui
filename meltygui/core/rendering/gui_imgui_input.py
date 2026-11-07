@@ -1,17 +1,8 @@
-"""Host input routed to independent retained ImGui contexts (prototype).
+"""Retained-view invalidation using the one host ImGui context's input.
 
-The invalidation unit is the view rectangle, not a catalog of widget functions.
-ImGui owns widget IDs, focus and editing state inside each context. This bridge
-owns pointer capture and keyboard focus *between* cached views.
+ImGui owns widget IDs, keyboard focus and editing state globally. This bridge
+tracks which retained views must execute; it never copies IO into view contexts.
 """
-
-
-def _empty_clipboard():
-    return ''
-
-
-def _ignore_clipboard(text):
-    pass
 
 
 class ImGuiInput:
@@ -21,19 +12,13 @@ class ImGuiInput:
         self.characters = []
         self.text = ()
         self.sample = None
-        self.host_io = None
         self.serial = 0
-        self.consumed = {}
         self.active = set()
-        self.clipboard = None
         self.blur = None
         self.pointer_claims = {}
         self.settle_hover = set()
         self.right_active = set()
-        self.key_map = ()
         self.pressed_keys = frozenset()
-        self.applied_key_maps = {}
-        self.delivered_keys = {}
 
     def character(self, codepoint):
         self.characters.append(codepoint)
@@ -47,12 +32,10 @@ class ImGuiInput:
         return hits[0][0] if hits else None
 
     def process(self, io):
-        self.host_io = io
         self.serial += 1
         position = tuple(io.mouse_pos)
         buttons = tuple(io.mouse_down)
         keys = tuple(io.keys_down)
-        self.key_map = tuple(io.key_map)
         self.pressed_keys = frozenset(i for i, down in enumerate(keys) if down)
         modifiers = tuple(getattr(io, 'key_' + name) for name in ('ctrl', 'shift', 'alt', 'super'))
         wheel = (io.mouse_wheel, io.mouse_wheel_horizontal)
@@ -94,56 +77,16 @@ class ImGuiInput:
         if not any(buttons):
             self.capture = None
 
-    def apply(self, node, io):
-        host = self.host_io
-        if host is None:
-            return
-        io.delta_time = max(1 / 1000, min(host.delta_time, .1))
-        io.font_global_scale = host.font_global_scale
-        if self.applied_key_maps.get(node) != self.key_map:
-            key_map = io.key_map
-            for i, key in enumerate(self.key_map):
-                key_map[i] = key
-            self.applied_key_maps[node] = self.key_map
-        if self.clipboard is not None:
-            io.get_clipboard_text_fn, io.set_clipboard_text_fn = self.clipboard
-        position, buttons, keys, modifiers, wheel = self.sample
-        if node == self.mouse_owner:
-            x, y = self.cache._position(node)
-            io.mouse_pos = (position[0] - self.cache.origin[0] - x,
-                            position[1] - self.cache.origin[1] - y)
-        else:
-            io.mouse_pos = (-1e20, -1e20)
-        for i, down in enumerate(buttons):
-            # A click in another cached context must deactivate the old editor.
-            # Its off-view pointer ensures it cannot activate a covered widget.
-            io.mouse_down[i] = down and node in (self.mouse_owner, self.blur)
-        pressed = self.pressed_keys if node == self.focus else frozenset()
-        previous = self.delivered_keys.get(node, frozenset())
-        if pressed != previous:
-            # Each property access creates a binding array view. More importantly,
-            # unfocused contexts need no 512-slot keyboard copy on every capture.
-            keys_down = io.keys_down
-            for key in pressed ^ previous:
-                keys_down[key] = key in pressed
-            self.delivered_keys[node] = pressed
-        for name, value in zip(('ctrl', 'shift', 'alt', 'super'), modifiers):
-            setattr(io, 'key_' + name, value and node == self.focus)
-        fresh = self.consumed.get(node) != self.serial
-        io.mouse_wheel = wheel[0] if fresh and node == self.mouse_owner else 0
-        io.mouse_wheel_horizontal = wheel[1] if fresh and node == self.mouse_owner else 0
-        io.clear_input_characters()
-        if fresh and node == self.focus:
-            for codepoint in self.text:
-                io.add_input_character(codepoint)
-        self.consumed[node] = self.serial
-
-    def finish(self, node):
+    def finish(self, node, capture):
         import meltygui_imgui as imgui
         io = imgui.get_io()
-        hovered = imgui.is_any_item_hovered()
-        active = imgui.is_any_item_active()
-        if imgui.is_item_activated():
+        hovered = node == self.mouse_owner and imgui.is_any_item_hovered()
+        active = capture.active_widget
+        if active:
+            self.focus = node
+            if any(io.mouse_down):
+                self.capture = self.mouse_owner = node
+        if active and imgui.is_item_activated():
             if io.mouse_down[1]:
                 self.right_active.add(node)
             else:
@@ -180,18 +123,6 @@ class ImGuiInput:
         self.settle_hover.discard(node)
         self.right_active.discard(node)
         self.pointer_claims.pop(node, None)
-        self.consumed.pop(node, None)
-        self.applied_key_maps.pop(node, None)
-        self.delivered_keys.pop(node, None)
         for name in ('hover', 'capture', 'focus', 'mouse_owner', 'blur'):
             if getattr(self, name) == node:
                 setattr(self, name, None)
-
-    @staticmethod
-    def release_context_callbacks():
-        import meltygui_imgui as imgui
-        # This binding's destroy_context does not remove its Python clipboard
-        # callback table. Drop references to the owning backend before teardown.
-        io = imgui.get_io()
-        io.get_clipboard_text_fn = _empty_clipboard
-        io.set_clipboard_text_fn = _ignore_clipboard

@@ -4,6 +4,10 @@ Measured on 2026-11-07 using the current workspace, CPython 3.12, Ryzen 9
 7950X and NVIDIA RTX 4090 desktop OpenGL. These are isolated experiments;
 the installed extension and production Python modules are unchanged.
 
+That statement describes these isolated experiments. Later production packet
+and bookkeeping changes are recorded in [implementation results](GUI_PACKET_BOOKKEEPING_RESULTS.md).
+The historical measurements below have not been rewritten as current results.
+
 ## Result
 
 **Applicability correction:** the 14.3% result below is the hostless reference

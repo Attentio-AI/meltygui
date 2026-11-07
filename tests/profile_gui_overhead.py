@@ -272,7 +272,7 @@ def main():
                     assert row['pixels_match_raw'], variant
                 if scene.host:
                     cache = scene.host.cache
-                    row['retained_resources'] = dict(declared=len(cache.records), contexts=len(cache.contexts),
+                    row['retained_resources'] = dict(declared=len(cache.records), captures=len(cache.captures),
                                                       scroll_tiles=len(cache.scroll_tiles), scroll_bytes=cache.scroll_tile_bytes,
                                                       layouts=len(cache.geometry.layouts), frames=len(cache.geometry.frames),
                                                       bindings=len(cache.geometry.bindings), windows=len(cache.geometry.windows))

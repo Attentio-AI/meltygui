@@ -37,7 +37,7 @@ def main():
     native.probe_cycles.restype=ctypes.c_double
     host=imgui.get_current_context();atlas=imgui.get_io().fonts
     contexts=[];pointers=[]
-    for _ in range(args.contexts):
+    for _ in range(args.captures):
         context=imgui.create_context(shared_font_atlas=atlas)
         contexts.append(context);imgui.set_current_context(context)
         io=imgui.get_io();io.ini_file_name=None;io.display_size=(128,64);io.delta_time=1/60
@@ -94,7 +94,7 @@ def main():
             report[name]=dict(cpu={mode:summary(values) for mode,values in samples.items()},
                 samples_us=samples,native_phase_mean_us={label:sum(row[i] for row in native_phases)/len(native_phases)/1000
                     for i,label in enumerate(['context_switch','new_frame','begin_window','group_enter','body','group_end_window_end','render'])},
-                draw_buffers_match=True,contexts=len(contexts))
+                draw_buffers_match=True,captures=len(contexts))
             print(name,report[name]['cpu'],flush=True)
         args.output.write_text(json.dumps(report,indent=2))
     finally:

@@ -191,7 +191,7 @@ current window inventory in z order, including title and shadow. Closing an
 owned window therefore cannot leave an independently replaying registry entry.
 
 GPU work and cleanup remain on the rendering thread. Removed nodes release native
-targets and Python layout contexts. OS-surface teardown closes the private GUI
+targets and local draw buffers. OS-surface teardown closes the retained GUI
 owner before destroying the renderer and its shared font resources.
 The default texture/scratch allocation budget is 256 MiB; exceeding it raises an
 error rather than evicting textures still referenced by retained commands.
@@ -209,18 +209,18 @@ error rather than evicting textures still referenced by retained commands.
   portal positions are parent-relative. Capture resolution is one texel per
   logical pixel; per-monitor DPI transitions are not integrated.
 * Pointer regions are retained by `cache.region` and injected as `view_events`.
-  Raw ImGui widgets also receive host IO in their isolated contexts. Pointer
+  Raw ImGui widgets use the single host context and its input state. Pointer
   activity invalidates the hit view rectangle; press capture survives leaving
-  that rectangle; keyboard/characters go to the clicked context. Text editing
+  that rectangle; keyboard/characters go to the active ImGui widget. Text editing
   and held interactions request frames. Idle unrelated views remain cached.
   Input destination and gesture ownership are separate: ImGui controls claim
   left drags, text/blank space allows background movement, and unclaimed normal
   or double-right drags reach the native resize system. Existing explicit
-  regions/internal windows retain their claims. Cross-context Tab navigation,
-  IME, OS-focus integration, cross-context drag/drop, accessibility and popups
+  regions/internal windows retain their claims. IME, OS-focus integration,
+  drag/drop between cached views, accessibility and popups
   outside a retained texture remain gaps. See `examples/gui_imgui_widgets.py`.
-* A private ImGui context/runtime per cached node and Python pointer routing make
-  this a semantic experiment, not a production-scale implementation. Rust still
+* Each cached node owns a draw buffer, not an ImGui context. The host owns the
+  one frame and all widget/input state. This remains a prototype: Rust still
   scans node flags for scheduling; there is no incremental ready queue or spatial
   index yet. There is no cache eviction or GPU-resident command-buffer pool.
 * Commands support this build's 20-byte vertices and 32-bit indices, ordinary

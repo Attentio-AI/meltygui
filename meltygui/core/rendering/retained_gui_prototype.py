@@ -2,7 +2,7 @@
 
 Rust owns graph reconciliation, dirty scheduling, result mailboxes, command
 storage, texture allocation and GL replay. This bridge owns Python callables,
-isolated ImGui layout contexts and translation of host input into view events.
+draw capture scopes in the host ImGui context and retained input invalidation.
 Cache boundaries accept a constrained width and fixed or measured height.
 """
 from contextlib import contextmanager
@@ -32,6 +32,14 @@ def _alias(value):
 
 class RetainedGui:
     def __init__(self, *, graphics=True, state_registry=None, calibration=True):
+        if graphics:
+            import meltygui_imgui as imgui
+            if not hasattr(imgui, 'DrawCapture'):
+                raise RuntimeError(
+                    'The retained GUI prototype requires meltygui-imgui 2.0.4 with DrawCapture. '
+                    'Install the matching binding wheel into the Python environment running '
+                    'this app; rebuilding the Rust extension does not update the binding. '
+                    'See docs/GUI_PROTOTYPE.md for setup instructions.')
         from meltygui.core.rendering._gui_native import RetainedGraph, Identities
         self.identities = Identities(state_registry)
         self.uniques = {}
@@ -61,7 +69,7 @@ class RetainedGui:
         self.staged_regions = {}
         self.events = {}
         self.renderers = []
-        self.contexts = {}
+        self.captures = {}
         self.states = {}
         self.backgrounds = {}
         self.texture_refs = {}
@@ -173,6 +181,11 @@ class RetainedGui:
 
         @wraps(func)
         def wrapper(input_value=None, **kwargs):
+            if self.graphics and not self.stack:
+                import meltygui_imgui as imgui
+                if not imgui.is_frame_active():
+                    with self.capture_frame():
+                        return wrapper(input_value, **kwargs)
             _check_position_arguments(kwargs)
             if self.closed:
                 raise RuntimeError('retained runtime is closed')
@@ -264,7 +277,10 @@ class RetainedGui:
                 self.associate(func, node)
                 self.associate(wrapper, node)
                 self.graph.associate(node, f'renderer:{renderer_id}', func)
-            self.associate(input_value, node)
+            # Identity aliases remain registered until replacement or retirement.
+            # Path-like values can supply changing text, so resolve those again.
+            if previous is None or previous[0] is not input_value or isinstance(input_value, (str, Path)):
+                self.associate(input_value, node)
             self.geometry.bind(node, parent, portal=portal)
             if parent == 0:
                 self.root_ids.add(node)
@@ -307,44 +323,39 @@ class RetainedGui:
         wrapper.__gui__ = True
         return wrapper
 
-    def _context(self, node, w, h):
+    @contextmanager
+    def capture_frame(self):
+        """Direct graph users get one host frame; hosted apps already own theirs."""
         import meltygui_imgui as imgui
-        if node not in self.contexts:
-            previous = imgui.get_current_context()
-            atlas = imgui.get_io().fonts
-            context = imgui.create_context(shared_font_atlas=atlas)
-            self.contexts[node] = context
-            imgui.set_current_context(context)
-            io = imgui.get_io()
-            io.ini_file_name = None
-            io.display_size = (w, h)
-            io.delta_time = 1 / 60
-            # Settle ImGui's new-window bookkeeping without executing user code.
-            imgui.new_frame()
-            self._begin_window(w, h)
-            imgui.get_window_draw_list().pop_clip_rect()
+        if not self.graphics or imgui.is_frame_active():
+            yield
+            return
+        imgui.new_frame()
+        imgui.set_next_window_position(0, 0)
+        imgui.set_next_window_size(*imgui.get_io().display_size)
+        imgui.begin(f'##retained-host-{id(self)}', flags=(imgui.WINDOW_NO_TITLE_BAR |
+                    imgui.WINDOW_NO_RESIZE | imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_SCROLLBAR |
+                    imgui.WINDOW_NO_SAVED_SETTINGS | imgui.WINDOW_NO_BACKGROUND))
+        try:
+            yield
+        finally:
             imgui.end()
             imgui.render()
-            imgui.set_current_context(previous)
-        return self.contexts[node]
 
-    @staticmethod
-    def _begin_window(w, h):
+    def _capture(self, node):
         import meltygui_imgui as imgui
-        imgui.set_next_window_position(0, 0)
-        imgui.set_next_window_size(w, h)
-        imgui.begin('retained-body', flags=(imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_NO_RESIZE
-                    | imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_SCROLLBAR | imgui.WINDOW_NO_SAVED_SETTINGS
-                    | imgui.WINDOW_NO_SCROLL_WITH_MOUSE | imgui.WINDOW_NO_BACKGROUND))
-        imgui.set_cursor_screen_pos((0, 0))
-        imgui.get_window_draw_list().push_clip_rect(0, 0, w, h, False)
+        if node not in self.captures:
+            self.captures[node] = imgui.DrawCapture(f'gui-capture-{id(self)}-{node}')
+        return self.captures[node]
 
     def _execute(self, node, *, independent):
         native, renderer, func = self.records[node]
         input_value, arguments = self.graph.invocation(node)
-        info = self.graph.info(node)
-        w, requested_h = info['constraints']
-        old_rect = info['rect']
+        # Invocation supplies canonical height/auto-height. Keep its read before
+        # the geometry sync, without materializing unrelated info dictionary fields.
+        old_rect = self.graph.rect(node)
+        w = old_rect[2]
+        requested_h = -1. if arguments['height'] is None else arguments['height']
         # Measure without the old texture's clip truncating newly grown content.
         # This is a logical capture viewport, not an 8192px texture allocation.
         h = 8192 if requested_h < 0 else max(1, requested_h)
@@ -352,8 +363,8 @@ class RetainedGui:
         self.graph.begin(node)
         self.stack.append(node)
         self.staged_regions[node] = []
-        previous = None
-        parent_texture_refs = None
+        capture = None
+        reference_start = 0
         try:
             self.geometry.begin(node)
             if self.graphics:
@@ -361,18 +372,11 @@ class RetainedGui:
                 from meltygui.core.rendering._gui_native import TextureCache
                 if self.gpu is None:
                     self.gpu = TextureCache()
-                previous = imgui.get_current_context()
-                # This binding's keepalive list is shared by ImGui contexts.
-                # A child's new_frame clears it while the parent's draw list is
-                # unfinished. Own those Python texture-ID objects through the
-                # nested capture, including user-submitted images and failures.
-                parent_texture_refs = tuple(previous._keepalive_cache)
-                context = self._context(node, w, h)
-                imgui.set_current_context(context)
-                imgui.get_io().display_size = (w, h)
-                self.imgui_input.apply(node, imgui.get_io())
-                imgui.new_frame()
-                self._begin_window(w, h)
+                scope = self._capture(node)
+                x, y = self._position(node)
+                reference_start = len(imgui.get_current_context()._keepalive_cache)
+                scope.begin(w, h, self.origin[0] + x, self.origin[1] + y)
+                capture = scope
             try:
                 native.begin_frame(width=w, cache=self, view_events=events, identity_frame=False)
                 try:
@@ -380,14 +384,18 @@ class RetainedGui:
                                       _gui_unique=self.uniques[node], _gui_explicit=self.caller_keys[node])
                 finally:
                     native.end_frame()
+                state_changed = self.states[node] is not result[2]
                 self.states[node] = result[2]
-                self.associate(result[2], node)
+                # A declaration has state before its first execution, including
+                # culled views. Register that first alias before skipping repeats.
+                if state_changed or node not in self.backgrounds:
+                    self.associate(result[2], node)
             finally:
                 if self.graphics:
-                    self.imgui_input.finish(node)
-                    imgui.get_window_draw_list().pop_clip_rect()
-                    imgui.end()
-                    imgui.render()
+                    try:
+                        self.imgui_input.finish(node, capture)
+                    finally:
+                        capture.end()
             measured_h = (result[2].content_height if self.graphics else result[2].height) if requested_h < 0 else requested_h
             if not math.isfinite(measured_h) or measured_h < 0 or measured_h > 8192:
                 raise ValueError('measured cache height must be 0..8192 pixels')
@@ -406,7 +414,7 @@ class RetainedGui:
                     self.gpu.target(node, math.ceil(w), max(1, math.ceil(measured_h)))
                 self.gpu.begin_packet(node)
                 texture_refs = []
-                for draw_list in imgui.get_draw_data().commands_lists:
+                for draw_list in capture.draw_lists:
                     commands, offset = [], 0
                     for command in draw_list.commands:
                         texture = command.texture_id
@@ -445,9 +453,9 @@ class RetainedGui:
             raise
         finally:
             self.stack.pop()
-            if previous is not None:
-                imgui.set_current_context(previous)
-                previous._keepalive_cache[:] = parent_texture_refs
+            if capture is not None:
+                from meltygui.core.rendering.gui_draw_capture import release_captured_references
+                release_captured_references(capture, reference_start)
 
     def _track_capture(self, node):
         parent = self.graph.parent(node)
@@ -455,7 +463,7 @@ class RetainedGui:
         while ancestor and not self.graph.is_scrollable(ancestor):
             owner, ancestor = ancestor, self.graph.parent(ancestor)
         owner = owner if ancestor else None
-        # Empty command captures still own contexts and count toward residency.
+        # Empty command captures still own draw buffers and count toward residency.
         size = max(1, self.gpu.capture_bytes(node))
         old_capture = self.capture_info.get(node)
         if old_capture != (parent, size, owner):
@@ -472,7 +480,7 @@ class RetainedGui:
         enabled = Toggles.Rust.auto_cache
         if enabled != self._auto_cache:
             self._auto_cache = enabled
-            # A global switch is a rare full transition. No bodies or contexts
+            # A global switch is a rare full transition. No bodies or capture buffers
             # change; ordinary policy ticks consume a bounded affected queue.
             for node in self.backgrounds:
                 mandatory = not self.graph.parent(node) or self.graph.is_portal(node)
@@ -567,13 +575,8 @@ class RetainedGui:
         self.capture_children.pop(node, None)
         if self.gpu: self.gpu.remove(node)
         self.imgui_input.retire(node)
-        if node in self.contexts:
-            import meltygui_imgui as imgui
-            previous = imgui.get_current_context()
-            imgui.set_current_context(self.contexts[node])
-            self.imgui_input.release_context_callbacks()
-            imgui.destroy_context(self.contexts.pop(node))
-            imgui.set_current_context(previous)
+        if node in self.captures:
+            self.captures.pop(node).close()
         self.texture_refs.pop(node, None)
         self.backgrounds.pop(node, None)
 
@@ -616,6 +619,13 @@ class RetainedGui:
                 refresh_positions()
                 self.invalidate(func)
                 definition[1] = func.__code__
+        if self.graphics:
+            import meltygui_imgui as imgui
+            # Representation-only replay does not submit widgets and must not
+            # invent an extra host frame that would expire the active widget ID.
+            if not imgui.is_frame_active() and self.graph.dirty_nodes():
+                with self.capture_frame():
+                    return self.flush()
         # A legitimate deep chain may need one upward layout wave per level.
         limit = max(64, len(self.records) * 2 + 1)
         for _ in range(limit):
@@ -826,8 +836,6 @@ class RetainedGui:
             if self.gpu:
                 self.gpu.close()
                 self.gpu = None
-            self.imgui_input.host_io = None
-            self.imgui_input.clipboard = None
             self.imgui_input.characters.clear()
             self.imgui_input.text = ()
             self.imgui_input.cache = None

@@ -70,7 +70,7 @@ def main():
         let indices = if index_len == 0 {vec![]} else {
             unsafe {std::slice::from_raw_parts(index_ptr as *const u8, index_len).to_vec()}
         };
-        self.add_packet(id, vertices, indices, commands)
+        self.store_packet(id, vertices, indices, commands)
     }
 ''' + source_text[index:]
     path.write_text(source_text)

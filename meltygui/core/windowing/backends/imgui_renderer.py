@@ -13,7 +13,7 @@ class WindowRenderer(ProgrammablePipelineRenderer):
     def __init__(self, window, attach_callbacks:bool=True):
         super(WindowRenderer, self).__init__()
         self.window = window
-        self.gui_character_callback = None  # optional retained-context input sink
+        self.gui_character_callback = None  # optional retained-view invalidation sink
 
         if attach_callbacks:
             glfw.set_key_callback(self.window, self.keyboard_callback)

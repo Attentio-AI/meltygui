@@ -7,6 +7,7 @@ use calibration::Sampler;
 mod shared_replay;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use std::{
     collections::HashMap,
     ffi::{c_void, CString},
@@ -535,33 +536,20 @@ impl TextureCache {
     fn add_packet(
         &mut self,
         id: u64,
-        vertices: Vec<u8>,
-        indices: Vec<u8>,
+        vertices: &Bound<'_, PyAny>,
+        indices: &Bound<'_, PyAny>,
         commands: Vec<Command>,
     ) -> PyResult<()> {
-        if vertices.len() % 20 != 0 || indices.len() % 4 != 0 {
-            return Err(PyRuntimeError::new_err(
-                "expected ImGui 20-byte vertices / 32-bit indices",
-            ));
-        }
-        for (_, count, _, offset, base) in &commands {
-            if *count < 0
-                || *base < 0
-                || offset.saturating_add(*count as usize).saturating_mul(4) > indices.len()
-            {
-                return Err(PyRuntimeError::new_err("invalid draw-command range"));
+        // ImGui capture supplies bytes. Generic Vec<u8> argument extraction in
+        // PyO3 iterates every byte; borrow the typed bytes and copy in bulk.
+        // Keep owned packet buffers and the existing sequence input contract.
+        let copy = |value: &Bound<'_, PyAny>| -> PyResult<Vec<u8>> {
+            match value.downcast::<PyBytes>() {
+                Ok(bytes) => Ok(bytes.as_bytes().to_vec()),
+                Err(_) => value.extract(),
             }
-        }
-        let entry=self.workloads.entry(id).or_default();
-        entry.payload_bytes+=vertices.len()+indices.len(); entry.commands+=commands.len();
-        self.packets.entry(id).or_default().push(Packet {
-            vertices,
-            indices,
-            commands,
-            spans: vec![],
-        });
-        self.uploads += 1;
-        Ok(())
+        };
+        self.store_packet(id, copy(vertices)?, copy(indices)?, commands)
     }
     #[pyo3(signature=(id, background=(0.0, 0.0, 0.0, 0.0)))]
     fn render(&mut self, id: u64, background: (f32, f32, f32, f32)) -> PyResult<()> {
@@ -670,6 +658,31 @@ impl TextureCache {
 }
 
 impl TextureCache {
+    fn store_packet(&mut self, id: u64, vertices: Vec<u8>, indices: Vec<u8>, commands: Vec<Command>) -> PyResult<()> {
+        if vertices.len() % 20 != 0 || indices.len() % 4 != 0 {
+            return Err(PyRuntimeError::new_err(
+                "expected ImGui 20-byte vertices / 32-bit indices",
+            ));
+        }
+        for (_, count, _, offset, base) in &commands {
+            if *count < 0
+                || *base < 0
+                || offset.saturating_add(*count as usize).saturating_mul(4) > indices.len()
+            {
+                return Err(PyRuntimeError::new_err("invalid draw-command range"));
+            }
+        }
+        let entry=self.workloads.entry(id).or_default();
+        entry.payload_bytes+=vertices.len()+indices.len(); entry.commands+=commands.len();
+        self.packets.entry(id).or_default().push(Packet {
+            vertices,
+            indices,
+            commands,
+            spans: vec![],
+        });
+        self.uploads += 1;
+        Ok(())
+    }
     fn scratch_bytes(&self) -> usize {
         self.scratch.iter().map(|t| if t.fbo == 0 {0} else {(t.w * t.h * 4) as usize}).sum()
     }

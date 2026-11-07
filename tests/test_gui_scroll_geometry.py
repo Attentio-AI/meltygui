@@ -206,7 +206,7 @@ def test_composite_tile_eviction_preserves_state_and_bounds_gpu_memory(gl_contex
             state.scroll_offset = (0, offset)
             cache.flush()
         assert len(cache.scroll_tiles) <= 8
-        assert len(cache.contexts) <= 25
+        assert len(cache.captures) <= 25
         assert cache.gpu.stats()[2] <= 80_000 + 8*32_000
         state.scroll_offset = (0, 0)
         cache.flush()

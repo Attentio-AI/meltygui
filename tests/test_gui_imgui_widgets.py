@@ -1,4 +1,4 @@
-"""Real ImGui input, private contexts and native texture replay together."""
+"""Real ImGui input and retained texture replay in the shared host context."""
 import subprocess
 import sys
 
@@ -71,6 +71,7 @@ def frame(cache, position=(-100, -100), *, down=False, text='', keys=(), wheel=0
     for i in range(len(io.keys_down)):
         io.keys_down[i] = i in keys
     for char in text:
+        io.add_input_character(ord(char))
         cache.imgui_input.character(ord(char))
     cache.imgui_input.process(io)
     cache.flush()
@@ -183,7 +184,7 @@ def test_nested_widget_input_does_not_execute_unrelated_views(cache):
     assert calls == before
 
 
-def test_text_focus_moves_between_cached_contexts_and_retires(cache):
+def test_text_focus_moves_between_cached_views_and_retires(cache):
     texts, ids = {'a': '', 'b': ''}, {}
 
     @cache.gui(width=180, height=35)
@@ -257,9 +258,10 @@ def test_wheel_scrolls_imgui_child(cache):
     assert scroll[-1] > 0
 
 
-def test_clipboard_paste_uses_the_host_callback(cache):
+def test_clipboard_paste_uses_the_host_callback(cache, monkeypatch):
     value = ['']
-    cache.imgui_input.clipboard = (lambda: 'pasted', lambda text: None)
+    monkeypatch.setattr(imgui.get_io(), 'get_clipboard_text_fn', lambda: 'pasted')
+    monkeypatch.setattr(imgui.get_io(), 'set_clipboard_text_fn', lambda text: None)
 
     @cache.gui(width=180, height=40)
     def editor():
@@ -453,7 +455,7 @@ def test_keyboard_focus_does_not_claim_a_later_right_drag(cache):
         io.mouse_down[1] = False
 
 
-def test_held_keys_follow_focus_and_release_in_cached_contexts(cache):
+def test_cached_views_read_shared_host_keys_and_key_map(cache):
     ids, observed = {}, {}
 
     @cache.gui(width=160, height=40)
@@ -471,12 +473,14 @@ def test_held_keys_follow_focus_and_release_in_cached_contexts(cache):
     parent()
     a, b = (cache._position(ids[key]) for key in ('a', 'b'))
     pa, pb = (a[0] + 8, a[1] + 8), (b[0] + 8, b[1] + 8)
+    for node in ids.values():
+        cache.invalidate_id(node)
     frame(cache, pa, down=True, keys=(65,), ctrl=True)
     assert observed['a'][:2] == (True, True)
-    assert observed['b'][:2] == (False, False)
+    assert observed['b'][:2] == (True, True)
     frame(cache, pb, keys=(65,), ctrl=True)
     frame(cache, pb, down=True, keys=(65,), ctrl=True)
-    assert observed['a'][:2] == (False, False)
+    assert observed['a'][:2] == (True, True)
     assert observed['b'][:2] == (True, True)
     frame(cache, pb)
     assert observed['b'][:2] == (False, False)
@@ -492,5 +496,4 @@ def test_held_keys_follow_focus_and_release_in_cached_contexts(cache):
         io.key_map[imgui.KEY_A] = original
     cache.graph.retire(ids['b'])
     cache._retire()
-    assert ids['b'] not in cache.imgui_input.delivered_keys
-    assert ids['b'] not in cache.imgui_input.applied_key_maps
+    assert ids['b'] not in cache.captures

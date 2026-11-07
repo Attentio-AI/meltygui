@@ -104,7 +104,12 @@ def test_window_title_and_cached_body_move_on_the_same_pixel_grid(gl_context):
         for x,y in ((10.2,12.2),(10.7,12.7),(30.35,45.8),(10.2,12.2)):
             cache.states[ids['child']].left, cache.states[ids['child']].top = (x, y)
             begin_frame()
-            cache._begin_window(200,150)
+            imgui.set_next_window_position(0, 0)
+            imgui.set_next_window_size(200, 150)
+            imgui.begin('capture output', flags=(imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_NO_RESIZE |
+                        imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_BACKGROUND | imgui.WINDOW_NO_SAVED_SETTINGS))
+            imgui.set_cursor_screen_pos((0, 0))
+            imgui.get_window_draw_list().push_clip_rect(0, 0, 200, 150, False)
             cache.present((0,0))
             imgui.get_window_draw_list().pop_clip_rect()
             imgui.end();imgui.render()
@@ -357,7 +362,7 @@ def test_gui_window_host_owns_capture_position_and_cleanup(gl_context, monkeypat
         owner.close()
         assert backend.gui_character_callback is None
         assert not gl.glIsTexture(texture)
-        assert owner.cache.contexts == {} and owner.cache.records == {}
+        assert owner.cache.captures == {} and owner.cache.records == {}
     finally:
         if surface._gui_prototype:
             surface._gui_prototype.close()

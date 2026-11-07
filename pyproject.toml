@@ -12,7 +12,7 @@ description = "Immediate-mode Python UI, live inspection, HDR and tensor visuali
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    "meltygui-imgui>=2.0.3,<2.0.4",
+    "meltygui-imgui>=2.0.4,<2.0.5",
     "glfw>=2.10; sys_platform != 'ios'", "PyOpenGL>=3.1.7; sys_platform != 'ios'",
     "PyOpenGL-accelerate>=3.1.7; sys_platform != 'ios'",
     "numpy>=1.26", "libcst>=1.4", "jedi>=0.19", "Pygments>=2.18", "freetype-py>=2.4",

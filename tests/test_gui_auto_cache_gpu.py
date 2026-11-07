@@ -36,7 +36,7 @@ def test_shared_order_clipping_fractional_positions_and_transitions(cache,monkey
         dl.add_rect_filled(12,15,15,30,0xFF00FFFF)
     root()
     texture=cache.gpu.texture(ids['child'])
-    context=cache.contexts[ids['child']];state=cache.states[ids['child']]
+    context=cache.captures[ids['child']];state=cache.states[ids['child']]
     before=pixels(cache.gpu.texture(ids['root']),60,50)
     assert cache.gpu.representation_stats()==(2,1)
     for enabled in [False,True,False,True]:
@@ -48,7 +48,7 @@ def test_shared_order_clipping_fractional_positions_and_transitions(cache,monkey
         if alpha: assert np.max(np.abs(after.astype(int)-before.astype(int))) <= 2
         else: np.testing.assert_array_equal(after,before)
         assert cache.gpu.texture(ids['child'])==texture
-        assert cache.contexts[ids['child']] is context and cache.states[ids['child']] is state
+        assert cache.captures[ids['child']] is context and cache.states[ids['child']] is state
         assert calls==['root','child']
     cache.invalidate_id(ids['child']);cache.flush()
     assert calls==['root','child','child']
@@ -63,14 +63,14 @@ def test_focus_and_text_survive_runtime_representation_changes(cache,monkeypatch
         _,text[0]=imgui.input_text('Edit',text[0],128)
     @cache.gui(width=220,height=80)
     def root(): editor()
-    root();node=ids['editor'];context=cache.contexts[node];state=cache.states[node]
+    root();node=ids['editor'];context=cache.captures[node];state=cache.states[node]
     x,y=cache._position(node);click(cache,(x+10,y+10));frame(cache,text='one')
     assert text[0]=='one'
     for enabled,char in [(False,'X'),(True,'Y')]:
         monkeypatch.setattr(Toggles.Rust,'auto_cache',enabled);cache.flush()
         assert cache.imgui_input.focus==node
         frame(cache,text=char)
-        assert cache.contexts[node] is context and cache.states[node] is state
+        assert cache.captures[node] is context and cache.states[node] is state
     assert len(text[0])==5
 
 

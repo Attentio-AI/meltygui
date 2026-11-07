@@ -35,7 +35,12 @@ def test_table_move_resize_and_native_origin_changes(monkeypatch,moving,point,na
 
     root=demo['example_app'] if fill_cell else ordinary_parent
     begin_frame()
-    cache._begin_window(1600,1600)
+    imgui.set_next_window_position(0, 0)
+    imgui.set_next_window_size(1600, 1600)
+    imgui.begin('table host', flags=(imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_NO_RESIZE |
+                imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_BACKGROUND | imgui.WINDOW_NO_SAVED_SETTINGS))
+    imgui.set_cursor_screen_pos((0, 0))
+    imgui.get_window_draw_list().push_clip_rect(0, 0, 1600, 1600, False)
     try:
         native.observe((((100,1352),(native_y,native_y+1081)),screen,'feed',1,((),())))
         root(width=1252,height=1081)

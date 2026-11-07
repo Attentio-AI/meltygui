@@ -40,7 +40,7 @@ exports have not silently become Rust implementations.
 | --- | --- |
 | [gui_prototype.py](../../meltygui/core/rendering/gui_prototype.py) | Public decorators, signature planning, typed injection recognition, native binding and active-window scope |
 | [gui_window_prototype.py](../../meltygui/core/rendering/gui_window_prototype.py) | Private per-surface owner; dispatch, frame boundaries, input translation, flush, presentation and cleanup |
-| [retained_gui_prototype.py](../../meltygui/core/rendering/retained_gui_prototype.py) | Python call bridge, ImGui contexts, argument comparisons, command capture, layout measurement, pointer regions and scheduling orchestration |
+| [retained_gui_prototype.py](../../meltygui/core/rendering/retained_gui_prototype.py) | Python call bridge, shared-context draw capture, argument comparisons, layout measurement, pointer regions and scheduling orchestration |
 | [lib.rs](src/lib.rs) | Dynamic native state, field slots, call identities, dependency injection, native wrapper and timing |
 | [retained.rs](src/retained.rs) | Retained identities, ownership, invalidation associations, pending results, dirty/composition flags, measured extents and portal ordering |
 | [texture.rs](src/texture.rs) | Command packets, OpenGL textures/FBOs, replay, clipping, tint, alpha resolution and GPU cleanup |
@@ -405,7 +405,7 @@ Docking and native child OS surfaces remain outside this compositor.
 
 ### Resource lifetime and cost
 
-- Removed nodes release their packets, GPU targets, ImGui contexts and node-owned
+- Removed nodes release their packets, GPU targets, draw buffers and node-owned
   Python/native state. OS-surface shutdown closes the GUI owner before the shared
   renderer/font resources disappear.
 - The default texture/scratch budget is 256 MiB. Exceeding it raises an error;
@@ -417,7 +417,7 @@ Docking and native child OS surfaces remain outside this compositor.
 - Retained packets still upload buffers during replay. There is no GPU-resident
   command-buffer pool, partial texture update system or damage-rectangle renderer.
 - The reported texture-byte counter covers node targets, not all graphics memory;
-  scratch storage, driver overhead and ImGui contexts also have costs. Command-byte
+  scratch storage, driver overhead and draw buffers also have costs. Command-byte
   reporting counts vertex/index data, not every metadata allocation.
 
 ## 7. Layout invalidation and measurement
@@ -539,27 +539,31 @@ return statement, cache configuration or a widget registration step. Native
 group measurement includes ImGui item extents, and Rust captures/replays their
 draw lists through the existing texture path. No Rust ABI change was required.
 
-`gui_imgui_input.py` routes host IO into the private contexts:
+Retained views now share the host's single ImGui context and frame. Per-view
+`DrawCapture` buffers temporarily capture a local draw list; they never create a
+context or call `NewFrame`/`Render`. Parent layout, mouse coordinates and navigation
+coordinates are restored after nested scopes. Keyboard, text editing and clipboard
+state remain in the host context. The capture key is stable across buffer eviction.
+
+`gui_imgui_input.py` determines which retained views must execute:
 
 1. Hit-test committed view bounds and ancestor clips, respecting portal order.
    Invalidate the previous and current pointer targets on position/button/wheel
    changes. This operates on complete view rectangles, even text-only views;
    there is no widget catalog or instrumented `imgui.button` wrapper.
-2. Capture pointer presses to the hit node until release, including release
-   outside the view. Focus its context for keyboard input. A focus change also
-   delivers an outside click to the old context to deactivate its text field.
-3. Copy local pointer coordinates, button/key states, modifiers, key mapping,
-   delta time and font scale before `new_frame`. The window backend forwards
-   character callbacks to its own cache, independent of which context happens
-   to be current. Clipboard callbacks use the owning host backend.
-4. Consume text and wheel input once per node per host sample. Extra executions
-   caused by layout/returned-value propagation do not type characters twice.
+2. Capture pointer presses until release, including release outside the view.
+   Capture scopes identify the actual active widget's owning view in the shared
+   context, including keyboard focus changes.
+3. Use host keyboard, text, wheel, modifiers, font and clipboard state directly.
+   There is no per-view IO copy. Local drawing scopes translate pointer/navigation
+   coordinates without creating separate input state.
+4. ImGui consumes text input in the shared frame. Extra layout or result passes
+   do not copy or reinject characters into another context.
 5. Request further frames while text editing or an active held interaction can
    change its pixels with time. Otherwise retain the texture. Active editing
    can therefore run at the host frame rate; a still-hovered idle view does not.
-6. Clear focus/capture on retirement and detach the backend callback on close.
-   Clear private clipboard callbacks before destroying contexts so the binding's
-   callback table does not keep the host backend alive.
+6. Clear retained focus/capture metadata on retirement and detach the backend
+   invalidation callback on close. Closing a cache never destroys the host context.
 
 Verified widgets include text, button, checkbox, float slider, input text,
 Backspace, clipboard paste and wheel scrolling inside an ImGui child. A native
@@ -568,8 +572,9 @@ replays that edit to its caller without duplicating the widget action.
 `examples/gui_imgui_widgets.py` demonstrates injected state for widgets whose
 application values need to persist across body executions.
 
-Still missing: cross-context Tab/focus navigation, OS-focus/IME integration,
-cross-context drag/drop, production shortcut arbitration, and accessibility.
+Still incomplete: keyboard navigation across clean cached views, OS-focus/IME
+integration, drag/drop between cached views,
+production shortcut arbitration, and accessibility.
 Popups extending outside a node's texture are clipped and are not promoted into
 compositor portals. Root cached boundaries still do not implement scrolling;
 an explicit `imgui.begin_child` can scroll within its allocated texture. Widget
@@ -611,7 +616,7 @@ Some facilities are supplied by the existing host rather than reimplemented.
 | Mixed old/new trees | Original benchmark hosted inside legacy panels; new roots use their own adapter | Arbitrary alternating old/new cached subtrees are not established |
 | GPU commands | Ordinary ImGui texture commands, clip rectangles and index offsets for this build | Custom draw callbacks, nonzero vertex base offsets and arbitrary external texture lifetime management |
 | Platforms | Desktop OpenGL exercised on Linux through native Wayland and GLFW | No claim of Windows, macOS, mobile, alternate graphics-backend or CUDA/tensor parity |
-| Scale | Counters, bounded texture budget and semantic stress checks | Per-node contexts, Python scans and graph scans are not a production-scale architecture yet |
+| Scale | One host context, bounded texture budget and semantic stress checks | Python declaration/layout work and broad graph scans remain scalability limits |
 
 The current command capture assumes this ImGui build's 20-byte vertices and
 32-bit indices. External textures and the shared font atlas must outlive packets
@@ -909,7 +914,7 @@ Before treating this as a production replacement, the main open decisions are:
 4. Extend the tested parent-relative internal-window collision prototype to
    production docking, tile overlays and real child OS surfaces.
 5. Define font/theme/DPI/external-texture invalidation and safe GPU resource reuse.
-6. Replace per-node heavyweight contexts and broad scans where measurements show
+6. Reduce remaining broad scans now that per-node ImGui contexts are removed, where measurements show
    they dominate; add appropriate memory management without breaking references.
 7. Establish hot-source editing, persistence, mixed old/new trees and packaging
    contracts before migrating ordinary application views.

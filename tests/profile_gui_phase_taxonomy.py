@@ -115,11 +115,22 @@ class Trace:
         bench.gui = public_gui
 
         original_factory = retained.RetainedGui.gui
-        self.patches.append((retained.RetainedGui, 'gui', original_factory))
-        def factory(cache, func=None, **kwargs):
-            result = original_factory(cache, func, **kwargs)
-            return trace.wrap('declaration.python', result) if func is not None else result
-        retained.RetainedGui.gui = factory
+        factory_namespace = None
+        if self.selects('declaration.python'):
+            # Inject inside the original closure so aliases and __wrapped__ keep
+            # their original meanings for invalidation and source replacement.
+            factory_source=getattr(original_factory,'__declaration_source__',None)
+            parsed=ast.parse(textwrap.dedent(factory_source or inspect.getsource(original_factory)))
+            wrapper=next(node for node in ast.walk(parsed) if isinstance(node,ast.FunctionDef) and node.name=='wrapper')
+            original_body=wrapper.body
+            enter=ast.parse("_phase_entry = _trace.begin('declaration.python') if _trace.enabled else None").body
+            leave=ast.parse("if _phase_entry is not None: _trace.end('declaration.python', _phase_entry)").body
+            wrapper.body=enter+[ast.Try(body=original_body,handlers=[],orelse=[],finalbody=leave)]
+            namespace={**original_factory.__globals__,'_trace':self}
+            factory_namespace=namespace
+            exec(compile(ast.fix_missing_locations(parsed),'<declaration phase instrumentation>','exec'),namespace)
+            self.patches.append((retained.RetainedGui,'gui',original_factory))
+            retained.RetainedGui.gui=namespace['gui']
 
         for module in (retained, window):
             original = module._bind_native
@@ -128,6 +139,8 @@ class Trace:
                 result = _original(native, func, **kwargs)
                 return trace.wrap('dispatch.native_boundary', result) if func is not None else result
             module._bind_native = bind
+        if factory_namespace is not None:
+            factory_namespace['_bind_native']=retained._bind_native
 
         original_execute = retained.RetainedGui._execute
         source = ast.parse(textwrap.dedent(inspect.getsource(original_execute)))
@@ -149,14 +162,13 @@ class Trace:
             self.patch(retained.RetainedGui, name, 'bookkeeping.' + name)
         for name in ('_compose', '_select_rasters', '_evict_scroll_tiles', 'present'):
             self.patch(retained.RetainedGui, name, 'replay.' + name)
-        for name in (() if self.coarse else ('_context', '_begin_window')):
+        for name in (() if self.coarse else ('_capture',)):
             self.patch(retained.RetainedGui, name, 'imgui.' + name)
         for name in (('begin', 'commit') if self.coarse else ('begin', 'commit', 'abort', 'captured', 'bind', 'apply')):
             self.patch(GuiGeometry, name, 'layout.' + name)
         self.patch(window._GuiWindow, 'solve_native', 'layout.host_native')
         self.patch(NativeCollision, 'commit', 'layout.native_commit')
         self.patch(window._GuiWindow, 'call', 'dispatch.binding')
-        self.patch(ImGuiInput, 'apply', 'imgui.input_apply')
         self.patch(ImGuiInput, 'finish', 'bookkeeping.input_finish')
         self.patch(bench.Scene, 'frame', 'bookkeeping.frame')
         self.patch(bench.Graphics, 'submit', 'host.submit')
@@ -209,6 +221,8 @@ def main():
     parser.add_argument('--lifecycle-probes', type=Path, help='Same-library direct ImGui timer bridge from lifecycle benchmark')
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--hostless', action='store_true')
+    parser.add_argument('--host-input', action='store_true', help='Also run idle process_host_input as normal hosted drawing does')
+    parser.add_argument('--measure-raw', action='store_true', help='Retain matched raw/reference timing samples before the retained case')
     parser.add_argument('--culled', action='store_true')
     parser.add_argument('--depth', type=int, default=5)
     parser.add_argument('--fanout', type=int, default=4)
@@ -218,6 +232,7 @@ def main():
     parser.add_argument('--frames', type=int, default=100)
     parser.add_argument('--warm', type=int, default=24)
     parser.add_argument('--hot', action='store_true')
+    parser.add_argument('--declaration-hooks',action='store_true',help='Separately time allocation/bind callbacks in a coarse declaration trace')
     args = parser.parse_args()
     from profile_gui_overhead import load_native, mount
     load_native(args.native_path)
@@ -227,9 +242,17 @@ def main():
     Toggles.Rust.auto_cache = True
     set_content(bench, args.content, args.commands)
     graphics = bench.Graphics()
-    reference = bench.Scene(bench.tree(args.depth, args.fanout, args.culled), 'raw', args.work, True)
+    reference_variant = 'gui_redraw' if args.content=='widget' else 'raw'
+    reference = bench.Scene(bench.tree(args.depth, args.fanout, args.culled), reference_variant, args.work, True)
+    if reference.host:reference.host.cache.calibration.enabled=False
     mount(reference, graphics, False)
     pixels = graphics.pixels()
+    raw_samples=[]
+    if args.measure_raw:
+        for frame in range(args.warm+args.frames):
+            graphics.begin();start=perf_counter_ns();reference.frame();graphics.submit()
+            elapsed=(perf_counter_ns()-start)/1000;graphics.finish()
+            if frame>=args.warm:raw_samples.append(elapsed)
     reference.close()
     focus_labels = {
         'declaration': ['declaration.python','bookkeeping._execute','bookkeeping.flush'],
@@ -252,6 +275,10 @@ def main():
              if args.mode in ('phases','coarse','focused') else None)
     if trace:
         trace.install(bench)
+        if args.declaration_hooks:
+            from meltygui.core.rendering.gui_layout_prototype import GuiGeometry
+            trace.patch(GuiGeometry,'allocation','hook.allocation')
+            trace.patch(GuiGeometry,'bind','hook.bind')
     from types import SimpleNamespace
     adapter = SimpleNamespace(
         prototype_snapshot=lambda: (((0.,128.),(0.,512.)),((0.,128.),(0.,512.)),'walls',1,((),())),
@@ -301,10 +328,12 @@ def main():
                 trace.enabled = True
                 with trace.scope('frame.unattributed'):
                     if not args.hostless:scene.host.solve_native(adapter)
+                    if args.host_input:cache.process_host_input()
                     scene.frame();graphics.submit()
                 trace.enabled = False
             else:
                 if not args.hostless:scene.host.solve_native(adapter)
+                if args.host_input:cache.process_host_input()
                 scene.frame();graphics.submit()
             elapsed = (perf_counter_ns()-start)/1000
             lifecycle_active[0]=False
@@ -315,11 +344,14 @@ def main():
         assert graphics.pixels() == pixels, 'final pixels'
         report = dict(args={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()},
             cpu=bench.summary(samples),gpu=bench.summary(gpu_samples),cpu_samples_us=samples,
-            gpu_samples_us=gpu_samples,cold_us=cold_us,bodies=expected[0],checksum=expected[1],pixels_match_raw=True,
-            resources=dict(contexts=len(cache.contexts),ids=len(set(cache.uniques.values())),gpu=cache.gpu.stats(),
+            gpu_samples_us=gpu_samples,cold_us=cold_us,bodies=expected[0],checksum=expected[1],
+            pixels_match_reference=True,reference_variant=reference_variant,
+            resources=dict(captures=len(cache.captures),ids=len(set(cache.uniques.values())),gpu=cache.gpu.stats(),
                            representations=cache.gpu.representation_stats(),scratch=cache.gpu.scratch_stats(),
                            native_axes=[axis.stats() for axis in cache.geometry.axes]))
         if trace:
+            if args.mode in ('phases','coarse') and not args.hot:
+                assert trace.values['dispatch.native_boundary'][0] == expected[0]*args.frames
             report['phases']={k:dict(calls=v[0]/args.frames,inclusive_us=v[1]/args.frames/1000,
                 exclusive_us=v[2]/args.frames/1000) for k,v in trace.values.items()}
             report['python_copy_bytes_per_frame']=trace.copy_bytes/args.frames
@@ -328,6 +360,7 @@ def main():
             report['measured_probe_overhead_us']=sum(v for k,v in trace.overhead.items()
                                                      if k!='frame.unattributed')/args.frames/1000
         if args.mode=='native' or args.native_probes:report['native_phases']=_gui_native.profile_snapshot()
+        if raw_samples:report['raw_reference_cpu']=bench.summary(raw_samples);report['raw_reference_samples_us']=raw_samples
         if args.lifecycle_probes:report['imgui_core']={k:dict(calls=v[0]/args.frames,mean_us=v[1]/args.frames/1000)
                                                       for k,v in lifecycle_values.items()}
         args.output.parent.mkdir(parents=True,exist_ok=True)

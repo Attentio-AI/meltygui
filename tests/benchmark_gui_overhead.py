@@ -57,10 +57,11 @@ def digest(number, work):
 
 
 class Scene:
-    def __init__(self, root, variant, work, graphics, predeclare=False):
+    def __init__(self, root, variant, work, graphics, predeclare=False, wrapper=None,
+                 local_coordinates=False, host_factory=None, gui_decorator=None):
         self.root, self.variant, self.graphics = root, variant, graphics
         self.count = self.checksum = 0
-        self.host = None if variant.startswith('raw') else _GuiWindow(graphics=graphics)
+        self.host = None if variant.startswith('raw') else (host_factory or _GuiWindow)(graphics=graphics)
         self.manual = variant == 'raw_manual_cull'
         self.predeclare = predeclare and variant in ('gui_redraw', 'gui_hot')
         if self.host:
@@ -68,7 +69,7 @@ class Scene:
             self.host.cache.auto_layout = False
         if graphics:
             from meltygui import imgui
-        retained = variant in ('gui_redraw', 'gui_hot')
+        retained = variant in ('gui_redraw', 'gui_hot') or local_coordinates
 
         def body(input_value: Node, left=0., top=0., width=128., height=512., key=None):
             self.count += 1
@@ -85,9 +86,9 @@ class Scene:
             return False, input_value
 
         if self.host:
-            view = gui(body, use_cache=variant != 'gui_uncached', scroll=True)
+            view = (gui_decorator or gui)(body, use_cache=variant != 'gui_uncached', scroll=True)
         elif not self.manual:
-            view = body
+            view = body if wrapper is None else wrapper(body)
         else:
             def view(input_value, *, key=None, left=0., top=0., width=128., height=512.):
                 if self.manual and self.parents and top >= self.parents[-1][1]:
@@ -331,7 +332,7 @@ def run_case(depth, fanout, work, culled, args, graphics, cost_snapshot=None):
                     result['scratch_stats'] = cache.gpu.scratch_stats()
                     result['policy'] = dict(promotions=cache.raster_policy.promotions,
                         demotions=cache.raster_policy.demotions,evaluations=cache.raster_policy.evaluations)
-                    result['imgui_contexts'] = len(cache.contexts)
+                    result['imgui_contexts'] = len(cache.captures)
                     result['unique_ids'] = len(set(cache.uniques.values()))
             result['ratio_vs_raw'] = result['cpu']['median_us'] / results['raw']['cpu']['median_us']
             print(json.dumps(dict(depth=depth, fanout=fanout, work=work, culled=culled,

@@ -17,7 +17,18 @@ code changes, matched default/calibrated results and remaining redraw overhead.
 
 ## Short how-to guide
 
-Build using the checkout's interpreter, then run an example:
+The retained capture path requires `meltygui-imgui` 2.0.4, which adds
+`DrawCapture`. Until that binding is published to the package index, install
+its locally built wheel first. Use the interpreter that will run your app
+for both installs (an editable checkout does not update dependencies when
+its source requirements change):
+
+```sh
+.venv/bin/python -m pip install /path/to/meltygui_imgui-2.0.4-<python>-<abi>-<platform>.whl
+.venv/bin/python -m pip install -e .
+```
+
+Then build the Rust extension and run an example:
 
 ```sh
 .venv/bin/python tools/build_gui_prototype.py
@@ -217,8 +228,8 @@ persistence. There is no parallel archive of retired-view snapshots.
 | Event | State objects | Rendering resources |
 | --- | --- | --- |
 | Ordinary cached frame | Reuse | Replay |
-| Hide a view | Keep the same objects in the session | Retire captures/contexts |
-| Evict an offscreen capture | Keep state and declarations | Release captures/contexts |
+| Hide a view | Keep the same objects in the session | Retire draw captures |
+| Evict an offscreen capture | Keep state and declarations | Release draw buffers |
 | Show again | Reuse objects and parameter values | Recreate as needed |
 | Checkpoint | Determine save eligibility without deleting live state | Remain usable |
 | Close and reopen app | Restore eligible serialized state; prune unused records | Rebuild |
@@ -334,7 +345,7 @@ for timing conditions, resource counts, profiles and failure controls.
 - Initial declarations and CPU state storage remain O(number of declared views).
   The benchmark mounted 10,000 rows in roughly 0.4 seconds. It is not a virtualized
   declaration/provider API.
-- Nesting retains independent state, packets and ImGui contexts. Automatic
+- Nesting retains independent state and packets in one host ImGui context. Automatic
   selection avoids mandatory per-view textures, but Python capture/declaration
   and populated layout-transaction costs remain. Soft residency budgets cannot
   evict visible/focused content; the hard texture budget remains.

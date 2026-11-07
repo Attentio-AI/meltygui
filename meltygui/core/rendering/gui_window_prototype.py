@@ -46,8 +46,6 @@ class _GuiWindow:
         if self.cache.graphics and self.input_backend is None:
             self.input_backend = surface.impl
             self.input_backend.gui_character_callback = self.cache.imgui_input.character
-            self.cache.imgui_input.clipboard = (surface.impl._get_clipboard_text,
-                                                surface.impl._set_clipboard_text)
         token = _window.set(self)
         from meltygui.core.runtime.app import _state
         func, options = view.__gui_definition__
@@ -70,7 +68,7 @@ class _GuiWindow:
             self.cache.flush()
             if self.cache.graphics:
                 # Resolve ownership from this frame's actual ImGui items,
-                # after all dirty contexts ran, rather than from cache bounds.
+                # after all dirty views ran, rather than from cache bounds.
                 self.cache.register_host_pointer(Melty.event_handler, imgui.get_mouse_pos())
             self.cache.present((0, 0))
             if view.__gui_definition__[1].get('live', False):
@@ -88,7 +86,6 @@ class _GuiWindow:
             if self.input_backend is not None:
                 self.input_backend.gui_character_callback = None
                 self.input_backend = None
-                self.cache.imgui_input.clipboard = None
             self.cache.close()
             self.cache.request_frame = None
             self.native.clear()

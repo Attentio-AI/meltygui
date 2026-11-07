@@ -104,7 +104,7 @@ def main():
             row['cpu'], row['gpu'] = summary(row['cpu_samples_us']), summary(row['gpu_samples_us'])
             if scene.host:
                 cache = scene.host.cache
-                row['resources'] = dict(contexts=len(cache.contexts), ids=len(set(cache.uniques.values())),
+                row['resources'] = dict(captures=len(cache.captures), ids=len(set(cache.uniques.values())),
                     gpu=cache.gpu.stats(), representations=cache.gpu.representation_stats(),
                     scratch=cache.gpu.scratch_stats(), native_layout=cache.geometry.native is not None,
                     native_axes=[axis.stats() for axis in cache.geometry.axes])
