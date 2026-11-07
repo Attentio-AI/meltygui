@@ -10,7 +10,10 @@ from meltygui.core.rendering.retained_gui_prototype import RetainedGui
 
 
 @pytest.fixture
-def gl_context():
+def gl_context(monkeypatch):
+    # These reference checks inspect each individual raster texture.
+    from meltygui.core.runtime.toggles import Toggles
+    monkeypatch.setattr(Toggles.Rust, "auto_cache", False)
     _ensure_gl_context()
 
 

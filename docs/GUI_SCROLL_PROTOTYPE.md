@@ -84,9 +84,12 @@ State changes enqueue work:
 - Size/content changes invalidate affected bodies. Unchanged primitive writes
   do not enqueue work.
 - Newly exposed uncaptured children render on demand. Existing captured children
-  replay. Ancestor viewport textures are recomposited bottom-up.
+  replay. Optional ancestor rasters are recomposited bottom-up; cheap viewport
+  packets expand into the nearest raster boundary with automatic selection.
 
 Offscreen capture subtrees are evicted using a 256-tile / 32 MiB soft budget.
+[Automatic raster selection](GUI_AUTO_CACHE.md) charges packet plus actual raster
+bytes, while retaining the same state and context ownership.
 Visible, focused, active and floating-window resources are protected. Eviction
 releases textures and ImGui contexts, while declarations, draw-state objects and
 injected state remain. The existing hard texture budget still applies.

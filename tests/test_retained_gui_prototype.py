@@ -3,6 +3,37 @@ import pytest
 from meltygui.core.rendering.retained_gui_prototype import RetainedGui
 
 
+def test_unchanged_caller_skips_result_acknowledgement_but_new_input_checks_it():
+    cache = RetainedGui(graphics=False)
+    reads = []
+    graph = cache.graph
+
+    class ObservedGraph:
+        def __getattr__(self, name):
+            return getattr(graph, name)
+
+        def result(self, node, consume):
+            reads.append(consume)
+            return graph.result(node, consume)
+
+    cache.graph = ObservedGraph()
+
+    @cache.gui()
+    def view(input_value):
+        return False, input_value
+
+    try:
+        assert view('first') == (False, 'first')
+        reads.clear()
+        assert view('first') == (False, 'first')
+        assert reads == [True]
+        reads.clear()
+        assert view('second') == (False, 'second')
+        assert reads == [False, True]
+    finally:
+        cache.close()
+
+
 @pytest.mark.parametrize('position,claimed', [((60, 65), True), ((400, 400), False)])
 def test_retained_window_claims_drag_but_background_still_moves_host(position, claimed):
     from meltygui.core.input.input_handler import InputHandler

@@ -32,6 +32,10 @@ def gui(func=None, *, glfw_window=False, **decoration):
     this function as an OS window; ``@os_window`` is the convenient spelling.
     ``use_cache=False`` draws an immediate host/toolbar body. Other views retain
     their output and execute only when invalidated. No application runtime setup.
+    With ``Toggles.Rust.auto_cache`` enabled, retained commands share a pass until
+    measured work and reuse justify optional raster storage. ``use_cache=True``
+    is normal policy eligibility; disabling the global toggle forces the legacy
+    per-view raster representation without changing state or input identity.
 
     Identity uses the logical parent, renderer, then ``key``, nonempty ``name``,
     or an anonymous occurrence index, in that order. Named/keyed calls do not

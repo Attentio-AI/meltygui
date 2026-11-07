@@ -5,9 +5,15 @@ alongside `@render_func`, not a completed replacement. The priority is a small,
 fast runtime with plain Python view functions and reusable state injection.
 
 The current implementation has stable identity, native draw-state persistence,
-relative geometry, cached nested scrolling, and `left`/`top` positioning.
+relative geometry, cached nested scrolling, `left`/`top` positioning, runtime
+cost calibration and automatic raster selection.
 [Geometry, scrolling and benchmark details](GUI_SCROLL_PROTOTYPE.md) supplement
-this overview.
+this overview. [Matched plain-Python overhead measurements](GUI_OVERHEAD_BENCHMARK.md)
+separate uncached dispatch, full retained redraw, unchanged frames and culling.
+[Runtime calibration](GUI_CALIBRATION.md) describes local cost snapshots, passive
+replay observations, opportunistic idle probes and their coverage limits.
+[Automatic cache selection](GUI_AUTO_CACHE.md) records the current implementation,
+code changes, matched default/calibrated results and remaining redraw overhead.
 
 ## Short how-to guide
 
@@ -251,8 +257,10 @@ scroll changes update viewport composition; size/content changes can rerender
 the affected bodies. Unchanged primitive assignments do not invalidate work.
 
 A local spatial index selects children for each viewport. Missing captures render
-on demand; resident content replays. Nested viewport textures compose bottom-up,
-so depth still costs GPU passes. Offscreen capture subtrees have a soft
+on demand; resident content replays. With `Toggles.Rust.auto_cache = True`,
+cheap descendants share a pass and costly reusable subtrees can acquire raster
+storage. Host roots and portals remain presentation boundaries. See
+[automatic raster selection](GUI_AUTO_CACHE.md) for policy and measurements. Offscreen capture subtrees have a soft
 256-tile/32-MiB budget, with visible and active resources protected. Eviction does
 not discard state. Pure wheel gestures defer hover settling until scrolling stops.
 
@@ -280,7 +288,7 @@ not discard state. Pure wheel gestures defer hover settling until scrolling stop
 
 ## Validation and performance evidence
 
-The latest positioning milestone passed **273 focused tests**, including GPU
+The positioning milestone passed **273 focused tests**, including GPU
 pixels, identity, persistence, geometry, scrolling, layouts, widgets and chrome.
 Live Wayland checks exercised scrolling, floating-window dragging, hide/show,
 restart persistence and independent positioning axes. These counts describe the
@@ -296,18 +304,55 @@ Those measurements preceded the final `left`/`top` cleanup; they are historical
 evidence for the scrolling design, not fresh measurements from this documentation
 pass. See [the full conditions and reproduction command](GUI_SCROLL_PROTOTYPE.md#measurements).
 
+### Performance work after the geometry prototype
+
+| Step | Finding or implemented change |
+| --- | --- |
+| Raw-versus-`@gui` benchmark | Established the expensive all-visible redraw case: 0.288 ms raw versus 19.034 ms per-view retained rendering for the original trivial workload. |
+| Detailed profiling | Located repeated bridge/argument work and per-view FBO/upload/resolve costs. Identity hashing alone was not the explanation. |
+| Eviction eligibility | Stopped rescanning unchanged protected captures. A matched control changed from about 327 us to 96 us for the unchanged graphics frame, without raising budgets. |
+| Lazy acknowledgement | Removed an unnecessary retained-result lookup on unchanged declarations; measured CPU redraw improvement was about 2%. |
+| Runtime calibration | Added immutable cost snapshots, deferred profile loading, bounded asynchronous GPU samples and opportunistic idle probes. No calibration work blocks the first presentation. |
+| Automatic raster selection | Made shared command replay the default for cheap descendants, with optional cost/reuse-driven textures and stable state/input ownership. |
+
+The latest matched all-visible rerun measures **20.732 ms** per-view raster,
+**14.422 ms** automatic with defaults and **14.291 ms** automatic with calibrated
+costs, versus roughly **0.30 ms raw**. It uses 341 logical views in every mode;
+raster boundaries drop from 341 to one. The CPU gap is reduced, not solved.
+Defaults and calibration make the same decisions in these measured workloads,
+so their small timing difference is not evidence that calibration is faster.
+
+The automatic-selection milestone passed **314 focused tests**. Two additional
+native-settings tests fail with a GLFW/native-Wayland pointer mismatch in both
+automatic and disabled modes; that broader run is not reported as fully green.
+Opaque transition pixels are exact, while tested translucent cases differ by at
+most two RGBA8 channel values. See [the complete findings](GUI_AUTO_CACHE.md#measured-results-2026-11-07)
+for timing conditions, resource counts, profiles and failure controls.
+
 ## Known issues, limits and next work
 
 - Initial declarations and CPU state storage remain O(number of declared views).
   The benchmark mounted 10,000 rows in roughly 0.4 seconds. It is not a virtualized
   declaration/provider API.
-- Nesting consumes viewport textures and composition passes. Soft residency
-  budgets cannot evict visible/focused content; the hard texture budget remains.
+- Nesting retains independent state, packets and ImGui contexts. Automatic
+  selection avoids mandatory per-view textures, but Python capture/declaration
+  and populated layout-transaction costs remain. Soft residency budgets cannot
+  evict visible/focused content; the hard texture budget remains.
 - Large individual raw draw lists are not automatically tiled. Put scrolling
   content in cached child views; viewport-body drawing is fixed chrome.
 - The legacy constraint solver still snapshots the whole solver for body/layout
   transactions. Warm scrolling avoids body execution, but cold/layout-edit costs
   need further work.
+- The all-visible full-redraw CPU overhead remains large. Automatic raster
+  selection removes most per-view GPU composition cost, but does not remove
+  Python declaration/execution and ImGui capture overhead.
+- Calibration is opportunistic on existing presentations; it does not wake a
+  fully sleeping app. Its baseline covers the current RGBA8 GL cache operations.
+  External ray-marching/CUDA/body work is not automatically included in replay
+  measurements. An already-retained external texture can benefit both paths.
+- Automatic selection is a bounded local heuristic, with roots and portals
+  remaining raster boundaries. It is not a globally optimal cache partition.
+  Tested translucent representation changes can differ by two channel values.
 - Anonymous identity is intentionally sensitive to conditional omissions and
   insertion/reordering of anonymous calls to the same renderer. Names change
   identity unless a key overrides them. Module/qualified-name changes need an
@@ -337,6 +382,8 @@ pass. See [the full conditions and reproduction command](GUI_SCROLL_PROTOTYPE.md
 | Relative geometry and spatial indexes | [geometry.rs](../native/gui_prototype/src/geometry.rs) |
 | Retained reconciliation and scheduling | [retained.rs](../native/gui_prototype/src/retained.rs) |
 | Capture and composition | [texture.rs](../native/gui_prototype/src/texture.rs), [Python bridge](../meltygui/core/rendering/retained_gui_prototype.py) |
+| Automatic raster policy and shared replay | [gui_cache_policy.py](../meltygui/core/rendering/gui_cache_policy.py), [shared_replay.rs](../native/gui_prototype/src/shared_replay.rs), [global toggle](../meltygui/core/runtime/toggles.py) |
+| Runtime cost calibration | [gui_calibration.py](../meltygui/core/rendering/gui_calibration.py), [native probes](../native/gui_prototype/src/calibration.rs) |
 | Window/input/layout integration | [gui_window_prototype.py](../meltygui/core/rendering/gui_window_prototype.py), [gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py), [gui_layout_prototype.py](../meltygui/core/rendering/gui_layout_prototype.py) |
 | Session persistence | [app_session.py](../meltygui/core/runtime/app_session.py), [load_save_v2.py](../meltygui/core/conversion/load_save_v2.py) |
 | Contract tests | [identity](../tests/test_gui_identity.py), [persistence](../tests/test_gui_persistence.py), [positions](../tests/test_gui_position_api.py), [scroll/geometry](../tests/test_gui_scroll_geometry.py) |

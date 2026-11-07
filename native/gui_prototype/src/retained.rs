@@ -65,6 +65,7 @@ pub struct RetainedGraph {
     compose_set: HashSet<u64>,
     portals: BTreeSet<(u64,u64)>,
     placements: HashMap<u64, HashSet<u64>>,
+    visibility_revision: u64,
 }
 
 impl RetainedGraph {
@@ -80,6 +81,7 @@ impl RetainedGraph {
     }
     fn remove_node(&mut self, py: Python<'_>, id: u64) -> PyResult<()> {
         if let Some(n) = self.nodes.remove(&id) {
+            self.visibility_revision += 1;
             self.placements.remove(&id);
             if let Some(children)=self.placements.get_mut(&n.parent) {children.remove(&id);}
             self.geometry.remove(py,id);
@@ -104,6 +106,7 @@ impl RetainedGraph {
     fn sync(&mut self, py: Python<'_>) {
         for (id, flags) in self.geometry.sync(py) {
             if !self.nodes.contains_key(&id) {continue;}
+            if flags != 0 {self.visibility_revision += 1;}
             let parent=self.nodes[&id].parent;
             if parent!=0 && !self.nodes[&id].portal && flags & (POSITION|SIZE)!=0 {
                 self.placements.entry(parent).or_default().insert(id);
@@ -150,6 +153,7 @@ impl RetainedGraph {
             compose_set: HashSet::new(),
             portals: BTreeSet::new(),
             placements: HashMap::new(),
+            visibility_revision: 0,
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -178,6 +182,7 @@ impl RetainedGraph {
             id.extract()?
         } else {
             self.serial += 1;
+            self.visibility_revision += 1;
             self.rank += 1;
             let id = self.serial;
             self.identities.bind(py).set_item(&identity, id)?;
@@ -241,6 +246,7 @@ impl RetainedGraph {
         // never content hashing or inspection of arbitrary mutable Python objects.
         let node = self.nodes.get_mut(&id).unwrap();
         if node.portal != portal || node.scrollable != scrollable || node.auto_height != (rect.3<0.) {
+            self.visibility_revision += 1;
             node.dirty = true;self.dirty_set.insert(id);if !in_scroll {self.unclipped_dirty.insert(id);}
         }
         if node.portal != portal {
@@ -382,6 +388,7 @@ impl RetainedGraph {
         state.put("width",Value::Float(width));state.put("height",Value::Float(height));drop(state);
         if let Some(flags)=self.geometry.changes.borrow_mut().get_mut(&id) {*flags &= !SIZE;}
         if changed {
+            self.visibility_revision += 1;
             n.layout_changes+=1;self.geometry.refresh(py,id);self.composition(id);
             if !portal {
                 if let Some(owner)=self.nodes.get_mut(&parent) {
@@ -451,6 +458,7 @@ impl RetainedGraph {
         let mut ids:Vec<_>=self.compose_set.iter().copied().filter(|id| self.nodes[id].executions>0).collect();
         ids.sort_by_key(|id|(std::cmp::Reverse(self.depth(*id)),*id));ids
     }
+    fn request_composition(&mut self, id: u64) { self.composition(id); }
     fn composed(&mut self, id: u64) {
         if let Some(n) = self.nodes.get_mut(&id) {
             n.compose = false;self.compose_set.remove(&id);
@@ -487,6 +495,11 @@ impl RetainedGraph {
         self.geometry.visible_children(py,id).into_iter().filter(|c|!self.nodes[c].portal).map(|c|{
             let r=self.geometry.rect(py,c);(c,r.0-scroll.0,r.1-scroll.1,r.2,r.3)
         }).collect()
+    }
+    /// Changes to geometry, topology or portal protection invalidate eviction eligibility.
+    fn visibility_revision(&mut self,py:Python<'_>)->u64 {
+        self.sync(py);
+        self.visibility_revision
     }
     fn visible(&mut self,py:Python<'_>,id:u64)->bool {
         self.sync(py);let p=self.geometry.origin(py,id);let r=self.geometry.rect(py,id);
@@ -539,6 +552,7 @@ impl RetainedGraph {
     fn raise_window(&mut self, id: u64) {
         self.rank += 1;
         if let Some(n) = self.nodes.get_mut(&id) {
+            self.visibility_revision += 1;
             self.portals.remove(&(n.z,id));n.z = self.rank;self.portals.insert((n.z,id));
         }
     }
@@ -619,6 +633,7 @@ impl RetainedGraph {
         self.remove_node(py, id)
     }
     fn clear(&mut self, py: Python<'_>) {
+        if !self.nodes.is_empty() {self.visibility_revision += 1;}
         self.placements.clear();
         self.retired.extend(self.nodes.keys().copied());
         for id in self.nodes.keys() {self.geometry.remove(py,*id);}

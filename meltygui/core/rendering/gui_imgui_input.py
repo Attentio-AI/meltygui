@@ -62,6 +62,8 @@ class ImGuiInput:
         old = self.sample
         self.sample = (position, buttons, keys, modifiers, wheel)
         self.text, self.characters = tuple(self.characters), []
+        if old != self.sample or self.text or any(buttons) or self.pressed_keys:
+            self.cache.calibration.input()
         # During a wheel gesture keep cached content frozen. Settle hover once
         # the wheel stops; keyboard edits and captured widgets still get input.
         if scrolled and old is not None and old[2:4] == self.sample[2:4] and not self.text and not self.active:

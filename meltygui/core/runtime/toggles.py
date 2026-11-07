@@ -487,6 +487,11 @@ class Swoosh:
 
 @window(tint=(0.27, 0.19, 0.14))
 class Toggles:
+    class Rust:
+        # Retain cheap @gui commands in a shared pass; promote reusable costly
+        # views to textures. Disable for the original per-view raster baseline.
+        auto_cache = True
+
     class Mobile:
         # Follow UIKit's top/side safe areas and draw through to the bottom edge.
         # Disable to use the manual top and bottom reserves below.

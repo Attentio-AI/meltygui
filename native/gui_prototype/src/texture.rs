@@ -1,5 +1,10 @@
 //! Throwaway desktop OpenGL command replay. No framebuffer snapshots or masks.
 //! The bridge copies finalized ImGui buffers; all GPU upload/replay is native.
+#[path = "calibration.rs"]
+mod calibration;
+use calibration::Sampler;
+#[path = "shared_replay.rs"]
+mod shared_replay;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use std::{
@@ -215,6 +220,17 @@ struct Packet {
     vertices: Vec<u8>,
     indices: Vec<u8>,
     commands: Vec<Command>,
+    spans: Vec<(u64,usize,usize)>,
+}
+
+#[derive(Default)]
+struct Workload {
+    refreshes: u64,
+    presentations: u64,
+    last_refresh_presentation: u64,
+    payload_bytes: usize,
+    commands: usize,
+    epoch: u64,
 }
 
 #[pyclass(unsendable)]
@@ -228,11 +244,19 @@ pub struct TextureCache {
     targets: HashMap<u64, Target>,
     packets: HashMap<u64, Vec<Packet>>,
     children: HashMap<u64, Vec<(u64,f32,f32,f32,f32)>>,
+    references: HashMap<u32, u64>,
+    backgrounds: HashMap<u64, (f32,f32,f32,f32)>,
+    shared: bool,
+    workloads: HashMap<u64, Workload>,
+    replay_epoch: u64,
+    policy_pending: std::collections::HashSet<u64>,
+    policy_queue: std::collections::VecDeque<u64>,
     scratch: Vec<Target>,
     scratch_allocations: u64,
     renders: u64,
     uploads: u64,
     budget: usize,
+    sampler: Sampler,
 }
 
 unsafe fn shader(kind: u32, src: &str) -> PyResult<u32> {
@@ -263,7 +287,7 @@ impl TextureCache {
         unsafe {
             let _guard = Guard::new();
             let vs=shader(0x8B31,"#version 330 core\nlayout(location=0) in vec2 pos;layout(location=1) in vec2 uv;layout(location=2) in vec4 col;uniform vec2 size;out vec2 UV;out vec4 Color;void main(){UV=uv;Color=col;gl_Position=vec4(pos.x/size.x*2.-1.,1.-pos.y/size.y*2.,0.,1.);}")?;
-            let fs=shader(0x8B30,"#version 330 core\nin vec2 UV;in vec4 Color;uniform sampler2D image;uniform int resolve;out vec4 Out;void main(){vec4 c=texture(image,UV)*Color;if(resolve!=0&&c.a>0.)c.rgb/=c.a;Out=c;}")?;
+            let fs=shader(0x8B30,"#version 330 core\nin vec2 UV;in vec4 Color;uniform sampler2D image;uniform int resolve;out vec4 Out;void main(){vec4 c=resolve==2?Color:texture(image,UV)*Color;if(resolve==1&&c.a>0.)c.rgb/=c.a;Out=c;}")?;
             let p = glCreateProgram();
             glAttachShader(p, vs);
             glAttachShader(p, fs);
@@ -292,9 +316,17 @@ impl TextureCache {
                 targets: HashMap::new(),
                 packets: HashMap::new(),
                 children: HashMap::new(),
+                references: HashMap::new(),
+                backgrounds: HashMap::new(),
+                shared: false,
+                workloads: HashMap::new(),
+                replay_epoch: 0,
+                policy_pending: std::collections::HashSet::new(),
+                policy_queue: std::collections::VecDeque::new(),
                 scratch: Vec::new(),
                 scratch_allocations: 0,
                 renders: 0,
+                sampler: Sampler::default(),
                 uploads: 0,
                 budget,
             };
@@ -325,21 +357,22 @@ impl TextureCache {
                 ));
             }
             if let Some(t) = self.targets.get(&id) {
-                if t.w == w && t.h == h {
+                if t.w == w && t.h == h && t.fbo != 0 {
                     return Ok(t.tex);
                 }
             }
+            self.sampler.cancel_probes();
             // No hidden eviction that could leave retained packets sampling stale IDs.
             // This bounded experiment fails explicitly when its budget is exceeded.
             let used: usize = self
                 .targets
                 .iter()
                 .filter(|(k, _)| **k != id)
-                .map(|(_, t)| (t.w * t.h * 4) as usize)
+                .map(|(_, t)| if t.fbo == 0 {0} else {(t.w * t.h * 4) as usize})
                 .sum();
             let next_bytes = (w * h * 4) as usize;
             let largest = self.targets.iter().filter(|(k, _)| **k != id)
-                .map(|(_, t)| (t.w * t.h * 4) as usize)
+                .map(|(_, t)| if t.fbo == 0 {0} else {(t.w * t.h * 4) as usize})
                 .max().unwrap_or(0).max(next_bytes);
             // Reserve enough space to replay any target, even after later allocations.
             if used + next_bytes + largest > self.budget {
@@ -353,17 +386,88 @@ impl TextureCache {
                 // Keep the texture name stable: parent command packets reference it.
                 glBindTexture(TEX, t.tex);
                 glTexImage2D(TEX, 0, 0x8058, w, h, 0, 0x1908, 0x1401, ptr::null());
+                for parameter in [0x2801,0x2800] { glTexParameteri(TEX,parameter,0x2601); }
+                for parameter in [0x2802,0x2803] { glTexParameteri(TEX,parameter,0x812F); }
+                if t.fbo == 0 {
+                    glGenFramebuffers(1, &mut t.fbo);
+                    glBindFramebuffer(FB, t.fbo);
+                    glFramebufferTexture2D(FB, 0x8CE0, TEX, t.tex, 0);
+                    if glCheckFramebufferStatus(FB) != 0x8CD5 {
+                        glDeleteFramebuffers(1, &t.fbo); t.fbo = 0;
+                        return Err(PyRuntimeError::new_err("prototype capture framebuffer incomplete"));
+                    }
+                }
                 t.w = w;
                 t.h = h;
                 return Ok(t.tex);
             }
             let t = Target::new(w, h)?;
             let tex = t.tex;
+            self.references.insert(tex, id);
             self.targets.insert(id, t);
             Ok(tex)
         }
     }
+    // A stable logical reference reserves only a GL name, not pixel storage.
+    // The same name survives promotion, demotion, parent packets and input focus.
+    fn reference(&mut self, id: u64, w: i32, h: i32) -> PyResult<u32> {
+        if w <= 0 || h <= 0 || w > 8192 || h > 8192 {
+            return Err(PyRuntimeError::new_err("cache boundary must be 1..8192 pixels"));
+        }
+        self.shared = true;
+        if let Some(t) = self.targets.get(&id) {
+            if t.fbo != 0 { return self.target(id, w, h); }
+        }
+        let t = self.targets.entry(id).or_insert_with(|| {
+            let mut tex = 0;
+            unsafe { glGenTextures(1, &mut tex); }
+            self.references.insert(tex, id);
+            Target {tex, fbo: 0, w, h}
+        });
+        t.w = w; t.h = h;
+        Ok(t.tex)
+    }
+    fn raster(&mut self, id: u64, enabled: bool) -> PyResult<bool> {
+        let t = self.targets.get(&id).ok_or_else(|| PyRuntimeError::new_err("missing view reference"))?;
+        if (t.fbo != 0) == enabled { return Ok(false); }
+        if enabled {
+            let (w,h) = (t.w,t.h);
+            self.target(id,w,h)?;
+        } else {
+            let t = self.targets.get_mut(&id).unwrap();
+            unsafe {
+                let _guard = Guard::new();
+                glDeleteFramebuffers(1, &t.fbo); t.fbo = 0;
+                glBindTexture(TEX,t.tex);
+                glTexImage2D(TEX,0,0x8058,0,0,0,0x1908,0x1401,ptr::null());
+            }
+        }
+        Ok(true)
+    }
+    fn is_raster(&self, id: u64) -> bool { self.targets.get(&id).is_some_and(|t| t.fbo != 0) }
+    fn shared_pass(&mut self, enabled: bool) {self.shared=enabled;}
+    fn take_workloads(&mut self, limit: usize) -> Vec<(u64,u64,u64,u64,usize,usize)> {
+        let mut result=vec![];
+        for _ in 0..limit.min(256) {
+            let Some(id)=self.policy_queue.pop_front() else {break;};
+            self.policy_pending.remove(&id);
+            if let Some(work)=self.workloads.get(&id) {
+                result.push((id,work.refreshes,work.presentations,
+                    work.presentations-work.last_refresh_presentation,work.payload_bytes,work.commands));
+            }
+        }
+        result
+    }
+    fn capture_bytes(&self,id:u64)->usize {
+        self.targets.get(&id).map_or(0,|t| if t.fbo==0 {0} else {(t.w*t.h*4) as usize})
+        + self.workloads.get(&id).map_or(0,|entry|entry.payload_bytes)
+    }
+    fn representation_stats(&self) -> (usize,usize) {
+        (self.targets.len(),self.targets.values().filter(|t|t.fbo!=0).count())
+    }
     fn begin_packet(&mut self, id: u64) {
+        let entry=self.workloads.entry(id).or_default();
+        entry.payload_bytes=0; entry.commands=0;
         self.packets.insert(id, vec![]);
     }
     fn children(&mut self, id:u64, children:Vec<(u64,f32,f32,f32,f32)>) { self.children.insert(id,children); }
@@ -448,10 +552,13 @@ impl TextureCache {
                 return Err(PyRuntimeError::new_err("invalid draw-command range"));
             }
         }
+        let entry=self.workloads.entry(id).or_default();
+        entry.payload_bytes+=vertices.len()+indices.len(); entry.commands+=commands.len();
         self.packets.entry(id).or_default().push(Packet {
             vertices,
             indices,
             commands,
+            spans: vec![],
         });
         self.uploads += 1;
         Ok(())
@@ -459,12 +566,33 @@ impl TextureCache {
     #[pyo3(signature=(id, background=(0.0, 0.0, 0.0, 0.0)))]
     fn render(&mut self, id: u64, background: (f32, f32, f32, f32)) -> PyResult<()> {
         let _guard = unsafe { Guard::new() };
+        self.backgrounds.insert(id,background);
+        self.replay_epoch+=1;
+        let entry=self.workloads.entry(id).or_default(); entry.refreshes+=1; entry.last_refresh_presentation=entry.presentations;
         self.render_inner(id, background)
     }
     fn render_many(&mut self, views: Vec<(u64, (f32, f32, f32, f32))>) -> PyResult<()> {
         let _guard = unsafe { Guard::new() };
-        for (id, background) in views {
-            self.render_inner(id, background)?;
+        self.replay_epoch+=1;
+        for (id, background) in &views {
+            if !self.targets.contains_key(id) {return Err(PyRuntimeError::new_err("missing target"));}
+            self.backgrounds.insert(*id,*background);
+            // Visual staleness includes descendants, scrolling and placement,
+            // regardless of whether the Python body needed recapture.
+            let entry=self.workloads.entry(*id).or_default(); entry.refreshes+=1; entry.last_refresh_presentation=entry.presentations;
+        }
+        let views: Vec<_> = views.into_iter().filter(|(id,_)|self.targets.get(id).is_some_and(|t|t.fbo!=0)).collect();
+        if self.sampler.armed && !views.is_empty() {
+            let selected = self.sampler.selected(views.len());
+            self.sampler.armed = false;
+            for (index, (id, background)) in views.into_iter().enumerate() {
+                self.sampler.armed = index == selected;
+                self.render_inner(id, background)?;
+            }
+        } else {
+            for (id, background) in views {
+                self.render_inner(id, background)?;
+            }
         }
         Ok(())
     }
@@ -477,7 +605,10 @@ impl TextureCache {
     fn remove(&mut self, id: u64) {
         self.packets.remove(&id);
         self.children.remove(&id);
+        self.backgrounds.remove(&id);
+        self.workloads.remove(&id); self.policy_pending.remove(&id);
         if let Some(t) = self.targets.remove(&id) {
+            self.references.remove(&t.tex);
             unsafe {
                 t.delete();
             }
@@ -489,7 +620,7 @@ impl TextureCache {
             self.uploads,
             self.targets
                 .values()
-                .map(|t| (t.w * t.h * 4) as usize)
+                .map(|t| if t.fbo == 0 {0} else {(t.w * t.h * 4) as usize})
                 .sum(),
             self.packets
                 .values()
@@ -501,13 +632,29 @@ impl TextureCache {
     fn scratch_stats(&self) -> (usize, usize, u64) {
         (self.scratch.len(), self.scratch_bytes(), self.scratch_allocations)
     }
+    fn calibration_environment(&self) -> Vec<String> { unsafe { Sampler::environment() } }
+    fn calibration_arm(&mut self) { self.sampler.armed = true; }
+    fn calibration_poll(&mut self) -> Vec<calibration::Observation> { unsafe { self.sampler.poll() } }
+    fn calibration_pending(&self) -> usize { self.sampler.pending() }
+    #[pyo3(signature=(context_lost=false))]
+    fn calibration_cancel(&mut self, context_lost: bool) {
+        if context_lost { self.sampler.context_lost(); }
+        else { unsafe { self.sampler.close(); } }
+    }
+    fn calibration_probe(&mut self, operation: &str, size: i32) -> PyResult<bool> {
+        unsafe { self.probe(operation, size) }
+    }
     fn close(&mut self) {
         unsafe {
+            self.sampler.close();
             for (_, t) in self.targets.drain() {
                 t.delete();
             }
             self.packets.clear();
             self.children.clear();
+            self.backgrounds.clear();
+            self.references.clear();
+            self.workloads.clear(); self.policy_pending.clear(); self.policy_queue.clear();
             for t in self.scratch.drain(..) {
                 t.delete();
             }
@@ -524,10 +671,20 @@ impl TextureCache {
 
 impl TextureCache {
     fn scratch_bytes(&self) -> usize {
-        self.scratch.iter().map(|t| (t.w * t.h * 4) as usize).sum()
+        self.scratch.iter().map(|t| if t.fbo == 0 {0} else {(t.w * t.h * 4) as usize}).sum()
     }
     // The caller owns a Guard for either this replay or a whole composition batch.
     fn render_inner(&mut self, id: u64, background: (f32, f32, f32, f32)) -> PyResult<()> {
+        let sample = if self.sampler.armed && !self.shared {
+            self.sampler.armed = false;
+            let pixels = self.targets.get(&id).map_or(0, |t| t.w as u64 * t.h as u64);
+            unsafe { self.sampler.begin("replay", id, pixels) }
+        } else { false };
+        let result = self.replay(id, background);
+        if sample { unsafe { self.sampler.end(result.is_ok()); } }
+        result
+    }
+    fn replay(&mut self, id: u64, background: (f32, f32, f32, f32)) -> PyResult<()> {
         unsafe {
             let target = self
                 .targets
@@ -537,7 +694,8 @@ impl TextureCache {
             let index = if let Some(index) = self.scratch.iter().position(|s| s.w == w && s.h == h) {
                 index
             } else {
-                let used: usize = self.targets.values().map(|t| (t.w * t.h * 4) as usize).sum();
+                self.sampler.cancel_probes();
+                let used: usize = self.targets.values().map(|t| if t.fbo == 0 {0} else {(t.w * t.h * 4) as usize}).sum();
                 let bytes = (w * h * 4) as usize;
                 if used + bytes > self.budget {
                     return Err(PyRuntimeError::new_err("prototype texture budget exceeded"));
@@ -573,6 +731,44 @@ impl TextureCache {
             glBindBuffer(ELEMENT, self.ebo);
             glBindSampler(0, 0);
             glEnable(0x0C11);
+            if self.shared {
+                let packet = self.flatten(id, (0.,0.), (0.,0.,w as f32,h as f32), false)?;
+                for (node,_,_) in &packet.spans {
+                    let entry=self.workloads.entry(*node).or_default();
+                    if entry.epoch==self.replay_epoch {continue;}
+                    entry.epoch=self.replay_epoch; entry.presentations+=1;
+                    if self.policy_pending.insert(*node) {self.policy_queue.push_back(*node);}
+                }
+                let candidates:Vec<_>=if self.sampler.armed {
+                    packet.spans.iter().copied().filter(|(node,_,_)|*node==id || self.targets[node].fbo==0).collect()
+                } else {vec![]};
+                let sample=if self.sampler.armed && !candidates.is_empty() {
+                    self.sampler.armed=false;
+                    Some(candidates[self.sampler.selected(candidates.len())])
+                } else {None};
+                let mut sampling=false;
+                glBufferData(ARRAY, packet.vertices.len() as isize, packet.vertices.as_ptr().cast(), 0x88E0);
+                glBufferData(ELEMENT, packet.indices.len() as isize, packet.indices.as_ptr().cast(), 0x88E0);
+                for (index,(tex,count,(x1,y1,x2,y2),offset,base)) in packet.commands.iter().enumerate() {
+                    if let Some((node,start,_))=sample {
+                        if index==start {
+                            let t=&self.targets[&node];
+                            sampling=self.sampler.begin("replay",node,(t.w*t.h) as u64);
+                        }
+                    }
+                    let x=x1.floor().max(0.) as i32; let y=y1.floor().max(0.) as i32;
+                    let right=x2.ceil().min(w as f32) as i32; let bottom=y2.ceil().min(h as f32) as i32;
+                    if right>x && bottom>y && *count!=0 {
+                    glScissor(x,h-bottom,right-x,bottom-y);
+                    glUniform1i(self.resolve_loc, if *tex==0 {2} else {0});
+                    glBindTexture(TEX,*tex);
+                    glDrawElementsBaseVertex(4,*count,0x1405,(offset*4) as *const c_void,*base);
+                    }
+                    if sampling && sample.is_some_and(|(_,_,end)|index+1==end) {
+                        self.sampler.end(true); sampling=false;
+                    }
+                }
+            } else {
             for packet in self
                 .packets
                 .get(&id)
@@ -633,6 +829,7 @@ impl TextureCache {
                     glBindTexture(TEX,target.tex);
                     glDrawElementsBaseVertex(4,6,0x1405,ptr::null(),0);
                 }
+            }
             }
             // Resolve premultiplied accumulation to straight-alpha ImGui textures.
             // This prevents double-multiplication at nested cache boundaries.

@@ -13,6 +13,7 @@ from types import FunctionType
 import ctypes
 import math
 import inspect
+import time
 
 from meltygui.core.rendering.gui_prototype import _bind_native, _new_native, _renderer_name, _check_position_arguments
 from meltygui.core.rendering.gui_imgui_input import ImGuiInput
@@ -30,7 +31,7 @@ def _alias(value):
 
 
 class RetainedGui:
-    def __init__(self, *, graphics=True, state_registry=None):
+    def __init__(self, *, graphics=True, state_registry=None, calibration=True):
         from meltygui.core.rendering._gui_native import RetainedGraph, Identities
         self.identities = Identities(state_registry)
         self.uniques = {}
@@ -38,6 +39,12 @@ class RetainedGui:
         self.graph = RetainedGraph()
         self.graphics = graphics
         self.gpu = None
+        from meltygui.core.rendering.gui_calibration import Calibration
+        self.calibration = Calibration(enabled=graphics and calibration)
+        from meltygui.core.runtime.toggles import Toggles
+        self._auto_cache = Toggles.Rust.auto_cache
+        from meltygui.core.rendering.gui_cache_policy import RasterPolicy
+        self.raster_policy = RasterPolicy()
         self.stack = []
         self.records = {}
         self.bindings = {}
@@ -47,6 +54,8 @@ class RetainedGui:
         self.scroll_tile_bytes = 0
         self.max_scroll_tiles = 256
         self.scroll_tile_budget = 32 * 1024 * 1024
+        self._scroll_tile_revision = 0
+        self._eviction_inputs = None
         self.invocations = {}
         self.regions = {}
         self.staged_regions = {}
@@ -65,10 +74,16 @@ class RetainedGui:
         self.closed = False
         self.frame_roots = None
         self._last_pointer = None
+        self._frame_started = None
         self.layout_log = deque(maxlen=64)
         self.imgui_input = ImGuiInput(self)
         from meltygui.core.rendering.gui_layout_prototype import GuiGeometry
         self.geometry = GuiGeometry(self)
+
+    @property
+    def costs(self):
+        """Immutable local cost snapshot; CPU and GPU estimates stay separate."""
+        return self.calibration.snapshot
 
     @property
     def current(self):
@@ -99,6 +114,8 @@ class RetainedGui:
         """Reconcile declarations made by the external, uncached host."""
         if self.frame_roots is not None:
             raise RuntimeError('nested retained host frame')
+        if self._frame_started is None:
+            self._frame_started = time.monotonic()
         self.identities.begin_frame()
         previous = self.root_ids.copy()
         self.frame_roots = set()
@@ -231,8 +248,8 @@ class RetainedGui:
             pending = self.graph.pending(node)
             if previous is not None:
                 old_input, old_args = previous
-                acknowledgement = _same(self.graph.result(node, False)[1], input_value)
-                if ((not pending and not _same(old_input, input_value) and not acknowledgement) or old_args.keys() != arguments.keys()
+                changed_input = not pending and not _same(old_input, input_value)
+                if ((changed_input and not _same(self.graph.result(node, False)[1], input_value)) or old_args.keys() != arguments.keys()
                         or any(not _same(old_args[k], v) for k, v in arguments.items()
                                if k not in ('left','top','width','height','scroll_offset','content_offset'))):
                     self.graph.invalidate_node(node)
@@ -381,7 +398,12 @@ class RetainedGui:
             if len(background) != 4 or any(not math.isfinite(c) or not 0 <= c <= 1 for c in background):
                 raise ValueError('prototype tint must be RGB or RGBA components in 0..1')
             if self.graphics:
-                self.gpu.target(node, math.ceil(w), max(1, math.ceil(measured_h)))
+                if self._auto_cache:
+                    self.gpu.reference(node, math.ceil(w), max(1, math.ceil(measured_h)))
+                    if not self.graph.parent(node) or self.graph.is_portal(node):
+                        self.gpu.raster(node, True)
+                else:
+                    self.gpu.target(node, math.ceil(w), max(1, math.ceil(measured_h)))
                 self.gpu.begin_packet(node)
                 texture_refs = []
                 for draw_list in imgui.get_draw_data().commands_lists:
@@ -410,19 +432,7 @@ class RetainedGui:
             self.regions[node] = self.staged_regions.pop(node)
             self.geometry.commit(node)
             if self.graphics:
-                parent = self.graph.parent(node)
-                owner, ancestor = node, parent
-                while ancestor and not self.graph.is_scrollable(ancestor):
-                    owner, ancestor = ancestor, self.graph.parent(ancestor)
-                owner = owner if ancestor else None
-                size = math.ceil(w) * max(1, math.ceil(measured_h)) * 4
-                old_capture = self.capture_info.get(node)
-                difference = size - (old_capture[1] if old_capture else 0)
-                self.capture_info[node] = parent, size, owner
-                self.capture_children[parent].add(node)
-                if owner is not None:
-                    self.scroll_tile_bytes += difference
-                    self.scroll_tiles[owner] = self.scroll_tiles.get(owner, 0) + difference
+                self._track_capture(node)
             self._last_pointer = None  # the retained hit geometry may have changed
             if result[0]:
                 self.geometry.frozen.clear()
@@ -439,8 +449,88 @@ class RetainedGui:
                 imgui.set_current_context(previous)
                 previous._keepalive_cache[:] = parent_texture_refs
 
+    def _track_capture(self, node):
+        parent = self.graph.parent(node)
+        owner, ancestor = node, parent
+        while ancestor and not self.graph.is_scrollable(ancestor):
+            owner, ancestor = ancestor, self.graph.parent(ancestor)
+        owner = owner if ancestor else None
+        # Empty command captures still own contexts and count toward residency.
+        size = max(1, self.gpu.capture_bytes(node))
+        old_capture = self.capture_info.get(node)
+        if old_capture != (parent, size, owner):
+            self._scroll_tile_revision += 1
+        difference = size - (old_capture[1] if old_capture else 0)
+        self.capture_info[node] = parent, size, owner
+        self.capture_children[parent].add(node)
+        if owner is not None:
+            self.scroll_tile_bytes += difference
+            self.scroll_tiles[owner] = self.scroll_tiles.get(owner, 0) + difference
+
+    def _select_rasters(self):
+        from meltygui.core.runtime.toggles import Toggles
+        enabled = Toggles.Rust.auto_cache
+        if enabled != self._auto_cache:
+            self._auto_cache = enabled
+            # A global switch is a rare full transition. No bodies or contexts
+            # change; ordinary policy ticks consume a bounded affected queue.
+            for node in self.backgrounds:
+                mandatory = not self.graph.parent(node) or self.graph.is_portal(node)
+                if self.gpu.raster(node, mandatory or not enabled):
+                    self.graph.request_composition(node)
+                    self._track_capture(node)
+            self.gpu.shared_pass(enabled)
+        if not enabled:
+            return
+        for observation in self.gpu.take_workloads(64):
+            node = observation[0]
+            if node not in self.backgrounds:
+                continue
+            parent = self.graph.parent(node)
+            if not parent or self.graph.is_portal(node):
+                continue
+            ancestor, covered = parent, False
+            while ancestor:
+                if self.graph.is_portal(ancestor):
+                    break
+                if self.graph.parent(ancestor) and self.gpu.is_raster(ancestor):
+                    covered = True
+                    break
+                ancestor = self.graph.parent(ancestor)
+            _, _, w, h = self.graph.rect(node)
+            raster = self.gpu.is_raster(node)
+            selected = self.raster_policy.choose(observation, self.costs,
+                self.calibration.views.get(node), pixels=math.ceil(w)*math.ceil(h),
+                raster=raster, covered=covered)
+            if selected != raster:
+                try:
+                    changed = self.gpu.raster(node, selected)
+                except RuntimeError as error:
+                    if selected and str(error) == 'prototype texture budget exceeded':
+                        continue
+                    raise
+                if changed:
+                    self.raster_policy.applied(node, selected)
+                    self.graph.request_composition(node)
+                    self._track_capture(node)
+                    if selected:
+                        # Only a representation transition walks this subtree.
+                        # A cached ancestor makes descendant raster storage
+                        # redundant until that ancestor is demoted again.
+                        pending = list(self.capture_children.get(node, ()))
+                        while pending:
+                            child = pending.pop()
+                            if self.graph.is_portal(child):
+                                continue
+                            pending.extend(self.capture_children.get(child, ()))
+                            if self.gpu.raster(child, False):
+                                self.raster_policy.applied(child, False)
+                                self.graph.request_composition(child)
+                                self._track_capture(child)
+
     def _compose(self):
         if self.graphics and self.gpu:
+            self._select_rasters()
             # Keep the complete bottom-up replay order, but save/restore host GL
             # state once for the batch rather than once for every cached view.
             nodes = [node for node in self.graph.composition_order() if node not in self.stack]
@@ -462,8 +552,10 @@ class RetainedGui:
                     self.graph.composed(node)
 
     def _drop_capture(self, node):
+        self.raster_policy.retire(node)
         info = self.capture_info.pop(node, None)
         if info is not None:
+            self._scroll_tile_revision += 1
             parent, size, owner = info
             self.capture_children[parent].discard(node)
             if not self.capture_children[parent]: self.capture_children.pop(parent, None)
@@ -490,6 +582,11 @@ class RetainedGui:
         if not self.graphics or (len(self.scroll_tiles) <= self.max_scroll_tiles
                                 and self.scroll_tile_bytes <= self.scroll_tile_budget):
             return
+        inputs = (self.graph.visibility_revision(), self._scroll_tile_revision,
+                  self.max_scroll_tiles, self.scroll_tile_budget,
+                  frozenset(self.imgui_input.active), self.imgui_input.capture, self.imgui_input.focus)
+        if inputs == self._eviction_inputs:
+            return
         protected = set(self.imgui_input.active) | set(self.graph.windows())
         protected.update(n for n in (self.imgui_input.capture, self.imgui_input.focus) if n is not None)
         for node in tuple(self.scroll_tiles):
@@ -507,6 +604,9 @@ class RetainedGui:
                 self._drop_capture(current)
                 self.graph.invalidate_node(current)
                 self.graph.composed(current)
+        # Record the remaining residency after successful eviction, including
+        # over-budget sets whose only remaining captures are protected.
+        self._eviction_inputs = (inputs[0], self._scroll_tile_revision, *inputs[2:])
 
     def flush(self):
         """Run only dirty functions, then replay retained packets bottom-up."""
@@ -537,6 +637,7 @@ class RetainedGui:
 
     def _retire(self):
         for node in self.graph.take_retired():
+            self.calibration.retire(node)
             self.geometry.retire(node)
             self._last_pointer = None
             self.records.pop(node, None)
@@ -563,6 +664,7 @@ class RetainedGui:
 
     def scroll_at(self, position, delta):
         """Scroll the innermost viewport able to consume this content-space delta."""
+        self.calibration.input()
         changed = self.graph.scroll_at(position[0]-self.origin[0], position[1]-self.origin[1], *delta)
         if changed:
             self._last_pointer = None
@@ -595,6 +697,7 @@ class RetainedGui:
         if sample == self._last_pointer:
             return
         self._last_pointer = sample
+        self.calibration.input()
         x, y = position[0] - self.origin[0], position[1] - self.origin[1]
         if self.drag:
             node, dx, dy = self.drag
@@ -634,6 +737,7 @@ class RetainedGui:
         router so a retained control cannot also drag the outer OS window.
         """
         import meltygui_imgui as imgui
+        self._frame_started = time.monotonic()
         self.imgui_input.process(imgui.get_io())
         # Resolve actual widget ownership before allowing background gestures.
         self.flush()
@@ -690,6 +794,11 @@ class RetainedGui:
             self._draw_image(dl,node,x,y+28,w,h)
             self.geometry.paint(dl,origin,portal=node)
 
+        if self.gpu and self._frame_started is not None:
+            self.calibration.maintenance(self.gpu, frame_seconds=time.monotonic()-self._frame_started,
+                pressure=bool(self.drag or self.imgui_input.active or self.imgui_input.capture is not None))
+        self._frame_started = None
+
     def _draw_image(self,dl,node,x,y,w,h):
         texture,tw,th=self.gpu.image(node)
         left,top,right,bottom=(math.floor(v+.5) for v in (x,y,x+w,y+h))
@@ -713,6 +822,7 @@ class RetainedGui:
             self.prepare_save()
             self.graph.clear()
             self._retire()
+            self.calibration.close()
             if self.gpu:
                 self.gpu.close()
                 self.gpu = None
