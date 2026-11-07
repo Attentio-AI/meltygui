@@ -44,6 +44,23 @@ def backend_name():
     return getattr(backend, 'name', 'wayland') if backend is not None else 'glfw'
 
 
+def opengl_context_version():
+    """Respect the selected host's GL subset before creating shared contexts."""
+    default = (4, 1) if sys.platform == 'darwin' else (4, 3)
+    return getattr(_state['backend'], 'opengl_version', default)
+
+
+def supports_dual_source_blending():
+    """Whether the host supports LCD text's two fragment outputs."""
+    return getattr(_state['backend'], 'dual_source_blending', True)
+
+
+def owns_touch_input():
+    """External hosts can own gestures while Melty consumes their mouse events."""
+    backend = _state['backend']
+    return backend is None or getattr(backend, 'owns_touch_input', True)
+
+
 def select_ios_backend(host):
     """Bind the UIKit host explicitly, before importing/booting the app."""
     if _state['selected']:
@@ -86,6 +103,13 @@ def terminate():
             importlib.import_module('glfw').terminate()
     finally:
         _state.update(backend=None, selected=False)
+
+
+def presentation_latency_ms():
+    """Optional host presentation timing; None means this backend has no measurement."""
+    backend = _state['backend']
+    provider = getattr(backend, 'get_presentation_latency_ms', None)
+    return provider() if provider is not None else None
 
 
 def __getattr__(name):

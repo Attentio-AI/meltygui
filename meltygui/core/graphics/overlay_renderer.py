@@ -215,6 +215,11 @@ class SplitOverlayRenderer(WindowRenderer):
         """Build the LCD program; if the driver can't link it (no dual-source
         blending), fall back to the stock shader + stock blending so text
         still renders, just grayscale."""
+        if not glfw.supports_dual_source_blending():
+            self._lcd_ok = False
+            self.FRAGMENT_SHADER_SRC = self._STOCK_FRAGMENT_SHADER_SRC
+            super()._create_device_objects()
+            return
         self._text_style_source = adjust_text_color()
         self.FRAGMENT_SHADER_SRC = type(self).FRAGMENT_SHADER_SRC.replace(
             "/* dynamic text policy */", self._text_style_source)
@@ -238,8 +243,11 @@ class SplitOverlayRenderer(WindowRenderer):
             self._lcd_ok = False
         if not self._lcd_ok:
             gl.glDeleteProgram(self._shader_handle)
-            gl.glDeleteVertexArrays(1, [self._vao_handle])
-            gl.glDeleteBuffers(2, [self._vbo_handle, self._elements_handle])
+            if self._vao_handle:
+                gl.glDeleteVertexArrays(1, [self._vao_handle])
+            buffers = [handle for handle in (self._vbo_handle, self._elements_handle) if handle]
+            if buffers:
+                gl.glDeleteBuffers(len(buffers), buffers)
             self.FRAGMENT_SHADER_SRC = self._STOCK_FRAGMENT_SHADER_SRC
             super()._create_device_objects()
 

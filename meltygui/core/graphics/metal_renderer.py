@@ -208,6 +208,14 @@ class MetalRenderer:
         self._submit(draw_list, list(self._commands(draw_list,ranges)))
         self._has_overlay = False
 
+    def _finish_scene_filter(self, target):
+        """Keep the filtered image as the scene, recycling its previous target."""
+        previous = self.scene_framebuffer
+        self.scene_framebuffer = target
+        self._targets["scene"] = target
+        self._targets["scene_filter"] = previous
+        return previous
+
     def compose_scene(self, cache):
         """Apply the same built-in linear/HDR filters as Melty.post_frame."""
         from meltygui.core.melty import Melty
@@ -217,7 +225,7 @@ class MetalRenderer:
         if Toggles.filter_brightness:
             self.draw("brightness_contrast",scratch,u_texture=self.scene_framebuffer,
                       brightness=Toggles.brightness,contrast=Toggles.contrast)
-            self.copy(scratch,self.scene_framebuffer)
+            scratch = self._finish_scene_filter(scratch)
         if Toggles.filters:
             layers=100./((Melty.max_layer-1.)*(Melty.max_depth-1.))
             down=max(1,int(Toggles.shadow_downscale))
@@ -250,7 +258,7 @@ class MetalRenderer:
                     specular_fade_rel=Toggles.specular_fade_rel,
                     win_mask=getattr(cache,"_win_mask_tex",None),win_rects=getattr(cache,"_win_rects_tex",None),
                     specular_depth_falloff=Toggles.specular_depth_falloff,specular_slope_tol=Toggles.specular_slope_tol)
-                self.copy(scratch,self.scene_framebuffer)
+                scratch = self._finish_scene_filter(scratch)
         if Toggles.glow_debug_view and cache.glow_tex is not None:
             self.copy(cache.glow_tex,self.scene_framebuffer)
 

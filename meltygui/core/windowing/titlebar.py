@@ -821,7 +821,7 @@ FPS_TEXT_COLOR = (0.42, 0.46, 0.42)
 FPS_LABEL_TEMPLATE = "0000 fps  000.0 ms"
 
 
-def paint_fps(overlay, chrome, frame_ms, fps, *, fps_only=False):
+def paint_fps(overlay, chrome, frame_ms, fps, *, fps_only=False, presentation_ms=None):
     """Toggles.show_fps: average active-render rate and the previous
     frame's render-thread time, in a fixed-width pill right-aligned in the
     titlebar strip before the right control group (the top-right corner of
@@ -843,7 +843,13 @@ def paint_fps(overlay, chrome, frame_ms, fps, *, fps_only=False):
     if font is not None:
         imgui.push_font(font)
     try:
+        # Prefer FPS + presentation timing over clipping the pill on a phone.
+        if presentation_ms is not None and not fps_only:
+            full_width = imgui.calc_text_size(FPS_LABEL_TEMPLATE + "  Present 000.0 ms").x
+            fps_only = full_width + Melty.px(2 * FPS_PAD_X + FPS_GAP) > right
         label_template = "0000 FPS" if fps_only else FPS_LABEL_TEMPLATE
+        if presentation_ms is not None:
+            label_template += "  Present 000.0 ms"
         slot = imgui.calc_text_size(label_template)
         pad = Melty.px(FPS_PAD_X)
         height = min(Melty.px(_BTN_H), slot.y + Melty.px(6.0))
@@ -862,7 +868,11 @@ def paint_fps(overlay, chrome, frame_ms, fps, *, fps_only=False):
         fps_right = x0 + pad + imgui.calc_text_size(label_template.split("  ")[0]).x
         overlay.add_text(fps_right - imgui.calc_text_size(fps_label).x, text_y, color, fps_label)
         if not fps_only:
-            overlay.add_text(x1 - pad - imgui.calc_text_size(ms_label).x, text_y, color, ms_label)
+            ms_right = fps_right + imgui.calc_text_size("  000.0 ms").x
+            overlay.add_text(ms_right - imgui.calc_text_size(ms_label).x, text_y, color, ms_label)
+        if presentation_ms is not None:
+            latency_label = "Present — ms" if presentation_ms < 0 else f"Present {min(presentation_ms, 999.9):.1f} ms"
+            overlay.add_text(x1 - pad - imgui.calc_text_size(latency_label).x, text_y, color, latency_label)
     finally:
         if font is not None:
             imgui.pop_font()

@@ -1,5 +1,8 @@
 #import "MeltyHost.h"
 #import "MeltyRenderer.h"
+#if __has_include("RemoteFiles/RuntimeLatency.h")
+#import "RemoteFiles/RuntimeLatency.h"
+#endif
 #import <UIKit/UIKit.h>
 #include <Python/Python.h>
 #include <atomic>
@@ -322,7 +325,7 @@ static const char *kindName(melty::InputKind kind) {
         [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"unknown"]];
     NSDictionary *settings = [NSDictionary dictionaryWithContentsOfURL:
         [NSBundle.mainBundle URLForResource:@"HostSettings" withExtension:@"plist"]];
-    _frameDiagnostics = [settings[@"frame_diagnostics"] boolValue];
+    _frameDiagnostics = [settings[@"frame_diagnostics"] boolValue] || getenv("HUB_RUNTIME_BENCHMARK") != nullptr;
     return @{
         @"documents": documents.path,
         @"workspace": [[documents URLByAppendingPathComponent:@"Projects"] path],
@@ -716,6 +719,13 @@ static const char *kindName(melty::InputKind kind) {
         "now", CACurrentMediaTime(), "width", width, "height", height, "scale", scale,
         "show_fps", _showFPS.load() ? Py_True : Py_False,
         "selected_tab", _selectedTab.load());
+#if __has_include("RemoteFiles/RuntimeLatency.h")
+    if (info) {
+        PyObject *latency = PyFloat_FromDouble(HubPresentationLatencyMilliseconds());
+        if (!latency || PyDict_SetItemString(info, "presentation_latency_ms", latency) < 0) Py_CLEAR(info);
+        Py_XDECREF(latency);
+    }
+#endif
     if (info && _showFPS.load()) {
         std::lock_guard<std::mutex> lock(_presentationMutex);
         // Raw presentation facts only. Python measures cadence and draws FPS.
@@ -786,10 +796,14 @@ static const char *kindName(melty::InputKind kind) {
             [self performSelector:@selector(fail:) onThread:self->_thread withObject:message waitUntilDone:NO];
         }
     }];
-    if (_frameDiagnostics || _showFPS.load()) {
+    {
+        const double submittedTime = CACurrentMediaTime();
         __weak MeltyHost *weakSelf = self;
         const uint64_t run = _presentationRun;
         [update.drawable addPresentedHandler:^(id<MTLDrawable> drawable) {
+#if __has_include("RemoteFiles/RuntimeLatency.h")
+            HubRecordPresentationLatency(submittedTime, drawable.presentedTime);
+#endif
             MeltyHost *host = weakSelf;
             if (!host) return;
             std::lock_guard<std::mutex> lock(host->_presentationMutex);

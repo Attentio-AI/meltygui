@@ -152,3 +152,23 @@ def test_hosted_linux_titlebar_keeps_geometry_and_resize_registration(monkeypatc
     register.assert_called_once_with(titlebar._RESIZE_ID,
         ['non_blocking_right_mouse_dragged', 'non_blocking_right_mouse_double_dragged'],
         priority=titlebar._STRIP_PRIORITY)
+
+
+@pytest.mark.parametrize('width', [320, 390, 867])
+def test_presentation_latency_stays_inside_fps_pill_with_stable_fields(monkeypatch, width):
+    monkeypatch.setattr(titlebar, 'settings_available', lambda: False)
+    monkeypatch.setattr(Melty, 'font_mgr', None)
+    imgui.get_io().display_size = (width, 600)
+    imgui.new_frame()
+    geometry = []
+    fps_positions = []
+    for latency in (-1, 8.1, 999.9):
+        overlay = Mock()
+        titlebar.paint_fps(overlay, False, 12.0, 118.0, presentation_ms=latency)
+        left, top, right, bottom, *_ = overlay.add_rect_filled.call_args.args
+        assert 0 <= left < right <= width
+        geometry.append((left, top, right, bottom))
+        fps_positions.append(overlay.add_text.call_args_list[0].args[:2])
+        assert any(call.args[-1].startswith('Present ') for call in overlay.add_text.call_args_list)
+    assert len(set(geometry)) == 1
+    assert len(set(fps_positions)) == 1

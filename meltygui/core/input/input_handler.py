@@ -375,6 +375,12 @@ class InputHandler:
         Routing waits for process_frame's current cached-view hit test.
         End velocity is logical pixels/second; None uses move-sample estimation.
         """
+        from meltygui.core.windowing.window_api import owns_touch_input
+        if not owns_touch_input():
+            if self._touch_input is not None:
+                self._touch_input.cancel(self)
+                self._states.pop('touch', None)
+            return
         from meltygui.core.input.touch_input import TouchInput
         if self._touch_input is None:
             self._states['touch'] = TouchInput()

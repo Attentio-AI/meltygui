@@ -96,3 +96,33 @@ def test_mask_margin_clear_and_cleanup_invalidate_shadow(scene):
     cache.gpu.begin_masks(cache, 64, 48)
     renderer.compose_scene(cache)
     assert renderer.casts == 3
+
+
+@pytest.mark.parametrize('brightness', [False, True])
+def test_filters_chain_without_copying_or_sampling_their_target(scene, monkeypatch, brightness):
+    renderer, cache = scene
+    monkeypatch.setattr(Toggles, 'filter_brightness', brightness)
+    renderer._targets['scene'] = renderer.scene_framebuffer
+    renderer.native = SimpleNamespace(clear_texture=lambda *args: None,
+                                      set_scene=lambda target: presented.append(target))
+    presented = []
+    for width, height in [(64, 48), (64, 48), (128, 96), (128, 96)]:
+        renderer.begin_scene(width, height, (0, 0, 0, 1))
+        source = renderer.scene_framebuffer
+        renderer.calls.clear()
+        renderer.compose_scene(cache)
+        passes = [(name, target, args) for name, target, args in renderer.calls
+                  if name in ('brightness_contrast', 'shadow_composite')]
+        assert len(passes) == 1 + brightness
+        for _, target, args in passes:
+            assert args['u_texture'] == source
+            assert target != source
+            assert renderer._textures[target][:2] == (width, height)
+            source = target
+        assert not any(name == 'copy' for name, _, _ in renderer.calls)
+        assert renderer.scene_framebuffer == source == renderer._targets['scene']
+        assert renderer._targets['scene_filter'] != source
+        renderer.end_scene()
+        assert presented[-1] == source
+    # Only the scene pair and reduced shadow target remain after resize.
+    assert len(renderer._textures) == 3

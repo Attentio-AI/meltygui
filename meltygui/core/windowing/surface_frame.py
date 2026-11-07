@@ -7,7 +7,7 @@ render-host updates and the Melty frame lifecycle have a single owner here.
 from meltygui import imgui
 from meltygui.core.melty import Melty
 from meltygui.core.runtime.toggles import Toggles
-from meltygui.core.windowing import titlebar, os_frame
+from meltygui.core.windowing import titlebar, os_frame, window_api
 from meltygui.utils import render_utils as views
 
 
@@ -177,5 +177,6 @@ def draw_surface_frame(surface, *, transparent=False, chrome=False, request=None
         # Here in the root loop, outside every view and Melty.end_frame:
         # no cache, tile or invalidation decides whether it is current.
         titlebar.paint_fps(Melty.overlay_top_channel(), chrome, fps_counter.frame_ms,
-                           fps_counter.fps, fps_only=fps_only)
+                           fps_counter.fps, fps_only=fps_only,
+                           presentation_ms=window_api.presentation_latency_ms())
     views.end_frame()

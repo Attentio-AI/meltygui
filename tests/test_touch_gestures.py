@@ -436,3 +436,32 @@ def test_flick_and_activation_tap_batched_before_dispatch(gesture):
     assert set(result) == {'scroll', 'text'}
     assert 'touch_clicked' in result['text']
     assert handler._touch_input.velocity == 0
+
+
+def test_external_host_owns_touch_without_disabling_mouse(monkeypatch):
+    from types import SimpleNamespace
+    from meltygui.core.windowing import window_api
+    handler = InputHandler()
+    monkeypatch.setitem(window_api._state, 'backend', SimpleNamespace(owns_touch_input=False))
+    handler.feed_touch('begin', 10, 20)
+    assert handler._touch_input is None
+    handler.feed_move(30, 40)
+    assert handler.cursor() == (30, 40)
+    monkeypatch.setitem(window_api._state, 'backend', None)
+    handler.feed_touch('begin', 10, 20)
+    assert handler._touch_input is not None
+    monkeypatch.setitem(window_api._state, 'backend', SimpleNamespace(owns_touch_input=False))
+    handler.feed_touch('move', 15, 25)
+    assert handler._touch_input is None
+
+
+def test_external_host_supplies_opengl_context_version(monkeypatch):
+    from types import SimpleNamespace
+    from meltygui.core.windowing import window_api, glfw_utils
+    from unittest.mock import Mock
+    monkeypatch.setitem(window_api._state, 'backend', SimpleNamespace(opengl_version=(3, 3)))
+    hint = Mock()
+    monkeypatch.setattr(window_api, 'window_hint', hint, raising=False)
+    glfw_utils.apply_opengl_context_hints()
+    hint.assert_any_call(window_api.CONTEXT_VERSION_MAJOR, 3)
+    hint.assert_any_call(window_api.CONTEXT_VERSION_MINOR, 3)

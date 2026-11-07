@@ -26,6 +26,7 @@ class Host:
 
     def __init__(self, native):
         self._native = native
+        self.presentation_latency_ms = None
 
     def request_frame(self):
         """Wake display pacing; safe to call from a Python worker thread."""
@@ -52,6 +53,7 @@ class Host:
 class _Log(io.TextIOBase):
     def __init__(self, native):
         self._native = native
+        self.presentation_latency_ms = None
         self.tail = ""
 
     @property
@@ -245,6 +247,7 @@ def frame(info, events):
     """True requests another frame; False puts the display link to sleep."""
     if _app is None:
         raise RuntimeError("The iOS application has not initialized")
+    get_host().presentation_latency_ms = info.get("presentation_latency_ms")
     return bool(_app.frame(info, events))
 
 

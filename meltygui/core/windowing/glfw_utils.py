@@ -36,8 +36,9 @@ def apply_opengl_context_hints():
     Apple's OpenGL driver stops at 4.1 and requires a forward-compatible
     core profile. Other backends retain 4.3 for the compute-based tools.
     """
-    glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 4)
-    glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1 if sys.platform == 'darwin' else 3)
+    major, minor = glfw.opengl_context_version()
+    glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, major)
+    glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, minor)
     glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
     if sys.platform == 'darwin':
         glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, True)

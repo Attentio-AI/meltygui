@@ -173,6 +173,9 @@ class Backend:
     def make_context_current(self, *args):
         raise NotImplementedError('the iOS Metal surface has no OpenGL context')
 
+    def get_presentation_latency_ms(self):
+        return getattr(self.host, "presentation_latency_ms", None)
+
     def swap_buffers(self, *args):
         raise NotImplementedError('the native Metal host owns presentation')
 

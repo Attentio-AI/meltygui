@@ -98,3 +98,14 @@ def test_shader_without_atlas_uniform_does_not_write_it(submission):
     assert [d[:2] for d in draws] == [(0, None), (0, None)]
     assert gl.glBindTexture.call_count == 1
     assert all(c.args[0] != 4 for c in gl.glUniform1i.call_args_list)
+
+
+def test_external_host_without_dual_source_uses_stock_text_shader(monkeypatch):
+    monkeypatch.setattr(module.glfw, 'supports_dual_source_blending', lambda: False)
+    create = Mock()
+    monkeypatch.setattr(module.WindowRenderer, '_create_device_objects', create)
+    renderer = module.SplitOverlayRenderer.__new__(module.SplitOverlayRenderer)
+    renderer._create_device_objects()
+    create.assert_called_once()
+    assert renderer._lcd_ok is False
+    assert renderer.FRAGMENT_SHADER_SRC == renderer._STOCK_FRAGMENT_SHADER_SRC
