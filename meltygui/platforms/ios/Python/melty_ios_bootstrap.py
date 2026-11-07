@@ -190,6 +190,14 @@ def _application_source(bundle, support):
     return source
 
 
+def configure_pixel_density(config):
+    """Publish Retina density before any application imports or atlas builds."""
+    density = float(config.get('pixel_density', 1.0))
+    if not 1.0 <= density <= 8.0:
+        raise ValueError('The native host supplied an invalid display pixel density')
+    os.environ['HUB_IMGUI_PIXEL_DENSITY'] = str(density)
+
+
 def initialize(config):
     """Create the application once on the native render thread.
 
@@ -199,6 +207,7 @@ def initialize(config):
     global _app, _host
     if _app is not None:
         raise RuntimeError("The iOS application is already initialized")
+    configure_pixel_density(config)
     import _melty_ios
 
     sys.stdout = sys.stderr = _Log(_melty_ios)

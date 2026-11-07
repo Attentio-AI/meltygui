@@ -263,7 +263,7 @@ static const char *kindName(melty::InputKind kind) {
         });
 #endif
         _gpuAvailable = dispatch_semaphore_create(1);
-        _scale = 1;
+        _scale = UIScreen.mainScreen.scale;
         _width = 0;
         _height = 0;
         _active = false;
@@ -332,6 +332,7 @@ static const char *kindName(melty::InputKind kind) {
         @"application_support": support.path,
         @"cache": cache.path,
         @"renderer_available": @(_renderer != nil),
+        @"pixel_density": @(_scale.load()),
         @"entry_module": settings[@"entry_module"] ?: @"main",
     };
 }
