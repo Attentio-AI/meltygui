@@ -664,6 +664,9 @@ class _PicklerOverrides:
         super().__init__(*a, **k)
         # caller-level field-level drops (the studio's read-only list) - C1
         self._excluded = frozenset(excluded) if excluded else ()
+        # Do not import the optional prototype on normal saves.
+        native = sys.modules.get('meltygui.core.rendering._gui_native')
+        self._native_state_type = native.NativeState if native is not None else None
 
     def persistent_id(self, obj):
         # Positive rule mirroring to_dict: KEEP primitives, enums, enums,
@@ -678,6 +681,8 @@ class _PicklerOverrides:
             return None
         if isinstance(obj, Enum):
             return None
+        if type(obj) is self._native_state_type:
+            return 'DROP' if obj.dlt_count <= 0 else None
         # External resources / weakrefs/proxies. Checked via type(obj) (proxy-safe:
         # a weakref proxy masquerades as its referent through __class__) BEFORE the
         # DictConversion check below, so a proxy-to-DictConversion is still dropped.
@@ -726,6 +731,8 @@ class _PicklerOverrides:
         return "DROP"                           # any other type -> stub to None (to_dict parity)
 
     def reducer_override(self, obj):
+        if type(obj) is self._native_state_type:
+            return (type(obj), (), obj.save_state(list(self._excluded)))
         if isinstance(obj, type) and getattr(obj, "__missing_saved_path__", None):
             return (restore_saved_class, (obj.__missing_saved_path__,))
         if (getattr(type(obj), "__missing_saved_path__", None)

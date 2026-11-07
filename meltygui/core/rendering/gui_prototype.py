@@ -26,6 +26,14 @@ def gui(func=None, *, glfw_window=False, **decoration):
     this function as an OS window; ``@os_window`` is the convenient spelling.
     ``use_cache=False`` draws an immediate host/toolbar body. Other views retain
     their output and execute only when invalidated. No application runtime setup.
+
+    Identity uses the logical parent, renderer, then ``key``, nonempty ``name``,
+    or an anonymous occurrence index, in that order. Named/keyed calls do not
+    consume occurrences. Input values never participate. Keys accept str, None,
+    signed 128-bit int, or tuples of these. ``state_id="..."`` overrides the
+    renderer's module/qualified name to preserve identity through source moves.
+    Declared parameters persist with the state object; ``no_save=("field",)``
+    excludes transient fields. Geometry and framework context never persist.
     """
     if func is None:
         return lambda function: gui(function, glfw_window=glfw_window, **decoration)
@@ -38,7 +46,7 @@ def gui(func=None, *, glfw_window=False, **decoration):
         view = gui(func, **decoration)
         return host_window(view, **host_options, **{
             name: value for name, value in decoration.items()
-            if name not in ('use_cache', 'live', 'inject', 'events')})
+            if name not in ('use_cache', 'live', 'inject', 'events', 'state_id', 'no_save')})
 
     @wraps(func)
     def wrapper(input_value=None, **kwargs):
@@ -52,7 +60,11 @@ def gui(func=None, *, glfw_window=False, **decoration):
     return wrapper
 
 
-def _new_native(*, graphics=True):
+def _renderer_name(func, state_id=None):
+    return state_id if state_id is not None else f'{func.__module__}:{func.__qualname__}'
+
+
+def _new_native(*, graphics=True, identities=None):
     """Low-level engine constructor, also used by the isolated wrapper benchmark."""
     try:
         from meltygui.core.rendering._gui_native import Runtime
@@ -62,15 +74,17 @@ def _new_native(*, graphics=True):
         import meltygui_imgui as imgui
     else:
         imgui = None
-    return Runtime(imgui)
+    return Runtime(imgui, identities)
 
 
-def _bind_native(native, func=None, *, inject=None, events=(), **decoration):
+def _bind_native(native, func=None, *, inject=None, events=(), state_id=None, no_save=(), **decoration):
     """Compile the Python signature for Rust dispatch, once per function/engine."""
     if func is None:
-        return lambda function: _bind_native(native, function, inject=inject, events=events, **decoration)
+        return lambda function: _bind_native(native, function, inject=inject, events=events,
+                                            state_id=state_id, no_save=no_save, **decoration)
     from meltygui.core.rendering._gui_native import Renderer
     factories = dict(inject or {})
+    identity = native.identities.renderer(_renderer_name(func, state_id))
 
     def compile_plan():
         signature = inspect.signature(func)
@@ -92,7 +106,7 @@ def _bind_native(native, func=None, *, inject=None, events=(), **decoration):
             parameters.append((name, parameter.default is not inspect.Parameter.empty,
                                None if parameter.default is inspect.Parameter.empty else parameter.default,
                                factory))
-        return Renderer(native, func, decoration, parameters, list(events), var_kwargs)
+        return Renderer(native, func, decoration, parameters, list(events), var_kwargs, identity, list(no_save) + list(events))
 
     renderer = compile_plan()
     code = func.__code__
@@ -107,4 +121,5 @@ def _bind_native(native, func=None, *, inject=None, events=(), **decoration):
 
     wrapper.__gui_native__ = renderer
     wrapper.decoration = decoration
+    wrapper.no_save = tuple(no_save)
     return wrapper

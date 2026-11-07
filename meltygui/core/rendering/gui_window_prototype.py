@@ -1,13 +1,13 @@
 """Private @glfw_window adapter for the opt-in native @gui experiment."""
-from meltygui.core.rendering.gui_prototype import _bind_native, _new_native, _window
+from meltygui.core.rendering.gui_prototype import _bind_native, _new_native, _window, _renderer_name
 from meltygui.core.rendering.retained_gui_prototype import RetainedGui
 
 
 class _GuiWindow:
-    def __init__(self, *, graphics=True):
-        self.cache = RetainedGui(graphics=graphics)
+    def __init__(self, *, graphics=True, state_registry=None):
+        self.cache = RetainedGui(graphics=graphics, state_registry=state_registry)
         self.cache.auto_layout = True
-        self.native = _new_native(graphics=graphics)
+        self.native = _new_native(graphics=graphics, identities=self.cache.identities)
         self.bindings = {}
         self.closed = False
         self.input_backend = None
@@ -49,7 +49,10 @@ class _GuiWindow:
             self.cache.imgui_input.clipboard = (surface.impl._get_clipboard_text,
                                                 surface.impl._set_clipboard_text)
         token = _window.set(self)
-        self.native.begin_frame(scope=id(surface), width=width, cache=self.cache)
+        from meltygui.core.runtime.app import _state
+        func, options = view.__gui_definition__
+        scope = (_state['app_id'], _renderer_name(func, options.get('state_id')))
+        self.native.begin_frame(scope=scope, width=width, cache=self.cache)
         try:
             self.cache.process_host_input(
                 drag_position=(self.input_backend.drag_mouse_pos
@@ -77,6 +80,9 @@ class _GuiWindow:
             self.native.end_frame()
             _window.reset(token)
 
+    def prepare_save(self):
+        self.cache.prepare_save()
+
     def close(self):
         if not self.closed:
             if self.input_backend is not None:
@@ -92,5 +98,6 @@ class _GuiWindow:
 
 def draw_gui_surface(surface, view, view_kwargs):
     if getattr(surface, '_gui_prototype', None) is None:
-        surface._gui_prototype = _GuiWindow()
+        surface._gui_prototype = _GuiWindow(
+            state_registry=surface.session.draw_state_registry if surface.session is not None else None)
     return surface._gui_prototype.draw(surface, view, view_kwargs)

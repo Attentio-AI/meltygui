@@ -13,7 +13,7 @@ from types import FunctionType
 import ctypes
 import math
 
-from meltygui.core.rendering.gui_prototype import _bind_native, _new_native
+from meltygui.core.rendering.gui_prototype import _bind_native, _new_native, _renderer_name
 from meltygui.core.rendering.gui_imgui_input import ImGuiInput
 
 
@@ -29,8 +29,11 @@ def _alias(value):
 
 
 class RetainedGui:
-    def __init__(self, *, graphics=True):
-        from meltygui.core.rendering._gui_native import RetainedGraph
+    def __init__(self, *, graphics=True, state_registry=None):
+        from meltygui.core.rendering._gui_native import RetainedGraph, Identities
+        self.identities = Identities(state_registry)
+        self.uniques = {}
+        self.caller_keys = {}
         self.graph = RetainedGraph()
         self.graphics = graphics
         self.gpu = None
@@ -90,6 +93,7 @@ class RetainedGui:
         """Reconcile declarations made by the external, uncached host."""
         if self.frame_roots is not None:
             raise RuntimeError('nested retained host frame')
+        self.identities.begin_frame()
         previous = self.root_ids.copy()
         self.frame_roots = set()
         try:
@@ -108,11 +112,12 @@ class RetainedGui:
             self._retire()
 
     def gui(self, func=None, *, width=300, height=100, min_height=0, max_height=8192,
-            inject=None, events=(), **decoration):
+            inject=None, events=(), state_id=None, no_save=(), **decoration):
         if func is None:
             return lambda fn: self.gui(fn, width=width, height=height, min_height=min_height,
-                                       max_height=max_height, inject=inject, events=events, **decoration)
-        renderer_id = len(self.renderers) + 1
+                                       max_height=max_height, inject=inject, events=events,
+                                       state_id=state_id, no_save=no_save, **decoration)
+        renderer_id = self.identities.renderer(_renderer_name(func, state_id))
         definition = [func, func.__code__]
         self.renderers.append(definition)
 
@@ -120,7 +125,12 @@ class RetainedGui:
         def wrapper(input_value=None, **kwargs):
             if self.closed:
                 raise RuntimeError('retained runtime is closed')
-            key = kwargs.pop('key', func.__name__)
+            if self.frame_roots is None and not self.identities.active:
+                self.identities.begin_frame()
+            keyed = 'key' in kwargs or 'key' in decoration
+            key = kwargs.pop('key', decoration.get('key'))
+            name = kwargs.get('name', decoration.get('name'))
+            identity_handle = self.identities.handle(renderer_id, key, name, keyed)
             portal = kwargs.pop('melty_window', False)
             if kwargs.pop('glfw_window', False):
                 raise NotImplementedError('This experiment implements internal windows; native child surfaces are not connected yet')
@@ -135,18 +145,27 @@ class RetainedGui:
                 raise ValueError('height bounds must satisfy 0 <= min_height <= max_height <= 8192')
             minimum, maximum = math.ceil(minimum), math.ceil(maximum)
             parent = self.stack[-1] if self.stack else 0
-            window_identity = (parent,renderer_id,key)
+            window_identity = (parent, identity_handle)
             saved_window = self.window_ids.get(window_identity) if portal else None
+            old_rect = None
             if portal:
                 old_rect = self.graph.info(saved_window)['rect'] if saved_window in self.records else None
-                if not width_given: w = old_rect[2] if old_rect else initial.get('width',w)
-                if not height_given: h = old_rect[3] if old_rect else initial.get('height',h)
+                if old_rect is None:
+                    saved = self.identities.registry.get(self.identities.unique(identity_handle))
+                    if saved is not None:
+                        position = saved.get('window_pos', initial.get('window_pos', (0, 0)))
+                        old_rect = (*position, saved.get('width', initial.get('width', w)),
+                                    saved.get('height', initial.get('height', h)))
+                if not width_given: w = old_rect[2] if old_rect else initial.get('width', w)
+                if not height_given: h = old_rect[3] if old_rect else initial.get('height', h)
             allocation = self.geometry.allocation(parent) if not portal else None
             if self.graphics and (parent or self.auto_layout) and not portal:
                 import meltygui_imgui as imgui
                 x, y = imgui.get_cursor_screen_pos()
             else:
-                x, y = initial.get('window_pos', (0, 0))
+                x, y = old_rect[:2] if old_rect else initial.get('window_pos', (0, 0))
+                if portal and 'window_pos' in kwargs:
+                    x, y = kwargs['window_pos']
             if allocation is not None:
                 ax, ay, w, h = allocation
                 px, py = self._position(parent)
@@ -167,11 +186,13 @@ class RetainedGui:
                 h = min(maximum, max(minimum, h))
             arguments = {**decoration, **kwargs, 'width': w, 'height': h,
                          'min_height': minimum, 'max_height': maximum}
-            node = self.graph.declare(parent, renderer_id, key, input_value, arguments,
+            node = self.graph.declare(parent, 0, identity_handle, input_value, arguments,
                                       (float(x), float(y), float(w), float(-1 if h is None else h)), portal)
             self._positions.clear()
             if portal:
                 self.window_ids[window_identity] = node
+                if 'window_pos' in kwargs:
+                    self.graph.move_window(node, float(x), float(y))
             previous = self.invocations.get(node)
             pending = self.graph.pending(node)
             if previous is not None:
@@ -183,9 +204,12 @@ class RetainedGui:
                 if not pending and old_input is not input_value:
                     self.graph.dissociate(node, _alias(old_input))
             self.invocations[node] = input_value, arguments.copy()
+            self.caller_keys[node] = tuple(kwargs)
             if node not in self.records:
-                native = _new_native(graphics=self.graphics)
-                self.records[node] = (native, _bind_native(native, func, inject=inject, events=events), func)
+                native = _new_native(graphics=self.graphics, identities=self.identities)
+                self.uniques[node] = self.identities.unique(identity_handle)
+                self.records[node] = (native, _bind_native(native, func, inject=inject,
+                                                          events=events, state_id=state_id, no_save=no_save, **decoration), func)
                 self.associate(func, node)
                 self.associate(wrapper, node)
                 self.graph.associate(node, f'renderer:{renderer_id}', func)
@@ -289,9 +313,10 @@ class RetainedGui:
                 imgui.new_frame()
                 self._begin_window(w, h)
             try:
-                native.begin_frame(scope=node, width=w, cache=self, view_events=events)
+                native.begin_frame(width=w, cache=self, view_events=events, identity_frame=False)
                 try:
-                    result = renderer(input_value, **arguments, return_extras=True)
+                    result = renderer(input_value, **arguments, return_extras=True,
+                                      _gui_unique=self.uniques[node], _gui_explicit=self.caller_keys[node])
                 finally:
                     native.end_frame()
                 self.states[node] = result[2]
@@ -307,7 +332,7 @@ class RetainedGui:
                 raise ValueError('measured cache height must be 0..8192 pixels')
             measured_h = min(arguments['max_height'], max(arguments['min_height'], measured_h))
             result[2].height = measured_h
-            tint = result[2].get('tint', (0., 0., 0., 0.))
+            tint = result[2].get('tint', arguments.get('tint', (0., 0., 0., 0.)))
             background = tuple(tint) + ((1.,) if len(tint) == 3 else ())
             if len(background) != 4 or any(not math.isfinite(c) or not 0 <= c <= 1 for c in background):
                 raise ValueError('prototype tint must be RGB or RGBA components in 0..1')
@@ -409,7 +434,7 @@ class RetainedGui:
                 self.imgui_input.release_context_callbacks()
                 imgui.destroy_context(self.contexts.pop(node))
                 imgui.set_current_context(previous)
-            for mapping in (self.invocations, self.events, self.regions, self.states,
+            for mapping in (self.invocations, self.events, self.regions, self.states, self.uniques, self.caller_keys,
                             self.backgrounds, self.texture_refs):
                 mapping.pop(node, None)
             self.root_ids.discard(node)
@@ -572,8 +597,16 @@ class RetainedGui:
         y += origin[1]
         self._draw_image(dl,node,x,y,w,h)
 
+    def prepare_save(self):
+        for node in self.graph.windows():
+            if node in self.states:
+                self.states[node].save_window_geometry(
+                    self.graph.info(node)['rect'], self.records[node][1].no_save)
+        self.identities.prepare_save()
+
     def close(self):
         if not self.closed:
+            self.prepare_save()
             self.graph.clear()
             self._retire()
             if self.gpu:
@@ -589,5 +622,6 @@ class RetainedGui:
             self.geometry.native = None
             self.geometry.cache = None
             self.renderers.clear()
+            self.identities.clear()
             self.graph = None
             self.closed = True

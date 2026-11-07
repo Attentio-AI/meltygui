@@ -58,10 +58,10 @@ def test_explicit_state_is_borrowed_and_unknown_arguments_are_filtered():
         return False, input_value
 
     override = ['borrowed']
-    with native_frame(runtime):
-        view(None, arbitrary_forwarded_argument=1)
-        view(None, session=override, arbitrary_forwarded_argument=2)
-        view(None)
+    for kwargs in ({'arbitrary_forwarded_argument': 1},
+                   {'session': override, 'arbitrary_forwarded_argument': 2}, {}):
+        with native_frame(runtime):
+            view(None, **kwargs)
     assert own[0] is own[2] and own[1] is override
 
 
@@ -184,13 +184,10 @@ def test_caller_overrides_are_transient_and_authored_state_survives_them():
             draw_state.level = 9
         return False, level
 
-    with native_frame(runtime):
-        assert view(None, level=7)[1] == 7
-        assert view(None)[1] == 2
-        assert view(None, edit=True)[1] == 2
-        assert view(None)[1] == 9
-        assert view(None, level=4)[1] == 4
-        assert view(None)[1] == 9
+    for kwargs, expected in [({'level': 7}, 7), ({}, 2), ({'edit': True}, 2),
+                             ({}, 9), ({'level': 4}, 4), ({}, 9)]:
+        with native_frame(runtime):
+            assert view(None, **kwargs)[1] == expected
 
 
 def test_two_host_tiles_have_independent_native_state():

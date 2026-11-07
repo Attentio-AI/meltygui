@@ -4,9 +4,10 @@ use pyo3::exceptions::{PyAttributeError, PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyTuple};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Instant;
+mod identity;
 mod retained;
 mod texture;
 mod edges;
@@ -71,15 +72,48 @@ struct NativeState {
     owned: HashMap<usize, Py<PyAny>>,
     overrides: HashMap<usize, Value>,
     revision: u64,
+    excluded: HashSet<String>,
+    renderer: u128,
 }
+const TRANSIENT_STATE: &[&str] = &[
+    "input_value", "draw_state", "cache", "view_events", "font_manager", "style_manager",
+    "width", "height", "content_width", "content_height", "abs_left", "abs_top",
+    "measured_width", "depth", "unique_events",
+];
 impl NativeState {
     fn new(shape: Rc<RefCell<Shape>>) -> Self {
-        Self {
+        let mut state = Self {
             shape,
             values: Vec::new(),
             owned: HashMap::new(),
             overrides: HashMap::new(),
             revision: 0,
+            excluded: TRANSIENT_STATE.iter().map(|v| v.to_string()).collect(),
+            renderer: 0,
+        };
+        state.put("unique", Value::Int(0));
+        state.put("dlt_count", Value::Int(0));
+        state
+    }
+    fn rebind(&mut self, shape: Rc<RefCell<Shape>>) {
+        if Rc::ptr_eq(&self.shape, &shape) { return; }
+        let mut state = Self::new(shape);
+        for (name, slot) in self.shape.borrow().slots.iter() {
+            let target = state.shape.borrow_mut().slot(name);
+            if let Some(value) = self.values.get_mut(*slot).and_then(Option::take) { state.put_slot(target, value); }
+            if let Some(value) = self.owned.remove(slot) { state.owned.insert(target, value); }
+            if let Some(value) = self.overrides.remove(slot) { state.overrides.insert(target, value); }
+        }
+        state.excluded = std::mem::take(&mut self.excluded);
+        *self = state;
+    }
+    fn release_transients(&mut self) {
+        for (name, slot) in self.shape.borrow().slots.iter() {
+            if name.starts_with('_') || self.excluded.contains(name) {
+                if let Some(value) = self.values.get_mut(*slot) { *value = None; }
+                self.owned.remove(slot);
+                self.overrides.remove(slot);
+            }
         }
     }
     fn put_slot(&mut self, slot: usize, value: Value) {
@@ -106,6 +140,52 @@ impl NativeState {
 }
 #[pymethods]
 impl NativeState {
+    #[new]
+    fn py_new() -> Self { Self::new(Rc::new(RefCell::new(Shape::default()))) }
+
+    #[pyo3(signature = (rect, excluded=Vec::new()))]
+    fn save_window_geometry(&mut self, py: Python<'_>, rect: (f64, f64, f64, f64), excluded: Vec<String>) -> PyResult<()> {
+        // The retained graph owns window placement; capture it only at save/close.
+        self.put("window_pos", Value::Object((rect.0, rect.1).into_pyobject(py)?.into_any().unbind()));
+        self.put("width", Value::Float(rect.2));
+        self.put("height", Value::Float(rect.3));
+        for name in ["window_pos", "width", "height"] {
+            if let Some(slot) = self.shape.borrow().slots.get(name) { self.overrides.remove(slot); }
+            if excluded.iter().any(|field| field == name) { self.excluded.insert(name.to_string()); }
+            else { self.excluded.remove(name); }
+        }
+        Ok(())
+    }
+
+    #[pyo3(signature = (excluded=Vec::new()))]
+    fn save_state(&self, py: Python<'_>, excluded: Vec<String>) -> PyResult<Py<PyAny>> {
+        let values = PyDict::new(py);
+        let owned = PyDict::new(py);
+        let overrides = PyDict::new(py);
+        for (name, slot) in self.shape.borrow().slots.iter() {
+            if name.starts_with('_') || self.excluded.contains(name) || excluded.contains(name) { continue; }
+            if let Some(value) = self.at(*slot) { values.set_item(name, value.to_py(py))?; }
+            if let Some(value) = self.owned.get(slot) { owned.set_item(name, value)?; }
+            if let Some(value) = self.overrides.get(slot) { overrides.set_item(name, value.to_py(py))?; }
+        }
+        values.set_item("dlt_count", self.number("dlt_count", 0.) as i64 - 1)?;
+        Ok((values, owned, overrides).into_pyobject(py)?.into_any().unbind())
+    }
+    fn __setstate__(&mut self, state: &Bound<'_, PyTuple>) -> PyResult<()> {
+        for (index, item) in state.iter().enumerate() {
+            for (key, value) in item.downcast::<PyDict>()?.iter() {
+                let name = key.extract::<String>()?;
+                let slot = self.shape.borrow_mut().slot(&name);
+                match index {
+                    0 => self.put_slot(slot, Value::from_py(&value)),
+                    1 => { self.owned.insert(slot, value.unbind()); },
+                    2 => { self.overrides.insert(slot, Value::from_py(&value)); },
+                    _ => return Err(PyTypeError::new_err("invalid native draw state")),
+                }
+            }
+        }
+        Ok(())
+    }
     fn __getattr__(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
         self.lookup(name)
             .map(|v| v.to_py(py))
@@ -172,7 +252,6 @@ impl NativeState {
 }
 
 struct Frame {
-    id: u64,
     width: f64,
     child_ns: u64,
 }
@@ -180,15 +259,12 @@ struct Frame {
 #[pyclass(unsendable, module = "meltygui.core.rendering._gui_native")]
 struct Runtime {
     shape: Rc<RefCell<Shape>>,
-    nodes: HashMap<(u64, u64, u64, u64), (u64, Py<NativeState>, u64)>,
-    keys: Py<PyDict>,
+    nodes: HashMap<u128, (Py<NativeState>, Py<PyAny>)>,
+    identities: Py<identity::Identities>,
     globals: Py<PyDict>,
     imgui: Option<Py<PyAny>>,
     owner: Option<Py<PyAny>>,
     stack: Vec<Frame>,
-    serial: u64,
-    epoch: u64,
-    scope: u64,
     width: f64,
     calls: u64,
     wrapper_ns: u64,
@@ -196,52 +272,44 @@ struct Runtime {
 }
 #[pymethods]
 impl Runtime {
+    #[getter]
+    fn identities(&self, py: Python<'_>) -> Py<identity::Identities> {
+        self.identities.clone_ref(py)
+    }
     #[new]
-    #[pyo3(signature = (imgui=None))]
-    fn new(py: Python<'_>, imgui: Option<Py<PyAny>>) -> Self {
-        Self {
+    #[pyo3(signature = (imgui=None, identities=None))]
+    fn new(py: Python<'_>, imgui: Option<Py<PyAny>>, identities: Option<Py<identity::Identities>>) -> PyResult<Self> {
+        Ok(Self {
             shape: Rc::new(RefCell::new(Shape::default())),
             nodes: HashMap::new(),
-            keys: PyDict::new(py).unbind(),
+            identities: match identities { Some(ids) => ids, None => Py::new(py, identity::Identities::new(py, None))? },
             globals: PyDict::new(py).unbind(),
             imgui,
             owner: None,
             stack: Vec::new(),
-            serial: 0,
-            epoch: 0,
-            scope: 0,
             width: 300.0,
             calls: 0,
             wrapper_ns: 0,
             body_ns: 0,
-        }
+        })
     }
-    #[pyo3(signature = (owner=None, width=300.0, scope=None, **globals))]
+    #[pyo3(signature = (owner=None, width=300.0, scope=None, identity_frame=true, **globals))]
     fn begin_frame(
         &mut self,
         py: Python<'_>,
         owner: Option<Py<PyAny>>,
         width: f64,
         scope: Option<Py<PyAny>>,
+        identity_frame: bool,
         globals: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<()> {
         if !self.stack.is_empty() {
             return Err(PyRuntimeError::new_err("begin_frame during rendering"));
         }
-        let scope = scope
-            .or_else(|| {
-                owner
-                    .as_ref()
-                    .and_then(|o| o.bind(py).getattr("unique").ok().map(Bound::unbind))
-            })
-            .unwrap_or_else(|| py.None());
-        self.scope = if let Some(id) = self.keys.bind(py).get_item(&scope)? {
-            id.extract()?
-        } else {
-            let id = self.keys.bind(py).len() as u64 + 1;
-            self.keys.bind(py).set_item(scope, id)?;
-            id
-        };
+        if let Some(scope) = scope {
+            self.identities.borrow_mut(py).set_scope(scope.bind(py))?;
+        }
+        if identity_frame { self.identities.borrow_mut(py).begin_frame(); }
         self.owner = owner;
         self.width = width;
         self.globals = globals
@@ -249,15 +317,9 @@ impl Runtime {
             .transpose()?
             .unwrap_or_else(|| PyDict::new(py))
             .unbind();
-        self.epoch += 1;
         self.calls = 0;
         self.wrapper_ns = 0;
         self.body_ns = 0;
-        // Bound dynamic view lifetimes; retain briefly hidden collection children.
-        if self.epoch % 120 == 0 {
-            let cutoff = self.epoch.saturating_sub(120);
-            self.nodes.retain(|_, (_, _, seen)| *seen >= cutoff);
-        }
         Ok(())
     }
     fn end_frame(&mut self, py: Python<'_>) -> PyResult<()> {
@@ -282,14 +344,18 @@ impl Runtime {
         if !self.stack.is_empty() {
             return Err(PyRuntimeError::new_err("clear during rendering"));
         }
+        for (unique, (state, _)) in &self.nodes {
+            state.borrow_mut(py).release_transients();
+            let ids = self.identities.borrow(py);
+            if !ids.persistent { ids.registry.bind(py).del_item(unique).ok(); }
+        }
         self.nodes.clear();
-        self.keys = PyDict::new(py).unbind();
         self.owner = None;
         self.globals = PyDict::new(py).unbind();
         Ok(())
     }
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
-        visit.call(&self.keys)?;
+        visit.call(&self.identities)?;
         visit.call(&self.globals)?;
         if let Some(value) = &self.imgui {
             visit.call(value)?;
@@ -297,7 +363,7 @@ impl Runtime {
         if let Some(value) = &self.owner {
             visit.call(value)?;
         }
-        for (_, state, _) in self.nodes.values() {
+        for (state, _) in self.nodes.values() {
             visit.call(state)?;
         }
         Ok(())
@@ -323,7 +389,8 @@ struct Renderer {
     parameters: Vec<Parameter>,
     events: Vec<String>,
     var_kwargs: bool,
-    id: u64,
+    excluded: Vec<String>,
+    id: u128,
 }
 
 fn kw_number(kwargs: &Bound<'_, PyDict>, name: &str, default: f64) -> f64 {
@@ -342,6 +409,13 @@ impl Renderer {
         self.defaults = replacement.defaults.clone_ref(py);
         self.events = replacement.events.clone();
         self.var_kwargs = replacement.var_kwargs;
+        self.excluded = replacement.excluded.clone();
+        for (state, _) in self.runtime.borrow(py).nodes.values() {
+            let mut state = state.borrow_mut(py);
+            if state.renderer == self.id {
+                state.excluded = TRANSIENT_STATE.iter().map(|v| v.to_string()).chain(self.excluded.iter().cloned()).collect();
+            }
+        }
         self.parameters = replacement
             .parameters
             .iter()
@@ -362,10 +436,11 @@ impl Renderer {
         parameters: Vec<(String, bool, Py<PyAny>, Option<Py<PyAny>>)>,
         events: Vec<String>,
         var_kwargs: bool,
+        identity: u128,
+        excluded: Vec<String>,
     ) -> PyResult<Self> {
-        let (id, plan) = {
-            let mut rt = runtime.borrow_mut(py);
-            rt.serial += 1;
+        let plan = {
+            let rt = runtime.borrow(py);
             let plan = parameters
                 .into_iter()
                 .map(|(name, has_default, default, factory)| {
@@ -378,7 +453,7 @@ impl Renderer {
                     }
                 })
                 .collect();
-            (rt.serial, plan)
+            plan
         };
         Ok(Self {
             runtime,
@@ -387,7 +462,8 @@ impl Renderer {
             parameters: plan,
             events,
             var_kwargs,
-            id,
+            excluded,
+            id: identity,
         })
     }
     #[pyo3(signature = (input_value=None, **kwargs))]
@@ -403,36 +479,43 @@ impl Renderer {
         if let Some(kwargs) = kwargs {
             args.update(kwargs.as_mapping())?;
         }
-        let (state, unique, inherited_width, imgui, owner, globals) = {
+        // Cached calls carry defaults for layout; only caller keys outrank state.
+        let explicit_keys = args.get_item("_gui_explicit")?;
+        if explicit_keys.is_some() { args.del_item("_gui_explicit")?; }
+        let (state, unique, unique_value, inherited_width, imgui, owner, globals) = {
             let mut rt = self.runtime.borrow_mut(py);
-            let parent = rt.stack.last().map_or(0, |f| f.id);
-            let key = args
-                .get_item("key")?
-                .or(args.get_item("name")?)
-                .unwrap_or_else(|| py.None().into_bound(py));
-            let key_id = if let Some(id) = rt.keys.bind(py).get_item(&key)? {
-                id.extract::<u64>()?
+            let unique = if let Some(value) = args.get_item("_gui_unique")? {
+                let unique = value.extract::<u128>()?;
+                args.del_item("_gui_unique")?;
+                unique
             } else {
-                let id = rt.keys.bind(py).len() as u64 + 1;
-                rt.keys.bind(py).set_item(&key, id)?;
-                id
+                rt.identities.borrow_mut(py).resolve(self.id, args.get_item("key")?.as_ref(), args.get_item("name")?.as_ref(), args.contains("key")?)?
             };
-            let identity = (rt.scope, parent, self.id, key_id);
-            if !rt.nodes.contains_key(&identity) {
-                rt.serial += 1;
-                let state = Py::new(py, NativeState::new(rt.shape.clone()))?;
-                let serial = rt.serial;
-                let epoch = rt.epoch;
-                rt.nodes.insert(identity, (serial, state, epoch));
+            if !rt.nodes.contains_key(&unique) {
+                let identities = rt.identities.clone_ref(py);
+                let mut ids = identities.borrow_mut(py);
+                let saved = ids.registry.bind(py).get_item(unique)?;
+                let state = match saved.and_then(|s| s.extract::<Py<NativeState>>().ok()) {
+                    Some(state) => { state.borrow_mut(py).rebind(rt.shape.clone()); state },
+                    None => Py::new(py, NativeState::new(rt.shape.clone()))?,
+                };
+                {
+                    let mut ds = state.borrow_mut(py);
+                    ds.renderer = self.id;
+                    ds.excluded = TRANSIENT_STATE.iter().map(|v| v.to_string()).chain(self.excluded.iter().cloned()).collect();
+                }
+                ids.registry.bind(py).set_item(unique, &state)?;
+                ids.states.insert(unique);
+                rt.nodes.insert(unique, (state, unique.into_pyobject(py)?.into_any().unbind()));
             }
-            let epoch = rt.epoch;
-            let (unique, state, seen) = rt.nodes.get_mut(&identity).unwrap();
-            *seen = epoch;
-            let (unique, state) = (*unique, state.clone_ref(py));
+            let (state, unique_value) = rt.nodes.get(&unique).unwrap();
+            let state = state.clone_ref(py);
+            let unique_value = unique_value.clone_ref(py);
             let width = rt.stack.last().map_or(rt.width, |frame| frame.width);
             (
                 state,
                 unique,
+                unique_value,
                 width,
                 rt.imgui.as_ref().map(|v| v.clone_ref(py)),
                 rt.owner.as_ref().map(|v| v.clone_ref(py)),
@@ -456,24 +539,18 @@ impl Renderer {
         };
         {
             let mut ds = state.borrow_mut(py);
-            for (name, value) in args.iter() {
-                ds.put(&name.extract::<String>()?, Value::from_py(&value));
-            }
-            ds.put("unique", Value::Int(unique as i64));
+            ds.put("unique", Value::Object(unique_value.clone_ref(py)));
+            ds.put("dlt_count", Value::Int(1));
             ds.put("width", Value::Float(width));
             ds.put("height", Value::Float(height));
             ds.put("content_width", Value::Float(width));
             ds.put("content_height", Value::Float(height));
             ds.put("abs_left", Value::Float(left));
             ds.put("abs_top", Value::Float(top));
-            ds.put(
-                "depth",
-                Value::Int(self.runtime.borrow(py).stack.len() as i64),
-            );
         }
         args.set_item("input_value", &input_value)?;
         args.set_item("draw_state", &state)?;
-        args.set_item("unique", unique)?;
+        args.set_item("unique", &unique_value)?;
         args.set_item("depth", self.runtime.borrow(py).stack.len())?;
         if !self.events.is_empty() {
             if let Some(owner) = owner {
@@ -513,7 +590,8 @@ impl Renderer {
             let explicit = kwargs
                 .map(|kw| kw.get_item(&parameter.name))
                 .transpose()?
-                .flatten();
+                .flatten()
+                .filter(|_| explicit_keys.as_ref().map_or(true, |keys| keys.contains(&parameter.name).unwrap_or(false)));
             let value = if let Some(value) = explicit {
                 value.unbind()
             } else if let Some(value) = authored {
@@ -563,12 +641,14 @@ impl Renderer {
             }
         }
         self.runtime.borrow_mut(py).stack.push(Frame {
-            id: unique,
             width,
             child_ns: 0,
         });
+        let identities = self.runtime.borrow(py).identities.clone_ref(py);
+        identities.borrow_mut(py).enter(unique);
         let body_start = Instant::now();
         let result = self.func.bind(py).call((), Some(&clean)).map(Bound::unbind);
+        identities.borrow_mut(py).leave(result.is_ok());
         let body_ns = body_start.elapsed().as_nanos() as u64;
         let child_ns = self.runtime.borrow_mut(py).stack.pop().unwrap().child_ns;
         let cleanup = (|| -> PyResult<()> {
@@ -640,6 +720,7 @@ impl Renderer {
 
 #[pymodule]
 fn _gui_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<identity::Identities>()?;
     m.add_class::<edges::EdgeGraph>()?;
     m.add_class::<retained::RetainedGraph>()?;
     m.add_class::<texture::TextureCache>()?;

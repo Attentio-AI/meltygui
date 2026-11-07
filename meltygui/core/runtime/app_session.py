@@ -104,7 +104,9 @@ def prune(session):
     if not isinstance(registry, dict):
         session.draw_state_registry = {}
         return 0
-    dead = [key for key, draw_state in registry.items() if not isinstance(draw_state, DrawState)]
+    native = sys.modules.get('meltygui.core.rendering._gui_native')
+    state_types = (DrawState, native.NativeState) if native is not None else (DrawState,)
+    dead = [key for key, draw_state in registry.items() if not isinstance(draw_state, state_types)]
     for key in dead:
         registry.pop(key)
     for draw_state in registry.values():

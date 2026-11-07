@@ -247,7 +247,7 @@ def test_gui_window_host_owns_capture_position_and_cleanup(gl_context, monkeypat
     backend = SimpleNamespace(gui_character_callback=None, drag_mouse_pos=None,
                               _get_clipboard_text=lambda: '',
                               _set_clipboard_text=lambda text: None)
-    surface = SimpleNamespace(_gui_prototype=None, request_frame=lambda: None, impl=backend)
+    surface = SimpleNamespace(_gui_prototype=None, request_frame=lambda: None, impl=backend, session=None)
     body = _root_body(app, 'native root')
     try:
         for _ in range(2):

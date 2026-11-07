@@ -904,6 +904,10 @@ def _save_session():
     session = _state.get('session')
     if session is None:
         return True
+    surfaces = sys.modules.get('meltygui.core.windowing.surface')
+    for surface in surfaces.Surface.all if surfaces is not None else ():
+        if surface._gui_prototype is not None:
+            surface._gui_prototype.prepare_save()
     import meltygui.core.runtime.app_session as app_session
     path = app_session.save(session, _state['app_id'])
     _debug(f'session saved to {path}' if path else 'session save failed')
