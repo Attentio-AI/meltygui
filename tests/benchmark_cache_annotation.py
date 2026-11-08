@@ -1,5 +1,6 @@
 """The specific 341-view comparison: raw, bare Rust, full cache annotation, @gui."""
 import argparse
+import cProfile
 import json
 from pathlib import Path
 import random
@@ -14,8 +15,12 @@ def main():
     parser.add_argument('--frames', type=int, default=300)
     parser.add_argument('--warm', type=int, default=30)
     parser.add_argument('--seed', type=int, default=1027)
+    parser.add_argument('--profile', action='store_true',
+                        help='Collect separate measured-frame cProfiles; timings include profiler overhead')
     args = parser.parse_args()
-    from profile_gui_overhead import load_native, mount
+    assert args.frames > 0 and args.warm >= 0
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    from profile_gui_overhead import load_native, mount, profile_rows
     load_native(args.native_path)
     from benchmark_gui_overhead import Scene, Graphics, tree, summary
     from benchmark_bare_gui import FixedSurface
@@ -64,11 +69,15 @@ def main():
                 rows[label]['initial'] = resources(scene.host.cache)
                 stable[label] = identities(scene.host.cache)
         rng, order = random.Random(args.seed), list(scenes)
+        profilers = {label: cProfile.Profile() for label in scenes} if args.profile else {}
         for frame in range(args.warm + args.frames):
             rng.shuffle(order)
             for label in order:
                 scene = scenes[label]
                 graphics.begin()
+                profiler = profilers.get(label) if frame >= args.warm else None
+                if profiler is not None:
+                    profiler.enable()
                 start = perf_counter_ns()
                 if scene.host:
                     scene.host.solve_native(surface)
@@ -77,6 +86,8 @@ def main():
                 assert graphics.imgui.get_current_context() is graphics.context
                 graphics.submit()
                 cpu = (perf_counter_ns() - start) / 1000
+                if profiler is not None:
+                    profiler.disable()
                 gpu = graphics.finish()
                 assert (scene.count, scene.checksum) == (341, 58311)
                 if frame >= args.warm:
@@ -85,6 +96,9 @@ def main():
                 if frame == args.warm + args.frames - 1:
                     assert graphics.pixels() == reference, ('final pixels', label)
         for label, row in rows.items():
+            if args.profile:
+                profilers[label].dump_stats(str(args.output.with_name(args.output.stem + '-' + label + '.prof')))
+                row['profile'] = profile_rows(profilers[label], args.frames)
             for device in ('cpu', 'gpu'):
                 values = row[device + '_samples_us']
                 row[device] = dict(summary(values), mean_us=mean(values))

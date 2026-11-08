@@ -14,8 +14,10 @@ def main():
     parser.add_argument('--frames', type=int, default=200)
     parser.add_argument('--warm', type=int, default=24)
     parser.add_argument('--seed', type=int, default=1027)
-    parser.add_argument('--mode', choices=('single', 'cumulative', 'detail'), default='single')
+    parser.add_argument('--mode', choices=('single', 'cumulative', 'detail', 'declaration'), default='single')
     args = parser.parse_args()
+    assert args.frames > 0 and args.warm >= 0
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     from profile_gui_overhead import load_native, mount
     load_native(args.native_path)
     from benchmark_gui_overhead import Scene, Graphics, tree, summary
@@ -27,9 +29,14 @@ def main():
     from meltygui.core.runtime.toggles import Toggles
     steps = ('input', 'layout', 'policy', 'scopes', 'declaration', 'lifetime', 'graph', 'execution_glue')
     variants = {'baseline': ()}
-    if args.mode == 'detail':
+    if args.mode == 'declaration':
         variants.update((f'without_{step}', (step,)) for step in
-                        ('input_apply', 'input_finish', 'host_input', 'layout_snapshot', 'layout_commit', 'state_configure'))
+                        ('identity_lookup', 'caller_copy', 'declaration_validation', 'state_configure',
+                         'state_reads', 'argument_build', 'change_detection', 'invocation_snapshots'))
+    elif args.mode == 'detail':
+        variants.update((f'without_{step}', (step,)) for step in
+                        ('input_finish', 'host_input', 'layout_snapshot', 'layout_commit', 'state_configure',
+                         'validation', 'residency', 'retirement'))
     elif args.mode == 'single':
         variants.update((f'without_{step}', (step,)) for step in steps if step not in ('graph', 'execution_glue'))
     else:

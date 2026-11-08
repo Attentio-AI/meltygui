@@ -163,6 +163,19 @@ original `--rust-gui` comparison described above.
 
 ## Verification and measurement
 
+Run the CPU comparison and retained OpenGL benchmarks together, rebuilding the
+release extension first and saving a timestamped HTML report, JSON and logs:
+
+```sh
+.venv/bin/python tools/run_rust_benchmarks.py --open
+```
+
+Reports default to `~/Documents/MeltyGUI Benchmarks/`. Use `--output-dir PATH`
+to change that location, or omit `--open` to run without opening a browser.
+The **MeltyGUI Rust Benchmarks** dock launcher runs this same command in a
+terminal. Concurrent launches are rejected so they do not distort measurements.
+Failures are included in the report; a failed build skips benchmarking entirely.
+
 ```sh
 .venv/bin/pytest -q tests/test_gui_prototype.py tests/test_gui_prototype_rendering.py
 .venv/bin/python tests/benchmark_gui_prototype.py

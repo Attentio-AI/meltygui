@@ -39,14 +39,11 @@ def apply(scene, cuts):
 
     if 'input' in cuts:
         cache.process_host_input = noop
-        cache.imgui_input.apply = noop
         cache.imgui_input.finish = noop
-    if 'input_apply' in cuts:
-        cache.imgui_input.apply = noop
     if 'input_finish' in cuts:
         cache.imgui_input.finish = noop
     if 'host_input' in cuts:
-        # Preserve a valid frozen host IO snapshot for the per-view apply path.
+        # Preserve a valid frozen host IO snapshot for the fixed idle scene.
         cache.imgui_input.process(imgui.get_io())
         cache.process_host_input = noop
     if 'layout_snapshot' in cuts:
@@ -65,15 +62,23 @@ def apply(scene, cuts):
         cache._select_rasters = noop
         cache.calibration.enabled = False
     if 'scopes' in cuts:
-        replace('''result = renderer(input_value, **arguments, return_extras=True,
-                                  _gui_unique=self.uniques[node], _gui_explicit=self.caller_keys[node])''',
-                '''self.identities.enter(self.uniques[node])
-                body_ok = False
-                try:
-                    result = _fixed_body(func, input_value, arguments, self.states[node])
-                    body_ok = True
-                finally:
-                    self.identities.leave(body_ok)''')
+        # Locate the call structurally so changes in indentation fail cleanly.
+        tree = ast.parse(source)
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Name) and node.func.id == 'renderer']
+        assert len(calls) == 1
+        replace(ast.get_source_segment(source, calls[0]),
+                '_render_fixed(self, node, func, input_value, arguments)')
+    if 'validation' in cuts:
+        # Geometry and colors were validated during mount and are frozen here.
+        start = source.index('        measured_h = ')
+        end = source.index('        if self.graphics:', start)
+        source = (source[:start] + "        measured_h = self._ablation_fixed[node]['rect'][3]\n"
+                  + "        background = self.backgrounds[node]\n" + source[end:])
+    if 'residency' in cuts:
+        cache._track_capture = noop
+    if 'retirement' in cuts:
+        cache._retire = noop
     if 'lifetime' in cuts:
         for name in ('_track_capture', '_evict_scroll_tiles', '_retire'):
             setattr(cache, name, noop)
@@ -103,7 +108,17 @@ def apply(scene, cuts):
                 cache._ablation_needs_composition = False
         cache._compose = compose
         cache.flush = compose
-    namespace = dict(retained.__dict__, _fixed_body=fixed_body)
+    def render_fixed(runtime, node, function, value, arguments):
+        runtime.identities.enter(runtime.uniques[node])
+        succeeded = False
+        try:
+            result = fixed_body(function, value, arguments, runtime.states[node])
+            succeeded = True
+            return result
+        finally:
+            runtime.identities.leave(succeeded)
+
+    namespace = dict(retained.__dict__, _render_fixed=render_fixed)
     exec(compile(source, '<fixed-tree cache ablation>', 'exec'), namespace)
     cache._execute = MethodType(namespace['_execute'], cache)
 
@@ -156,6 +171,10 @@ def apply(scene, cuts):
                 imgui.dummy(w, h)
             return cache._ablation_results[node] if 'graph' in cuts else cache.graph.result(node, True)
         scene.host.bindings[scene.view] = declare
+    declaration_cuts = cuts & {'identity_lookup', 'caller_copy', 'declaration_validation',
+                               'state_reads', 'argument_build', 'change_detection', 'invocation_snapshots'}
+    if declaration_cuts:
+        install_declaration_cut(scene, fixed, declaration_cuts)
     if 'state_configure' in cuts:
         from cache_only_gui import bind_cache
         tree = ast.parse(textwrap.dedent(inspect.getsource(retained.RetainedGui.gui)))
@@ -180,3 +199,70 @@ def apply(scene, cuts):
         scene.host.bindings[scene.view] = scope['gui'](cache, function, **options)
         cache.renderers[:] = definitions
     return dict(cuts=sorted(cuts), fixed_nodes=len(fixed))
+
+
+def install_declaration_cut(scene, fixed, cuts):
+    """Freeze one declaration operation in the already-verified fixed scene."""
+    from meltygui.core.rendering import retained_gui_prototype as retained
+    from cache_only_gui import bind_cache
+    cache = scene.host.cache
+    cache._ablation_by_number = {row['value'].number: row for row in fixed.values()}
+    cache._ablation_callers = {row['value'].number: {key: row['arguments'][key]
+                              for key in cache.caller_keys[node] if key in row['arguments']}
+                              for node, row in fixed.items()}
+    source = textwrap.dedent(inspect.getsource(retained.RetainedGui.gui))
+    tree = ast.parse(source)
+    wrapper = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == 'wrapper')
+
+    class Cut(ast.NodeTransformer):
+        changes = 0
+
+        def replacement(self, node, statement):
+            self.changes += 1
+            return ast.copy_location(ast.parse(statement).body[0], node)
+
+        def visit_Assign(self, node):
+            target = ast.unparse(node.targets[0])
+            if 'identity_lookup' in cuts and target == 'identity_handle':
+                return self.replacement(node, "identity_handle = self._ablation_by_number[input_value.number]['handle']")
+            if 'caller_copy' in cuts and target == 'caller':
+                return self.replacement(node, 'pass' if isinstance(node.value, ast.DictComp) else
+                                        'caller = self._ablation_callers[input_value.number]')
+            if 'argument_build' in cuts and target == 'arguments':
+                return self.replacement(node, "arguments = self._ablation_by_number[input_value.number]['arguments']")
+            if 'state_reads' in cuts and ast.unparse(node.value) in ('(state.left, state.top)', '(state.width, state.height)'):
+                part = '[:2]' if target == '(x, y)' else '[2:]'
+                return self.replacement(node, f"{target} = self._ablation_by_number[input_value.number]['rect']{part}")
+            if 'invocation_snapshots' in cuts and target in ('self.invocations[node]', 'self.caller_keys[node]'):
+                return self.replacement(node, 'pass')
+            return self.generic_visit(node)
+
+        def visit_If(self, node):
+            if 'change_detection' in cuts and ast.unparse(node.test) == 'previous is not None':
+                return self.replacement(node, 'pass')
+            if ('declaration_validation' in cuts and len(node.body) == 1
+                    and isinstance(node.body[0], ast.Raise)
+                    and isinstance(node.body[0].exc, ast.Call)
+                    and ast.unparse(node.body[0].exc.func) == 'ValueError'):
+                return self.replacement(node, 'pass')
+            return self.generic_visit(node)
+
+        def visit_Expr(self, node):
+            if ('declaration_validation' in cuts and isinstance(node.value, ast.Call)
+                    and ast.unparse(node.value.func) == '_check_position_arguments'):
+                return self.replacement(node, 'pass')
+            return self.generic_visit(node)
+
+    transform = Cut()
+    transform.visit(wrapper)
+    expected = {'identity_lookup': 1, 'caller_copy': 2, 'argument_build': 1,
+                'state_reads': 2, 'invocation_snapshots': 2, 'change_detection': 1,
+                'declaration_validation': 4}
+    assert transform.changes == sum(expected[cut] for cut in cuts), (cuts, transform.changes)
+    scope = dict(retained.__dict__, _bind_native=bind_cache)
+    exec(compile(ast.fix_missing_locations(tree), '<fixed declaration operation>', 'exec'), scope)
+    function, options = scene.view.__gui_definition__
+    options = {key: value for key, value in options.items() if key != 'use_cache'}
+    definitions = list(cache.renderers)
+    scene.host.bindings[scene.view] = scope['gui'](cache, function, **options)
+    cache.renderers[:] = definitions

@@ -1,5 +1,9 @@
 # Accounting for the full-cache wrapper overhead
 
+These are historical multi-context results. See the
+[shared-context feature-removal rerun](GUI_CACHE_ABLATION_CURRENT.md) for current
+individual and cumulative measurements, including finer execution cuts.
+
 November 7, 2026. CPython 3.12, Linux GLFW/OpenGL, RTX 4090.
 
 The full-cache wrapper's overhead is spread across input delivery, layout,

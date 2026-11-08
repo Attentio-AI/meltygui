@@ -1,5 +1,9 @@
 # Full-cache annotation versus @gui: the same 341-view redraw
 
+For a rerun after the shared-context capture changes, see
+[current cache-only profiling](GUI_CACHE_PROFILE_RERUN.md). The timings below
+describe the earlier implementation and are retained as historical results.
+
 November 7, 2026, CPython 3.12, Linux GLFW/OpenGL, RTX 4090. Isolated experiment;
 no installed renderer or public package API was changed.
 
@@ -90,3 +94,9 @@ Run graphics commands on a reserved agent desktop with isolated XDG directories.
 Repeat with seed 2027. The build output includes the generated Rust dispatcher
 for inspection. Raw samples, logs and the built experiment are preserved under
 `/tmp/codex-cache-annotation/`.
+
+Add `--profile` in a separate run to collect one cProfile per variant, limited
+to measured CPU submission frames. JSON includes per-function calls, self time
+and cumulative time per frame; sibling `.prof` files retain the complete call
+graph. Warmup, GPU waits and pixel checks are excluded. Profiled timing includes
+instrumentation overhead and must not replace the ordinary benchmark results.

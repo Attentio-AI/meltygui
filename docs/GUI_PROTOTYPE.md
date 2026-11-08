@@ -24,7 +24,7 @@ for both installs (an editable checkout does not update dependencies when
 its source requirements change):
 
 ```sh
-.venv/bin/python -m pip install /path/to/meltygui_imgui-2.0.4-<python>-<abi>-<platform>.whl
+.venv/bin/python -m pip install '/path/to/meltygui_imgui-2.0.4-<python>-<abi>-<platform>.whl'
 .venv/bin/python -m pip install -e .
 ```
 
