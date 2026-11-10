@@ -219,7 +219,7 @@ impl Target {
 // Texture, element count, clip rectangle, index offset, vertex offset.
 type Command = (u32, i32, (f32, f32, f32, f32), usize, i32);
 // Command, vertex and index buffer addresses and element counts of one ImDrawList.
-type DrawBuffers = (usize, usize, usize, usize, usize, usize);
+pub(crate) type DrawBuffers = (usize, usize, usize, usize, usize, usize);
 // Dear ImGui 1.82 ImDrawCmd. Texture IDs are borrowed Python objects in this binding.
 #[repr(C)]
 struct DrawCmd {

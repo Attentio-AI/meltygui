@@ -89,6 +89,10 @@ impl RetainedGraph {
         Ok((id, flags))
     }
     pub(crate) fn is_visible(&mut self, py: Python<'_>, id: u64) -> bool { self.visible(py, id) }
+    /// Whether `id` is a live, inline child of `parent`.
+    pub(crate) fn known_child(&self, id: u64, parent: u64) -> bool {
+        self.nodes.get(&id).is_some_and(|node| node.parent == parent && !node.portal)
+    }
     /// Whether `id` is a live child of `parent` with nothing to execute or return.
     pub(crate) fn clean_child(&self, id: u64, parent: u64) -> bool {
         self.nodes.get(&id).is_some_and(|node| node.parent == parent && !node.dirty && !node.pending && !node.portal)
@@ -342,7 +346,7 @@ impl RetainedGraph {
     /// origin, parent, portal flag, automatic-height flag and scroll offset.
     /// `invocation` materializes the same data as one keyword dictionary.
     #[allow(clippy::type_complexity)]
-    fn begin_execution(&mut self, py: Python<'_>, id: u64)
+    pub(crate) fn begin_execution(&mut self, py: Python<'_>, id: u64)
         -> PyResult<(Py<PyAny>, Py<PyDict>, (f64,f64,f64,f64), (f64,f64), u64, bool, bool, (f64,f64))> {
         let node = self.nodes.get(&id).ok_or_else(|| PyRuntimeError::new_err("retired view"))?;
         let (input, args) = (node.input.clone_ref(py), node.kwargs.clone_ref(py));
@@ -356,7 +360,7 @@ impl RetainedGraph {
     /// Commit one execution and its measured extent. Returns whether the extent
     /// changed, whether nodes await retirement, the parent, and the capture's
     /// residency owner (the ancestor directly below a scroll viewport, or 0).
-    fn finish_execution(&mut self, py: Python<'_>, id: u64, result: &Bound<'_, PyTuple>, independent: bool,
+    pub(crate) fn finish_execution(&mut self, py: Python<'_>, id: u64, result: &Bound<'_, PyTuple>, independent: bool,
                         width: f64, height: f64) -> PyResult<(bool, bool, u64, u64)> {
         self.commit(py, id, result, independent)?;
         let resized = self.measured(py, id, width, height)?;
@@ -559,7 +563,7 @@ impl RetainedGraph {
         self.nodes.get(&id).is_some_and(|n| n.pending)
     }
     fn in_scroll(&self, id:u64)->bool {self.nodes.get(&id).is_some_and(|n|n.in_scroll)}
-    fn invalidate_node(&mut self, id: u64) {
+    pub(crate) fn invalidate_node(&mut self, id: u64) {
         if let Some(n) = self.nodes.get_mut(&id) {
             n.dirty = true;self.dirty_set.insert(id);if !n.in_scroll {self.unclipped_dirty.insert(id);}
         }
@@ -640,7 +644,7 @@ impl RetainedGraph {
         self.sync(py);Ok(())
     }
     #[pyo3(signature = (id, relative_to=0, content=false))]
-    fn origin(&mut self,py:Python<'_>,id:u64,relative_to:u64,content:bool)->PyResult<(f64,f64)> {
+    pub(crate) fn origin(&mut self,py:Python<'_>,id:u64,relative_to:u64,content:bool)->PyResult<(f64,f64)> {
         if !self.nodes.contains_key(&id) || (relative_to!=0 && !self.nodes.contains_key(&relative_to)) {return Err(PyRuntimeError::new_err("unknown coordinate space"));}
         self.sync(py);
         let a=self.geometry.origin(py,id);let mut b=self.geometry.origin(py,relative_to);

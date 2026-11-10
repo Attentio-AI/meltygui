@@ -40,12 +40,12 @@ class _Binding:
     """One view identity: the definition's shared native engine, this
     identity's handle and state. The native declaration table remembers the
     identity's last resolved call under the same handle."""
-    __slots__ = ('native', 'renderer', 'call', 'code', 'func', 'state', 'unique', 'handle')
+    __slots__ = ('native', 'renderer', 'call', 'func', 'state', 'unique', 'handle')
 
     def __init__(self, native, renderer, func, state, unique, handle):
         self.native, self.renderer, self.func = native, renderer, func
-        # The native renderer and the function code its parameter plan matches.
-        self.call, self.code = renderer.__gui_native__, func.__code__
+        # The native renderer the executor calls directly.
+        self.call = renderer.__gui_native__
         self.state, self.unique, self.handle = state, unique, handle
 
 
@@ -57,9 +57,9 @@ class RetainedGui:
         if graphics:
             import meltygui_imgui as imgui
             self.imgui = imgui
-            if not hasattr(imgui, 'DrawCapture'):
+            if not hasattr(getattr(imgui, 'DrawCapture', None), 'begin_view'):
                 raise RuntimeError(
-                    'The retained GUI prototype requires meltygui-imgui 2.0.4 with DrawCapture. '
+                    'The retained GUI prototype requires meltygui-imgui 2.0.5 with DrawCapture.begin_view. '
                     'Install the matching binding wheel into the Python environment running '
                     'this app; rebuilding the Rust extension does not update the binding. '
                     'See docs/GUI_PROTOTYPE.md for setup instructions.')
@@ -117,6 +117,14 @@ class RetainedGui:
         self.imgui_input = ImGuiInput(self)
         from meltygui.core.rendering.gui_layout_prototype import GuiGeometry
         self.geometry = GuiGeometry(self)
+        # Runs one view execution natively over these same dictionaries and
+        # calls the hooks below (_layout_begin, _background, ...) for the rest.
+        from meltygui.core.rendering._gui_native import Executor
+        from meltygui.core.rendering.gui_imgui_input import _NO_CLAIM
+        self.executor = Executor(self, self.graph, graphics, self.imgui_input, self.stack, self.events,
+                                 self.backgrounds, self.texture_refs, self.staged_regions, self.regions,
+                                 self.capture_info, self.geometry.changes, self.imgui_input.right_active,
+                                 self.imgui_input.pointer_claims, self.imgui_input.active, _NO_CLAIM, _CLEAR)
 
     @property
     def costs(self):
@@ -373,11 +381,13 @@ class RetainedGui:
                 if new_input or old_args is not arguments:
                     invocations[node] = input_value, arguments
                     self.caller_keys[node] = caller_keys
+                    self.executor.set_caller_keys(node, caller_keys)
             if node not in self.records:
                 self.uniques[node] = binding.unique
                 self.declarations[node] = binding
                 self.records[node] = binding.native, binding.renderer, func
                 self.states[node] = state
+                self.executor.attach(node, binding.call, func, binding.unique, state, caller_keys)
                 self.associate(func, node)
                 self.associate(wrapper, node)
                 graph.associate(node, f'renderer:{renderer_id}', func)
@@ -454,129 +464,79 @@ class RetainedGui:
         return self.captures[node]
 
     def _execute(self, node, *, independent):
-        binding = self.declarations[node]
-        func = binding.func
-        # Source edits recompile the parameter plan before the body runs.
-        if func.__code__ is not binding.code:
-            binding.renderer.__gui_refresh__()
-            binding.code = func.__code__
-        graph, geometry, graphics = self.graph, self.geometry, self.graphics
-        # One native crossing: the live input, the declaration's arguments
-        # (shared, read only), the rectangle before the geometry sync, origin,
-        # owner facts and scroll offset; it also marks the execution begun.
-        (input_value, arguments, old_rect, origin, parent, portal,
-         auto_height, scroll) = graph.begin_execution(node)
-        w = old_rect[2]
-        requested_h = -1. if auto_height else old_rect[3]
-        # Measure without the old texture's clip truncating newly grown content.
-        # This is a logical capture viewport, not an 8192px texture allocation.
-        h = 8192 if auto_height else (requested_h if requested_h > 1 else 1)
-        events = self.events.pop(node, None) if self.events else None
-        if events is None:
-            events = {}
-        self.stack.append(node)
-        capture = None
-        keepalive = None
-        reference_start = 0
-        try:
-            # Layout transactions exist once any row, column or window was
-            # declared; until then an owner opens one lazily on first use.
-            if geometry.changes[0] and geometry.begin(node):
-                origin = graph.origin(node)
-            if graphics:
-                gpu = self.gpu
-                if gpu is None:
-                    from meltygui.core.rendering._gui_native import TextureCache
-                    gpu = self.gpu = TextureCache()
-                    self.declared.set_gpu(gpu)
-                scope = self.captures.get(node)
-                if scope is None:
-                    scope = self._capture(node)
-                keepalive = self._keepalive
-                if keepalive is None:
-                    # One list for the binding's lifetime; new frames clear it in place.
-                    keepalive = self._keepalive = self.imgui.get_current_context()._keepalive_cache
-                reference_start = len(keepalive)
-                scope.begin(w, h, self.origin[0] + origin[0], self.origin[1] + origin[1])
-                capture = scope
-            try:
-                result = binding.call.execute(input_value, arguments, old_rect, auto_height, scroll,
-                                              binding.unique, self.caller_keys[node], self, events)
-                state = result[2]
-                # A declaration has state before its first execution, including
-                # culled views. Register that first alias before skipping repeats.
-                if binding.state is not state:
-                    binding.state = self.states[node] = state
-                    self.associate(state, node)
-                elif node not in self.backgrounds:
-                    self.associate(state, node)
-            finally:
-                if graphics:
-                    try:
-                        self.imgui_input.finish(node, capture)
-                    finally:
-                        capture.end()
-            measured_h = (state.content_height if graphics else state.height) if auto_height else requested_h
-            if not 0 <= measured_h <= 8192:
-                raise ValueError('measured cache height must be 0..8192 pixels')
-            minimum, maximum = arguments['min_height'], arguments['max_height']
-            if measured_h < minimum: measured_h = minimum
-            if measured_h > maximum: measured_h = maximum
-            # Graph measurement writes resolved size without authoring an override.
-            if result[3] or 'tint' in arguments:
-                tint = state.get('tint', arguments.get('tint', _CLEAR))
-                background = tuple(tint) + ((1.,) if len(tint) == 3 else ())
-                if len(background) != 4 or any(not math.isfinite(c) or not 0 <= c <= 1 for c in background):
-                    raise ValueError('prototype tint must be RGB or RGBA components in 0..1')
-            else:
-                background = _CLEAR
-            size = 0
-            if graphics:
-                # Native code copies the finalized draw buffers in place. Retained
-                # commands outlive this ImGui frame, and a texture-ID object may
-                # itself own its resource, so keep those until packet replacement.
-                rows = math.ceil(measured_h)
-                size, self.texture_refs[node] = gpu.capture(
-                    node, math.ceil(w), rows if rows > 1 else 1, self._auto_cache, not parent or portal,
-                    [(draw.cmd_buffer_data, draw.cmd_buffer_size, draw.vtx_buffer_data, draw.vtx_buffer_size,
-                      draw.idx_buffer_data, draw.idx_buffer_size) for draw in capture.draw_lists])
-            resized, retired, parent, owner = graph.finish_execution(node, result, independent, w, measured_h)
-            if retired:
-                self._retire()
-            self.backgrounds[node] = background
-            if geometry.frames:
-                geometry.captured(node)
-            if resized:
-                self.layout_log.append((func.__name__, node, old_rect[2:], (w, measured_h)))
-                if self.request_frame:
-                    self.request_frame()
-            # Hit regions staged by the body replace the previous execution's.
-            staged = self.staged_regions.pop(node, None) if self.staged_regions else None
-            if staged is not None:
-                self.regions[node] = staged
-            elif self.regions:
-                self.regions.pop(node, None)
-            if node in geometry.transactions:
-                geometry.commit(node)
-            if graphics:
-                owner = owner or None
-                if self.capture_info.get(node) != (parent, size if size > 1 else 1, owner):
-                    self._track_capture(node, parent, owner, size)
-            self._last_pointer = None  # the retained hit geometry may have changed
-            if result[0]:
-                geometry.frozen.clear()
-                graph.invalidate(_alias(input_value), exclude=node)
-        except BaseException:
-            geometry.abort(node)
-            graph.abort(node)
-            self.staged_regions.pop(node, None)
-            self.events.setdefault(node, {}).update(events)
-            raise
-        finally:
-            self.stack.pop()
-            if capture is not None and len(keepalive) > reference_start:
-                from meltygui.core.rendering.gui_draw_capture import release_captured_references
-                release_captured_references(capture, reference_start)
+        """Execute one dirty view. The native executor runs the capture scope,
+        body, measurement, packet copy and commit; the hooks below cover what
+        that straight path does not."""
+        owner = self.imgui_input
+        self.executor.run(node, independent, self.origin, self._auto_cache, owner.mouse_owner, owner.focus)
+
+    def _refresh(self, node):
+        # A source edit: recompile the parameter plan before the body runs.
+        self.declarations[node].renderer.__gui_refresh__()
+
+    def _layout_begin(self, node):
+        return self.geometry.begin(node)
+
+    def _ensure_gpu(self):
+        if self.gpu is None:
+            from meltygui.core.rendering._gui_native import TextureCache
+            self.gpu = TextureCache()
+            self.declared.set_gpu(self.gpu)
+        return self.gpu
+
+    def _keepalive_list(self):
+        # One list for the binding's lifetime; new frames clear it in place.
+        return self.imgui.get_current_context()._keepalive_cache
+
+    def _state_replaced(self, node, state):
+        self.declarations[node].state = self.states[node] = state
+        self.associate(state, node)
+
+    def _first_capture(self, node, state):
+        # A declaration has state before its first execution, including culled views.
+        self.associate(state, node)
+
+    def _background(self, state, arguments):
+        tint = state.get('tint', arguments.get('tint', _CLEAR))
+        background = tuple(tint) + ((1.,) if len(tint) == 3 else ())
+        if len(background) != 4 or any(not math.isfinite(c) or not 0 <= c <= 1 for c in background):
+            raise ValueError('prototype tint must be RGB or RGBA components in 0..1')
+        return background
+
+    def _commit_regions(self, node):
+        # Hit regions staged by the body replace the previous execution's.
+        staged = self.staged_regions.pop(node, None)
+        if staged is not None:
+            self.regions[node] = staged
+        else:
+            self.regions.pop(node, None)
+
+    def _layout_end(self, node, resized, old_width, old_height, width, height):
+        geometry = self.geometry
+        if geometry.frames:
+            geometry.captured(node)
+        if resized:
+            self.layout_log.append((self.declarations[node].func.__name__, node,
+                                    (old_width, old_height), (width, height)))
+            if self.request_frame:
+                self.request_frame()
+        if node in geometry.transactions:
+            geometry.commit(node)
+
+    def _propagate(self, node, input_value):
+        # A returned edit: other views of the same input repaint.
+        self.geometry.frozen.clear()
+        self.graph.invalidate(_alias(input_value), exclude=node)
+
+    def _abort_execution(self, node, events):
+        self.geometry.abort(node)
+        self.graph.abort(node)
+        self.staged_regions.pop(node, None)
+        self.events.setdefault(node, {}).update(events)
+
+    def _release_references(self, capture, start):
+        from meltygui.core.rendering.gui_draw_capture import release_captured_references
+        release_captured_references(capture, start)
 
     def _track_capture(self, node, parent=None, owner=None, size=None):
         """Account one capture's residency. Execution supplies what it already
@@ -664,6 +624,7 @@ class RetainedGui:
                         tiles.move_to_end(child)
 
     def _drop_capture(self, node):
+        self.executor.forget_capture(node)
         self.raster_policy.retire(node)
         info = self.capture_info.pop(node, None)
         if info is not None:
@@ -759,6 +720,7 @@ class RetainedGui:
                 # A retired view no longer pins its last caller arguments.
                 self.declared.forget(binding.handle)
             self._drop_capture(node)
+            self.executor.forget(node)
             for mapping in (self.invocations, self.events, self.regions, self.states, self.uniques, self.caller_keys,
                             self.backgrounds, self.texture_refs):
                 mapping.pop(node, None)
@@ -810,7 +772,8 @@ class RetainedGui:
         """Host calls this outside cached bodies. Movement only reexecutes a
         view when its retained hover state changes; window motion just places pixels.
         """
-        sample = (tuple(position), self.origin, pressed, down, released)
+        # An execution since the last sample may have changed the hit geometry.
+        sample = (tuple(position), self.origin, pressed, down, released, self.executor.runs)
         if sample == self._last_pointer:
             return
         self._last_pointer = sample
@@ -943,6 +906,8 @@ class RetainedGui:
             # Released here, on the owning thread, rather than by a later collection.
             self.declared.clear()
             self.declared = None
+            self.executor.clear()
+            self.executor = None
             if self.gpu:
                 self.gpu.close()
                 self.gpu = None

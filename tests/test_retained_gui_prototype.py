@@ -6,7 +6,7 @@ from meltygui.core.rendering.retained_gui_prototype import RetainedGui
 def test_old_binding_reports_required_dependency_before_graphics_setup(monkeypatch):
     import meltygui_imgui as imgui
     monkeypatch.delattr(imgui, 'DrawCapture')
-    with pytest.raises(RuntimeError, match='requires meltygui-imgui 2.0.4 with DrawCapture'):
+    with pytest.raises(RuntimeError, match='requires meltygui-imgui 2.0.5 with DrawCapture'):
         RetainedGui()
     # Graph-only consumers do not need the native drawing API.
     cache = RetainedGui(graphics=False)

@@ -10,6 +10,7 @@ use std::rc::{Rc, Weak};
 use std::time::Instant;
 mod hash;
 mod declare;
+mod executor;
 mod geometry;
 mod identity;
 mod retained;
@@ -129,7 +130,7 @@ impl Value {
 }
 
 #[pyclass(unsendable, module = "meltygui.core.rendering._gui_native")]
-struct NativeState {
+pub(crate) struct NativeState {
     shape: Rc<RefCell<Shape>>,
     values: Vec<Option<Value>>,
     owned: HashMap<usize, Py<PyAny>>,
@@ -563,16 +564,19 @@ struct Parameter {
 
 // A retained capture supplies its frame context directly instead of through
 // begin_frame globals and reserved keyword arguments.
-struct Capture<'a, 'py> {
-    unique: u128,
-    explicit: &'a Bound<'py, PyAny>,
+pub(crate) struct Capture<'a, 'py> {
+    pub(crate) unique: u128,
+    pub(crate) explicit: &'a Bound<'py, PyAny>,
     // Current rectangle and scroll offset. They overlay the declaration's
     // arguments, which therefore need no per-execution copy.
-    rect: (f64, f64, f64, f64),
-    auto_height: bool,
-    scroll: (f64, f64),
-    cache: &'a Bound<'py, PyAny>,
-    events: &'a Bound<'py, PyAny>,
+    pub(crate) rect: (f64, f64, f64, f64),
+    pub(crate) auto_height: bool,
+    pub(crate) scroll: (f64, f64),
+    pub(crate) cache: &'a Bound<'py, PyAny>,
+    pub(crate) events: &'a Bound<'py, PyAny>,
+    // The caller's capture scope already opened the view's ID scope and
+    // measuring group and will close and measure them.
+    pub(crate) fused: bool,
 }
 
 // Keyword values a body's parameters are looked up in. An immediate call owns
@@ -637,7 +641,7 @@ fn wanted(parameters: &[Parameter]) -> u16 {
 }
 
 #[pyclass(unsendable, module = "meltygui.core.rendering._gui_native")]
-struct Renderer {
+pub(crate) struct Renderer {
     runtime: Py<Runtime>,
     func: Py<PyAny>,
     code: Option<Py<PyAny>>,
@@ -949,7 +953,8 @@ impl Renderer {
                     .put_slot(parameter.slot, Value::field(&parameter.name, value.bind(py))?);
             }
         }
-        if let Some(api) = &api {
+        let fused = capture.as_ref().is_some_and(|capture| capture.fused);
+        if let (Some(api), false) = (&api, fused) {
             api.push_id.bind(py).call1((&label,))?;
             if let Err(error) = api.begin_group.bind(py).call0() {
                 api.pop_id.bind(py).call0()?;
@@ -968,7 +973,7 @@ impl Renderer {
         let body_ns = body_start.elapsed().as_nanos() as u64;
         let child_ns = self.runtime.borrow_mut(py).stack.pop().unwrap().child_ns;
         let cleanup = (|| -> PyResult<()> {
-            if let Some(api) = &api {
+            if let (Some(api), false) = (&api, fused) {
                 let end = api.end_group.bind(py).call0();
                 let pop = api.pop_id.bind(py).call0();
                 end?;
@@ -1137,7 +1142,7 @@ impl Renderer {
         view_events: &Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
         self.invoke(py, Some(input_value), Some(arguments),
-                    Some(Capture { unique, explicit, rect, auto_height, scroll, cache, events: view_events }))
+                    Some(Capture { unique, explicit, rect, auto_height, scroll, cache, events: view_events, fused: false }))
     }
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
         visit.call(&self.runtime)?;
@@ -1181,6 +1186,7 @@ fn _gui_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Runtime>()?;
     m.add_class::<Renderer>()?;
     m.add_class::<declare::Declarations>()?;
+    m.add_class::<executor::Executor>()?;
     m.add_function(wrap_pyfunction!(same_arguments, m)?)?;
     Ok(())
 }
