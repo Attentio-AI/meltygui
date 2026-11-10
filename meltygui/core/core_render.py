@@ -741,6 +741,13 @@ def render_func(*args, **o_kwargs):
             # default kwargs. Never falls through to a real render.
             return annotation_track(input_value, wrapper=wrapper, call_kwargs=kwargs)
 
+        # Path-finding (rendering/gui_compat.py): a cached view may be served
+        # by a Rust retained node, which calls back in with _rust_inner.
+        if _rust_route is not None and _has_imgui and not kwargs.pop('_rust_inner', False):
+            _routed = _rust_route(wrapper, func, merge_o_kwargs, input_value, kwargs)
+            if _routed is not _rust_pass:
+                return _routed
+
         selected_entry = kwargs.pop("_selected_view_entry", False)
         selected_view = None
         selection_call_kwargs = dict(kwargs)
@@ -5292,6 +5299,12 @@ def render_func(*args, **o_kwargs):
                             _e = _vm.get(_nm)
                             _vm[_nm] = ((_e[0] + _tot - _child, _e[1] + 1)
                                         if _e else (_tot - _child, 1))
+                            # Body share of that exclusive time (gui_compat.py view
+                            # catalog): what is left is the wrapper's own cost.
+                            _bm = getattr(Melty, "_frame_view_body_ms", None)
+                            _b0 = getattr(draw_state, "_wt_body0", None)
+                            if _bm is not None and _b0 is not None and _b0 >= _wt0:
+                                _bm[_nm] = _bm.get(_nm, 0.0) + max(0.0, draw_state._wt_body1 - _b0 - _child)
                             if _nm == "button":
                                 _bl = getattr(Melty, "_frame_button_names", None)
                                 if _bl is not None and len(_bl) < 24:
@@ -6318,3 +6331,12 @@ def jet_color(val: float):
     g = min(four_value - 0.5, -four_value + 3.5)
     b = min(four_value + 0.5, -four_value + 2.5)
     return max(0.0, min(1.0, r)), max(0.0, min(1.0, g)), max(0.0, min(1.0, b)), 1.0
+
+
+# Path-finding: MELTY_RUST=1 serves cached views from the Rust retained host.
+# The bridge and its levers are in rendering/gui_compat.py.
+_rust_route = _rust_pass = None
+import os as _os
+if _os.environ.get('MELTY_RUST', '') not in ('', '0'):
+    from meltygui.core.rendering import gui_compat as _gui_compat
+    _rust_route, _rust_pass = _gui_compat.route, _gui_compat.PASS

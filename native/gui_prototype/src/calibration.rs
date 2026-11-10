@@ -159,12 +159,12 @@ impl TextureCache {
         // Preparation is deliberately outside the measured interval. No resource
         // is bigger than 512 squared RGBA8; resources stay owned until completion.
         if operation != "allocate" && operation != "upload" {
-            targets.push(Target::new(size, size)?);
+            targets.push(Target::new(size, size, 0x8058)?);
             glDisable(0x0C11); glColorMask(1,1,1,1);
             glClearColor(0.25,0.5,0.75,1.); glClear(0x4000);
         }
         if operation == "resolve" || operation == "composite" {
-            let second = match Target::new(size, size) {
+            let second = match Target::new(size, size, 0x8058) {
                 Ok(target) => target,
                 Err(error) => { for target in targets {target.delete();} return Err(error); }
             };
@@ -198,7 +198,7 @@ impl TextureCache {
         if operation == "transition" { glBindFramebuffer(FB,0); }
         self.sampler.begin(operation,0,if operation=="upload" {units*4} else {units});
         let result = match operation {
-            "allocate" => match Target::new(size,size) {Ok(target)=>{targets.push(target);Ok(())},Err(error)=>Err(error)},
+            "allocate" => match Target::new(size, size, 0x8058) {Ok(target)=>{targets.push(target);Ok(())},Err(error)=>Err(error)},
             "transition" => {glBindFramebuffer(FB,targets[0].fbo); Ok(())},
             "upload" => {glBufferData(ARRAY,data.len() as isize,data.as_ptr().cast(),0x88E0); Ok(())},
             "clear" => {glClear(0x4000); Ok(())},

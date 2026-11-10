@@ -96,6 +96,8 @@ def root_view_kwargs(name, /, **kwargs):
 def draw_surface_frame(surface, *, transparent=False, chrome=False, request=None, fps_counter=None,
                        fps_only=False):
     from meltygui.core.rendering.parameter_core import flush_deferred_writes
+    from meltygui.core.rendering import gui_compat
+    frame_started = gui_compat.frame_clock()
     root_flags = (imgui.WINDOW_NO_BACKGROUND | imgui.WINDOW_NO_TITLE_BAR | imgui.WINDOW_NO_RESIZE
                   | imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_SCROLLBAR | imgui.WINDOW_NO_NAV_FOCUS
                   | imgui.WINDOW_NO_BRING_TO_FRONT_ON_FOCUS | imgui.WINDOW_NO_NAV_INPUTS
@@ -172,6 +174,9 @@ def draw_surface_frame(surface, *, transparent=False, chrome=False, request=None
     else:
         titlebar.paint_window_controls(draw_list)
     Melty.end_frame()
+    if getattr(surface, '_rust_compat', None) is not None:
+        # Path-finding (gui_compat.py): close the retained host frame.
+        surface._rust_compat.finish()
     if request is not None:
         Melty.finish_surface_root(request, surface)
     os_frame.flush()
@@ -187,3 +192,5 @@ def draw_surface_frame(surface, *, transparent=False, chrome=False, request=None
                            fps_counter.fps, fps_only=fps_only,
                            presentation_ms=window_api.presentation_latency_ms())
     views.end_frame()
+    if frame_started is not None:
+        gui_compat.frame_done(frame_started)

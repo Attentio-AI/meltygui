@@ -552,6 +552,11 @@ def _root_body(fn, name, view_kwargs=None, config=None):
         from meltygui.core.rendering.gui_window_prototype import draw_gui_surface
         return lambda surface: draw_gui_surface(surface, fn, current_kwargs())
     if hasattr(fn, '__render_func__'):
+        from meltygui.core.rendering import gui_compat
+        if gui_compat.enabled():
+            # Path-finding: the legacy root runs under the Rust retained host.
+            return lambda surface: gui_compat.draw_root(
+                surface, lambda: _draw_root(fn, name, **current_kwargs()))
         return lambda surface: _draw_root(fn, name, **current_kwargs())
     if current_kwargs().get('tint') is None and config is None:
         return lambda surface: fn()

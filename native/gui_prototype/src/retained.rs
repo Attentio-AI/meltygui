@@ -20,6 +20,8 @@ struct Node {
     value: Py<PyAny>,
     pending: bool,
     dirty: bool,
+    // Caller-bound (bind): this body only runs where its caller declares it.
+    bound: bool,
     compose: bool,
     portal: bool,
     // Keep logical geometry at collision-solver precision: rounded captures
@@ -68,6 +70,8 @@ pub struct RetainedGraph {
     portals: BTreeSet<(u64,u64)>,
     placements: HashMap<u64, HashSet<u64>>,
     visibility_revision: u64,
+    // Caller-bound nodes dirtied by the graph itself, for their host (take_woken).
+    woken: Vec<u64>,
 }
 
 impl RetainedGraph {
@@ -106,6 +110,14 @@ impl RetainedGraph {
     pub(crate) fn constraints(&mut self,py:Python<'_>,id:u64)->(f64,f64) {
         self.sync(py);let r=self.geometry.rect(py,id);
         (r.2,if self.nodes[&id].auto_height {-1.}else{r.3})
+    }
+    /// Dirty one node. A caller-bound node is also reported to its host,
+    /// which runs it by executing the caller again.
+    fn mark(&mut self, id: u64) {
+        if let Some(n) = self.nodes.get_mut(&id) {
+            if n.bound && !n.dirty { self.woken.push(id); }
+            n.dirty = true;self.dirty_set.insert(id);if !n.in_scroll {self.unclipped_dirty.insert(id);}
+        }
     }
     fn composition(&mut self, mut id: u64) {
         while let Some(node) = self.nodes.get_mut(&id) {
@@ -192,6 +204,7 @@ impl RetainedGraph {
             portals: BTreeSet::new(),
             placements: HashMap::default(),
             visibility_revision: 0,
+            woken: Vec::new(),
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -251,6 +264,7 @@ impl RetainedGraph {
                     value: input.clone_ref(py),
                     pending: false,
                     dirty: true,
+                    bound: false,
                     compose: true,
                     portal,
                     auto_height: rect.3<0.,
@@ -517,12 +531,7 @@ impl RetainedGraph {
         self.composition(id);
         // Replay returned edits through the actual caller. Pixel-only invalidation
         // does not execute ancestors; data return propagation deliberately can.
-        if changed && independent {
-            if let Some(p) = self.nodes.get_mut(&parent) {
-                p.dirty = true;
-                self.dirty_set.insert(parent);if !p.in_scroll {self.unclipped_dirty.insert(parent);}
-            }
-        }
+        if changed && independent { self.mark(parent); }
         Ok(())
     }
     fn result(&mut self, py: Python<'_>, id: u64, consume: bool) -> PyResult<(bool, Py<PyAny>)> {
@@ -551,10 +560,8 @@ impl RetainedGraph {
         if changed {
             self.visibility_revision += 1;
             n.layout_changes+=1;self.geometry.refresh(py,id);self.composition(id);
-            if !portal {
-                if let Some(owner)=self.nodes.get_mut(&parent) {
-                    if owner.declared.is_none() && !owner.scrollable {owner.dirty=true;self.dirty_set.insert(parent);if !owner.in_scroll {self.unclipped_dirty.insert(parent);}}
-                }
+            if !portal && self.nodes.get(&parent).is_some_and(|owner| owner.declared.is_none() && !owner.scrollable) {
+                self.mark(parent);
             }
         }
         Ok(changed)
@@ -563,11 +570,21 @@ impl RetainedGraph {
         self.nodes.get(&id).is_some_and(|n| n.pending)
     }
     fn in_scroll(&self, id:u64)->bool {self.nodes.get(&id).is_some_and(|n|n.in_scroll)}
-    pub(crate) fn invalidate_node(&mut self, id: u64) {
+    pub(crate) fn invalidate_node(&mut self, id: u64) { self.mark(id); }
+    /// Make a node caller-bound: flush never runs it on its own (its body
+    /// needs state only its caller sets up). It runs when its caller declares
+    /// it dirty; the graph's own invalidations are reported by take_woken.
+    fn bind(&mut self, id: u64) {
+        if let Some(n) = self.nodes.get_mut(&id) { n.bound = true; }
+    }
+    /// The host's own invalidation of a caller-bound node, at its call site.
+    fn invalidate_bound(&mut self, id: u64) {
         if let Some(n) = self.nodes.get_mut(&id) {
             n.dirty = true;self.dirty_set.insert(id);if !n.in_scroll {self.unclipped_dirty.insert(id);}
         }
     }
+    /// Caller-bound nodes the graph dirtied since the last call.
+    fn take_woken(&mut self) -> Vec<u64> { std::mem::take(&mut self.woken) }
     fn associate(&mut self, id: u64, key: String, anchor: Py<PyAny>) {
         if let Some(n) = self.nodes.get_mut(&id) {
             if !n.aliases.contains(&key) {
@@ -611,6 +628,7 @@ impl RetainedGraph {
         for id in self.windows() {self.collect_visible(py,id,&mut visible);}
         visible.retain(|id|self.dirty_set.contains(id));
         visible.extend(self.unclipped_dirty.iter().copied());
+        visible.retain(|id|self.nodes.get(id).is_some_and(|n|!n.bound));
         visible.sort_unstable();visible.dedup();
         visible.sort_by_key(|id|(self.depth(*id),*id));visible
     }

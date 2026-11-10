@@ -50,7 +50,10 @@ class _Binding:
 
 
 class RetainedGui:
-    def __init__(self, *, graphics=True, state_registry=None, calibration=True):
+    def __init__(self, *, graphics=True, state_registry=None, calibration=True, input=ImGuiInput,
+                 texture_bytes=None):
+        # Lever: bytes of node textures the GPU cache may hold (None: the native default).
+        self.texture_bytes = texture_bytes
         self.imgui = None
         # The binding's texture keepalive list, resolved on first capture.
         self._keepalive = None
@@ -104,6 +107,16 @@ class RetainedGui:
         self.backgrounds = {}
         self.texture_refs = {}
         self.auto_layout = False
+        # Hosts that declare retained views from inside an immediate tree (the
+        # legacy bridge, gui_compat.py): a root's image is drawn where it is
+        # declared, in the caller's draw list, instead of by present().
+        self.inline_roots = False
+        # Host hook, called with (node, parent) by every declaration that
+        # reaches the bridge (the first one of an identity always does).
+        self.on_declare = None
+        # Host hook, called with (node, error) when a view Rust ran on its own
+        # raises. Without one the error leaves flush(), as before.
+        self.on_failure = None
         self.request_frame = None
         self.root_ids = set()
         self.origin = (0, 0)
@@ -114,7 +127,8 @@ class RetainedGui:
         self._last_pointer = None
         self._frame_started = None
         self.layout_log = deque(maxlen=64)
-        self.imgui_input = ImGuiInput(self)
+        # `input` decides which views execute for pointer and keyboard input.
+        self.imgui_input = input(self)
         from meltygui.core.rendering.gui_layout_prototype import GuiGeometry
         self.geometry = GuiGeometry(self)
         # Runs one view execution natively over these same dictionaries and
@@ -197,12 +211,13 @@ class RetainedGui:
             self._retire()
 
     def gui(self, func=None, *, left=None, top=None, width=300, height=100, min_height=0, max_height=8192,
-            inject=None, events=(), state_id=None, no_save=(), scroll=False, **decoration):
+            inject=None, events=(), state_id=None, no_save=(), scroll=False, place=None, **decoration):
         _check_position_arguments(decoration, no_save)
         if func is None:
             return lambda fn: self.gui(fn, left=left, top=top, width=width, height=height, min_height=min_height,
                                        max_height=max_height, inject=inject, events=events,
-                                       state_id=state_id, no_save=no_save, scroll=scroll, **decoration)
+                                       state_id=state_id, no_save=no_save, scroll=scroll, place=place,
+                                       **decoration)
         decorated_left, decorated_top = left, top
         parameters = inspect.signature(func).parameters
         def position_default(name, decorated):
@@ -272,7 +287,8 @@ class RetainedGui:
             # (a tuple).
             declared = self.declared
             outcome = declared.declare(parent, renderer_id, keyed, key, kwargs.get('name', decoration_name),
-                                       generation[0], geometry.cell_scope is None, not geometry.bindings,
+                                       generation[0], geometry.cell_scope is None,
+                                       not geometry.bindings and place is None,
                                        not geometry.frozen, self.auto_layout, input_value, kwargs)
             kind = type(outcome)
             if kind is tuple:
@@ -436,8 +452,17 @@ class RetainedGui:
             if not parent:
                 self.flush()
             changed, value, w, h = graph.conclude(node)
+            if self.on_declare is not None:
+                self.on_declare(node, parent)
+            if place is not None:
+                # `place`: this definition's host draws the image and owns the
+                # layout advance (a legacy view in window coordinates).
+                place(node)
+                if extras:
+                    return changed, value, self.states[node]
+                return changed, value
             if graphics:
-                if parent and not portal:
+                if (parent or self.inline_roots) and not portal:
                     imgui.set_cursor_screen_pos((x, y))
                     if not flags & 4:
                         self._draw_image(imgui.get_window_draw_list(),node,x,y,w,h)
@@ -496,7 +521,7 @@ class RetainedGui:
     def _ensure_gpu(self):
         if self.gpu is None:
             from meltygui.core.rendering._gui_native import TextureCache
-            self.gpu = TextureCache()
+            self.gpu = TextureCache() if self.texture_bytes is None else TextureCache(self.texture_bytes)
             self.declared.set_gpu(self.gpu)
         return self.gpu
 
@@ -718,7 +743,12 @@ class RetainedGui:
                 break
             for node in dirty:
                 if self.graph.dirty(node):
-                    self._execute(node, independent=True)
+                    try:
+                        self._execute(node, independent=True)
+                    except Exception as error:
+                        if self.on_failure is None:
+                            raise
+                        self.on_failure(node, error)
             self._retire()
         else:
             pending = [(self.records[node][2].__name__, node, self.graph.rect(node))
@@ -880,7 +910,7 @@ class RetainedGui:
         self.origin = origin
         dl = imgui.get_window_draw_list()
         for node in sorted(self.root_ids):
-            if not self.graph.is_portal(node):
+            if not self.graph.is_portal(node) and not self.inline_roots:
                 self._image(dl, node, origin)
         self.geometry.paint(dl,origin)
         for node in self.graph.windows():
