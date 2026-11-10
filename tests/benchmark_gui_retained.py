@@ -13,6 +13,7 @@ from pathlib import Path
 from conftest import _ensure_gl_context
 from test_gui_collision_layout import scene
 from OpenGL import GL as gl
+from meltygui.core.runtime.toggles import Toggles
 
 
 def main():
@@ -51,7 +52,10 @@ def main():
                             'divider': (0, 1, 1), 'full': (1, 1, 1)}[scenario]
                 assert tuple(executed.values()) == expected, (scenario, executed)
                 draws = cache.gpu.stats()[0] - gpu_before
-                assert draws == {'hot': 0, 'leaf': 2, 'divider': 3, 'full': 3}[scenario]
+                # Automatic selection shares one raster pass; the per-view
+                # baseline refreshes each changed view and its ancestors.
+                per_view = {'hot': 0, 'leaf': 2, 'divider': 3, 'full': 3}[scenario]
+                assert draws == (min(per_view, 1) if Toggles.Rust.auto_cache else per_view), (scenario, draws)
                 if frame >= args.warm:
                     samples.append(elapsed)
             result = {'scenario': scenario, 'median_ms': median(samples),
