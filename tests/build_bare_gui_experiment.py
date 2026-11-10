@@ -21,13 +21,13 @@ def main():
     text = path.read_text()
     # Preserve the current renderer's identity, ImGui grouping, geometry and
     # cleanup code. Replace only dependency resolution with caller forwarding.
-    start = text.index('#[pyclass(unsendable, module = "meltygui.core.rendering._gui_native")]\nstruct Renderer')
+    start = text.index('#[pyclass(unsendable, module = "meltygui.core.rendering._gui_native")]\npub(crate) struct Renderer')
     end = text.index('#[pymodule]', start)
     renderer = text[start:end].replace('Renderer', 'CacheRenderer')
     # The module-level helper after the class stays with the production module.
     renderer = renderer[:renderer.index('/// Whether two keyword dictionaries hold the same keys')]
     start_matching = renderer.index('        if wants(WANT_INPUT) { args.set(intern!(py, "input_value"), &input_value)?; }')
-    end_matching = renderer.index('        if let Some(api) = &api {\n            api.push_id',
+    end_matching = renderer.index('        let fused = capture.as_ref().is_some_and(|capture| capture.fused);',
                                   renderer.index('        for parameter in &self.parameters {', start_matching))
     forwarding = '''        let clean = PyDict::new(py);
         if let Some(keys) = &explicit_keys {
@@ -42,7 +42,6 @@ def main():
     old_call = 'self.func.bind(py).call((), Some(&clean))'
     assert renderer.count(old_call) == 1
     renderer = renderer.replace(old_call, 'self.func.bind(py).call((&input_value,), Some(&clean))')
-    renderer = renderer.replace('struct CacheRenderer {', 'pub(crate) struct CacheRenderer {', 1)
     (destination / 'src/cache_renderer.rs').write_text('use super::*;\n' + renderer)
     needle = '    m.add_class::<Renderer>()?;'
     assert text.count(needle) == 1

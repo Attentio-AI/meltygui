@@ -1,6 +1,6 @@
 # `@gui` full-redraw fast paths
 
-November 10, 2026. CPython 3.12, Rust 1.77.2, meltygui-imgui 2.0.4, Linux
+November 10, 2026. CPython 3.12, Rust 1.77.2, meltygui-imgui 2.0.5 (2.0.4 for the first two passes), Linux
 GLFW/OpenGL, Ryzen 9 7950X, RTX 4090. This pass changes the production
 prototype (bridge and extension), unlike the earlier isolated experiments.
 
@@ -77,6 +77,33 @@ recomposed frame about 0.35 ms on top of an unchanged one.
 | Mount | Every identity compiled its own parameter plan (`inspect.signature` twice) and owned a native runtime. One runtime and plan now serve all identities of a definition; an identity adds only its state. A capture may start while an enclosing capture of the same function is on the stack. |
 | Declaration | `Declarations.declare` resolves the identity, checks the remembered call and declares the view in one crossing. An unchanged child under an executing parent finishes there, including its layout advance and, under a non-scrolling parent, its image quad. Otherwise the bridge continues from the already declared node, or resolves fully when nothing remembered applies. |
 
+## Third pass: native execution and a fused ImGui scope
+
+A dirty view now executes in one native call, and its ImGui bookkeeping takes
+two binding calls instead of about fifteen. This pass needs **meltygui-imgui
+2.0.5** (`DrawCapture.begin_view`, `end_view`, `buffers`).
+
+Seeds 1027 / 2027, pinned to one core, mean CPU ms:
+
+| Scenario | Tree | Second pass | Third pass |
+| --- | --- | ---: | ---: |
+| Full redraw | 5:4 (341 views) | 2.89 | **2.26 / 2.23** |
+| Full redraw | 4:8 (585 views) | 4.65 | **3.62 / 3.48** |
+| Full redraw | 2:512 (513 views) | 4.39 | **3.30 / 3.21** |
+| Full redraw | 6:4 (1365 views) | 11.93 | **10.81 / 9.89** |
+| Root-only redraw | 5:4 / 2:512 | 0.68 / 1.64 | 0.68 / 1.67 |
+| Fresh mount, per view | all trees | 20 to 24 us | 18 to 22 us |
+
+Full redraw is about 6.0 to 6.6 us per view (33 originally, 0.7 raw). The
+minimal-cache reference measures about 2.0 ms for 341 views in its own
+seven-variant benchmark, where full `@gui` now measures about 3.0 ms.
+
+| Area | Change |
+| --- | --- |
+| Binding | `DrawCapture.begin_view(w, h, x, y, label)` is `begin` + `push_id` + `begin_group`. `end_view(end_if_idle)` closes both, measures the content and reports whether the view owns the live widget; an idle view also ends its capture there and gets its draw buffer addresses back. `buffers()` returns those addresses for a capture that was kept open for input queries. |
+| Execution | `Executor.run` replaces the Python `_execute`: begin, capture scope, body (the renderer is called directly, without argument marshalling), measurement, idle-input bookkeeping, packet copy, commit and residency in one call. The bridge's dictionaries stay authoritative; the executor holds references to them and skips writes that would store what is already there. It calls the bridge's hooks (`_layout_begin`, `_layout_end`, `_background`, `_commit_regions`, `_track_capture`, `_propagate`, `_abort_execution`, ...) only when layouts exist, a widget is live, a tint is set, a size changed, regions were staged or the body failed. |
+| Declaration | A dirty child declared from its remembered call is handed to the executor inside the same `Declarations.declare` crossing, then concluded and placed there. The Python tail only runs for roots, new inputs, pending edits, layout cells, frozen views and path-like inputs. |
+
 ## What changed
 
 Each item removes work a redraw repeated without needing its result.
@@ -105,6 +132,9 @@ Each item removes work a redraw repeated without needing its result.
   scales with the number of bindings times executed views.
 - A parent with very many children still scans its child list per declaration
   and per commit.
+- Wheels: only a local Linux CPython 3.12 wheel of meltygui-imgui 2.0.5 was
+  built (kept in the binding checkout's `dist/local-2.0.5/`). The release
+  wheels for other Pythons and Windows, and publishing, are not done.
 - `capture` assumes this binding's draw command layout. A different ImGui
   build must fail its consistency check rather than be trusted.
 - The remembered call keeps a view's last keyword arguments alive until it retires.
@@ -114,13 +144,18 @@ Each item removes work a redraw repeated without needing its result.
 
 ## Verification
 
-- 330 focused tests pass (316 existing plus 14 in `tests/test_gui_redraw_fast_paths.py`),
+- 332 focused tests pass (316 existing, 14 in `tests/test_gui_redraw_fast_paths.py`, and
+  2 in `tests/test_gui_imgui_lifecycle.py` for the fused scope and a failing body),
   32 experiment-only skips. Two existing tests were adjusted to the new
   internals: the result-acknowledgement spy also counts `conclude`, and the
   hosted-transaction test asserts the snapshot after the first layout
   declaration instead of before it.
-- The 27 cache-only, minimal-cache, public-API and policy tests pass against
-  the isolated experiment build.
+- The 27 cache-only, minimal-cache, public-API and policy tests passed against
+  the isolated experiment build through the second pass. The cache-only
+  annotation no longer applies after the third (see below).
+- One of about 15 suite runs during the third pass printed "RetainedGraph is
+  unsendable, but is being dropped on another thread"; ten further runs of
+  this tree and of the original did not. Its cause was not found.
 - `examples/gui_collision_lab.py` and `examples/gui_scroll_lab.py` were driven
   with the same clicks, drags and scrolls on this code and on a pristine build
   of 87f32626, after each pass. The resulting windows are pixel-identical
@@ -134,12 +169,15 @@ Each item removes work a redraw repeated without needing its result.
 ## Measurement harnesses
 
 Still valid: `benchmark_gui_redraw.py`, `benchmark_gui_overhead.py`,
-`benchmark_gui_scrolling.py`, `benchmark_cache_annotation.py`,
-`benchmark_cached_bare_gui.py`, `profile_gui_declaration_lines.py`,
+`benchmark_gui_scrolling.py`, `benchmark_cached_bare_gui.py`, `profile_gui_declaration_lines.py`,
 `profile_gui_phase_taxonomy.py` in plain mode and `tools/run_rust_benchmarks.py`.
 `build_bare_gui_experiment.py` was updated for the new renderer.
 
-No longer applicable, because they patch source text that this pass replaced:
+No longer applicable after the third pass: `benchmark_cache_annotation.py` and
+`tests/cache_only_gui.py`, whose forwarding-only renderer the native executor
+does not accept.
+
+No longer applicable, because they patch source text that this work replaced:
 `benchmark_gui_cache_ablation.py`, the coarse/phases/focused modes of
 `profile_gui_phase_taxonomy.py`, `build_gui_declaration_prototype.py`,
 `build_gui_records_prototype.py` and `benchmark_gui_full_cache.py`. Their

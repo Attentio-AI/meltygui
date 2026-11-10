@@ -105,3 +105,83 @@ def test_failed_child_restores_shared_style_and_window_stacks():
         cache.close()
         imgui.end()
         imgui.render()
+
+
+def _draw_bytes(buffers):
+    import ctypes
+    return [(ctypes.string_at(vertices, vertex_count * 20), ctypes.string_at(indices, index_count * 4), command_count)
+            for _, command_count, vertices, vertex_count, indices, index_count in buffers]
+
+
+def test_fused_view_scope_matches_the_separate_calls():
+    """begin_view/end_view are begin, push_id, begin_group and their closing
+    calls in one crossing: same measurement, same captured geometry."""
+    _ensure_gl_context()
+    def content():
+        imgui.text('Measured text')
+        imgui.button('Button', width=40, height=20)
+    imgui.new_frame()
+    imgui.begin('fused scope host')
+    try:
+        separate, fused = imgui.DrawCapture('parity-separate'), imgui.DrawCapture('parity-fused')
+        try:
+            separate.begin(128, 64, 10, 20)
+            imgui.push_id('view-label')
+            imgui.begin_group()
+            content()
+            imgui.end_group()
+            imgui.pop_id()
+            expected_size = tuple(imgui.get_item_rect_size())
+            expected_live = separate.active_widget
+            separate.end()
+            expected = _draw_bytes(separate.buffers())
+            assert len(expected) == len(separate.draw_lists) == 1 and expected[0][0]
+
+            fused.begin_view(128, 64, 10, 20, b'view-label')
+            content()
+            width, height, live, buffers = fused.end_view(True)
+            assert (width, height) == expected_size and live == expected_live is False
+            # An idle view ends with its measurement and reports its buffers.
+            assert buffers is not None and _draw_bytes(buffers) == expected == _draw_bytes(fused.buffers())
+
+            # Asked to stay open, the capture still answers item queries until end().
+            fused.begin_view(128, 64, 10, 20, b'view-label')
+            content()
+            width, height, live, buffers = fused.end_view(False)
+            assert buffers is None and (width, height) == expected_size
+            assert fused.active_widget is False
+            fused.end()
+            assert _draw_bytes(fused.buffers()) == expected
+            with pytest.raises(RuntimeError, match='Unbalanced DrawCapture scope'):
+                fused.end_view(True)
+        finally:
+            separate.close()
+            fused.close()
+    finally:
+        imgui.end()
+        imgui.render()
+
+
+def test_failing_body_unwinds_its_view_scope_and_can_run_again():
+    _ensure_gl_context()
+    cache = RetainedGui()
+    fail = [True]
+
+    @cache.gui(width=128, height=64)
+    def body():
+        imgui.begin_group()  # left open on purpose when the body fails
+        imgui.text('Before the failure')
+        if fail[0]:
+            raise ValueError('body failed')
+        imgui.end_group()
+
+    try:
+        with pytest.raises(ValueError, match='body failed'):
+            body()
+        assert not cache.stack and not cache.backgrounds
+        fail[0] = False
+        body()
+        node = next(iter(cache.records))
+        assert node in cache.backgrounds and cache.gpu.capture_bytes(node) > 0
+    finally:
+        cache.close()

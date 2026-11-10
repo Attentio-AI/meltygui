@@ -125,6 +125,22 @@ class RetainedGui:
                                  self.backgrounds, self.texture_refs, self.staged_regions, self.regions,
                                  self.capture_info, self.geometry.changes, self.imgui_input.right_active,
                                  self.imgui_input.pointer_claims, self.imgui_input.active, _NO_CLAIM, _CLEAR)
+        self.executor.set_origin(self._origin)
+        self.executor.set_auto_cache(self._auto_cache)
+        # A dirty child declared from its remembered call runs there directly.
+        self.declared.set_executor(self.executor)
+
+    @property
+    def origin(self):
+        """Where presentation places this cache's content; captures follow it."""
+        return self._origin
+
+    @origin.setter
+    def origin(self, value):
+        self._origin = value
+        executor = getattr(self, 'executor', None)
+        if executor is not None:
+            executor.set_origin(value)
 
     @property
     def costs(self):
@@ -251,12 +267,13 @@ class RetainedGui:
             geometry, graph = self.geometry, self.graph
             # One native crossing resolves the identity and, for a call whose
             # keyword arguments, flow position and state geometry match the
-            # remembered resolution, declares the view again. An unchanged
-            # child under an executing parent is finished there (a tuple).
+            # remembered resolution, declares the view again. A child under an
+            # executing parent is finished there, executed first when dirty
+            # (a tuple).
             declared = self.declared
             outcome = declared.declare(parent, renderer_id, keyed, key, kwargs.get('name', decoration_name),
                                        generation[0], geometry.cell_scope is None, not geometry.bindings,
-                                       self.auto_layout, input_value, kwargs)
+                                       not geometry.frozen, self.auto_layout, input_value, kwargs)
             kind = type(outcome)
             if kind is tuple:
                 return outcome
@@ -467,8 +484,7 @@ class RetainedGui:
         """Execute one dirty view. The native executor runs the capture scope,
         body, measurement, packet copy and commit; the hooks below cover what
         that straight path does not."""
-        owner = self.imgui_input
-        self.executor.run(node, independent, self.origin, self._auto_cache, owner.mouse_owner, owner.focus)
+        self.executor.run(node, independent)
 
     def _refresh(self, node):
         # A source edit: recompile the parameter plan before the body runs.
@@ -489,7 +505,10 @@ class RetainedGui:
         return self.imgui.get_current_context()._keepalive_cache
 
     def _state_replaced(self, node, state):
-        self.declarations[node].state = self.states[node] = state
+        binding = self.declarations[node]
+        binding.state = self.states[node] = state
+        # The remembered call was resolved against the previous state object.
+        self.declared.forget(binding.handle)
         self.associate(state, node)
 
     def _first_capture(self, node, state):
@@ -560,6 +579,7 @@ class RetainedGui:
         enabled = self._toggles.Rust.auto_cache
         if enabled != self._auto_cache:
             self._auto_cache = enabled
+            self.executor.set_auto_cache(enabled)
             # A global switch is a rare full transition. No bodies or capture buffers
             # change; ordinary policy ticks consume a bounded affected queue.
             for node in self.backgrounds:

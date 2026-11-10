@@ -185,7 +185,8 @@ impl Declarations {
             let known = nodes.known_child(slot.node, parent);
             let direct = parent != 0 && unbound && same_input && known
                 && !input.is_instance_of::<PyString>() && !input.is_instance(this.path.bind(py))?
-                && (this.api.is_none() || this.gpu.is_some());
+                && (this.api.is_none() || this.gpu.is_some())
+                && this.executor.as_ref().is_some_and(|executor| executor.borrow(py).attached(slot.node));
             // A clean child needs no visibility test; a dirty one is culled by it.
             let clean = direct && nodes.clean_child(slot.node, parent);
             let (node, mut flags) = nodes.declare_flags(py, parent, 0, handle.into_pyobject(py)?.into_any().unbind(),
@@ -198,8 +199,7 @@ impl Declarations {
             // Finish here: an unchanged child, or a dirty one this table can
             // hand straight to the executor (no pending edit, no frozen views).
             let dirty = flags & 2 != 0;
-            let finish = direct && node == previous_node && flags & 1 == 0
-                && (!dirty || (thawed && this.executor.is_some()));
+            let finish = direct && node == previous_node && flags & 1 == 0 && (!dirty || thawed);
             if !finish {
                 let resolved = slot.resolved.bind(py).clone().into_any();
                 drop(guard);

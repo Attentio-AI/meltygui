@@ -281,6 +281,10 @@ impl Executor {
 }
 
 impl Executor {
+    /// Whether the bridge finished registering the view.
+    pub(crate) fn attached(&self, node: u64) -> bool {
+        self.records.contains_key(&node)
+    }
     /// Whether the view has a committed capture.
     pub(crate) fn captured(&self, node: u64) -> bool {
         self.records.get(&node).is_some_and(|record| record.captured)
