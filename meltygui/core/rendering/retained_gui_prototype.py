@@ -30,26 +30,52 @@ def _alias(value):
     return f'object:{id(value)}'
 
 
+# Absent tint, distinct from every caller value including None.
+_MISSING = object()
+# Background of a view without a tint: transparent.
+_CLEAR = (0., 0., 0., 0.)
+
+
+class _Binding:
+    """One view identity: the definition's shared native engine, this
+    identity's handle and state. The native declaration table remembers the
+    identity's last resolved call under the same handle."""
+    __slots__ = ('native', 'renderer', 'call', 'code', 'func', 'state', 'unique', 'handle')
+
+    def __init__(self, native, renderer, func, state, unique, handle):
+        self.native, self.renderer, self.func = native, renderer, func
+        # The native renderer and the function code its parameter plan matches.
+        self.call, self.code = renderer.__gui_native__, func.__code__
+        self.state, self.unique, self.handle = state, unique, handle
+
+
 class RetainedGui:
     def __init__(self, *, graphics=True, state_registry=None, calibration=True):
+        self.imgui = None
+        # The binding's texture keepalive list, resolved on first capture.
+        self._keepalive = None
         if graphics:
             import meltygui_imgui as imgui
+            self.imgui = imgui
             if not hasattr(imgui, 'DrawCapture'):
                 raise RuntimeError(
                     'The retained GUI prototype requires meltygui-imgui 2.0.4 with DrawCapture. '
                     'Install the matching binding wheel into the Python environment running '
                     'this app; rebuilding the Rust extension does not update the binding. '
                     'See docs/GUI_PROTOTYPE.md for setup instructions.')
-        from meltygui.core.rendering._gui_native import RetainedGraph, Identities
+        from meltygui.core.rendering._gui_native import RetainedGraph, Identities, Declarations
         self.identities = Identities(state_registry)
         self.uniques = {}
         self.caller_keys = {}
         self.graph = RetainedGraph()
+        # Remembered resolutions of repeated declarations, declared natively.
+        self.declared = Declarations(self.graph, self.identities, self.imgui)
         self.graphics = graphics
         self.gpu = None
         from meltygui.core.rendering.gui_calibration import Calibration
         self.calibration = Calibration(enabled=graphics and calibration)
         from meltygui.core.runtime.toggles import Toggles
+        self._toggles = Toggles
         self._auto_cache = Toggles.Rust.auto_cache
         from meltygui.core.rendering.gui_cache_policy import RasterPolicy
         self.raster_policy = RasterPolicy()
@@ -65,6 +91,10 @@ class RetainedGui:
         self._scroll_tile_revision = 0
         self._eviction_inputs = None
         self.invocations = {}
+        # Node to its identity binding, so retirement can drop the memoized call.
+        self.declarations = {}
+        # Per-definition [runtime, renderer] pairs, emptied by close().
+        self.shared_natives = []
         self.regions = {}
         self.staged_regions = {}
         self.events = {}
@@ -157,6 +187,9 @@ class RetainedGui:
                 return parameter.default
             return decorated
         left, top = position_default('left', left), position_default('top', top)
+        # Bumped when a source edit changes the position defaults, so memoized
+        # declarations resolved from the old defaults are not reused.
+        generation = [0]
         def refresh_positions():
             nonlocal parameters, left, top
             previous = (left, top)
@@ -165,6 +198,7 @@ class RetainedGui:
             top = position_default('top', decorated_top)
             if previous == (left, top):
                 return
+            generation[0] += 1
             defaults = {name: value for name, value in (('left', left), ('top', top)) if value is not None}
             for node, (_, _, renderer_func) in self.records.items():
                 if renderer_func is not func:
@@ -178,147 +212,219 @@ class RetainedGui:
         renderer_id = self.identities.renderer(_renderer_name(func, state_id))
         definition = [func, func.__code__, refresh_positions]
         self.renderers.append(definition)
+        graphics, imgui, bindings = self.graphics, self.imgui, self.bindings
+        # One native runtime and compiled parameter plan for every identity of
+        # this definition; each identity only adds its own state. close()
+        # empties it so the native objects are released on the owning thread.
+        shared = []
+        self.shared_natives.append(shared)
+        decoration_keyed, decoration_key = 'key' in decoration, decoration.get('key')
+        decoration_name = decoration.get('name')
+        layout_keys = ('left', 'top', 'width', 'height', 'scroll_offset', 'content_offset')
 
         @wraps(func)
         def wrapper(input_value=None, **kwargs):
-            if self.graphics and not self.stack:
-                import meltygui_imgui as imgui
+            stack = self.stack
+            if graphics and not stack:
                 if not imgui.is_frame_active():
                     with self.capture_frame():
                         return wrapper(input_value, **kwargs)
-            _check_position_arguments(kwargs)
             if self.closed:
                 raise RuntimeError('retained runtime is closed')
-            if self.frame_roots is None and not self.identities.active:
-                self.identities.begin_frame()
-            keyed = 'key' in kwargs or 'key' in decoration
-            key = kwargs.pop('key', decoration.get('key'))
-            name = kwargs.get('name', decoration.get('name'))
-            identity_handle = self.identities.handle(renderer_id, key, name, keyed)
-            portal = kwargs.pop('melty_window', False)
-            scrollable = kwargs.pop('scroll', scroll)
-            if identity_handle not in self.bindings:
-                native = _new_native(graphics=self.graphics, identities=self.identities)
-                renderer = _bind_native(native, func, inject=inject, events=events,
-                                        state_id=state_id, no_save=no_save, **decoration)
-                unique = self.identities.unique(identity_handle)
-                self.bindings[identity_handle] = native, renderer, func, native.state(unique), unique
-            native, renderer, _, state, unique = self.bindings[identity_handle]
-            caller = dict(kwargs)
-            if kwargs.pop('glfw_window', False):
-                raise NotImplementedError('This experiment implements internal windows; native child surfaces are not connected yet')
-            initial = kwargs.pop('initial', decoration.get('initial', {}))
-            extras = kwargs.pop('return_extras', False)
-            width_given, height_given = 'width' in kwargs, 'height' in kwargs
-            w, h = kwargs.pop('width', width), kwargs.pop('height', height)
-            minimum = kwargs.pop('min_height', min_height)
-            maximum = kwargs.pop('max_height', max_height)
-            if (not math.isfinite(minimum) or not math.isfinite(maximum)
-                    or not 0 <= minimum <= maximum <= 8192):
-                raise ValueError('height bounds must satisfy 0 <= min_height <= max_height <= 8192')
-            minimum, maximum = math.ceil(minimum), math.ceil(maximum)
-            parent = self.stack[-1] if self.stack else 0
-            allocation = self.geometry.allocation(parent) if not portal else None
-            if self.graphics and (parent or self.auto_layout) and not portal:
-                import meltygui_imgui as imgui
-                x, y = imgui.get_cursor_screen_pos()
+            identities = self.identities
+            # An executing owner already has an active identity scope.
+            if not stack and self.frame_roots is None and not identities.active:
+                identities.begin_frame()
+            if 'key' in kwargs:
+                keyed, key = True, kwargs['key']
             else:
-                x, y = (0, 0)
-            if allocation is not None:
-                ax, ay, w, h = allocation
-                px, py = self._position(parent)
-                x, y = ax-px, ay-py
-            if w is None:
-                if parent:
-                    w = self.graph.constraints(parent)[0] - x
-                elif self.graphics:
-                    w = imgui.get_content_region_available()[0]
+                keyed, key = decoration_keyed, decoration_key
+            parent = stack[-1] if stack else 0
+            geometry, graph = self.geometry, self.graph
+            # One native crossing resolves the identity and, for a call whose
+            # keyword arguments, flow position and state geometry match the
+            # remembered resolution, declares the view again. An unchanged
+            # child under an executing parent is finished there (a tuple).
+            declared = self.declared
+            outcome = declared.declare(parent, renderer_id, keyed, key, kwargs.get('name', decoration_name),
+                                       generation[0], geometry.cell_scope is None, not geometry.bindings,
+                                       self.auto_layout, input_value, kwargs)
+            kind = type(outcome)
+            if kind is tuple:
+                return outcome
+            portal = False
+            if kind is list:
+                # Declared from the remembered resolution; continue below with
+                # change detection, execution and placement.
+                identity_handle, node, flags, resolved = outcome
+                binding = bindings[identity_handle]
+                state = binding.state
+                arguments, x, y, w, h, auto_height, scrollable, extras, caller_keys = resolved
+            else:
+                identity_handle = outcome
+                binding = bindings.get(identity_handle)
+                if binding is None:
+                    if not shared:
+                        native = _new_native(graphics=graphics, identities=identities)
+                        shared.extend((native, _bind_native(native, func, inject=inject, events=events,
+                                                            state_id=state_id, no_save=no_save, **decoration)))
+                    native, renderer = shared
+                    unique = identities.unique(identity_handle)
+                    binding = bindings[identity_handle] = _Binding(native, renderer, func, native.state(unique),
+                                                                   unique, identity_handle)
+                state = binding.state
+                if 'window_pos' in kwargs or ('initial' in kwargs and 'window_pos' in (kwargs['initial'] or {})):
+                    raise TypeError('@gui uses relative left and top, not window_pos')
+                raw = kwargs.copy()
+                kwargs.pop('key', None)
+                portal = kwargs.pop('melty_window', False)
+                scrollable = kwargs.pop('scroll', scroll)
+                caller = dict(kwargs)
+                if kwargs.pop('glfw_window', False):
+                    raise NotImplementedError('This experiment implements internal windows; native child surfaces are not connected yet')
+                initial = kwargs.pop('initial', decoration.get('initial', {}))
+                extras = kwargs.pop('return_extras', False)
+                w, h = kwargs.pop('width', width), kwargs.pop('height', height)
+                minimum = kwargs.pop('min_height', min_height)
+                maximum = kwargs.pop('max_height', max_height)
+                if (not math.isfinite(minimum) or not math.isfinite(maximum)
+                        or not 0 <= minimum <= maximum <= 8192):
+                    raise ValueError('height bounds must satisfy 0 <= min_height <= max_height <= 8192')
+                minimum, maximum = math.ceil(minimum), math.ceil(maximum)
+                allocation = geometry.allocation(parent) if not portal else None
+                reads_cursor = bool(graphics and (parent or self.auto_layout) and not portal)
+                if reads_cursor:
+                    x, y = imgui.get_cursor_screen_pos()
                 else:
-                    raise ValueError('width=None requires a parent or graphics host')
-            auto_height = h is None
-            if auto_height: h = state.get('height', 0.) or 0.
-            if (not math.isfinite(w) or not 0 < w <= 8192
-                    or not math.isfinite(h) or h < 0):
-                raise ValueError('cached boundaries require positive width and nonnegative height')
-            caller = {k: v for k, v in caller.items() if not (k in ('left', 'top', 'width', 'height') and v is None)}
-            if allocation is not None:
-                caller.update(width=w, height=h, left=x, top=y)
-            state.configure({'width': w, 'height': h,
-                             'left': float(x) if left is None else left,
-                             'top': float(y) if top is None else top,
-                             'scroll_offset': (0., 0.), 'content_offset': (0., 28. if portal else 0.)},
-                            caller, initial)
-            x, y = state.left, state.top
-            w, h = state.width, state.height
-            if not math.isfinite(w) or not 0 < w <= 8192 or not math.isfinite(h) or h < 0:
-                raise ValueError('cached boundaries require positive width and nonnegative height')
-            w, h = float(w), min(maximum, max(minimum, float(h)))
-            arguments = {**decoration, **kwargs, 'width': w, 'height': None if auto_height else h,
-                         'min_height': minimum, 'max_height': maximum}
-            node = self.graph.declare(parent, 0, identity_handle, input_value, arguments,
-                                      (float(x), float(y), w, -1. if auto_height else h), portal, state, scrollable)
-            previous = self.invocations.get(node)
-            pending = self.graph.pending(node)
-            if previous is not None:
+                    x, y = (0, 0)
+                flow_x, flow_y = x, y
+                if allocation is not None:
+                    ax, ay, w, h = allocation
+                    px, py = self._position(parent)
+                    x, y = ax-px, ay-py
+                automatic_width = None
+                if w is None:
+                    if parent:
+                        w = graph.constraints(parent)[0] - x
+                    elif graphics:
+                        w = imgui.get_content_region_available()[0]
+                    else:
+                        raise ValueError('width=None requires a parent or graphics host')
+                    automatic_width = w
+                auto_height = h is None
+                if auto_height: h = state.get('height', 0.) or 0.
+                if (not math.isfinite(w) or not 0 < w <= 8192
+                        or not math.isfinite(h) or h < 0):
+                    raise ValueError('cached boundaries require positive width and nonnegative height')
+                caller = {k: v for k, v in caller.items() if not (k in ('left', 'top', 'width', 'height') and v is None)}
+                if allocation is not None:
+                    caller.update(width=w, height=h, left=x, top=y)
+                state.configure({'width': w, 'height': h,
+                                 'left': float(x) if left is None else left,
+                                 'top': float(y) if top is None else top,
+                                 'scroll_offset': (0., 0.), 'content_offset': (0., 28. if portal else 0.)},
+                                caller, initial)
+                x, y = state.left, state.top
+                w, h = state.width, state.height
+                if not math.isfinite(w) or not 0 < w <= 8192 or not math.isfinite(h) or h < 0:
+                    raise ValueError('cached boundaries require positive width and nonnegative height')
+                x, y = float(x), float(y)
+                w, h = float(w), min(maximum, max(minimum, float(h)))
+                arguments = {**decoration, **kwargs, 'width': w, 'height': None if auto_height else h,
+                             'min_height': minimum, 'max_height': maximum}
+                caller_keys = tuple(caller)
+                # The cursor only matters to an axis that neither the caller nor
+                # a position default fixes, and to an automatic width.
+                if not reads_cursor:
+                    flow_x = flow_y = None
+                else:
+                    if (left is not None or 'left' in caller) and automatic_width is None: flow_x = None
+                    if top is not None or 'top' in caller: flow_y = None
+                # Layout cells and portals re-resolve every declaration: their
+                # rectangle comes from the constraint solver, not these inputs.
+                if portal or allocation is not None:
+                    declared.forget(identity_handle)
+                else:
+                    # Also records the state geometry this call resolved to.
+                    declared.remember(identity_handle, raw, generation[0], flow_x, flow_y, automatic_width,
+                                      (arguments, x, y, w, h, auto_height, scrollable, extras, caller_keys), state)
+                node, flags = graph.declare_view(parent, 0, identity_handle, input_value, arguments,
+                                                 (x, y, w, -1. if auto_height else h), portal, state, scrollable)
+            pending, dirty = flags & 1, flags & 2
+            invocations = self.invocations
+            previous = invocations.get(node)
+            if previous is None:
+                invocations[node] = input_value, arguments
+                self.caller_keys[node] = caller_keys
+            else:
                 old_input, old_args = previous
-                changed_input = not pending and not _same(old_input, input_value)
-                if ((changed_input and not _same(self.graph.result(node, False)[1], input_value)) or old_args.keys() != arguments.keys()
-                        or any(not _same(old_args[k], v) for k, v in arguments.items()
-                               if k not in ('left','top','width','height','scroll_offset','content_offset'))):
-                    self.graph.invalidate_node(node)
-                if not pending and old_input is not input_value:
-                    self.graph.dissociate(node, _alias(old_input))
-            self.invocations[node] = input_value, arguments.copy()
-            self.caller_keys[node] = tuple(caller)
+                new_input = old_input is not input_value
+                # Identity/scalar checks only; an unchanged memoized declaration
+                # passes the very same arguments dictionary.
+                if ((new_input and not pending and not _same(old_input, input_value)
+                     and not _same(graph.result(node, False)[1], input_value))
+                        or (old_args is not arguments and (old_args.keys() != arguments.keys()
+                            or any(not _same(old_args[k], v) for k, v in arguments.items()
+                                   if k not in layout_keys)))):
+                    graph.invalidate_node(node)
+                    dirty = True
+                if new_input and not pending:
+                    graph.dissociate(node, _alias(old_input))
+                if new_input or old_args is not arguments:
+                    invocations[node] = input_value, arguments
+                    self.caller_keys[node] = caller_keys
             if node not in self.records:
-                self.uniques[node] = unique
-                self.records[node] = native, renderer, func
+                self.uniques[node] = binding.unique
+                self.declarations[node] = binding
+                self.records[node] = binding.native, binding.renderer, func
                 self.states[node] = state
                 self.associate(func, node)
                 self.associate(wrapper, node)
-                self.graph.associate(node, f'renderer:{renderer_id}', func)
+                graph.associate(node, f'renderer:{renderer_id}', func)
             # Identity aliases remain registered until replacement or retirement.
             # Path-like values can supply changing text, so resolve those again.
             if previous is None or previous[0] is not input_value or isinstance(input_value, (str, Path)):
                 self.associate(input_value, node)
-            self.geometry.bind(node, parent, portal=portal)
+            visible = flags & 8
+            if portal or geometry.cell_scope is not None or geometry.bindings:
+                geometry.bind(node, parent, portal=portal)
+                # Rebinding a layout cell can invalidate this view.
+                dirty = graph.dirty(node)
+                if flags & 4:
+                    visible = graph.visible(node)
             if parent == 0:
                 self.root_ids.add(node)
                 if self.frame_roots is not None:
                     self.frame_roots.add(node)
             # An independently produced return is consumed before reexecuting.
             # In particular, an old scalar caller argument cannot overwrite it.
-            # Cull whole scroll tiles. A non-scrolling parent's packet needs
-            # its children's textures even outside the ancestor viewport.
-            # Unmeasured auto-height tiles need one capture before culling.
-            if (self.graph.dirty(node) and not pending and node not in self.geometry.frozen
-                    and (not parent or not self.graph.is_scrollable(parent)
-                         or (auto_height and node not in self.backgrounds)
-                         or self.graph.visible(node))):
+            # Cull whole scroll tiles (flag 4: the parent scrolls). A non-scrolling
+            # parent's packet needs its children's textures even outside the
+            # ancestor viewport. Unmeasured auto-height tiles need one capture
+            # before culling.
+            if (dirty and not pending and node not in geometry.frozen
+                    and (not flags & 4 or (auto_height and node not in self.backgrounds) or visible)):
                 self._execute(node, independent=False)
             # Root layout settles before the immediate caller places later items.
             if not parent:
                 self.flush()
-            _, _, w, h = self.graph.rect(node)
-            if self.graphics:
+            changed, value, w, h = graph.conclude(node)
+            if graphics:
                 if parent and not portal:
-                    import meltygui_imgui as imgui
                     imgui.set_cursor_screen_pos((x, y))
-                    if not self.graph.is_scrollable(parent):
+                    if not flags & 4:
                         self._draw_image(imgui.get_window_draw_list(),node,x,y,w,h)
                     imgui.dummy(w, h)
                 elif self.auto_layout and not parent and not portal:
-                    import meltygui_imgui as imgui
                     imgui.set_cursor_screen_pos((x, y))
                     imgui.dummy(w, h)
-            result = self.graph.result(node, consume=True)
-            if result[0] and parent:
+            if changed and parent:
                 # The caller may have drawn a label before assigning this return.
                 # One signalled refresh displays its post-edit state consistently.
-                self.graph.invalidate_node(parent)
+                graph.invalidate_node(parent)
             if extras:
-                return *result, self.states[node]
-            return result
+                return changed, value, self.states[node]
+            return changed, value
 
         wrapper.__gui__ = True
         return wrapper
@@ -343,141 +449,155 @@ class RetainedGui:
             imgui.render()
 
     def _capture(self, node):
-        import meltygui_imgui as imgui
         if node not in self.captures:
-            self.captures[node] = imgui.DrawCapture(f'gui-capture-{id(self)}-{node}')
+            self.captures[node] = self.imgui.DrawCapture(f'gui-capture-{id(self)}-{node}')
         return self.captures[node]
 
     def _execute(self, node, *, independent):
-        native, renderer, func = self.records[node]
-        input_value, arguments = self.graph.invocation(node)
-        # Invocation supplies canonical height/auto-height. Keep its read before
-        # the geometry sync, without materializing unrelated info dictionary fields.
-        old_rect = self.graph.rect(node)
+        binding = self.declarations[node]
+        func = binding.func
+        # Source edits recompile the parameter plan before the body runs.
+        if func.__code__ is not binding.code:
+            binding.renderer.__gui_refresh__()
+            binding.code = func.__code__
+        graph, geometry, graphics = self.graph, self.geometry, self.graphics
+        # One native crossing: the live input, the declaration's arguments
+        # (shared, read only), the rectangle before the geometry sync, origin,
+        # owner facts and scroll offset; it also marks the execution begun.
+        (input_value, arguments, old_rect, origin, parent, portal,
+         auto_height, scroll) = graph.begin_execution(node)
         w = old_rect[2]
-        requested_h = -1. if arguments['height'] is None else arguments['height']
+        requested_h = -1. if auto_height else old_rect[3]
         # Measure without the old texture's clip truncating newly grown content.
         # This is a logical capture viewport, not an 8192px texture allocation.
-        h = 8192 if requested_h < 0 else max(1, requested_h)
-        events = self.events.pop(node, {})
-        self.graph.begin(node)
+        h = 8192 if auto_height else (requested_h if requested_h > 1 else 1)
+        events = self.events.pop(node, None) if self.events else None
+        if events is None:
+            events = {}
         self.stack.append(node)
-        self.staged_regions[node] = []
         capture = None
+        keepalive = None
         reference_start = 0
         try:
-            self.geometry.begin(node)
-            if self.graphics:
-                import meltygui_imgui as imgui
-                from meltygui.core.rendering._gui_native import TextureCache
-                if self.gpu is None:
-                    self.gpu = TextureCache()
-                scope = self._capture(node)
-                x, y = self._position(node)
-                reference_start = len(imgui.get_current_context()._keepalive_cache)
-                scope.begin(w, h, self.origin[0] + x, self.origin[1] + y)
+            # Layout transactions exist once any row, column or window was
+            # declared; until then an owner opens one lazily on first use.
+            if geometry.changes[0] and geometry.begin(node):
+                origin = graph.origin(node)
+            if graphics:
+                gpu = self.gpu
+                if gpu is None:
+                    from meltygui.core.rendering._gui_native import TextureCache
+                    gpu = self.gpu = TextureCache()
+                    self.declared.set_gpu(gpu)
+                scope = self.captures.get(node)
+                if scope is None:
+                    scope = self._capture(node)
+                keepalive = self._keepalive
+                if keepalive is None:
+                    # One list for the binding's lifetime; new frames clear it in place.
+                    keepalive = self._keepalive = self.imgui.get_current_context()._keepalive_cache
+                reference_start = len(keepalive)
+                scope.begin(w, h, self.origin[0] + origin[0], self.origin[1] + origin[1])
                 capture = scope
             try:
-                native.begin_frame(width=w, cache=self, view_events=events, identity_frame=False)
-                try:
-                    result = renderer(input_value, **arguments, return_extras=True,
-                                      _gui_unique=self.uniques[node], _gui_explicit=self.caller_keys[node])
-                finally:
-                    native.end_frame()
-                state_changed = self.states[node] is not result[2]
-                self.states[node] = result[2]
+                result = binding.call.execute(input_value, arguments, old_rect, auto_height, scroll,
+                                              binding.unique, self.caller_keys[node], self, events)
+                state = result[2]
                 # A declaration has state before its first execution, including
                 # culled views. Register that first alias before skipping repeats.
-                if state_changed or node not in self.backgrounds:
-                    self.associate(result[2], node)
+                if binding.state is not state:
+                    binding.state = self.states[node] = state
+                    self.associate(state, node)
+                elif node not in self.backgrounds:
+                    self.associate(state, node)
             finally:
-                if self.graphics:
+                if graphics:
                     try:
                         self.imgui_input.finish(node, capture)
                     finally:
                         capture.end()
-            measured_h = (result[2].content_height if self.graphics else result[2].height) if requested_h < 0 else requested_h
-            if not math.isfinite(measured_h) or measured_h < 0 or measured_h > 8192:
+            measured_h = (state.content_height if graphics else state.height) if auto_height else requested_h
+            if not 0 <= measured_h <= 8192:
                 raise ValueError('measured cache height must be 0..8192 pixels')
-            measured_h = min(arguments['max_height'], max(arguments['min_height'], measured_h))
+            minimum, maximum = arguments['min_height'], arguments['max_height']
+            if measured_h < minimum: measured_h = minimum
+            if measured_h > maximum: measured_h = maximum
             # Graph measurement writes resolved size without authoring an override.
-            tint = result[2].get('tint', arguments.get('tint', (0., 0., 0., 0.)))
-            background = tuple(tint) + ((1.,) if len(tint) == 3 else ())
-            if len(background) != 4 or any(not math.isfinite(c) or not 0 <= c <= 1 for c in background):
-                raise ValueError('prototype tint must be RGB or RGBA components in 0..1')
-            if self.graphics:
-                if self._auto_cache:
-                    self.gpu.reference(node, math.ceil(w), max(1, math.ceil(measured_h)))
-                    if not self.graph.parent(node) or self.graph.is_portal(node):
-                        self.gpu.raster(node, True)
-                else:
-                    self.gpu.target(node, math.ceil(w), max(1, math.ceil(measured_h)))
-                self.gpu.begin_packet(node)
-                texture_refs = []
-                for draw_list in capture.draw_lists:
-                    commands, offset = [], 0
-                    for command in draw_list.commands:
-                        texture = command.texture_id
-                        texture_refs.append(texture)
-                        commands.append((int(texture), command.elem_count,
-                                         tuple(command.clip_rect), offset, 0))
-                        offset += command.elem_count
-                    self.gpu.add_packet(node,
-                        ctypes.string_at(draw_list.vtx_buffer_data, draw_list.vtx_buffer_size * 20),
-                        ctypes.string_at(draw_list.idx_buffer_data, draw_list.idx_buffer_size * 4), commands)
-                # Retained commands outlive this ImGui frame. A texture-ID object
-                # may itself own its resource, so retain it until packet replacement.
-                self.texture_refs[node] = tuple(texture_refs)
-            self.graph.commit(node, result[:2], independent)
-            self._retire()
+            if result[3] or 'tint' in arguments:
+                tint = state.get('tint', arguments.get('tint', _CLEAR))
+                background = tuple(tint) + ((1.,) if len(tint) == 3 else ())
+                if len(background) != 4 or any(not math.isfinite(c) or not 0 <= c <= 1 for c in background):
+                    raise ValueError('prototype tint must be RGB or RGBA components in 0..1')
+            else:
+                background = _CLEAR
+            size = 0
+            if graphics:
+                # Native code copies the finalized draw buffers in place. Retained
+                # commands outlive this ImGui frame, and a texture-ID object may
+                # itself own its resource, so keep those until packet replacement.
+                rows = math.ceil(measured_h)
+                size, self.texture_refs[node] = gpu.capture(
+                    node, math.ceil(w), rows if rows > 1 else 1, self._auto_cache, not parent or portal,
+                    [(draw.cmd_buffer_data, draw.cmd_buffer_size, draw.vtx_buffer_data, draw.vtx_buffer_size,
+                      draw.idx_buffer_data, draw.idx_buffer_size) for draw in capture.draw_lists])
+            resized, retired, parent, owner = graph.finish_execution(node, result, independent, w, measured_h)
+            if retired:
+                self._retire()
             self.backgrounds[node] = background
-            resized = self.graph.measured(node, w, measured_h)
-            self.geometry.captured(node)
+            if geometry.frames:
+                geometry.captured(node)
             if resized:
                 self.layout_log.append((func.__name__, node, old_rect[2:], (w, measured_h)))
-            if resized and self.request_frame:
-                self.request_frame()
-            self.regions[node] = self.staged_regions.pop(node)
-            self.geometry.commit(node)
-            if self.graphics:
-                self._track_capture(node)
+                if self.request_frame:
+                    self.request_frame()
+            # Hit regions staged by the body replace the previous execution's.
+            staged = self.staged_regions.pop(node, None) if self.staged_regions else None
+            if staged is not None:
+                self.regions[node] = staged
+            elif self.regions:
+                self.regions.pop(node, None)
+            if node in geometry.transactions:
+                geometry.commit(node)
+            if graphics:
+                owner = owner or None
+                if self.capture_info.get(node) != (parent, size if size > 1 else 1, owner):
+                    self._track_capture(node, parent, owner, size)
             self._last_pointer = None  # the retained hit geometry may have changed
             if result[0]:
-                self.geometry.frozen.clear()
-                self.graph.invalidate(_alias(input_value), exclude=node)
+                geometry.frozen.clear()
+                graph.invalidate(_alias(input_value), exclude=node)
         except BaseException:
-            self.geometry.abort(node)
-            self.graph.abort(node)
+            geometry.abort(node)
+            graph.abort(node)
             self.staged_regions.pop(node, None)
             self.events.setdefault(node, {}).update(events)
             raise
         finally:
             self.stack.pop()
-            if capture is not None:
+            if capture is not None and len(keepalive) > reference_start:
                 from meltygui.core.rendering.gui_draw_capture import release_captured_references
                 release_captured_references(capture, reference_start)
 
-    def _track_capture(self, node):
-        parent = self.graph.parent(node)
-        owner, ancestor = node, parent
-        while ancestor and not self.graph.is_scrollable(ancestor):
-            owner, ancestor = ancestor, self.graph.parent(ancestor)
-        owner = owner if ancestor else None
+    def _track_capture(self, node, parent=None, owner=None, size=None):
+        """Account one capture's residency. Execution supplies what it already
+        knows; a representation change looks the capture up again."""
+        if size is None:
+            parent, owner = self.graph.capture_owner(node)
+            owner = owner or None
+            size = self.gpu.capture_bytes(node)
         # Empty command captures still own draw buffers and count toward residency.
-        size = max(1, self.gpu.capture_bytes(node))
+        size = max(1, size)
         old_capture = self.capture_info.get(node)
-        if old_capture != (parent, size, owner):
-            self._scroll_tile_revision += 1
+        self.capture_children[parent].add(node)
+        self._scroll_tile_revision += 1
         difference = size - (old_capture[1] if old_capture else 0)
         self.capture_info[node] = parent, size, owner
-        self.capture_children[parent].add(node)
         if owner is not None:
             self.scroll_tile_bytes += difference
             self.scroll_tiles[owner] = self.scroll_tiles.get(owner, 0) + difference
 
     def _select_rasters(self):
-        from meltygui.core.runtime.toggles import Toggles
-        enabled = Toggles.Rust.auto_cache
+        enabled = self._toggles.Rust.auto_cache
         if enabled != self._auto_cache:
             self._auto_cache = enabled
             # A global switch is a rare full transition. No bodies or capture buffers
@@ -490,36 +610,30 @@ class RetainedGui:
             self.gpu.shared_pass(enabled)
         if not enabled:
             return
-        for observation in self.gpu.take_workloads(64):
+        graph, gpu, backgrounds = self.graph, self.gpu, self.backgrounds
+        choose, costs, observed = self.raster_policy.choose, self.costs, self.calibration.views
+        for observation in gpu.take_workloads(64):
             node = observation[0]
-            if node not in self.backgrounds:
+            if node not in backgrounds:
                 continue
-            parent = self.graph.parent(node)
-            if not parent or self.graph.is_portal(node):
+            # Roots and portals stay rasters. One crossing answers whether a
+            # rasterized ancestor covers this view, its pixels and current form.
+            context = graph.raster_context(gpu, node)
+            if context is None:
                 continue
-            ancestor, covered = parent, False
-            while ancestor:
-                if self.graph.is_portal(ancestor):
-                    break
-                if self.graph.parent(ancestor) and self.gpu.is_raster(ancestor):
-                    covered = True
-                    break
-                ancestor = self.graph.parent(ancestor)
-            _, _, w, h = self.graph.rect(node)
-            raster = self.gpu.is_raster(node)
-            selected = self.raster_policy.choose(observation, self.costs,
-                self.calibration.views.get(node), pixels=math.ceil(w)*math.ceil(h),
-                raster=raster, covered=covered)
+            covered, pixels, raster = context
+            selected = choose(observation, costs, observed.get(node), pixels=pixels,
+                              raster=raster, covered=covered)
             if selected != raster:
                 try:
-                    changed = self.gpu.raster(node, selected)
+                    changed = gpu.raster(node, selected)
                 except RuntimeError as error:
                     if selected and str(error) == 'prototype texture budget exceeded':
                         continue
                     raise
                 if changed:
                     self.raster_policy.applied(node, selected)
-                    self.graph.request_composition(node)
+                    graph.request_composition(node)
                     self._track_capture(node)
                     if selected:
                         # Only a representation transition walks this subtree.
@@ -528,36 +642,26 @@ class RetainedGui:
                         pending = list(self.capture_children.get(node, ()))
                         while pending:
                             child = pending.pop()
-                            if self.graph.is_portal(child):
+                            if graph.is_portal(child):
                                 continue
                             pending.extend(self.capture_children.get(child, ()))
-                            if self.gpu.raster(child, False):
+                            if gpu.raster(child, False):
                                 self.raster_policy.applied(child, False)
-                                self.graph.request_composition(child)
+                                graph.request_composition(child)
                                 self._track_capture(child)
 
     def _compose(self):
         if self.graphics and self.gpu:
             self._select_rasters()
-            # Keep the complete bottom-up replay order, but save/restore host GL
-            # state once for the batch rather than once for every cached view.
-            nodes = [node for node in self.graph.composition_order() if node not in self.stack]
-            if nodes:
-                for node in nodes:
-                    placements = self.graph.take_placements(node)
-                    if self.graph.is_scrollable(node):
-                        children = self.graph.visible_children(node)
-                        self.gpu.children(node, children)
-                        for child, *_ in children:
-                            if child in self.scroll_tiles:
-                                self.scroll_tiles.move_to_end(child)
-                    else:
-                        for child, x, y, w, h in placements:
-                            if child in self.backgrounds:
-                                self.gpu.place_child(node, child, (x, y, w, h), (x, y, x+w, y+h))
-                self.gpu.render_many([(node, self.backgrounds[node]) for node in nodes])
-                for node in nodes:
-                    self.graph.composed(node)
+            # The complete bottom-up replay, including one save/restore of host
+            # GL state for the batch, runs natively. Views still executing are
+            # skipped: their packets are incomplete.
+            touched = self.graph.compose(self.gpu, self.backgrounds, self.stack)
+            tiles = self.scroll_tiles
+            if tiles:
+                for child in touched:
+                    if child in tiles:
+                        tiles.move_to_end(child)
 
     def _drop_capture(self, node):
         self.raster_policy.retire(node)
@@ -620,10 +724,9 @@ class RetainedGui:
                 self.invalidate(func)
                 definition[1] = func.__code__
         if self.graphics:
-            import meltygui_imgui as imgui
             # Representation-only replay does not submit widgets and must not
             # invent an extra host frame that would expire the active widget ID.
-            if not imgui.is_frame_active() and self.graph.dirty_nodes():
+            if not self.imgui.is_frame_active() and self.graph.dirty_nodes():
                 with self.capture_frame():
                     return self.flush()
         # A legitimate deep chain may need one upward layout wave per level.
@@ -651,6 +754,10 @@ class RetainedGui:
             self.geometry.retire(node)
             self._last_pointer = None
             self.records.pop(node, None)
+            binding = self.declarations.pop(node, None)
+            if binding is not None:
+                # A retired view no longer pins its last caller arguments.
+                self.declared.forget(binding.handle)
             self._drop_capture(node)
             for mapping in (self.invocations, self.events, self.regions, self.states, self.uniques, self.caller_keys,
                             self.backgrounds, self.texture_refs):
@@ -659,7 +766,7 @@ class RetainedGui:
 
     def region(self, key, rect):
         """Retain a local hit region; input is injected as view_events on wake."""
-        self.staged_regions[self.current].append((key, tuple(rect)))
+        self.staged_regions.setdefault(self.current, []).append((key, tuple(rect)))
 
     def send(self, node, key, value=True):
         self.events.setdefault(node, {})[key] = value
@@ -833,6 +940,9 @@ class RetainedGui:
             self.graph.clear()
             self._retire()
             self.calibration.close()
+            # Released here, on the owning thread, rather than by a later collection.
+            self.declared.clear()
+            self.declared = None
             if self.gpu:
                 self.gpu.close()
                 self.gpu = None
@@ -841,11 +951,16 @@ class RetainedGui:
             self.imgui_input.cache = None
             self.geometry.axes = ()
             self.geometry.transactions.clear()
+            # The shared snapshot owns solver forks; release them on this thread.
+            self.geometry._snapshot_value = self.geometry._snapshot_stamp = None
             self.geometry.native = None
             self.geometry.cache = None
             self.renderers.clear()
-            for native, _, _, _, _ in self.bindings.values(): native.clear()
+            for binding in self.bindings.values(): binding.native.clear()
             self.bindings.clear()
+            self.declarations.clear()
+            for shared in self.shared_natives: shared.clear()
+            self.shared_natives.clear()
             self.identities.clear()
             self.graph = None
             self.closed = True

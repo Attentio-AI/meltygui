@@ -7,6 +7,98 @@ import pytest
 from meltygui.core.runtime.public_exports import discover_render_exports
 
 
+@pytest.fixture
+def editable(tmp_path, monkeypatch):
+    import meltygui.core.runtime.public_exports as exports
+    root = tmp_path / 'library'
+    module = root / 'core/runtime/public_exports.py'
+    module.parent.mkdir(parents=True)
+    monkeypatch.setattr(exports, '__file__', str(module))
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    exports.render_exports.cache_clear()
+    yield root, exports
+    exports.render_exports.cache_clear()
+
+
+def test_editable_index_skips_parsing_on_next_launch(editable, monkeypatch):
+    root, exports = editable
+    (root / 'view.py').write_text('from meltygui import render_func\n@render_func\ndef draw_test(): pass\n')
+    expected = exports.render_exports()
+    assert expected == {'draw_test': ('meltygui.view', 'draw_test')}
+    exports.render_exports.cache_clear()
+    monkeypatch.setattr(exports, 'discover_render_exports', lambda root: pytest.fail('source scan'))
+    assert exports.render_exports() == expected
+
+
+def test_editable_index_tracks_edits_additions_and_deletions(editable):
+    import os
+    root, exports = editable
+    view = root / 'view.py'
+    source = 'from meltygui import render_func\n@render_func\ndef first(): pass\n'
+    view.write_text(source)
+    assert set(exports.render_exports()) == {'first'}
+    stamp = view.stat()
+    view.write_text(source.replace('first', 'other'))  # Same size, newer mtime.
+    os.utime(view, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1_000_000))
+    exports.render_exports.cache_clear()
+    assert set(exports.render_exports()) == {'other'}
+    added = root / 'added.py'
+    added.write_text(source)
+    exports.render_exports.cache_clear()
+    assert set(exports.render_exports()) == {'first', 'other'}
+    view.unlink()
+    exports.render_exports.cache_clear()
+    assert set(exports.render_exports()) == {'first'}
+    added.write_text('def first(): pass\n')
+    exports.render_exports.cache_clear()
+    assert exports.render_exports() == {}
+
+
+def test_editable_index_recovers_from_corrupt_or_unwritable_cache(editable, tmp_path, monkeypatch):
+    root, exports = editable
+    (root / 'view.py').write_text('from meltygui import render_func\n@render_func\ndef first(): pass\n')
+    expected = exports.render_exports()
+    index, = (tmp_path / 'cache').rglob('*.json')
+    for broken in ('{', '[]', '{"version": 1}'):
+        index.write_text(broken)
+        exports.render_exports.cache_clear()
+        assert exports.render_exports() == expected
+    blocked = tmp_path / 'blocked'
+    blocked.write_text('not a directory')
+    monkeypatch.setenv('XDG_CACHE_HOME', str(blocked))
+    exports.render_exports.cache_clear()
+    assert exports.render_exports() == expected
+
+
+def test_submodule_lookup_does_not_discover_render_functions(monkeypatch):
+    import types
+    import meltygui
+    module = types.ModuleType('meltygui.pending_import')
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    monkeypatch.setattr(meltygui, '_render_exports', lambda: pytest.fail('source scan'))
+    assert meltygui.pending_import is module
+
+
+def test_parallel_first_lookups_share_discovery(editable, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from unittest.mock import Mock
+    root, exports = editable
+    (root / 'view.py').write_text('from meltygui import render_func\n@render_func\ndef first(): pass\n')
+    discover = Mock(wraps=exports.discover_render_exports)
+    monkeypatch.setattr(exports, 'discover_render_exports', discover)
+    ready = Barrier(2)
+
+    def lookup():
+        ready.wait(timeout=5)
+        return exports.render_exports()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first, second = pool.submit(lookup), pool.submit(lookup)
+        assert first.result() == second.result() == {'first': ('meltygui.view', 'first')}
+    discover.assert_called_once_with(root)
+
+
 def test_packaged_index_avoids_discovery_and_preserves_specs(tmp_path, monkeypatch):
     import meltygui.core.runtime.public_exports as exports
     module = tmp_path / 'core/runtime/public_exports.py'

@@ -24,16 +24,15 @@ def main():
     start = text.index('#[pyclass(unsendable, module = "meltygui.core.rendering._gui_native")]\nstruct Renderer')
     end = text.index('#[pymodule]', start)
     renderer = text[start:end].replace('Renderer', 'CacheRenderer')
-    start_globals = renderer.index('        for (key, value) in globals.bind(py).iter() {')
-    end_globals = renderer.index('        let width = kw_number', start_globals)
-    renderer = renderer[:start_globals] + renderer[end_globals:]
-    start_matching = renderer.index('        args.set_item("input_value", &input_value)?;')
-    end_matching = renderer.index('        if let Some(imgui) = &imgui {',
+    # The module-level helper after the class stays with the production module.
+    renderer = renderer[:renderer.index('/// Whether two keyword dictionaries hold the same keys')]
+    start_matching = renderer.index('        if wants(WANT_INPUT) { args.set(intern!(py, "input_value"), &input_value)?; }')
+    end_matching = renderer.index('        if let Some(api) = &api {\n            api.push_id',
                                   renderer.index('        for parameter in &self.parameters {', start_matching))
     forwarding = '''        let clean = PyDict::new(py);
         if let Some(keys) = &explicit_keys {
             for key in keys.downcast::<PyTuple>()?.iter() {
-                if let Some(value) = args.get_item(&key)? {
+                if let Some(value) = args.get(&key)? {
                     clean.set_item(key, value)?;
                 }
             }

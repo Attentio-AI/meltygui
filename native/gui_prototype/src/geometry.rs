@@ -2,7 +2,7 @@
 use crate::{NativeState, Value};
 use pyo3::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use crate::hash::{Map as HashMap, Set as HashSet};
 use std::rc::Rc;
 
 pub type Rect = (f64, f64, f64, f64);

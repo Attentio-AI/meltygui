@@ -26,6 +26,8 @@ def bind_cache(native, func=None, *, inject=None, events=(), state_id=None,
     def wrapper(input_value=None, **kwargs):
         return renderer(input_value, **kwargs)
     wrapper.__gui_native__ = renderer
+    # No parameter plan to recompile: arguments are forwarded as given.
+    wrapper.__gui_refresh__ = lambda: None
     wrapper.decoration = decoration
     wrapper.no_save = tuple(no_save)
     return wrapper

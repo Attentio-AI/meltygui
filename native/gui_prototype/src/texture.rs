@@ -3,13 +3,14 @@
 #[path = "calibration.rs"]
 mod calibration;
 use calibration::Sampler;
+use crate::hash::{Map as HashMap, Set as HashSet};
 #[path = "shared_replay.rs"]
 mod shared_replay;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::{
-    collections::HashMap,
+    collections::VecDeque,
     ffi::{c_void, CString},
     ptr,
 };
@@ -217,6 +218,19 @@ impl Target {
 }
 // Texture, element count, clip rectangle, index offset, vertex offset.
 type Command = (u32, i32, (f32, f32, f32, f32), usize, i32);
+// Command, vertex and index buffer addresses and element counts of one ImDrawList.
+type DrawBuffers = (usize, usize, usize, usize, usize, usize);
+// Dear ImGui 1.82 ImDrawCmd. Texture IDs are borrowed Python objects in this binding.
+#[repr(C)]
+struct DrawCmd {
+    clip: [f32; 4],
+    texture: *mut pyo3::ffi::PyObject,
+    vtx_offset: u32,
+    idx_offset: u32,
+    elem_count: u32,
+    callback: *const c_void,
+    callback_data: *const c_void,
+}
 struct Packet {
     vertices: Vec<u8>,
     indices: Vec<u8>,
@@ -250,8 +264,8 @@ pub struct TextureCache {
     shared: bool,
     workloads: HashMap<u64, Workload>,
     replay_epoch: u64,
-    policy_pending: std::collections::HashSet<u64>,
-    policy_queue: std::collections::VecDeque<u64>,
+    policy_pending: HashSet<u64>,
+    policy_queue: VecDeque<u64>,
     scratch: Vec<Target>,
     scratch_allocations: u64,
     renders: u64,
@@ -314,16 +328,16 @@ impl TextureCache {
                 ebo: 0,
                 size_loc: glGetUniformLocation(p, b"size\0".as_ptr().cast()),
                 resolve_loc: glGetUniformLocation(p, b"resolve\0".as_ptr().cast()),
-                targets: HashMap::new(),
-                packets: HashMap::new(),
-                children: HashMap::new(),
-                references: HashMap::new(),
-                backgrounds: HashMap::new(),
+                targets: HashMap::default(),
+                packets: HashMap::default(),
+                children: HashMap::default(),
+                references: HashMap::default(),
+                backgrounds: HashMap::default(),
                 shared: false,
-                workloads: HashMap::new(),
+                workloads: HashMap::default(),
                 replay_epoch: 0,
-                policy_pending: std::collections::HashSet::new(),
-                policy_queue: std::collections::VecDeque::new(),
+                policy_pending: HashSet::default(),
+                policy_queue: VecDeque::new(),
                 scratch: Vec::new(),
                 scratch_allocations: 0,
                 renders: 0,
@@ -445,7 +459,7 @@ impl TextureCache {
         }
         Ok(true)
     }
-    fn is_raster(&self, id: u64) -> bool { self.targets.get(&id).is_some_and(|t| t.fbo != 0) }
+    pub(crate) fn is_raster(&self, id: u64) -> bool { self.targets.get(&id).is_some_and(|t| t.fbo != 0) }
     fn shared_pass(&mut self, enabled: bool) {self.shared=enabled;}
     fn take_workloads(&mut self, limit: usize) -> Vec<(u64,u64,u64,u64,usize,usize)> {
         let mut result=vec![];
@@ -471,8 +485,81 @@ impl TextureCache {
         entry.payload_bytes=0; entry.commands=0;
         self.packets.insert(id, vec![]);
     }
-    fn children(&mut self, id:u64, children:Vec<(u64,f32,f32,f32,f32)>) { self.children.insert(id,children); }
-    fn place_child(
+    pub(crate) fn children(&mut self, id:u64, children:Vec<(u64,f32,f32,f32,f32)>) { self.children.insert(id,children); }
+    /// Replace one view's packets from ImGui draw lists that are still alive in
+    /// the capture, copying each buffer once without intermediate Python bytes
+    /// or command wrappers. `shared` keeps a logical reference (promoted to a
+    /// raster when `raster` is set); otherwise the view owns a raster target.
+    /// Returns the capture's resident bytes and the texture-ID objects its
+    /// commands reference, which the caller keeps alive with the packets.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture(&mut self, py: Python<'_>, id: u64, w: i32, h: i32, shared: bool, raster: bool,
+                          lists: Vec<DrawBuffers>) -> PyResult<(usize, Py<pyo3::types::PyTuple>)> {
+        if shared {
+            self.reference(id, w, h)?;
+            if raster { self.raster(id, true)?; }
+        } else {
+            self.target(id, w, h)?;
+        }
+        // Reuse the previous packets' buffers: a redraw usually has the same shape.
+        let mut packets = self.packets.remove(&id).unwrap_or_default();
+        let mut used = 0_usize;
+        let (mut payload, mut total_commands) = (0_usize, 0_usize);
+        let mut textures: Vec<Py<PyAny>> = Vec::new();
+        for (cmd_ptr, cmd_count, vtx_ptr, vtx_count, idx_ptr, idx_count) in lists {
+            if used == packets.len() {
+                packets.push(Packet { vertices: vec![], indices: vec![], commands: vec![], spans: vec![] });
+            }
+            let packet = &mut packets[used];
+            used += 1;
+            let commands = &mut packet.commands;
+            commands.clear();
+            packet.spans.clear();
+            let mut offset = 0_usize;
+            for index in 0..cmd_count {
+                // SAFETY: the caller passes buffers of a draw list owned by its
+                // live capture; nothing has drawn into it since capture end.
+                let command = unsafe { &*(cmd_ptr as *const DrawCmd).add(index) };
+                if command.idx_offset as usize != offset {
+                    return Err(PyRuntimeError::new_err("unexpected ImGui draw command layout"));
+                }
+                let texture = if command.texture.is_null() { 0 } else {
+                    let object = unsafe { Bound::from_borrowed_ptr(py, command.texture) };
+                    let name = match object.extract::<u32>() {
+                        Ok(name) => name,
+                        Err(_) => object.call_method0(pyo3::intern!(py, "__int__"))?.extract::<u32>()?,
+                    };
+                    textures.push(object.unbind());
+                    name
+                };
+                commands.push((texture, command.elem_count as i32,
+                               (command.clip[0], command.clip[1], command.clip[2], command.clip[3]),
+                               offset, command.vtx_offset as i32));
+                offset += command.elem_count as usize;
+            }
+            if offset != idx_count {
+                return Err(PyRuntimeError::new_err("unexpected ImGui draw command layout"));
+            }
+            let copy = |target: &mut Vec<u8>, pointer: usize, bytes: usize| {
+                target.clear();
+                if bytes != 0 && pointer != 0 {
+                    target.extend_from_slice(unsafe { std::slice::from_raw_parts(pointer as *const u8, bytes) });
+                }
+            };
+            copy(&mut packet.vertices, vtx_ptr, vtx_count * 20);
+            copy(&mut packet.indices, idx_ptr, idx_count * 4);
+            payload += packet.vertices.len() + packet.indices.len();
+            total_commands += packet.commands.len();
+        }
+        packets.truncate(used);
+        self.uploads += used as u64;
+        self.packets.insert(id, packets);
+        let entry = self.workloads.entry(id).or_default();
+        entry.payload_bytes = payload;
+        entry.commands = total_commands;
+        Ok((self.capture_bytes(id), pyo3::types::PyTuple::new(py, textures)?.unbind()))
+    }
+    pub(crate) fn place_child(
         &mut self,
         parent: u64,
         child: u64,
@@ -559,7 +646,7 @@ impl TextureCache {
         let entry=self.workloads.entry(id).or_default(); entry.refreshes+=1; entry.last_refresh_presentation=entry.presentations;
         self.render_inner(id, background)
     }
-    fn render_many(&mut self, views: Vec<(u64, (f32, f32, f32, f32))>) -> PyResult<()> {
+    pub(crate) fn render_many(&mut self, views: Vec<(u64, (f32, f32, f32, f32))>) -> PyResult<()> {
         let _guard = unsafe { Guard::new() };
         self.replay_epoch+=1;
         for (id, background) in &views {
@@ -587,7 +674,7 @@ impl TextureCache {
     fn texture(&self, id: u64) -> Option<u32> {
         self.targets.get(&id).map(|t| t.tex)
     }
-    fn image(&self, id: u64) -> Option<(u32, i32, i32)> {
+    pub(crate) fn image(&self, id: u64) -> Option<(u32, i32, i32)> {
         self.targets.get(&id).map(|t| (t.tex, t.w, t.h))
     }
     fn remove(&mut self, id: u64) {

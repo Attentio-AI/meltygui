@@ -25,6 +25,8 @@ pub struct EdgeGraph {
     cells: BTreeMap<u64, Vec<Cell>>,
     next: u64,
     version: u64,
+    // Every mutating call, including solved positions. `version` only tracks topology.
+    mutations: u64,
     gesture: Option<Gesture>,
     visits: usize,
 }
@@ -254,6 +256,7 @@ impl EdgeGraph {
             cells: BTreeMap::new(),
             next: 0,
             version: 0,
+            mutations: 0,
             gesture: None,
             visits: 0,
         }
@@ -261,6 +264,11 @@ impl EdgeGraph {
 
     fn fork(&self) -> Self {
         self.clone()
+    }
+    /// Changes whenever a fork taken earlier could differ from this graph.
+    #[getter]
+    fn mutations(&self) -> u64 {
+        self.mutations
     }
     fn edge(&mut self, owner: u64, key: String, initial: f64) -> PyResult<u64> {
         if !initial.is_finite() {
@@ -275,6 +283,7 @@ impl EdgeGraph {
         }
         self.next += 1;
         self.version += 1;
+        self.mutations += 1;
         self.edges.insert(
             self.next,
             Edge {
@@ -308,6 +317,7 @@ impl EdgeGraph {
             }
         }
         let before = self.snapshot();
+        self.mutations += 1;
         self.restore(&values);
         Ok(self.delta(&before))
     }
@@ -328,6 +338,7 @@ impl EdgeGraph {
         if self.cells.get(&owner) == Some(&cells) {
             return Ok(false);
         }
+        self.mutations += 1;
         let old = self.cells.insert(owner, cells);
         if !self.feasible() {
             match old {
@@ -352,6 +363,7 @@ impl EdgeGraph {
             .iter()
             .filter_map(|(&id, e)| (e.owner == owner).then_some(id))
             .collect();
+        self.mutations += 1;
         self.cells.remove(&owner);
         // Registrations borrowing deleted edges retire with those edges.
         let dependents: Vec<u64> = self
@@ -377,6 +389,7 @@ impl EdgeGraph {
     fn solve(&mut self, edge: u64, target: f64, walls: Vec<u64>) -> PyResult<Vec<(u64, f64)>> {
         let before = self.snapshot();
         self.visits = 0;
+        self.mutations += 1;
         if let Err(e) = self.run(edge, target, &walls.into_iter().collect()) {
             self.restore(&before);
             return Err(e);
@@ -399,6 +412,7 @@ impl EdgeGraph {
         if let Some(other) = opposite {
             self.position(other)?;
         }
+        self.mutations += 1;
         if self.gesture.as_ref().map_or(true, |g| {
             g.token != token || g.edge != edge || g.version != self.version
         }) {
@@ -440,6 +454,7 @@ impl EdgeGraph {
         Ok(self.delta(&before))
     }
     fn end_drag(&mut self) {
+        if self.gesture.is_some() { self.mutations += 1; }
         self.gesture = None;
     }
     #[pyo3(signature=(near, far, maximum=false))]

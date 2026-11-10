@@ -325,6 +325,7 @@ pass. See [the full conditions and reproduction command](GUI_SCROLL_PROTOTYPE.md
 | Lazy acknowledgement | Removed an unnecessary retained-result lookup on unchanged declarations; measured CPU redraw improvement was about 2%. |
 | Runtime calibration | Added immutable cost snapshots, deferred profile loading, bounded asynchronous GPU samples and opportunistic idle probes. No calibration work blocks the first presentation. |
 | Automatic raster selection | Made shared command replay the default for cheap descendants, with optional cost/reuse-driven textures and stable state/input ownership. |
+| Redraw fast paths (2026-11-10) | Memoized declarations, single-crossing native execution, in-place packet capture and lazy layout transactions. Full redraw of 341 views went from about 11.4 ms to 3.5 ms in the matched benchmark; see [the fast-path notes](GUI_REDRAW_FAST_PATHS.md). |
 
 The latest matched all-visible rerun measures **20.732 ms** per-view raster,
 **14.422 ms** automatic with defaults and **14.291 ms** automatic with calibrated
@@ -354,9 +355,9 @@ for timing conditions, resource counts, profiles and failure controls.
 - The legacy constraint solver still snapshots the whole solver for body/layout
   transactions. Warm scrolling avoids body execution, but cold/layout-edit costs
   need further work.
-- The all-visible full-redraw CPU overhead remains large. Automatic raster
-  selection removes most per-view GPU composition cost, but does not remove
-  Python declaration/execution and ImGui capture overhead.
+- The all-visible full-redraw CPU overhead is about 9 us per view after the
+  [redraw fast paths](GUI_REDRAW_FAST_PATHS.md), against 0.7 us raw. The rest
+  is Python declaration/execution orchestration and ImGui capture.
 - Calibration is opportunistic on existing presentations; it does not wake a
   fully sleeping app. Its baseline covers the current RGBA8 GL cache operations.
   External ray-marching/CUDA/body work is not automatically included in replay

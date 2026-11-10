@@ -71,7 +71,13 @@ def gui(func=None, *, glfw_window=False, **decoration):
         window = _window.get()
         if window is None:
             raise RuntimeError('@gui must be called inside @os_window (or a @glfw_window hosted @gui root)')
-        return window.call(wrapper, input_value, kwargs)
+        try:
+            # An already bound view dispatches straight to its binding.
+            bound = window.bindings[wrapper]
+        except KeyError:
+            # First use, or a closed window whose bindings were released.
+            return window.call(wrapper, input_value, kwargs)
+        return bound(input_value, **kwargs)
 
     wrapper.__gui__ = True
     wrapper.__gui_definition__ = (func, decoration)
@@ -132,6 +138,13 @@ def _bind_native(native, func=None, *, inject=None, events=(), state_id=None, no
     renderer = compile_plan()
     code = func.__code__
 
+    def refresh():
+        """Recompile the parameter plan after the function's code was replaced."""
+        nonlocal code
+        if func.__code__ is not code:
+            renderer.reconfigure(compile_plan())
+            code = func.__code__
+
     @wraps(func)
     def wrapper(input_value=None, **kwargs):
         nonlocal code
@@ -141,6 +154,8 @@ def _bind_native(native, func=None, *, inject=None, events=(), state_id=None, no
         return renderer(input_value, **kwargs)
 
     wrapper.__gui_native__ = renderer
+    # Retained captures call the native renderer directly and refresh through this.
+    wrapper.__gui_refresh__ = refresh
     wrapper.decoration = decoration
     wrapper.no_save = tuple(no_save)
     return wrapper

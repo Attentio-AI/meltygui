@@ -5,6 +5,11 @@ tracks which retained views must execute; it never copies IO into view contexts.
 """
 
 
+# Neither mouse button is claimed by an idle view.
+_NO_CLAIM = (False, False)
+_NO_KEYS = frozenset()
+
+
 class ImGuiInput:
     def __init__(self, cache):
         self.cache = cache
@@ -36,7 +41,8 @@ class ImGuiInput:
         position = tuple(io.mouse_pos)
         buttons = tuple(io.mouse_down)
         keys = tuple(io.keys_down)
-        self.pressed_keys = frozenset(i for i, down in enumerate(keys) if down)
+        # Idle frames have no key down; skip enumerating the whole key table.
+        self.pressed_keys = frozenset(i for i, down in enumerate(keys) if down) if any(keys) else _NO_KEYS
         modifiers = tuple(getattr(io, 'key_' + name) for name in ('ctrl', 'shift', 'alt', 'super'))
         wheel = (io.mouse_wheel, io.mouse_wheel_horizontal)
         scrolled = any(wheel) and not any(buttons) and self.cache.scroll_at(position, (-wheel[1]*40., -wheel[0]*40.))
@@ -78,10 +84,17 @@ class ImGuiInput:
             self.capture = None
 
     def finish(self, node, capture):
+        active = capture.active_widget
+        if not active and node != self.mouse_owner and node != self.focus:
+            # A view that owns no live widget, pointer or focus claims nothing
+            # and cannot tick; skip reading the frame's input state for it.
+            if self.right_active: self.right_active.discard(node)
+            self.pointer_claims[node] = _NO_CLAIM
+            if self.active: self.active.discard(node)
+            return
         import meltygui_imgui as imgui
         io = imgui.get_io()
         hovered = node == self.mouse_owner and imgui.is_any_item_hovered()
-        active = capture.active_widget
         if active:
             self.focus = node
             if any(io.mouse_down):

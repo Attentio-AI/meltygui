@@ -72,8 +72,9 @@ def test_native_host_keeps_original_transaction_snapshots():
     @host.cache.gui(width=300, height=200)
     def view(input_value=None):
         # Hosted views must retain native walls, serials and rollback snapshots.
-        assert isinstance(geometry.transactions[host.cache.current], tuple)
+        # The owner's snapshot is taken before its first layout mutation.
         geometry.declare(2, axis=0, key='introduced', mins=0)
+        assert isinstance(geometry.transactions[host.cache.current], tuple)
         raise ValueError('hosted geometry failed')
 
     try:

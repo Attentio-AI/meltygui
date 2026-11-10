@@ -9,6 +9,52 @@ from dataclasses import dataclass, field
 import math
 
 
+class _Tracked(dict):
+    """A geometry table that counts its own mutations in a shared counter.
+
+    Every cached view execution opens a layout transaction. While the counter
+    and the solver graphs are unchanged, consecutive transactions share one
+    snapshot instead of copying every table and forking both graphs again.
+    Reads stay plain dictionary operations.
+    """
+    __slots__ = ('changes',)
+
+    def __init__(self, changes, *contents):
+        super().__init__(*contents)
+        self.changes = changes
+
+    def __setitem__(self, key, value):
+        self.changes[0] += 1
+        super().__setitem__(key, value)
+
+    def __delitem__(self, key):
+        self.changes[0] += 1
+        super().__delitem__(key)
+
+    def pop(self, key, *default):
+        if key in self:
+            self.changes[0] += 1
+        return super().pop(key, *default)
+
+    def clear(self):
+        if self:
+            self.changes[0] += 1
+        super().clear()
+
+    def update(self, *contents, **entries):
+        self.changes[0] += 1
+        super().update(*contents, **entries)
+
+    def setdefault(self, key, default=None):
+        if key not in self:
+            self.changes[0] += 1
+        return super().setdefault(key, default)
+
+    def popitem(self):
+        self.changes[0] += 1
+        return super().popitem()
+
+
 @dataclass
 class Layout:
     manager: object
@@ -53,6 +99,7 @@ class Layout:
                 # geometry belongs to Python and must be recaptured on reflow.
                 if dl.vtx_buffer_size-before > 4*(len(self.children)-count):
                     self.raw = True
+                    manager.changes[0] += 1
             manager.cell_scope = previous
 
     def __enter__(self):
@@ -72,12 +119,17 @@ class GuiGeometry:
         from meltygui.core.rendering._gui_native import EdgeGraph
         self.cache = cache
         self.axes = (EdgeGraph(), EdgeGraph())
-        self.layouts = {}
+        # Counts mutations of the tables below and of Layout fields; with the
+        # solver graphs' own counters it tells when a snapshot is still current.
+        self.changes = [0]
+        self.layouts = _Tracked(self.changes)
         self.owner_layouts = {}
-        self.frames = {}
-        self.bindings = {}
+        self.frames = _Tracked(self.changes)
+        self.bindings = _Tracked(self.changes)
         self.staged = {}
         self.transactions = {}
+        self._snapshot_stamp = None
+        self._snapshot_value = None
         self.cell_scope = None
         self.serial = 1000000
         self.gesture = None
@@ -85,7 +137,7 @@ class GuiGeometry:
         self.last_error = None
         self.offset = (0.,0.)
         self.native = None
-        self.windows = {}
+        self.windows = _Tracked(self.changes)
         self.claim = (False,False)
         self.frozen = set()
         self.drag_parents = None
@@ -156,6 +208,7 @@ class GuiGeometry:
         return self.serial
 
     def window(self,node):
+        self._open_transactions()
         pairs=self.bounds(node)
         serial=self.frames[node][0]
         args=self.cache.invocations[node][1]
@@ -182,6 +235,7 @@ class GuiGeometry:
         return values[0][0],values[1][0],values[0][1]-values[0][0],values[1][1]-values[1][0]
 
     def bounds(self, node):
+        self._open_transactions()
         binding = self.bindings.get(node)
         if node not in self.frames:
             x, y = self.position(node)
@@ -219,19 +273,43 @@ class GuiGeometry:
         live=self.position(node);projected=self.projected_position(node)
         return live[0]-projected[0],live[1]-projected[1]
 
+    def _snapshot(self):
+        """The current geometry, copied only when it changed since the last copy."""
+        stamp = (self.changes[0], self.axes[0].mutations, self.axes[1].mutations)
+        if stamp != self._snapshot_stamp:
+            saved = {}
+            for key, layout in self.layouts.items():
+                state = layout.__dict__.copy()
+                state['children'] = dict(layout.children)
+                saved[key] = (layout,state)
+            self._snapshot_value = (tuple(g.fork() for g in self.axes), saved,
+                                    dict(self.frames), dict(self.bindings), dict(self.windows))
+            self._snapshot_stamp = stamp
+        return self._snapshot_value
+
+    def _open_transactions(self):
+        """Give every executing owner a transaction before the first mutation.
+
+        An owner that began while no row, column or window had ever been
+        declared skipped its snapshot. Nothing can have changed since it began,
+        so the current geometry is exactly what it would have saved.
+        """
+        transactions = self.transactions
+        for owner in self.cache.stack:
+            if owner not in transactions:
+                transactions[owner] = self._snapshot()
+                self.staged[owner] = set()
+
     def begin(self, node):
+        """Open the owner's layout transaction. Returns True when reconciling
+        its frame moved views, so the caller re-reads the node's origin."""
         if not self.transactions and self.gesture is None:
             for window in self.windows:self.sync_projection(window)
-        # Prototype transactions favor correctness over copying cost. Geometry
-        # commits with the declaration owner; failed bodies leave no dividers.
-        saved = {}
-        for key, layout in self.layouts.items():
-            state = layout.__dict__.copy()
-            state['children'] = layout.children.copy()
-            saved[key] = (layout,state)
-        self.transactions[node] = (tuple(g.fork() for g in self.axes), saved,
-                                   self.frames.copy(), self.bindings.copy(), self.windows.copy())
+        # Geometry commits with the declaration owner; failed bodies leave no
+        # dividers. An unchanged layout shares its snapshot between owners.
+        self.transactions[node] = self._snapshot()
         self.staged[node] = set()
+        moved = False
         if node in self.frames and node not in self.bindings:
             serial, pairs, old = self.frames[node]
             old=self.frame_rect(node)
@@ -254,6 +332,8 @@ class GuiGeometry:
                     graph.solve(far, rect[axis]+rect[axis+2], [near])
                 self.frames[node] = (serial,pairs,rect)
                 self.apply()
+                moved = True
+        return moved
 
     def captured(self,node):
         if node not in self.frames:return
@@ -263,21 +343,26 @@ class GuiGeometry:
 
     def commit(self, node):
         fresh = self.staged.pop(node, set())
-        for key in [key for key,l in self.layouts.items() if l.owner==node and key not in fresh]:
-            self.remove_layout(key)
-        for child,(layout,index) in tuple(self.bindings.items()):
-            if layout.owner==node and child not in layout.children:
-                self.bindings.pop(child)
-        graph = self.cache.graph
-        for window in sorted((w for w in self.windows if graph.contains(w)),key=self.depth):
-            parent=self.cache.graph.parent(window)
-            if window!=node and self.descendant(parent,node):
-                desired=self.position(window)
-                current=self.frame_rect(window)
-                for axis in range(2):
-                    delta=desired[axis]-current[axis]
-                    self.translate_window(window,axis,delta)
-                    self.contain_carried(window,axis,delta)
+        # Only an owner of layouts can have stale layouts or cell bindings.
+        owned = self.owner_layouts.get(node)
+        if owned:
+            for key in sorted(owned-fresh, key=lambda key:self.layouts[key].serial):
+                self.remove_layout(key)
+            if node in self.owner_layouts:
+                for child,(layout,index) in tuple(self.bindings.items()):
+                    if layout.owner==node and child not in layout.children:
+                        self.bindings.pop(child)
+        if self.windows:
+            graph = self.cache.graph
+            for window in sorted((w for w in self.windows if graph.contains(w)),key=self.depth):
+                parent=self.cache.graph.parent(window)
+                if window!=node and self.descendant(parent,node):
+                    desired=self.position(window)
+                    current=self.frame_rect(window)
+                    for axis in range(2):
+                        delta=desired[axis]-current[axis]
+                        self.translate_window(window,axis,delta)
+                        self.contain_carried(window,axis,delta)
         self.apply()
         self.transactions.pop(node, None)
 
@@ -285,12 +370,19 @@ class GuiGeometry:
         self.staged.pop(node, None)
         snapshot = self.transactions.pop(node, None)
         if snapshot:
-            self.axes, saved, self.frames, self.bindings, self.windows = snapshot
-            self.layouts = {key:layout for key,(layout,state) in saved.items()}
+            # Enclosing transactions can share this snapshot: restore copies.
+            axes, saved, frames, bindings, windows = snapshot
+            changes = self.changes
+            self.axes = tuple(g.fork() for g in axes)
+            self.frames, self.bindings = _Tracked(changes, frames), _Tracked(changes, bindings)
+            self.windows = _Tracked(changes, windows)
+            self.layouts = _Tracked(changes, {key:layout for key,(layout,state) in saved.items()})
             self.owner_layouts = {}
             for key,layout in self.layouts.items():self.owner_layouts.setdefault(layout.owner,set()).add(key)
             for layout,state in saved.values():
                 layout.__dict__.update(state)
+                layout.children = _Tracked(changes, state['children'])
+            changes[0] += 1
 
     def _frame_owner(self, node):
         while node in self.bindings:
@@ -300,6 +392,7 @@ class GuiGeometry:
     def declare(self, keys, *, axis, key, sizes=None, mins=None, maxes=None, fixed=None, padding=4.):
         if not self.cache.stack:
             raise RuntimeError('rows/columns require a cached @gui owner')
+        self._open_transactions()
         owner = self.cache.current
         keys = tuple(range(keys)) if isinstance(keys, int) else tuple(keys)
         if not keys or len(set(keys)) != len(keys):
@@ -351,7 +444,8 @@ class GuiGeometry:
                 at += width
                 edges.append(graph.edge(serial,str(keys[index]),at))
             edges.append(pair[1])
-            layout = Layout(self,owner,identity,serial,axis,keys,edges,cross,float(padding),minima,maxima)
+            layout = Layout(self,owner,identity,serial,axis,keys,edges,cross,float(padding),minima,maxima,
+                            children=_Tracked(self.changes))
             self.layouts[identity] = layout
             self.owner_layouts.setdefault(owner,set()).add(identity)
         graph.replace_cells(layout.serial, [(a,b,float(lo),None if hi is None else float(hi))
@@ -359,6 +453,7 @@ class GuiGeometry:
         layout.cross, layout.padding = cross, float(padding)
         layout.minima, layout.maxima, layout.raw = minima, maxima, False
         layout.children.clear()
+        self.changes[0] += 1
         # Normalize initial dividers with BOTH frame edges held. The requested
         # minima are never silently lowered to fit an impossible allocation.
         near, far = layout.edges[0], layout.edges[-1]
@@ -420,6 +515,7 @@ class GuiGeometry:
     def bind(self, node, parent, *, portal=False):
         scope=self.cell_scope
         if scope and scope[0].owner==parent and not portal:
+            self._open_transactions()
             previous=self.bindings.get(node)
             if node in self.frames and (previous is None or previous[0] is not scope[0] or previous[1]!=scope[1]):
                 self.drop_frame(node)
@@ -435,6 +531,8 @@ class GuiGeometry:
         cache = self.cache
         if self.native is not None:
             self.native.commit()
+        if not self.windows and not self.bindings:
+            return
         # Commit placement parents before their descendants. Portal rectangles
         # remain parent-relative even across ordinary intermediate views.
         graph = cache.graph

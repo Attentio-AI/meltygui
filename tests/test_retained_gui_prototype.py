@@ -26,6 +26,11 @@ def test_unchanged_caller_skips_result_acknowledgement_but_new_input_checks_it()
             reads.append(consume)
             return graph.result(node, consume)
 
+        def conclude(self, node):
+            # The declaration's single consuming read, combined with its extent.
+            reads.append(True)
+            return graph.conclude(node)
+
     cache.graph = ObservedGraph()
 
     @cache.gui()

@@ -1,11 +1,28 @@
 """Discover library render functions without executing their modules.
 
-Discovery runs once, on first public view lookup/introspection, not on package
-import or per frame. Editable source changes are discovered by the next
-interpreter run; packaged builds can supply an index generated during packaging.
+Editable checkouts cache the index between launches, validating source mtimes
+and sizes on first public view lookup. Changed sources are discovered by the
+next interpreter run; packaged builds can supply an immutable generated index.
 """
 from functools import cache
 from pathlib import Path
+from threading import Lock
+
+_discovery_lock = Lock()
+
+
+def _sources(root):
+    return sorted(path for path in Path(root).rglob('*.py')
+                  if not any(part in ('examples', '__pycache__')
+                             for part in path.relative_to(root).parts))
+
+
+def _manifest(root):
+    files = {}
+    for path in _sources(root):
+        stat = path.stat()
+        files[str(path.relative_to(root))] = [stat.st_mtime_ns, stat.st_size]
+    return files
 
 
 def _module_statements(statements):
@@ -27,10 +44,8 @@ def discover_render_exports(root):
     import importlib.util
     exports = {}
     canonical = 'meltygui.core.core_render.render_func'
-    for path in sorted(Path(root).rglob('*.py')):
+    for path in _sources(root):
         relative = path.relative_to(root)
-        if any(part in ('examples', '__pycache__') for part in relative.parts):
-            continue
         source = path.read_text(encoding='utf-8')
         if 'render_func' not in source:
             continue
@@ -89,7 +104,52 @@ def render_exports():
     index = root / '_render_exports.json'
     if index.is_file():
         # Packaging generates this from the exact bundled dependency sources.
-        # Editable checkouts have no index and retain source discovery.
         import json
         return {name: tuple(spec) for name, spec in json.loads(index.read_text()).items()}
-    return discover_render_exports(root)
+    # Serialize first lookups from the render and import threads.
+    with _discovery_lock:
+        return _editable_exports(root)
+
+
+def _editable_exports(root):
+    import hashlib
+    import json
+    import os
+    import tempfile
+    from meltygui.core.runtime.paths import cache_root
+
+    key = hashlib.sha256(os.fsencode(root)).hexdigest()[:24]
+    path = cache_root() / 'render-exports' / f'{key}.json'
+    files = _manifest(root)
+    try:
+        saved = json.loads(path.read_text())
+        if saved['version'] == 1 and saved['files'] == files:
+            exports = saved['exports']
+            if isinstance(exports, dict) and all(
+                    isinstance(name, str) and isinstance(spec, list) and len(spec) == 2
+                    and all(isinstance(value, str) for value in spec)
+                    for name, spec in exports.items()):
+                return {name: tuple(spec) for name, spec in exports.items()}
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+
+    exports = discover_render_exports(root)
+    # Do not save a mixed generation if a source changed during discovery.
+    if files != _manifest(root):
+        return exports
+    temporary = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump({'version': 1, 'files': files, 'exports': exports}, stream)
+        os.replace(temporary, path)
+    except OSError:
+        pass  # A read-only cache must not prevent public view imports.
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return exports

@@ -6,7 +6,7 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyInt, PyString, PyTuple};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use crate::hash::{Map as HashMap, Set as HashSet};
 
 #[derive(Hash, Eq, PartialEq)]
 enum Key {
@@ -133,18 +133,18 @@ impl Identities {
     #[pyo3(signature = (registry=None))]
     pub fn new(py: Python<'_>, registry: Option<Py<PyDict>>) -> Self {
         let mut ids = Self {
-            keys: HashMap::new(),
-            edges: HashMap::new(),
+            keys: HashMap::default(),
+            edges: HashMap::default(),
             uniques: vec![],
             scopes: vec![],
             depth: 0,
-            root_counts: HashMap::new(),
+            root_counts: HashMap::default(),
             root: 0,
             roots: vec![],
-            children: HashMap::new(),
+            children: HashMap::default(),
             persistent: registry.is_some(),
             registry: registry.unwrap_or_else(|| PyDict::new(py).unbind()),
-            states: HashSet::new(),
+            states: HashSet::default(),
         };
         ids.root = ids.token(Key::None);
         ids
@@ -195,7 +195,7 @@ impl Identities {
         }
     }
     pub fn prepare_save(&mut self, py: Python<'_>) -> PyResult<()> {
-        let mut active = HashSet::new();
+        let mut active = HashSet::default();
         let mut pending = self.roots.clone();
         while let Some(id) = pending.pop() {
             if active.insert(id) {

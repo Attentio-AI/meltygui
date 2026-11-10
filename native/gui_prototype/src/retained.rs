@@ -1,9 +1,11 @@
 //! Explicit invalidation and ownership, independent of rasterization.
 use pyo3::class::gc::{PyTraverseError, PyVisit};
 use pyo3::exceptions::PyRuntimeError;
+use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyString, PyTuple};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
+use crate::hash::{Map as HashMap, Set as HashSet};
 use crate::geometry::{Geometry, POSITION, SIZE, SCROLL, CONTENT};
 use crate::{NativeState, Value};
 
@@ -34,7 +36,7 @@ struct Node {
     anchors: Vec<Py<PyAny>>,
 }
 
-fn same_argument(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<bool> {
+pub(crate) fn same_argument(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<bool> {
     if a.is(b) {
         return Ok(true);
     }
@@ -69,6 +71,38 @@ pub struct RetainedGraph {
 }
 
 impl RetainedGraph {
+    /// `declare` plus its scheduling flags. `visibility` evaluates flag 8;
+    /// a caller that already knows the view is clean has no use for it.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn declare_flags(&mut self, py: Python<'_>, parent: u64, renderer: u64, key: Py<PyAny>, input: Py<PyAny>,
+                                kwargs: Py<PyDict>, rect: (f64, f64, f64, f64), portal: bool,
+                                state: Option<Py<NativeState>>, scrollable: bool, visibility: bool) -> PyResult<(u64, u8)> {
+        let id = self.declare(py, parent, renderer, key, input, kwargs, rect, portal, state, scrollable)?;
+        let node = &self.nodes[&id];
+        let mut flags = 0_u8;
+        if node.pending {flags |= 1;}
+        if node.dirty {flags |= 2;}
+        if parent != 0 && self.nodes[&parent].scrollable {
+            flags |= 4;
+            if visibility && self.visible(py, id) {flags |= 8;}
+        }
+        Ok((id, flags))
+    }
+    pub(crate) fn is_visible(&mut self, py: Python<'_>, id: u64) -> bool { self.visible(py, id) }
+    /// Whether `id` is a live child of `parent` with nothing to execute or return.
+    pub(crate) fn clean_child(&self, id: u64, parent: u64) -> bool {
+        self.nodes.get(&id).is_some_and(|node| node.parent == parent && !node.dirty && !node.pending && !node.portal)
+    }
+    /// The consumed result and current extent a declaration returns to its caller.
+    pub(crate) fn conclude(&mut self, py: Python<'_>, id: u64) -> PyResult<(bool, Py<PyAny>, f64, f64)> {
+        let rect = self.rect(py, id);
+        let (pending, value) = self.result(py, id, true)?;
+        Ok((pending, value, rect.2, rect.3))
+    }
+    pub(crate) fn constraints(&mut self,py:Python<'_>,id:u64)->(f64,f64) {
+        self.sync(py);let r=self.geometry.rect(py,id);
+        (r.2,if self.nodes[&id].auto_height {-1.}else{r.3})
+    }
     fn composition(&mut self, mut id: u64) {
         while let Some(node) = self.nodes.get_mut(&id) {
             node.compose = true;
@@ -142,17 +176,17 @@ impl RetainedGraph {
     fn new(py: Python<'_>) -> Self {
         Self {
             identities: PyDict::new(py).unbind(),
-            nodes: HashMap::new(),
+            nodes: HashMap::default(),
             serial: 0,
             rank: 0,
-            aliases: HashMap::new(),
+            aliases: HashMap::default(),
             retired: vec![],
             geometry: Geometry::default(),
-            dirty_set: HashSet::new(),
-            unclipped_dirty: HashSet::new(),
-            compose_set: HashSet::new(),
+            dirty_set: HashSet::default(),
+            unclipped_dirty: HashSet::default(),
+            compose_set: HashSet::default(),
             portals: BTreeSet::new(),
-            placements: HashMap::new(),
+            placements: HashMap::default(),
             visibility_revision: 0,
         }
     }
@@ -274,6 +308,129 @@ impl RetainedGraph {
         node.kwargs = kwargs;
         Ok(id)
     }
+    /// `declare` plus the scheduling facts its caller needs, in one crossing.
+    /// Flags: 1 pending returned edit, 2 dirty, 4 scrollable parent, 8 visible
+    /// (only evaluated under a scrollable parent, where it decides culling).
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (parent, renderer, key, input, kwargs, rect, portal, state=None, scrollable=false))]
+    fn declare_view(
+        &mut self,
+        py: Python<'_>,
+        parent: u64,
+        renderer: u64,
+        key: Py<PyAny>,
+        input: Py<PyAny>,
+        kwargs: Py<PyDict>,
+        rect: (f64, f64, f64, f64),
+        portal: bool,
+        state: Option<Py<NativeState>>,
+        scrollable: bool,
+    ) -> PyResult<(u64, u8)> {
+        self.declare_flags(py, parent, renderer, key, input, kwargs, rect, portal, state, scrollable, true)
+    }
+    /// A consumed result plus the current extent; see `conclude`.
+    #[pyo3(name = "conclude")]
+    fn py_conclude(&mut self, py: Python<'_>, id: u64) -> PyResult<(bool, Py<PyAny>, f64, f64)> {
+        self.conclude(py, id)
+    }
+    #[pyo3(name = "constraints")]
+    fn py_constraints(&mut self, py: Python<'_>, id: u64) -> (f64, f64) {
+        self.constraints(py, id)
+    }
+    /// Start one execution. Returns the live input, the declaration's
+    /// arguments (shared, not copied: read only), the pre-execution rectangle,
+    /// origin, parent, portal flag, automatic-height flag and scroll offset.
+    /// `invocation` materializes the same data as one keyword dictionary.
+    #[allow(clippy::type_complexity)]
+    fn begin_execution(&mut self, py: Python<'_>, id: u64)
+        -> PyResult<(Py<PyAny>, Py<PyDict>, (f64,f64,f64,f64), (f64,f64), u64, bool, bool, (f64,f64))> {
+        let node = self.nodes.get(&id).ok_or_else(|| PyRuntimeError::new_err("retired view"))?;
+        let (input, args) = (node.input.clone_ref(py), node.kwargs.clone_ref(py));
+        let rect = self.rect(py, id);
+        self.begin(py, id)?;
+        let origin = self.geometry.origin(py, id);
+        let scroll = self.geometry.scroll(py, id);
+        let node = &self.nodes[&id];
+        Ok((input, args, rect, origin, node.parent, node.portal, node.auto_height, scroll))
+    }
+    /// Commit one execution and its measured extent. Returns whether the extent
+    /// changed, whether nodes await retirement, the parent, and the capture's
+    /// residency owner (the ancestor directly below a scroll viewport, or 0).
+    fn finish_execution(&mut self, py: Python<'_>, id: u64, result: &Bound<'_, PyTuple>, independent: bool,
+                        width: f64, height: f64) -> PyResult<(bool, bool, u64, u64)> {
+        self.commit(py, id, result, independent)?;
+        let resized = self.measured(py, id, width, height)?;
+        let (parent, owner) = self.capture_owner(id);
+        Ok((resized, !self.retired.is_empty(), parent, owner))
+    }
+    /// A capture's parent and its residency owner: the ancestor directly below
+    /// the nearest scroll viewport, or 0 when no viewport contains it.
+    fn capture_owner(&self, id: u64) -> (u64, u64) {
+        let parent = self.nodes[&id].parent;
+        let (mut owner, mut ancestor) = (id, parent);
+        while ancestor != 0 && !self.nodes[&ancestor].scrollable {
+            owner = ancestor;
+            ancestor = self.nodes[&ancestor].parent;
+        }
+        (parent, if ancestor != 0 {owner} else {0})
+    }
+    /// What automatic raster selection needs for one observed view: whether a
+    /// rasterized ancestor already covers it, its pixel count and whether it is
+    /// a raster now. None for roots and portals, which are always rasters.
+    fn raster_context(&mut self, py: Python<'_>, gpu: &Bound<'_, crate::texture::TextureCache>, id: u64)
+        -> Option<(bool, i64, bool)> {
+        let node = self.nodes.get(&id)?;
+        if node.parent == 0 || node.portal {return None;}
+        let cache = gpu.borrow();
+        let (mut ancestor, mut covered) = (node.parent, false);
+        while ancestor != 0 {
+            let owner = &self.nodes[&ancestor];
+            if owner.portal {break;}
+            if owner.parent != 0 && cache.is_raster(ancestor) {covered = true; break;}
+            ancestor = owner.parent;
+        }
+        let raster = cache.is_raster(id);
+        drop(cache);
+        let rect = self.rect(py, id);
+        Some((covered, (rect.2.ceil() as i64) * (rect.3.ceil() as i64), raster))
+    }
+
+    /// Replay every pending composition bottom-up in one crossing. `stack`
+    /// holds views still executing, whose packets are incomplete. Returns the
+    /// visible scroll children, for the caller's residency ordering.
+    fn compose(&mut self, py: Python<'_>, gpu: &Bound<'_, crate::texture::TextureCache>,
+               backgrounds: &Bound<'_, PyDict>, stack: Vec<u64>) -> PyResult<Vec<u64>> {
+        let nodes: Vec<u64> = self.composition_order(py).into_iter().filter(|id| !stack.contains(id)).collect();
+        let mut touched = vec![];
+        if nodes.is_empty() {return Ok(touched);}
+        let mut cache = gpu.borrow_mut();
+        for node in &nodes {
+            let placements = self.take_placements(py, *node);
+            if self.nodes[node].scrollable {
+                let children = self.visible_children(py, *node);
+                touched.extend(children.iter().map(|child| child.0));
+                cache.children(*node, children.into_iter()
+                    .map(|(child,x,y,w,h)| (child, x as f32, y as f32, w as f32, h as f32)).collect());
+            } else {
+                for (child,x,y,w,h) in placements {
+                    if backgrounds.contains(child)? {
+                        cache.place_child(*node, child, (x as f32, y as f32, w as f32, h as f32),
+                                          (x as f32, y as f32, (x+w) as f32, (y+h) as f32))?;
+                    }
+                }
+            }
+        }
+        let mut views = Vec::with_capacity(nodes.len());
+        for node in &nodes {
+            let background = backgrounds.get_item(*node)?
+                .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(*node))?;
+            views.push((*node, background.extract::<(f32,f32,f32,f32)>()?));
+        }
+        cache.render_many(views)?;
+        drop(cache);
+        for node in &nodes {self.composed(*node);}
+        Ok(touched)
+    }
     fn invocation(&mut self, py: Python<'_>, id: u64) -> PyResult<(Py<PyAny>, Py<PyDict>)> {
         let n = self
             .nodes
@@ -281,10 +438,10 @@ impl RetainedGraph {
             .ok_or_else(|| PyRuntimeError::new_err("retired view"))?;
         let args=n.kwargs.bind(py).copy()?;
         let r=self.geometry.rect(py,id);
-        args.set_item("width",r.2)?;
-        if n.auto_height {args.set_item("height",py.None())?;} else {args.set_item("height",r.3)?;}
-        args.set_item("left",r.0)?;args.set_item("top",r.1)?;
-        args.set_item("scroll_offset",self.geometry.scroll(py,id))?;
+        args.set_item(intern!(py,"width"),r.2)?;
+        if n.auto_height {args.set_item(intern!(py,"height"),py.None())?;} else {args.set_item(intern!(py,"height"),r.3)?;}
+        args.set_item(intern!(py,"left"),r.0)?;args.set_item(intern!(py,"top"),r.1)?;
+        args.set_item(intern!(py,"scroll_offset"),self.geometry.scroll(py,id))?;
         Ok((n.input.clone_ref(py),args.unbind()))
     }
     fn begin(&mut self, py:Python<'_>, id: u64) -> PyResult<()> {
@@ -600,10 +757,7 @@ impl RetainedGraph {
         }
         clip
     }
-    fn constraints(&mut self,py:Python<'_>,id:u64)->(f64,f64) {
-        self.sync(py);let r=self.geometry.rect(py,id);
-        (r.2,if self.nodes[&id].auto_height {-1.}else{r.3})
-    }
+
     /// One native query for ImGui and retained regions. Portals escape ancestor
     /// clips and occlude lower windows even when their body has no hit region.
     fn hits(&mut self,py:Python<'_>,x:f64,y:f64)->(Option<u64>,Vec<(u64,f64,f64)>) {

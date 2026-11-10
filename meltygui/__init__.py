@@ -59,6 +59,10 @@ _LAZY_EXPORTS = {
 
 
 def __getattr__(name):
+    # A submodule can be in sys.modules before importlib binds it on its parent.
+    module = sys.modules.get(f'{__name__}.{name}')
+    if module is not None:
+        return module
     if name == 'imgui':
         import meltygui_imgui
         return meltygui_imgui
