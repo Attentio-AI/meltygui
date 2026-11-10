@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "meltygui"
-version = "0.1.8"
+version = "0.1.9"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 classifiers = ["Development Status :: 3 - Alpha", "Operating System :: POSIX :: Linux", "Operating System :: MacOS :: MacOS X", "Operating System :: Microsoft :: Windows","Programming Language :: Python :: 3.11", "Programming Language :: Python :: 3.12", "Programming Language :: Python :: 3.13"]
@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-tensor = ["torch>=2.2", "meltygui-pycuda>=2026.2,<2026.3; sys_platform == 'linux'"]
+tensor = ["torch>=2.2", "meltygui-pycuda>=2026.3,<2026.4; sys_platform == 'linux'"]
 # The Claude Code chat backend (meltygui.chat.claude_code); imported on the first conversation.
 claude = ["claude-agent-sdk>=0.2.152"]
 input = ["evdev>=1.7; sys_platform == 'linux'", "pynput>=1.7"]
