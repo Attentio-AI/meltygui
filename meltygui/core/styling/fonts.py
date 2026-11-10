@@ -254,6 +254,13 @@ class FontManager:
     # Existing managers pick up the backing density between frames on hotswap.
     pixel_scale = 1.0
 
+    # Largest texture side every backend accepts (Metal and desktop GL).
+    # _bake walks _FIT, (atlas width, oversample cap) with 0 = imgui's own
+    # width, until the atlas height fits: reorder or add rungs here.
+    max_texture = 16384
+    _FIT = ((0, 3), (8192, 3), (8192, 2), (8192, 1), (16384, 1))
+    _oversample_cap = 3
+
     def __init__(self, io, scale: float = 1.0, pixel_scale: float = 1.0):
         self.io = io
         self.scale = float(scale)
@@ -321,7 +328,7 @@ class FontManager:
         the LCD text shader needs exactly 3 atlas texels per screen pixel
         regardless of scale, and with oversample_v pinned to 1 the atlas
         cost is linear in it (3x, not 9x)."""
-        return spec.oversample
+        return min(spec.oversample, self._oversample_cap)
 
     def prewarm(self):
         """Bake the eager (first-frame) fonts only. Everything else loads
@@ -363,8 +370,26 @@ class FontManager:
         include.intersection_update(retained)
         self._variant_groups = {f: group for f, group in self._variant_groups.items() if f in include}
         self._variant_last_used = {f: t for f, t in self._variant_last_used.items() if f in include}
+        atlas, texels = self.io.fonts, 0
+        for width, over in self._FIT:
+            # Skip rungs the first build's texel count already rules out.
+            if texels * over > width * self.max_texture * 3:
+                continue
+            self._fill(include, width, over)
+            atlas.get_tex_data_as_alpha8()  # builds; the size is unknown before
+            if atlas.texture_height <= self.max_texture:
+                return
+            texels = texels or atlas.texture_width * atlas.texture_height
+        print(f"FontManager: atlas {atlas.texture_width}x{atlas.texture_height} "
+              f"exceeds {self.max_texture}")
+
+    def _fill(self, include, width, oversample):
+        """Queue every font in `include` on a cleared atlas `width` texels
+        wide, horizontal oversampling capped at `oversample`."""
+        self._oversample_cap = oversample
         self._handles.clear()
         self.io.fonts.clear()
+        self.io.fonts.texture_desired_width = width
         # Rasterize at physical resolution, then express glyph geometry in
         # window points. This cancels the framebuffer scale, never upscales
         # a low-resolution atlas. Every Surface applies the same reciprocal.

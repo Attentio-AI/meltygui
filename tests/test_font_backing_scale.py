@@ -67,3 +67,13 @@ def test_backing_density_rebuilds_only_when_it_changes(font_context):
 def test_macos_uses_cocoa_points_for_automatic_ui_size(monkeypatch):
     monkeypatch.setattr(fonts.sys, 'platform', 'darwin')
     assert fonts.detect_auto_scale() == 1
+
+
+def test_atlas_stays_within_the_texture_limit(font_context):
+    # Every font at a 2x display and 1.5 UI scale overflowed imgui's 4096 wide atlas.
+    manager = fonts.FontManager(font_context, 1.5, 2.)
+    manager._loaded |= set(fonts.Font)
+    manager.prewarm()
+    width, height, _ = font_context.fonts.get_tex_data_as_alpha8()
+    assert max(width, height) <= manager.max_texture
+    assert manager.get(fonts.Font.JETBRAINS_MONO_50) is not None
