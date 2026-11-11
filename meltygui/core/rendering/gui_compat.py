@@ -291,6 +291,9 @@ class Bridge:
         # Native nodes under the pointer or holding focus become dirty; Rust
         # runs them on its own. Retained hit regions (cache.region) follow.
         routing = cache.imgui_input
+        if cache.listeners:
+            # The frame's ordered key presses and repeats, for listening views.
+            routing.keys.extend(Melty.frame_key_events)
         routing.process(imgui.get_io())
         if routing.hover is not None or cache.hover is not None or cache.drag:
             cache.pointer(imgui.get_mouse_pos(), pressed=imgui.is_mouse_clicked(0),

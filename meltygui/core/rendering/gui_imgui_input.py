@@ -2,7 +2,30 @@
 
 ImGui owns widget IDs, keyboard focus and editing state globally. This bridge
 tracks which retained views must execute; it never copies IO into view contexts.
+
+Views declared with ``@gui(listen=(...))`` are event driven instead: raw pointer
+and key samples never rerun them, and each name they list arrives as a list in
+``view_events``:
+
+- ``keys``: ``(key, mods)`` presses and repeats, for the keyboard owner.
+- ``text``: typed strings, for the keyboard owner.
+- ``focus``: True / False when the view gains / loses the keyboard.
+- ``pointer``: ``Pointer`` press, drag and release, in the view's own coordinates.
+- ``wheel``: ``(horizontal, vertical)`` steps no viewport consumed.
+- ``scroll``: True after a viewport under the pointer scrolled.
+
+A press gives the keyboard and the pointer to the innermost listening view
+around the hit one, so popovers and inline widgets leave the keyboard with
+their editor. Views that list nothing cost one dictionary truth test a frame.
 """
+from collections import namedtuple
+import time
+
+# kind is 'press', 'drag' or 'release'; clicks counts 1, 2, 3 for repeated presses.
+Pointer = namedtuple('Pointer', 'kind x y clicks ctrl shift alt')
+# Levers: how close in seconds and pixels presses must be to count as a multi click.
+CLICK_SECONDS = 0.4
+CLICK_PIXELS = 4.
 
 
 # Neither mouse button is claimed by an idle view.
@@ -24,11 +47,85 @@ class ImGuiInput:
         self.settle_hover = set()
         self.right_active = set()
         self.pressed_keys = frozenset()
+        # Event delivery to listening views: presses queued by the host, the
+        # views owning the keyboard and the held pointer, the last press.
+        self.keys = []
+        self.keyboard = self.grab = None
+        self.press = (0., 0., 0., 0)
 
     def character(self, codepoint):
         self.characters.append(codepoint)
         if self.cache.request_frame:
             self.cache.request_frame()
+
+    def key(self, key, mods):
+        """Host sink for one key press or repeat, in arrival order."""
+        self.keys.append((key, mods))
+        if self.cache.request_frame:
+            self.cache.request_frame()
+
+    def owner(self, node, name):
+        """The innermost view from `node` outward that listens for `name`."""
+        listeners, parent = self.cache.listeners, self.cache.graph.parent
+        while node:
+            if name in listeners.get(node, ()):
+                return node
+            node = parent(node)
+        return None
+
+    def post(self, node, name, item):
+        """Queue one event; the view's next run reads the list in view_events[name]."""
+        cache = self.cache
+        if node is None or node not in cache.records:
+            return
+        cache.events.setdefault(node, {}).setdefault(name, []).append(item)
+        cache.geometry.frozen.discard(node)
+        cache.graph.invalidate_node(node)
+        if cache.request_frame:
+            cache.request_frame()
+
+    def take_keyboard(self, node):
+        """Move the keyboard to `node` (None releases it)."""
+        if node != self.keyboard:
+            self.post(self.keyboard, 'focus', False)
+            self.keyboard = node
+            self.post(node, 'focus', True)
+
+    def deliver(self, position, buttons, old, wheel, modifiers, scrolled):
+        """Turn this frame's sample into events for the listening views."""
+        cache = self.cache
+        down, was_down = buttons[0], old is not None and old[1][0]
+        pressed = down and not was_down
+        if pressed or scrolled or any(wheel):
+            target = self.hit(position)
+            if pressed:
+                self.take_keyboard(self.owner(target, 'keys'))
+                self.grab = self.owner(target, 'pointer')
+                now = time.monotonic()
+                then, x, y, clicks = self.press
+                near = abs(position[0] - x) + abs(position[1] - y) <= CLICK_PIXELS
+                self.press = (now, position[0], position[1],
+                              clicks % 3 + 1 if near and now - then <= CLICK_SECONDS else 1)
+            if scrolled:
+                self.post(self.owner(target, 'scroll'), 'scroll', True)
+            elif any(wheel):
+                self.post(self.owner(target, 'wheel'), 'wheel', (wheel[1], wheel[0]))
+        if self.grab is not None:
+            kind = ('press' if pressed else 'release' if not down
+                    else 'drag' if old is None or old[0] != position else None)
+            if kind and self.grab in cache.records:
+                x, y = cache.position(self.grab)
+                self.post(self.grab, 'pointer', Pointer(
+                    kind, position[0] - cache.origin[0] - x, position[1] - cache.origin[1] - y,
+                    self.press[3], *modifiers[:3]))
+            if not down:
+                self.grab = None
+        if self.keys or self.text:
+            for item in self.keys:
+                self.post(self.keyboard, 'keys', item)
+            if self.text:
+                self.post(self.keyboard, 'text', ''.join(map(chr, self.text)))
+        self.keys.clear()
 
     def hit(self, position):
         cache = self.cache
@@ -53,6 +150,9 @@ class ImGuiInput:
         self.text, self.characters = tuple(self.characters), []
         if old != self.sample or self.text or any(buttons) or self.pressed_keys:
             self.cache.calibration.input()
+        listeners = self.cache.listeners
+        if listeners:
+            self.deliver(position, buttons, old, wheel, modifiers, scrolled)
         # During a wheel gesture keep cached content frozen. Settle hover once
         # the wheel stops; keyboard edits and captured widgets still get input.
         if scrolled and old is not None and old[2:4] == self.sample[2:4] and not self.text and not self.active:
@@ -77,7 +177,8 @@ class ImGuiInput:
         dirty.update(self.settle_hover)
         self.settle_hover.clear()
         for node in dirty:
-            if node in self.cache.records:
+            # Listening views run on their events, never on raw samples.
+            if node in self.cache.records and node not in listeners:
                 self.cache.geometry.frozen.discard(node)
                 self.cache.graph.invalidate_node(node)
         if not any(buttons):
@@ -136,6 +237,6 @@ class ImGuiInput:
         self.settle_hover.discard(node)
         self.right_active.discard(node)
         self.pointer_claims.pop(node, None)
-        for name in ('hover', 'capture', 'focus', 'mouse_owner', 'blur'):
+        for name in ('hover', 'capture', 'focus', 'mouse_owner', 'blur', 'keyboard', 'grab'):
             if getattr(self, name) == node:
                 setattr(self, name, None)

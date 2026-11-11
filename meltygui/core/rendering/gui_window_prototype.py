@@ -45,6 +45,16 @@ class _GuiWindow:
         self.cache.origin = (0, 0)
         if self.cache.graphics and self.input_backend is None:
             self.input_backend = surface.impl
+            # The host's colour pipeline (hdr_color.py): without it a packed
+            # colour's 7 bit alpha reads as more than half opaque.
+            from meltygui import hdr_color
+            from meltygui.core.runtime.toggles import Toggles
+            hdr_range, octaves = hdr_color._curve_params()
+            matrix = hdr_color.P3_TO_SRGB
+            gamma = float(Toggles.Fonts.text_gamma)
+            self.cache._ensure_gpu().melty_colors(
+                float(hdr_range), float(octaves), [float(matrix[row][column]) for column in range(3) for row in range(3)],
+                gamma if gamma > 0 else 1., int(imgui.get_io().fonts.texture_id))
             self.input_backend.gui_character_callback = self.cache.imgui_input.character
         token = _window.set(self)
         from meltygui.core.runtime.app import _state
@@ -52,6 +62,9 @@ class _GuiWindow:
         scope = (_state['app_id'], _renderer_name(func, options.get('state_id')))
         self.native.begin_frame(scope=scope, width=width, cache=self.cache)
         try:
+            if self.cache.listeners:
+                # The frame's ordered key presses and repeats, for listening views.
+                self.cache.imgui_input.keys.extend(Melty.frame_key_events)
             self.cache.process_host_input(
                 drag_position=(self.input_backend.drag_mouse_pos
                                if self.input_backend is not None else None))

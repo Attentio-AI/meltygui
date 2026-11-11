@@ -101,6 +101,11 @@ class RetainedGui:
         self.regions = {}
         self.staged_regions = {}
         self.events = {}
+        # Views declared with `listen=`: node to the event names it takes
+        # (gui_imgui_input.py). Empty until an app declares one.
+        self.listeners = {}
+        # Views a worker thread asked to run again (`wake`), drained by flush().
+        self.woken = deque()
         self.renderers = []
         self.captures = {}
         self.states = {}
@@ -185,6 +190,13 @@ class RetainedGui:
         if self.request_frame:
             self.request_frame()
 
+    def wake(self, node):
+        """Thread safe: run `node` again on the next frame, for a view whose
+        background result arrived. The only cache method a worker may call."""
+        self.woken.append(node)
+        if self.request_frame:
+            self.request_frame()
+
     @contextmanager
     def frame(self):
         """Reconcile declarations made by the external, uncached host."""
@@ -211,13 +223,14 @@ class RetainedGui:
             self._retire()
 
     def gui(self, func=None, *, left=None, top=None, width=300, height=100, min_height=0, max_height=8192,
-            inject=None, events=(), state_id=None, no_save=(), scroll=False, place=None, **decoration):
+            inject=None, events=(), state_id=None, no_save=(), scroll=False, place=None, listen=None,
+            **decoration):
         _check_position_arguments(decoration, no_save)
         if func is None:
             return lambda fn: self.gui(fn, left=left, top=top, width=width, height=height, min_height=min_height,
                                        max_height=max_height, inject=inject, events=events,
                                        state_id=state_id, no_save=no_save, scroll=scroll, place=place,
-                                       **decoration)
+                                       listen=listen, **decoration)
         decorated_left, decorated_top = left, top
         parameters = inspect.signature(func).parameters
         def position_default(name, decorated):
@@ -421,6 +434,8 @@ class RetainedGui:
                 self.records[node] = binding.native, binding.renderer, func
                 self.states[node] = state
                 self.executor.attach(node, binding.call, func, binding.unique, state, caller_keys)
+                if listen is not None:
+                    self.listeners[node] = frozenset(listen)
                 self.associate(func, node)
                 self.associate(wrapper, node)
                 graph.associate(node, f'renderer:{renderer_id}', func)
@@ -723,6 +738,11 @@ class RetainedGui:
 
     def flush(self):
         """Run only dirty functions, then replay retained packets bottom-up."""
+        while self.woken:
+            node = self.woken.popleft()
+            if node in self.records:
+                self.geometry.frozen.discard(node)
+                self.graph.invalidate_node(node)
         for definition in self.renderers:
             func, old_code, refresh_positions = definition
             if func.__code__ is not old_code:
@@ -772,7 +792,7 @@ class RetainedGui:
             self._drop_capture(node)
             self.executor.forget(node)
             for mapping in (self.invocations, self.events, self.regions, self.states, self.uniques, self.caller_keys,
-                            self.backgrounds, self.texture_refs):
+                            self.backgrounds, self.texture_refs, self.listeners):
                 mapping.pop(node, None)
             self.root_ids.discard(node)
 
@@ -800,10 +820,15 @@ class RetainedGui:
             if self.request_frame: self.request_frame()
         return changed
 
+    def title_height(self, node):
+        """A floating window's title strip: its content offset. A popover
+        declared with `content_offset=(0, 0)` has no title, shadow or drag."""
+        return self.graph.state(node).content_offset[1]
+
     def window_rect(self, node):
         x,y=self._position(node)
         _,_,w,h=self.graph.rect(node)
-        return x,y-28,w,h
+        return x,y-self.title_height(node),w,h
 
     def _inside_clip(self, node, x, y):
         """Inline descendants respect cached ancestor boundaries; portals escape."""
@@ -891,9 +916,9 @@ class RetainedGui:
         x, y = position[0] - self.origin[0], position[1] - self.origin[1]
         occupied = self.hover is not None or self.drag is not None
         if not occupied:
-            occupied = any(wx <= x < wx + w and wy <= y < wy + h + 28
-                           for wx, wy, w, h in
-                           (self.window_rect(node) for node in self.graph.windows()))
+            occupied = any(wx <= x < wx + w and wy <= y < wy + h + self.title_height(node)
+                           for node in self.graph.windows()
+                           for wx, wy, w, h in (self.window_rect(node),))
         left, right = self.imgui_input.pointer_claims.get(self.imgui_input.mouse_owner, (False, False))
         subscriptions = []
         if occupied or left or self.geometry.claim[0]:
@@ -917,11 +942,13 @@ class RetainedGui:
             x, y, w, h = self.window_rect(node)
             x += origin[0]
             y += origin[1]
-            left,top,right,bottom=(math.floor(v+.5) for v in (x,y,x+w,y+28+h))
-            dl.add_rect_filled(left+5,top+5,right+5,bottom+5,0x66000000,5)
-            dl.add_rect_filled(left,top,right,top+28,0xFF65513B,5)
-            dl.add_text(left+9,top+5,0xFFFFFFFF,'Owned @gui window (drag title)')
-            self._draw_image(dl,node,x,y+28,w,h)
+            title=self.title_height(node)
+            if title:
+                left,top,right,bottom=(math.floor(v+.5) for v in (x,y,x+w,y+title+h))
+                dl.add_rect_filled(left+5,top+5,right+5,bottom+5,0x66000000,5)
+                dl.add_rect_filled(left,top,right,top+title,0xFF65513B,5)
+                dl.add_text(left+9,top+5,0xFFFFFFFF,'Owned @gui window (drag title)')
+            self._draw_image(dl,node,x,y+title,w,h)
             self.geometry.paint(dl,origin,portal=node)
 
         if self.gpu and self._frame_started is not None:
