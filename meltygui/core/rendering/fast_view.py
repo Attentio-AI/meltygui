@@ -41,6 +41,10 @@ FAST_VIEW_WRAPPER_KWARGS = (
     "show_bg", "shadow", "horizontal", "initial", "window_pos", "draw_background", "draw_overlay", "draw_overlay_background")
 # Names a body's signature may ask for that the host supplies itself.
 _HOST_SUPPLIED = ("input_value", "draw_state", "style_manager", "unique", "name", "suffix", "depth")
+# Lever: a host whose callers cannot take wrapperless paint sets a callable
+# here; True sends the call to the @render_func wrapper (gui_compat.py: a
+# retained @gui body draws in its own coordinates).
+needs_wrapper = None
 
 # A body's signature facts keyed by its code object, so a hotswapped
 # signature is re-read (the function object itself survives hotswap).
@@ -78,6 +82,8 @@ def view_signature(body):
 def wants_wrapper(kwargs, wrapper_kwargs=FAST_VIEW_WRAPPER_KWARGS):
     """True when this call needs the @render_func host."""
     if not Toggles.Collection.fast_draw_collection or Melty.in_annotation_mode():
+        return True
+    if needs_wrapper is not None and needs_wrapper():
         return True
     for wrapper_kwarg in wrapper_kwargs:
         if kwargs.get(wrapper_kwarg):
@@ -425,7 +431,8 @@ def draw_fast_control(input_value, kwargs, *, wrapped, host, state_name, state_t
     from meltygui.core.core_render import push_id
     from meltygui.core.windowing.glfw_utils import request_render
 
-    if (Melty.in_annotation_mode() or any(kwargs.get(key) for key in wrapper_kwargs)):
+    if (Melty.in_annotation_mode() or any(kwargs.get(key) for key in wrapper_kwargs)
+            or (needs_wrapper is not None and needs_wrapper())):
         return wrapped(input_value, **kwargs)
     body = wrapped.__wrapped__
     return_extras = kwargs.pop("return_extras", False)

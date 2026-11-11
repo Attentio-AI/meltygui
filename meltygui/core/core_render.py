@@ -6339,4 +6339,6 @@ _rust_route = _rust_pass = None
 import os as _os
 if _os.environ.get('MELTY_RUST', '') not in ('', '0'):
     from meltygui.core.rendering import gui_compat as _gui_compat
+    from meltygui.core.rendering import fast_view as _fast_view
     _rust_route, _rust_pass = _gui_compat.route, _gui_compat.PASS
+    _fast_view.needs_wrapper = _gui_compat.in_native_body

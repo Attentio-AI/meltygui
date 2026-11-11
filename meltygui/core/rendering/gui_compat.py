@@ -15,8 +15,8 @@ before an unmodified legacy app (the code editor) runs on it?
     MELTY_FRAME_LOG=path    per-second frame CPU times, with or without MELTY_RUST
     MELTY_RUST_TREE=path    the view catalog: once a second, every view function
                             seen so far with its callers, how it was served
-                            (legacy, fast host, node run, node hit, native) and
-                            its time
+                            (legacy, fast host, node run, node hit, island run,
+                            island hit, native) and its time
 
 How it works, and where each piece lives:
 
@@ -39,10 +39,18 @@ native view may be declared from any legacy body, retained or immediate
 (`use_cache=False`), and may nest other native views. Its identity is scoped
 by the legacy view that calls it. Rust schedules native nodes on its own from
 pointer and keyboard input (`BridgeInput`); legacy-hosting nodes are
-caller-bound (`RetainedGraph.bind`) and wake through `Bridge.wake`. The other
-direction, a legacy view inside a native body, raises: see `route`.
+caller-bound (`RetainedGraph.bind`) and wake through `Bridge.wake`.
+
+The other direction, a legacy view called from a native body, is an island
+(`Bridge.island`): a legacy-hosting node under the native node, captured in
+window coordinates, whose body runs in the legacy context the native view was
+declared in (`Ambient`) instead of a live legacy caller's. So it can run alone:
+`Bridge.service` applies the legacy rules to it once a frame while its native
+parent is clean, and its edits reach the native caller on that caller's next
+run. Windows called from a native body (popovers) stay legacy, as everywhere.
 """
 from collections import Counter
+from contextlib import contextmanager
 from functools import wraps
 import inspect
 import json
@@ -78,7 +86,8 @@ class Entry:
     have compared or recomputed for it on a cache hit."""
     __slots__ = ('unique', 'node', 'draw_state', 'parent', 'pending', 'reason', 'call', 'size',
                  'extent', 'advance', 'hovered', 'frame', 'runs', 'name', 'input', 'result',
-                 'tile', 'origin', 'ambient', 'executed', 'shift', 'run_frame', 'anchor')
+                 'tile', 'origin', 'ambient', 'executed', 'shift', 'run_frame', 'anchor',
+                 'natives', 'site', 'host', 'local', 'returned', 'settled', 'epoch', 'live')
 
     def __init__(self, unique, name):
         self.unique, self.name = unique, name
@@ -96,12 +105,62 @@ class Entry:
         self.frame = -1           # last declaration
         self.run_frame = -1       # last execution
         self.runs = 0
+        self.natives = None       # Native records this view's body declared
+        # An island: this legacy view is called from a native body.
+        self.site = None          # Native record of the legacy call site above it
+        self.host = None          # the native node whose body calls it
+        self.local = (0., 0.)     # the cursor in that node's coordinates
+        self.returned = None      # an edit it made on its own, for the native caller
+        self.settled = -1         # frame whose run or hit epilogue is done
+        self.epoch = -1           # the native body run that last called it
+        self.live = False
+
+
+class Ambient:
+    """The legacy context at one call site: Melty's stacks and the scalars
+    the legacy wrapper reads from its surroundings, plus the style tint.
+    `enter` puts copies in place, `leave` puts back what was there."""
+    __slots__ = ('values', 'tint')
+    # Lever: per-call legacy state outside Melty's *_stack lists.
+    scalars = ('depth', 'z_pos', 'shadow_depth', 'bg_depth', 'active_layer', 'paint_rank',
+               'indent_count', 'unindent_count', 'flow_spacing')
+    names = None
+
+    @classmethod
+    def capture(cls):
+        from meltygui.core.melty import Melty
+        if cls.names is None:
+            cls.names = tuple(name for name, value in vars(Melty).items()
+                              if name.endswith('_stack') and isinstance(value, list)) + cls.scalars
+        ambient = cls()
+        ambient.values = [list(value) if type(value) is list else value
+                          for value in (getattr(Melty, name) for name in cls.names)]
+        ambient.tint = Melty.style_manager.get_tint()
+        return ambient
+
+    def enter(self):
+        from meltygui.core.melty import Melty
+        manager = Melty.style_manager
+        saved = [getattr(Melty, name) for name in self.names], manager.get_tint()
+        for name, value in zip(self.names, self.values):
+            setattr(Melty, name, list(value) if type(value) is list else value)
+        if saved[1] != self.tint:
+            manager.set_imgui_tint(*self.tint[:4])
+        return saved
+
+    def leave(self, saved):
+        from meltygui.core.melty import Melty
+        values, tint = saved
+        for name, value in zip(self.names, values):
+            setattr(Melty, name, value)
+        if Melty.style_manager.get_tint() != tint:
+            Melty.style_manager.set_imgui_tint(*tint[:4])
 
 
 class Native:
     """One native @gui view declared from legacy code: what the legacy side
     knew at its call site, for input routing and independent executions."""
-    __slots__ = ('node', 'owner', 'host', 'clip', 'tint', 'frame')
+    __slots__ = ('node', 'owner', 'host', 'clip', 'tint', 'frame', 'ambient', 'islands')
 
     def __init__(self):
         self.node = None      # retained node, known after the first declaration
@@ -110,6 +169,8 @@ class Native:
         self.clip = None      # legacy clip rectangle at the call site
         self.tint = None      # legacy style tint at the call site
         self.frame = -1
+        self.ambient = None   # the legacy context at the call site, for legacy views inside
+        self.islands = {}     # legacy unique -> Entry called from this view or its native children
 
 
 class BridgeInput(ImGuiInput):
@@ -122,7 +183,10 @@ class BridgeInput(ImGuiInput):
         x, y = position[0] - cache.origin[0], position[1] - cache.origin[1]
         _, hits = cache.graph.hits(x, y)
         for node, _, _ in hits:
-            if node in bridge.nodes:
+            entry = bridge.nodes.get(node)
+            if entry is not None:
+                if entry.site is not None and bridge.covers(entry, x, y):
+                    return None     # a legacy view in a native body: the legacy event system owns it
                 continue
             record = bridge.record(node)
             if record is not None and bridge.reachable(record, x, y):
@@ -161,6 +225,12 @@ class Bridge:
         self.native_keys = {} # (view, key) -> Native
         self.occurrences = {} # (legacy unique, view) -> unnamed calls this frame
         self.declaring_native = None
+        self.epoch = 0        # native body runs so far: one legacy identity per run
+        self.popups = set()   # native nodes whose last run called a legacy window
+        self.hosts = set()    # native nodes whose last run called a legacy view
+        self.deferred = set() # island nodes held back until the next frame (`defer`)
+        self.filled = set()   # native nodes whose current run gave its height to a legacy view
+        self.late = False     # after Melty.end_frame: no legacy body may run any more
         self.reported = set() # failures already printed
         self.runtime = None   # immediate (use_cache=False) dispatch, created on first use
         self.token = None
@@ -204,8 +274,20 @@ class Bridge:
         cache = self.cache
         cache.origin = (0, 0)
         self.occurrences.clear()
+        self.late = False
+        if self.deferred:
+            cache.geometry.frozen.difference_update(self.deferred)
+            self.deferred.clear()
         if _tree_path:
             Catalog.frame()
+        from meltygui.core.melty import Melty
+        if self.popups and Melty.returned_values:
+            # A legacy window answered last frame: its native callers read the answer.
+            for node in list(self.popups):
+                if node in cache.records:
+                    cache.graph.invalidate_node(node)
+                else:
+                    self.popups.discard(node)
         # Native nodes under the pointer or holding focus become dirty; Rust
         # runs them on its own. Retained hit regions (cache.region) follow.
         routing = cache.imgui_input
@@ -237,7 +319,7 @@ class Bridge:
         horizon = Melty.frame_count - KEEP_FRAMES
         roots = cache.frame_roots
         idle = sorted((entry for entry in self.entries.values()
-                       if entry.parent is None and entry.frame < Melty.frame_count),
+                       if entry.parent is None and entry.site is None and entry.frame < Melty.frame_count),
                       key=lambda entry: entry.frame, reverse=True)
         dropped = set(idle[IDLE_ROOTS:])
 
@@ -251,10 +333,12 @@ class Bridge:
                 record = record.owner if isinstance(record, Native) else record.parent
             return False
         for unique, entry in list(self.entries.items()):
-            if expired(entry):
-                del self.entries[unique]
-                self.owners.pop(entry.tile, None)
-                self.nodes.pop(entry.node, None)
+            if entry.site is not None:
+                # An island lives and dies with its node under the native parent.
+                if expired(entry) or (entry.node is not None and entry.node not in cache.records):
+                    self.forget(entry)
+            elif expired(entry):
+                self.forget(entry)
             elif entry.parent is None and entry.node is not None and roots is not None:
                 roots.add(entry.node)
         for key, record in list(self.native_keys.items()):
@@ -264,12 +348,26 @@ class Bridge:
             elif record.owner is None and record.node is not None and roots is not None:
                 roots.add(record.node)
         frame.__exit__(None, None, None)
-        if self.token is not None:
-            _window.reset(self.token)
-            self.token = None
-        if self.runtime is not None:
-            self.runtime.end_frame()
-        cache.flush()
+        # Melty.end_frame is behind us and no legacy body may run any more:
+        # a native body that calls legacy views waits for the next frame's
+        # flush, inside the legacy frame. The others still declare native
+        # views, so the host stays set until the flush is done.
+        frozen = cache.geometry.frozen
+        waiting = {node for node in self.hosts if node not in frozen}
+        frozen |= waiting
+        self.late = True
+        try:
+            cache.flush()
+        finally:
+            self.late = False
+            frozen -= waiting
+            if self.token is not None:
+                _window.reset(self.token)
+                self.token = None
+            if self.runtime is not None:
+                self.runtime.end_frame()
+        if any(node in cache.records and cache.graph.dirty(node) for node in waiting):
+            self.surface.request_frame()
         # A native edit returned to a legacy caller: that caller runs next frame.
         if self.wake():
             self.surface.request_frame()
@@ -305,9 +403,11 @@ class Bridge:
             self.stats.clear()
 
     # ---- routing --------------------------------------------------------
-    def legacy_view(self, wrapper, func, o_kwargs, input_value, kwargs):
+    def legacy_view(self, wrapper, func, o_kwargs, input_value, kwargs, site=None):
         """Declare the node for one cached legacy view, executing its legacy
-        wrapper only when a rule the legacy prologue applied says it is stale."""
+        wrapper only when a rule the legacy prologue applied says it is stale.
+        `site`: (Native record, native node, its window origin) for a call made
+        from a native body (`island`)."""
         import meltygui_imgui as imgui
         from meltygui.core.melty import Melty
         from meltygui.core.rendering.view_identity import view_unique, view_tile_id, get_draw_state
@@ -324,15 +424,40 @@ class Bridge:
         entry = self.entries.get(unique)
         if entry is None:
             entry = self.entries[unique] = Entry(unique, func.__name__)
-        if entry.frame == Melty.frame_count:
-            # The same identity twice in one frame: the legacy duplicate-unique path.
-            self.stats['duplicate'] += 1
-            return PASS
-        entry.frame = Melty.frame_count
-        entry.parent = self.stack[-1] if self.stack else None
-        size = (kwargs.get('width'), kwargs.get('height'))
-        state = entry.draw_state
+        graph = self.cache.graph
         cursor = tuple(imgui.get_cursor_screen_pos())
+        if site is None:
+            if entry.frame == Melty.frame_count:
+                # The same identity twice in one frame: the legacy duplicate-unique path.
+                self.stats['duplicate'] += 1
+                return PASS
+            entry.parent = self.stack[-1] if self.stack else None
+        else:
+            record, native, origin = site
+            if entry.epoch == self.epoch and entry.frame == Melty.frame_count:
+                raise RuntimeError(f'{func.__name__}: one legacy view identity twice in a @gui body; '
+                                   f'give the calls a name or a key')
+            # The native body draws in its own coordinates, a legacy view in the window's.
+            entry.local, cursor = cursor, (origin[0] + cursor[0], origin[1] + cursor[1])
+            entry.site, entry.host, entry.epoch, entry.parent = record, native, self.epoch, None
+            record.islands[unique] = entry
+            if ((o_kwargs.get('determines_height', True) is False or o_kwargs.get('fill_height') is not None)
+                    and kwargs.get('parent_window') is None):
+                # A view that cannot size itself (draw_text, layouts) fills
+                # what is left of its host: the wrapper's Melty.root_fill
+                # rule, with the native view as the host. All get the width,
+                # the first one in a fixed-height view the remaining height.
+                _, _, native_width, native_height = graph.rect(native)
+                if kwargs.get('width') is None:
+                    kwargs['width'] = max(1., native_width - entry.local[0])
+                if (kwargs.get('height') is None and native not in self.filled
+                        and graph.constraints(native)[1] >= 0):
+                    kwargs['height'] = max(40., native_height - entry.local[1])
+                    self.filled.add(native)
+                kwargs.setdefault('auto_resize', False)
+                kwargs.setdefault('show_header', False)
+        entry.frame = Melty.frame_count
+        size = (kwargs.get('width'), kwargs.get('height'))
         # The legacy prologue re-derives a cached view's size from its
         # surroundings on every call, hit or not. A node only sees what is
         # compared here, so the available width stands in for that.
@@ -340,53 +465,39 @@ class Bridge:
         if entry.tile is None:
             entry.tile = view_tile_id(name, unique, explicit if explicit is not None else get_draw_state(unique))
             self.owners[entry.tile] = entry
-        graph = self.cache.graph
+        live = bool(kwargs.get('live', o_kwargs.get('live')) or kwargs.get('draw'))
+        if site is not None and entry.returned is not None:
+            # This caller has not read the view's own edit yet: its argument is the older value.
+            input_value = entry.input
         if not entry.pending and entry.node is not None and graph.dirty(entry.node):
             # The graph dirtied it since the last wake(): a native child's edit.
             entry.pending, entry.reason = True, 'native child'
         if not entry.pending:
-            reason = None
-            if size != entry.size:
-                reason = 'size'
-            elif ambient != entry.ambient:
-                reason = 'available width'
-            elif entry.runs < 2 or (state is not None and state.size_change):
-                # The legacy cache serves a tile from its third frame, at a settled size.
-                reason = 'settling'
-            elif (isinstance(input_value, _PRIMITIVES) or isinstance(entry.input, _PRIMITIVES)) \
-                    and (type(input_value) is not type(entry.input) or input_value != entry.input):
-                # The legacy "untracked value changed" rule; objects are invalidated explicitly.
-                reason = 'input'
-            elif kwargs.get('live', o_kwargs.get('live')) or kwargs.get('draw'):
-                reason = 'live'
-            elif state is None or state.width is None or state.height is None or state.frame_count < 2:
-                reason = 'unmeasured'
-            elif state._external_change:
-                reason = 'external change'
-            elif cursor != entry.origin and entry.anchor != anchor(cursor, state):
-                # The caller moved and the legacy geometry did not follow (it
-                # only follows an ancestor's scroll): hit tests, event
-                # rectangles and overlays inside would be left behind.
-                reason = 'moved'
-            else:
-                hovered = state.is_bounding_hovered()
-                if hovered or hovered != entry.hovered:
-                    reason = 'hover'
-                entry.hovered = hovered
+            reason = self.stale(entry, cursor, size, ambient, input_value, live)
+            if reason is None and site is not None and not kwargs.get('use_cache', o_kwargs.get('use_cache', False)):
+                reason = 'uncached'     # drawn with its caller, every time the caller runs
             if reason:
                 entry.pending, entry.reason = True, reason
         entry.size = size
         entry.ambient = ambient
         entry.input = input_value
+        entry.live = live
         entry.call = (wrapper, kwargs, cursor)
         if entry.pending and entry.node is not None:
-            # Dirtied here, at the call site, so the body runs inside its
-            # caller's legacy context (unique, window, clip and style stacks).
-            graph.invalidate_bound(entry.node)
-        # A capture is in window coordinates. Until the next one, the node
-        # sits where its caller moved to, and native nodes inside follow it.
-        entry.shift = ((0., 0.) if entry.pending or entry.node is None
-                       else (cursor[0] - entry.origin[0], cursor[1] - entry.origin[1]))
+            if self.late or (site is not None and entry.run_frame == Melty.frame_count):
+                self.defer(entry)
+            else:
+                # Dirtied here, at the call site, so the body runs inside its
+                # caller's legacy context (unique, window, clip and style stacks).
+                graph.invalidate_bound(entry.node)
+        if site is not None:
+            # The node starts at the window's corner: its capture is in window coordinates.
+            entry.shift = (-origin[0], -origin[1])
+        else:
+            # A capture is in window coordinates. Until the next one, the node
+            # sits where its caller moved to, and native nodes inside follow it.
+            entry.shift = ((0., 0.) if entry.pending or entry.node is None
+                           else (cursor[0] - entry.origin[0], cursor[1] - entry.origin[1]))
         self.calling = entry
         self.declaring.append(entry)
         view = self.views.get(wrapper)
@@ -403,11 +514,69 @@ class Bridge:
         finally:
             self.calling = None
             self.declaring.pop()
-        changed, value = entry.result or (False, input_value)
+        result = entry.result
+        if site is not None:
+            if entry.executed:
+                entry.settled = Melty.frame_count
+            if result and result[0]:
+                self.edited(entry, result[1])
+            elif entry.returned is not None:
+                result = entry.returned     # the edit it made while this caller was clean
+            entry.returned = None
+            if result and result[0]:
+                # One more run of the caller shows its state after the edit.
+                graph.invalidate_node(native)
+        changed, value = result or (False, input_value)
         Melty.seen_unique.add(unique)
         if kwargs.get('return_extras'):
             return changed, value, entry.draw_state
         return changed, value
+
+    def edited(self, entry, value):
+        """An island returned an edit. Its next run starts from that value,
+        whether or not its native caller has read it by then (a second key
+        must not be applied to the text before the first), and shows it."""
+        entry.input = value
+        entry.pending, entry.reason = True, 'edited'
+
+    def defer(self, entry):
+        """This view's body waits for the next frame. A legacy body reads the
+        frame's events, so it runs once a frame however often its native
+        caller does, and never after Melty.end_frame. Its packet stands."""
+        self.deferred.add(entry.node)
+        self.cache.geometry.frozen.add(entry.node)
+        self.surface.request_frame()
+
+    def stale(self, entry, cursor, size, ambient, input_value, live):
+        """Why this view's body has to run now, by the rules the legacy
+        prologue applies to a cached view on every call. None: its packet stands."""
+        state = entry.draw_state
+        if size != entry.size:
+            return 'size'
+        if ambient != entry.ambient:
+            return 'available width'
+        if entry.runs < 2 or (state is not None and state.size_change):
+            # The legacy cache serves a tile from its third frame, at a settled size.
+            return 'settling'
+        if (isinstance(input_value, _PRIMITIVES) or isinstance(entry.input, _PRIMITIVES)) \
+                and (type(input_value) is not type(entry.input) or input_value != entry.input):
+            # The legacy "untracked value changed" rule; objects are invalidated explicitly.
+            return 'input'
+        if live:
+            return 'live'
+        if state is None or state.width is None or state.height is None or state.frame_count < 2:
+            return 'unmeasured'
+        if state._external_change:
+            return 'external change'
+        if cursor != entry.origin and entry.anchor != anchor(cursor, state):
+            # The caller moved and the legacy geometry did not follow (it
+            # only follows an ancestor's scroll): hit tests, event
+            # rectangles and overlays inside would be left behind.
+            return 'moved'
+        hovered = state.is_bounding_hovered()
+        changed = hovered or hovered != entry.hovered
+        entry.hovered = hovered
+        return 'hover' if changed else None
 
     def view(self, func):
         bridge = self
@@ -436,6 +605,15 @@ class Bridge:
             self.nodes[entry.node] = entry
             # Its body needs this call site's legacy stacks: Rust never runs it alone.
             cache.graph.bind(entry.node)
+        if entry.site is not None:
+            if self.late:
+                # First declared after Melty.end_frame: an empty packet now, its body next frame.
+                entry.pending, entry.reason = True, 'late'
+                self.surface.request_frame()
+                return
+            # A second run in one frame (alone, then with its native caller) is no duplicate.
+            Melty.seen_unique.discard(entry.unique)
+        entry.natives = None
         entry.origin = cursor
         entry.executed = True
         entry.pending = False
@@ -508,14 +686,30 @@ class Bridge:
                                   auto_resize=state.auto_resize))
         legacy.mark_end_offscreen()
 
+    def attend(self, entry):
+        """A legacy view whose body did not run: the native views it declared
+        last time were not declared either, so the legacy views inside them
+        get their frame here."""
+        if not entry.natives:
+            return
+        for record in list(entry.natives):
+            if record.owner is not entry or record.node is None or record.frame < entry.run_frame:
+                entry.natives.discard(record)
+            elif record.islands:
+                self.service(record)
+
     def place(self, node):
         """After a declaration: the node's image at the origin, in the caller's
         channel and clip, then the layout advance the legacy wrapper made."""
         import meltygui_imgui as imgui
         entry = self.declaring[-1]
         width, height = self.size
-        cursor = entry.call[2]
-        if not entry.executed and entry.draw_state is not None:
+        island = entry.site is not None
+        # An island's caller draws in its own coordinates: the hit epilogue
+        # paints in the window's, so `service` does it outside the capture.
+        cursor = entry.local if island else entry.call[2]
+        hit = not entry.executed and entry.draw_state is not None
+        if hit and not island:
             # Before the layout advance: the legacy epilogue submits its own (empty) group.
             self.stats['hit'] += 1
             self.replay(entry, entry.draw_state)
@@ -526,6 +720,170 @@ class Bridge:
         imgui.set_cursor_screen_pos(cursor)
         imgui.dummy(*entry.extent)
         imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], cursor[1] + entry.advance))
+        if hit and not island:
+            self.attend(entry)      # above this view's image
+
+    # ---- legacy views in native bodies --------------------------------------
+    def island(self, native, wrapper, func, o_kwargs, input_value, kwargs):
+        """One legacy view called from a native body (`route`)."""
+        import meltygui_imgui as imgui
+        record = self.record(native) or self.declaring_native
+        if record is None:
+            raise RuntimeError(f'{func.__name__}: called from a @gui view the bridge did not declare')
+        self.hosts.add(native)
+        closable = bool(kwargs.get('closable', o_kwargs.get('closable')) or kwargs.get('as_window'))
+        window = (closable or kwargs.get('melty_window', o_kwargs.get('melty_window'))
+                  or kwargs.get('glfw_window') or kwargs.get('just_shadow'))
+        with self.site(record, native) as origin:
+            if not window:
+                self.stats['island'] += 1
+                if not _tree_path:
+                    return self.legacy_view(wrapper, func, o_kwargs, input_value, kwargs, (record, native, origin))
+                runs = self.stats['executed']
+                try:
+                    return self.legacy_view(wrapper, func, o_kwargs, input_value, kwargs, (record, native, origin))
+                finally:
+                    Catalog.seen(func, 'island run' if self.stats['executed'] != runs else 'island hit')
+            # A window draws itself in the layer pass (or on its own surface):
+            # only its request is made here, at the window position of the call.
+            self.popups.add(native)
+            if _tree_path:
+                Catalog.seen(func, 'legacy window')
+            local = imgui.get_cursor_screen_pos()
+            imgui.set_cursor_screen_pos((origin[0] + local[0], origin[1] + local[1]))
+            try:
+                return wrapper(input_value, **{**kwargs, '_rust_inner': True})
+            finally:
+                imgui.set_cursor_screen_pos(local)
+
+    @contextmanager
+    def site(self, record, native):
+        """The legacy context of a call made in a native body: the one its
+        nearest legacy call site was declared in, one level down, with the
+        native view as identity scope and clip. Legacy views there are
+        top-level for the legacy cache, so `service` is who replays them.
+        Yields the native view's window origin."""
+        from meltygui.core.melty import Melty
+        cache = self.cache
+        if record.ambient is None:
+            record.ambient = Ambient.capture()
+        saved = record.ambient.enter()
+        legacy = Melty.cache
+        contexts, legacy._stack = legacy._stack, []
+        # A legacy view with no legacy view around it takes its position from
+        # the cursor only under a root fill (view_identity.place_in_parent_window).
+        # The fill itself is spent: `legacy_view` sizes such views to the native view.
+        fill = Melty.root_fill, Melty.root_fill_used
+        Melty.root_fill, Melty.root_fill_used = (*cache.graph.rect(native)[2:], 0.), True
+        Melty.unique_stack.append(cache.uniques[native])
+        Melty.depth += 1
+        clip, outer = cache.graph.clip_rect(native), Melty.get_clip_rect()
+        if outer is not None:
+            clip = (max(clip[0], outer[0]), max(clip[1], outer[1]), min(clip[2], outer[2]), min(clip[3], outer[3]))
+        Melty.clip_stack.append(clip)
+        try:
+            yield cache._position(native)
+        finally:
+            Melty.root_fill, Melty.root_fill_used = fill
+            legacy._stack = contexts
+            record.ambient.leave(saved)
+
+    def service(self, record):
+        """Once a frame, where a native view's image was placed: the legacy
+        views inside it (`record.islands`) that no body ran this frame get
+        what a legacy call gives a cached view, a run when a rule says so,
+        else the hit epilogue. Their native callers stay clean."""
+        import meltygui_imgui as imgui
+        from meltygui.core.melty import Melty
+        cache, frame = self.cache, Melty.frame_count
+        graph = cache.graph
+        hosts = {}
+        for entry in list(record.islands.values()):
+            node = entry.node
+            if entry.settled == frame or entry.site is not record:
+                continue
+            if node is None or node not in cache.records or self.nodes.get(node) is not entry:
+                if entry.frame < frame:
+                    self.forget(entry)      # its native caller no longer calls it
+                continue
+            hosts.setdefault(entry.host, []).append(entry)
+        for native, entries in hosts.items():
+            with self.site(record, native) as origin:
+                for entry in entries:
+                    node, state = entry.node, entry.draw_state
+                    called, entry.frame, entry.settled = entry.frame == frame, frame, frame
+                    cursor = (origin[0] + entry.local[0], origin[1] + entry.local[1])
+                    if entry.pending:
+                        reason = entry.reason
+                    elif called:
+                        reason = None       # its caller applied the rules a moment ago
+                    elif graph.dirty(node):
+                        reason = 'native child'
+                    else:
+                        reason = self.stale(entry, cursor, entry.size, entry.ambient, entry.input, entry.live)
+                    if reason and entry.run_frame == frame:
+                        # It ran with a native caller this frame already (`defer`).
+                        entry.pending, entry.reason, reason = True, reason, None
+                        self.surface.request_frame()
+                    if reason:
+                        self.run(entry, reason, cursor)
+                    elif state is not None:
+                        self.stats['hit'] += 1
+                        held = imgui.get_cursor_screen_pos()
+                        imgui.set_cursor_screen_pos(entry.origin)
+                        try:
+                            self.replay(entry, state)
+                            self.attend(entry)
+                        finally:
+                            imgui.set_cursor_screen_pos(held)
+                        Melty.seen_unique.add(entry.unique)
+                    if _tree_path:
+                        Catalog.seen(entry.call[0], 'island run' if reason else 'island hit')
+
+    def run(self, entry, reason, cursor):
+        """An island's body on its own, where its native caller left it."""
+        cache, node = self.cache, entry.node
+        graph = cache.graph
+        wrapper, kwargs, _ = entry.call
+        entry.call = (wrapper, kwargs, cursor)
+        entry.pending, entry.reason = True, reason
+        # Its capture is in window coordinates: the node starts at the window's corner.
+        x, y = cache._position(node)
+        if x or y:
+            state = cache.states[node]
+            state.left, state.top = state.left - x, state.top - y
+        layout = entry.extent, entry.advance
+        entry.executed, entry.result = False, None
+        self.calling = entry
+        graph.invalidate_bound(node)
+        try:
+            cache._execute(node, independent=True)
+        finally:
+            self.calling = None
+        changed = bool(entry.result and entry.result[0])
+        if changed:
+            entry.returned = entry.result
+            self.edited(entry, entry.result[1])
+        if changed or (entry.extent, entry.advance) != layout:
+            # The native caller reads the edit, or lays out around the new size.
+            graph.invalidate_node(entry.host)
+            self.surface.request_frame()
+
+    def covers(self, entry, x, y):
+        """Whether a window point is on the legacy view an island draws."""
+        state = entry.draw_state
+        if state is None or not state.width or not state.height:
+            return False
+        left, top = state.abs_left, state.abs_top
+        return left <= x < left + state.width and top <= y < top + state.height
+
+    def forget(self, entry):
+        self.entries.pop(entry.unique, None)
+        self.owners.pop(entry.tile, None)
+        if self.nodes.get(entry.node) is entry:
+            del self.nodes[entry.node]
+        if entry.site is not None:
+            entry.site.islands.pop(entry.unique, None)
 
     # ---- native @gui views ------------------------------------------------
     def call(self, view, input_value, kwargs):
@@ -546,7 +904,25 @@ class Bridge:
             def hosted(**arguments):
                 # Rust runs this node whenever its input says so, not only
                 # under its legacy caller: give it that caller's style tint.
-                record = natives.get(cache.current)
+                node = cache.current
+                record = natives.get(node)
+                # A new body run: legacy identities, window calls and the
+                # fill height start over for this view (`island`).
+                bridge.epoch += 1
+                bridge.popups.discard(node)
+                bridge.filled.discard(node)
+                if node in bridge.hosts:
+                    # Its last run called legacy views: whatever legacy code
+                    # this body reaches (draw_any's dispatch) reads the legacy
+                    # context of its call site, however Rust came to run it.
+                    bridge.hosts.discard(node)
+                    site = record or bridge.record(node)
+                    if site is not None and site.ambient is not None:
+                        saved = site.ambient.enter()
+                        try:
+                            return func(**arguments)
+                        finally:
+                            site.ambient.leave(saved)
                 manager = Melty.style_manager
                 if record is None or record.tint is None or manager.get_tint() == record.tint:
                     return func(**arguments)
@@ -611,14 +987,24 @@ class Bridge:
         record.host, record.clip = host, Melty.get_clip_rect()
         record.tint = Melty.style_manager.get_tint()
         record.frame = Melty.frame_count
+        if record.owner is not None:
+            if record.owner.natives is None:
+                record.owner.natives = set()
+            record.owner.natives.add(record)
+        if record.ambient is None or record.islands:
+            # What a legacy view called inside this view runs in (`site`).
+            record.ambient = Ambient.capture()
         self.stats['native declared'] += 1
         if _tree_path:
             Catalog.seen(view.__gui_definition__[0], 'native @gui')
         previous, self.declaring_native = self.declaring_native, record
         try:
-            return inner(input_value, **kwargs)
+            result = inner(input_value, **kwargs)
         finally:
             self.declaring_native = previous
+        if record.islands:
+            self.service(record)
+        return result
 
     def failed(self, node, error):
         """RetainedGui.on_failure: a native node Rust ran on its own raised.
@@ -853,10 +1239,8 @@ def route(wrapper, func, o_kwargs, input_value, kwargs):
     stack = bridge.cache.stack
     if stack and stack[-1] not in bridge.nodes:
         # A native node draws in its own coordinates and runs on Rust's
-        # schedule; a legacy body needs window coordinates and its caller's
-        # stacks. Port the child first, or declare the parent use_cache=False.
-        raise RuntimeError(f'{func.__name__}: a legacy @render_func cannot be drawn inside a retained '
-                           f'@gui view yet (MELTY_RUST bridge)')
+        # schedule; a legacy body needs window coordinates and legacy stacks.
+        return bridge.island(stack[-1], wrapper, func, o_kwargs, input_value, kwargs)
     surface = kwargs.get('glfw_window')     # a child OS window: its own surface draws it
     closable = bool(kwargs.get('closable', o_kwargs.get('closable')) or kwargs.get('as_window'))
     # The legacy wrapper caches a closable window unless it is told not to.
@@ -937,6 +1321,33 @@ def draw_root(surface, draw):
             Melty.cache.bridge = bridge
     bridge.begin()
     return draw()
+
+
+def draw_native_root(surface, view, view_kwargs):
+    """Draw one OS window whose root is a @gui view through its bridge, so the
+    root and the native views below it can call legacy views. The root fills
+    the window below the title bar, as it does on the native host."""
+    import meltygui_imgui as imgui
+    from meltygui.core.melty import Melty
+
+    def draw():
+        width, height = Melty.root_fill[:2] if Melty.root_fill is not None else imgui.get_content_region_available()
+        arguments = dict(view_kwargs)
+        value = arguments.pop('value', None)
+        arguments.setdefault('width', width)
+        arguments.setdefault('height', height)
+        return view(value, **arguments)
+    return draw_root(surface, draw)
+
+
+def in_native_body():
+    """fast_view.needs_wrapper: a wrapperless host paints into its caller's
+    draw list, and a native body's is in that view's own coordinates."""
+    bridge = Bridge.current
+    if bridge is None:
+        return False
+    stack = bridge.cache.stack
+    return bool(stack) and stack[-1] not in bridge.nodes
 
 
 # Lever: MELTY_FRAME_LOG=path appends, once a second, the CPU time of the

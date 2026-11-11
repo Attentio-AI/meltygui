@@ -9,7 +9,7 @@ from meltygui import gui
 from meltygui.core import core_render
 from meltygui.core.core_render import render_func
 from meltygui.core.melty import Melty, EmbeddedFrameState
-from meltygui.core.rendering import gui_compat
+from meltygui.core.rendering import fast_view, gui_compat
 
 
 @pytest.fixture
@@ -23,6 +23,7 @@ def host(monkeypatch):
         io.mouse_down[index] = False
     monkeypatch.setattr(core_render, '_rust_route', gui_compat.route)
     monkeypatch.setattr(core_render, '_rust_pass', gui_compat.PASS)
+    monkeypatch.setattr(fast_view, 'needs_wrapper', gui_compat.in_native_body)
     state = EmbeddedFrameState()
     state.values['cache'] = gui_compat.tile_cache()
     surface = SimpleNamespace(impl=SimpleNamespace(gui_character_callback=None), requests=[])
@@ -184,29 +185,229 @@ def test_native_edit_wakes_a_clean_legacy_caller(host):
     assert host.surface.requests
 
 
-def test_legacy_view_inside_a_native_view_raises_and_the_host_recovers(host):
-    @render_func(use_cache=False)
-    def legacy(input_value, draw_state):
-        imgui.text('legacy')
+def island_app(seen, runs, model, *, cached=True):
+    """A native shell at the root with one legacy view inside it."""
+    @render_func(use_cache=cached)
+    def child(input_value, draw_state):
+        runs['child'] += 1
+        seen['cursor'] = tuple(imgui.get_cursor_screen_pos())
+        seen['state'] = draw_state
+        imgui.text(f'legacy {input_value}')
+        seen['button'] = tuple(imgui.get_cursor_screen_pos())
+        if imgui.button('press', 80, 24) or seen.get('key'):
+            return True, input_value + 1
         return False, input_value
 
-    @gui(width=200, height=40)
-    def native(input_value):
-        legacy(1, name='child')
-
-    shown = {'native': True}
+    @gui(width=260, height=120)
+    def shell(input_value: dict):
+        runs['shell'] += 1
+        imgui.text('native shell')
+        seen['local'] = tuple(imgui.get_cursor_screen_pos())
+        changed, value = child(input_value['count'], name='child', width=200, height=70)
+        seen['after'] = tuple(imgui.get_cursor_screen_pos())
+        if changed:
+            input_value['count'] = value
+            return True, input_value
 
     def body():
-        if shown['native']:
-            native(None, name='native')
-        imgui.text('after')
+        if seen.pop('invalidate', False):
+            seen['state'].invalidate()      # what a legacy model change does
+        imgui.dummy(40, seen.get('gap', 30))
+        seen['shell'] = tuple(imgui.get_cursor_screen_pos())
+        shell(model, name='shell')
+    return body
 
-    with pytest.raises(RuntimeError, match='cannot be drawn inside a retained @gui view'):
+
+def test_legacy_view_in_a_native_view_draws_in_window_coordinates(host):
+    seen, runs, model = {}, {'shell': 0, 'child': 0}, {'count': 0}
+    body = island_app(seen, runs, model)
+    for _ in range(5):
         frame(host, body)
-    shown['native'] = False
+    settled = dict(runs)
+    assert settled['child'] >= 2
+    # The native body is at (0, 0) in its own coordinates; the legacy body
+    # sees the same spot as a window position.
+    assert seen['cursor'] == (seen['shell'][0] + seen['local'][0], seen['shell'][1] + seen['local'][1])
+    assert seen['cursor'] != seen['local']
+    # The native caller's layout moved on by what the legacy view measured.
+    assert seen['after'][1] > seen['local'][1]
+    entry = next(entry for entry in host.bridge.entries.values() if entry.site is not None)
+    assert host.bridge.cache.graph.parent(entry.node) == entry.host
+    # Idle frames run nothing.
     for _ in range(3):
         frame(host, body)
-    assert host.bridge.cache.stack == []
+    assert runs == settled
+
+
+def test_legacy_view_in_a_native_view_runs_without_its_caller(host):
+    seen, runs, model = {}, {'shell': 0, 'child': 0}, {'count': 0}
+    body = island_app(seen, runs, model)
+    for _ in range(5):
+        frame(host, body)
+    settled = dict(runs)
+    # A legacy invalidation reaches the legacy view; its native caller stays clean.
+    seen['invalidate'] = True
+    frame(host, body)
+    assert runs == {'shell': settled['shell'], 'child': settled['child'] + 1}
+    # The pointer over it: the legacy hover rule runs it every frame, and the
+    # native view below does not take the pointer.
+    x, y = seen['button']
+    for _ in range(3):
+        frame(host, body, (x + 20, y + 10))
+    assert runs['child'] >= settled['child'] + 3 and runs['shell'] == settled['shell']
+    assert host.bridge.cache.imgui_input.hover is None
+
+
+def test_legacy_edit_in_a_native_view_reaches_the_native_caller(host):
+    seen, runs, model = {}, {'shell': 0, 'child': 0}, {'count': 0}
+    body = island_app(seen, runs, model)
+    for _ in range(5):
+        frame(host, body)
+    x, y = seen['button']
+    click(host, body, (x + 20, y + 10))
+    for _ in range(3):
+        frame(host, body, (x + 20, y + 10))
+    assert model['count'] == 1
+    # The legacy view was drawn again with the caller's new value.
+    assert host.bridge.entries[seen['state'].unique].input == 1
+
+
+def test_legacy_view_reads_a_frames_events_once(host):
+    """However often its native caller runs in a frame (to take an edit, then
+    to show it), a legacy view runs once: again, it would read the same key again."""
+    seen, runs, model = {}, {'shell': 0, 'child': 0}, {'count': 0}
+    body = island_app(seen, runs, model)
+    for _ in range(5):
+        frame(host, body)
+    seen['key'] = True      # a key held over four frames
+    for _ in range(4):
+        before = runs['child']
+        seen['invalidate'] = True       # the event system wakes its subscriber
+        frame(host, body)
+        assert runs['child'] == before + 1
+    seen['key'] = False
+    for _ in range(4):
+        frame(host, body)
+    assert model['count'] == 4
+
+
+def test_legacy_view_follows_its_native_caller(host):
+    seen, runs, model = {}, {'shell': 0, 'child': 0}, {'count': 0}
+    body = island_app(seen, runs, model)
+    for _ in range(5):
+        frame(host, body)
+    settled, before = dict(runs), seen['cursor']
+    # The native view moves; its body does not run, the legacy geometry inside follows.
+    seen['gap'] = 75
+    for _ in range(3):
+        frame(host, body)
+    assert seen['cursor'] == (before[0], before[1] + 45)
+    assert runs['shell'] == settled['shell'] and runs['child'] > settled['child']
+    assert host.bridge.cache.position(host.bridge.entries[seen['state'].unique].node) == (0., 0.)
+
+
+def test_uncached_legacy_view_in_a_native_view_runs_with_its_caller(host):
+    seen, runs, model = {}, {'shell': 0, 'child': 0}, {'count': 0}
+    body = island_app(seen, runs, model, cached=False)
+    for _ in range(5):
+        frame(host, body)
+    settled = dict(runs)
+    for _ in range(3):
+        frame(host, body)
+    assert runs == settled
+    host.bridge.cache.invalidate(model)
+    frame(host, body)
+    frame(host, body)
+    assert runs['shell'] == settled['shell'] + 1 and runs['child'] >= settled['child'] + 1
+
+
+def test_legacy_and_native_views_alternate(host):
+    """legacy panel -> native shell -> legacy group -> native leaf."""
+    runs = {'panel': 0, 'shell': 0, 'group': 0, 'leaf': 0}
+    seen = {}
+
+    @gui(width=120, height=30)
+    def leaf(input_value, clicks=0, draw_state=None):
+        runs['leaf'] += 1
+        seen['leaf'] = cache_position(host)
+        if imgui.button('leaf', 80, 24):
+            draw_state.clicks = clicks + 1
+        seen['clicks'] = draw_state.clicks
+
+    @render_func(use_cache=True)
+    def group(input_value, draw_state):
+        runs['group'] += 1
+        seen['group'] = draw_state
+        imgui.text('legacy group')
+        seen['leaf cursor'] = tuple(imgui.get_cursor_screen_pos())
+        leaf(None, name='leaf')
+        return False, input_value
+
+    @gui(width=260, height=110)
+    def shell(input_value):
+        runs['shell'] += 1
+        imgui.text('native shell')
+        group(1, name='group', width=220, height=80)
+
+    @render_func(use_cache=True)
+    def panel(input_value, draw_state):
+        runs['panel'] += 1
+        imgui.text('legacy panel')
+        shell(None, name='shell')
+        return False, input_value
+
+    def body():
+        if seen.pop('invalidate', False):
+            seen['group'].invalidate()
+        panel(1, name='panel', width=300, height=160)
+
+    for _ in range(6):
+        frame(host, body)
+    settled = dict(runs)
+    assert all(count >= 1 for count in settled.values())
+    for _ in range(3):
+        frame(host, body)
+    assert runs == settled
+    # A click on the innermost native view reaches it. The legacy views under
+    # the pointer run by the legacy hover rule; the native shell between them does not.
+    x, y = seen['leaf cursor']
+    click(host, body, (x + 20, y + 10))
+    for _ in range(2):
+        frame(host, body, (x + 20, y + 10))
+    assert seen['clicks'] == 1
+    assert runs['shell'] == settled['shell']
+    # The legacy group in the middle is invalidated: it runs, its callers do not.
+    for _ in range(3):
+        frame(host, body)
+    settled = dict(runs)
+    seen['invalidate'] = True
+    frame(host, body)
+    assert (runs['panel'], runs['shell'], runs['group']) == (settled['panel'], settled['shell'], settled['group'] + 1)
+
+
+def test_wrapperless_library_views_take_their_wrapper_in_a_native_view(host):
+    """A fast host (fast_view.py) paints into its caller's draw list. A native
+    body's is in its own coordinates, so there the call takes the wrapper."""
+    from meltygui.view.collection_view import fast_draw_collection
+    model = {'enabled': True, 'retries': 3}
+
+    @gui(width=320, height=None)
+    def shell(input_value: dict):
+        imgui.text('native shell')
+        fast_draw_collection(input_value, name='settings')
+
+    def body():
+        shell(model, name='shell')
+
+    for _ in range(5):
+        frame(host, body)
+    islands = {entry.name for entry in host.bridge.entries.values() if entry.site is not None}
+    assert 'draw_collection' in islands
+
+
+def cache_position(host):
+    cache = host.bridge.cache
+    return cache.position(cache.current)
 
 
 def test_immediate_native_view_runs_with_its_legacy_caller(host):

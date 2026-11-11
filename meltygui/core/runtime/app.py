@@ -549,6 +549,10 @@ def _root_body(fn, name, view_kwargs=None, config=None):
         source = config.get('view_kwargs') if config is not None else view_kwargs
         return dict(source or {})
     if hasattr(fn, '__gui_definition__'):
+        from meltygui.core.rendering import gui_compat
+        if gui_compat.enabled():
+            # Path-finding: a native root under the bridge can call legacy views.
+            return lambda surface: gui_compat.draw_native_root(surface, fn, current_kwargs())
         from meltygui.core.rendering.gui_window_prototype import draw_gui_surface
         return lambda surface: draw_gui_surface(surface, fn, current_kwargs())
     if hasattr(fn, '__render_func__'):
