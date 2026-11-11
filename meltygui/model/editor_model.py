@@ -1,13 +1,15 @@
 """Background analysis of an editor's text, exposed as plain values.
 
     analysis = Analysis(path)
-    analysis.text = text            # after every edit; cheap
-    draw_editor(text, errors=analysis.errors, imports=analysis.imports,
+    draw_editor(text, state=state, errors=analysis.errors, imports=analysis.imports,
                 tints=analysis.tints, code_tree=analysis.tree)
+    analysis.feed(text, state.pane.version)     # after every run; cheap
 
 A worker parses and lints the latest text and swaps in new result objects,
 then asks for a frame. The view only compares object identity, so results
-repaint once when they land. Nothing here runs on the render thread.
+repaint once when they land. Results that are marks (`tints`) carry the
+document version they were computed for, so the editor can bring them
+forward over what was typed meanwhile. Nothing here runs on the render thread.
 """
 import threading
 
@@ -20,6 +22,7 @@ class Analysis:
         self.path = path
         self.errors, self.imports, self.tints, self.tree = [], {}, None, None
         self.analysed = None       # the text the results belong to
+        self.version = None        # the editor's document version of the latest text
         self._text = None
         self._wake = threading.Event()
         self._thread = None
@@ -41,6 +44,11 @@ class Analysis:
             self._thread.start()
         self._wake.set()
 
+    def feed(self, text, version=None):
+        """The editor's current text and its document version (`EditorState.pane.version`)."""
+        self.version = version
+        self.text = text
+
     def close(self):
         self.closed = True
         self._wake.set()
@@ -52,19 +60,20 @@ class Analysis:
             # Typing restarts the wait: analyse once the text rests.
             while self._wake.wait(QUIET):
                 self._wake.clear()
-            text = self._text
+            text, version = self._text, self.version
             if self.closed or text is self.analysed:
                 continue
-            self.errors, self.imports, self.tree, self.tints = analyse(text, self.path)
+            self.errors, self.imports, self.tree, self.tints = analyse(text, self.path, version)
             self.analysed = text
             from meltygui.core.windowing.glfw_utils import request_render
             request_render()
 
 
-def analyse(text, path=None):
+def analyse(text, path=None, version=None):
     """(errors, imports, tree, tints) of a Python source text: syntax and
     lint findings as [(line, message)], missing import statements by line,
-    the parse tree and the definition tints."""
+    the parse tree and the definition tints as `Marks` for document version
+    `version`."""
     from meltygui.code import code_checks
     from meltygui.editor import text_editor
     errors, imports, tree, tints = [], {}, None, None
@@ -95,6 +104,8 @@ def analyse(text, path=None):
                     name = words[2] if words[0] == 'async' and len(words) > 2 else words[1]
                     spans += [(low, high, rgb, 1.) for low, high in text_editor._word_match_ranges(text, name)]
             tints = (tints[0], tuple(spans)) + tuple(tints[2:])
+        from meltygui.editor import marks
+        tints = marks.tints(tints, text, version)
     except Exception:
-        tree = None
+        tree = tints = None
     return errors, imports, tree, tints

@@ -24,8 +24,14 @@ def _same(a, b):
     return a is b or (type(a) is type(b) and type(a) in (str, int, float, bool, type(None)) and a == b)
 
 
+# Lever: the longest string still treated as a path. A longer one is a value
+# (a whole file's text): aliasing it by content would copy and hash it on
+# every declaration, so it aliases by identity like any other object.
+PATH_ALIAS = 4096
+
+
 def _alias(value):
-    if isinstance(value, (str, Path)):
+    if isinstance(value, Path) or (isinstance(value, str) and len(value) <= PATH_ALIAS):
         return 'path:' + str(value)
     return f'object:{id(value)}'
 
@@ -104,6 +110,8 @@ class RetainedGui:
         # Views declared with `listen=`: node to the event names it takes
         # (gui_imgui_input.py). Empty until an app declares one.
         self.listeners = {}
+        # Views declared with `cursor=`: node to the pointer shape over it.
+        self.cursors = {}
         # Views a worker thread asked to run again (`wake`), drained by flush().
         self.woken = deque()
         self.renderers = []
@@ -224,13 +232,13 @@ class RetainedGui:
 
     def gui(self, func=None, *, left=None, top=None, width=300, height=100, min_height=0, max_height=8192,
             inject=None, events=(), state_id=None, no_save=(), scroll=False, place=None, listen=None,
-            **decoration):
+            cursor=None, **decoration):
         _check_position_arguments(decoration, no_save)
         if func is None:
             return lambda fn: self.gui(fn, left=left, top=top, width=width, height=height, min_height=min_height,
                                        max_height=max_height, inject=inject, events=events,
                                        state_id=state_id, no_save=no_save, scroll=scroll, place=place,
-                                       listen=listen, **decoration)
+                                       listen=listen, cursor=cursor, **decoration)
         decorated_left, decorated_top = left, top
         parameters = inspect.signature(func).parameters
         def position_default(name, decorated):
@@ -436,6 +444,8 @@ class RetainedGui:
                 self.executor.attach(node, binding.call, func, binding.unique, state, caller_keys)
                 if listen is not None:
                     self.listeners[node] = frozenset(listen)
+                if cursor is not None:
+                    self.cursors[node] = cursor
                 self.associate(func, node)
                 self.associate(wrapper, node)
                 graph.associate(node, f'renderer:{renderer_id}', func)
@@ -792,7 +802,7 @@ class RetainedGui:
             self._drop_capture(node)
             self.executor.forget(node)
             for mapping in (self.invocations, self.events, self.regions, self.states, self.uniques, self.caller_keys,
-                            self.backgrounds, self.texture_refs, self.listeners):
+                            self.backgrounds, self.texture_refs, self.listeners, self.cursors):
                 mapping.pop(node, None)
             self.root_ids.discard(node)
 

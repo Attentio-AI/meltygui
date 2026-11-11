@@ -3,7 +3,11 @@
 The ranking, snippet, member and import logic is the pure code of
 `text_editor.py`; this module only sequences it over a `Document`. The legacy
 helpers keep their caches on whatever object they are given: `Bag` is that
-object here. Popup painting lives in the view.
+object here.
+
+`Menu` is the state of a list popover: every list the editor pops up (the
+suggestions, an error's quick fixes) is one, painted by the one `choices`
+view and driven by the same keys, hover and wheel.
 """
 import re
 import sys
@@ -16,6 +20,58 @@ from meltygui.editor.syntax import tools
 EXPRESSION_WORDS = {'True', 'False', 'None', 'not', 'lambda', 'await'}
 
 
+# Lever: rows a list popover shows at once.
+ROWS = 10
+
+
+class Menu:
+    """One list popover: `rows` are (text, tag), `index` the selected row,
+    `first` the first one shown, `picked` a row the pointer chose (the owner
+    acts on it and clears it). `extra` gives a row its tint and dim suffix."""
+
+    def __init__(self):
+        self.rows, self.index, self.first, self.picked = [], 0, 0, None
+
+    @property
+    def open(self):
+        return bool(self.rows)
+
+    def set(self, rows):
+        """Show `rows`, keeping the selection where it can stay."""
+        self.rows, self.picked = rows, None
+        self.index = min(self.index, max(len(rows) - 1, 0))
+        self.show()
+
+    def show(self):
+        """Keep the selected row among the ones shown."""
+        self.first = min(max(self.first, self.index - ROWS + 1), self.index, max(len(self.rows) - ROWS, 0))
+
+    def step(self, delta):
+        """Move the selection `delta` rows, around the ends."""
+        if self.rows:
+            self.index = (self.index + delta) % len(self.rows)
+            self.show()
+
+    def page(self, delta):
+        """Move the selection `delta` pages, stopping at the ends."""
+        if self.rows:
+            self.index = min(max(self.index + delta * ROWS, 0), len(self.rows) - 1)
+            self.show()
+
+    def scroll(self, rows):
+        """The wheel: move the shown rows, not the selection."""
+        self.first = min(max(self.first + rows, 0), max(len(self.rows) - ROWS, 0))
+
+    def point(self, row):
+        """The pointer is over shown row `row`: it becomes the selection."""
+        if self.rows:
+            self.index = min(max(self.first + row, 0), len(self.rows) - 1)
+
+    def extra(self, at):
+        """(tint, suffix) of row `at`: an (r, g, b) for its text and dim text after it."""
+        return None, ''
+
+
 class Bag:
     """Attribute store for the legacy completion helpers."""
     text_cursor_pos = 0
@@ -24,24 +80,26 @@ class Bag:
         pass
 
 
-class Suggest:
-    """The open suggestion list: `rows` are (name, kind), `index` the pick."""
+class Suggest(Menu):
+    """The suggestion list: `rows` are (name, kind)."""
 
     def __init__(self):
+        super().__init__()
         self.bag = Bag()
-        self.rows, self.index, self.anchor, self.prefix = [], 0, 0, ''
+        self.anchor, self.prefix = 0, ''
         self.pool_key = self.import_key = self.imports = None
         self.explicit = False
         self.pending = None        # a member lookup still running
         self.signature = None      # (name, parameters, active index)
 
-    @property
-    def open(self):
-        return bool(self.rows)
-
     def close(self):
-        self.rows, self.explicit = [], False
+        self.rows, self.explicit, self.first, self.picked = [], False, 0, None
         self.bag._ac_snip_site = None
+
+    def extra(self, at):
+        """An import shortcut shows the statement it would add."""
+        name, kind = self.rows[at]
+        return None, (self.bag._ac_import_stmts or {}).get(name, '') if kind == 'auto_import' else ''
 
     def refresh(self, ed, typed, explicit=False, tree=None, path=None, source=None, wake=None):
         """Recompute the list for the caret. `typed`: the text just changed;
@@ -73,7 +131,7 @@ class Suggest:
             prefix, anchor, dot = helper._completion_context(text, caret)
             imports = helper._import_line_context(text, anchor)
             rows = []
-            if not (prefix or dot or keep) or (ed.syntax.quiet(caret) and not keep):
+            if not (prefix or dot or keep) or (ed.syntax.quiet(doc, caret) and not keep):
                 pass
             elif not typed and not keep and not self.open:
                 pass
@@ -99,9 +157,9 @@ class Suggest:
                     rows = [(name, kind) for name, kind in rows if kind != 'kw' or name in EXPRESSION_WORDS]
                 rows = self.shortcuts(rows, prefix, anchor, address, keep)
         if prefix != was:
-            self.index = 0
-        self.rows, self.anchor, self.prefix = rows, anchor, prefix
-        self.index = min(self.index, max(len(rows) - 1, 0))
+            self.index = self.first = 0
+        self.anchor, self.prefix = anchor, prefix
+        self.set(rows)
         if not rows:
             self.explicit = False
 
@@ -124,10 +182,6 @@ class Suggest:
         return rows + [(name, 'auto_import') for name in statements
                        if name not in have and name != prefix and name.lower().startswith(wanted)]
 
-    def step(self, delta):
-        if self.rows:
-            self.index = (self.index + delta) % len(self.rows)
-
     def accept(self, ed, path=None):
         """Insert the picked row: a name, a snippet, and its import when the
         row is an import shortcut."""
@@ -143,7 +197,7 @@ class Suggest:
         address = SimpleNamespace(path=path, start=None) if path else None
         imported = helper._ac_apply_auto_import(bag, pick, address, doc.text)
         if imported != doc.text:
-            edit._rewrite(doc, imported, bag.text_cursor_pos)
+            edit.rewrite(doc, imported, bag.text_cursor_pos)
         self.close()
         return pick
 
@@ -196,5 +250,5 @@ def fix_import(ed, statement, path=None):
     doc = ed.doc
     changed, text = tools()._apply_import_fix(statement, None, doc.text)
     if changed:
-        edit._rewrite(doc, text)
+        edit.rewrite(doc, text)
     return changed

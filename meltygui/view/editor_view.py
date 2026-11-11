@@ -7,53 +7,83 @@ Structure, outermost first:
 - `draw_editor` owns the keyboard and pointer. It turns events into edit
   commands (`editor/keys.py`, `editor/edit.py`), keeps the session in step
   (`Editor.sync`) and places the caret, scroll bar and popovers.
-- `pane` is the scrolling viewport. It declares one `block` per `BLOCK` rows.
-- `block` paints its rows and declares the inline widgets on them. A block
-  runs again only when its stamp changes, so a keystroke repaints one block
-  and scrolling repaints none.
+- `pane` is the scrolling viewport. It declares one `block` view for each
+  document block near the viewport (`Editor.window` chooses them), so its cost
+  does not depend on the file's length.
+- `block` paints its lines and declares the inline widgets on them. A block
+  runs again only when its stamp changes, so a keystroke repaints one block,
+  the blocks below a new line only move, and scrolling repaints none.
 
-To change how a row looks, edit `paint`. To add an inline widget, decorate a
-function with `@inline(kind)` (see the built in ones at the end of this file).
+To change how a row looks, edit `paint`; to change or add a decoration's
+look, its painter and `SHAPES`. To add an inline widget, decorate a function
+with `@inline(kind)` (see the built in ones at the end of this file).
+Positions never come from `column * cw`: a line's widgets may add cells, so
+`paint` asks the line's column map and everything else `Editor.x` / `column`.
 """
+import threading
+import time
+from collections import namedtuple
+
 import meltygui_imgui as imgui
 
+from meltygui.core.input import mouse_cursor
 from meltygui.core.rendering.gui_prototype import gui
-from meltygui.editor import edit, keys, marks, suggest, syntax
-from meltygui.editor.editor import Editor, BLOCK
+from meltygui.editor import edit, keys, suggest, syntax
+from meltygui.editor.marks import problems, values, pause, breaks, given
+from meltygui.editor.suggest import ROWS
+from meltygui.editor.editor import Editor, FLASH
+from meltygui.editor.rows import Numbers
 from meltygui.editor.inline import inline, for_token, for_value
+from meltygui.editor.syntax import shift
+from meltygui.core.runtime.toggles import Tint, Toggles
 from meltygui.hdr_color import pack_color
-from meltygui.state.editor_state import EditorState
+from meltygui.state.editor_state import EditorState, LOADING
 import meltygui.core.windowing.window_constants as glfw
 
-# --- look: change colours and sizes here ----------------------------------
+# --- look ------------------------------------------------------------------
+# Everything the editor paints with is here. Sizes are the levers below;
+# colours are the rows of `look()`, which reads the theme (`Tint`) and the
+# editor settings (`Toggles.TextEditor`) once a run. Painters only read the
+# table (`ed.look`). To restyle, change a row or the setting it reads.
 LINE = 1.25                      # line height over the font's
 BAR = 10.                        # scroll bar width
 FOLD = 16.                       # gutter strip holding the fold chevrons
 PAD = 6.                         # space left of the line numbers
-ROWS = 10                        # suggestion rows shown at once
-TINT = .055                      # strength of a definition's tint wash
-BACK = pack_color(.118, .122, .133)
-GUTTER = pack_color(.137, .141, .153)
-NUMBER = pack_color(.42, .44, .47)
-PLAIN = pack_color(.66, .72, .78)
-CARET = pack_color(.93, .93, .93)
-BAND = pack_color(1., 1., 1., .045)
-SELECT = pack_color(.21, .39, .64, .75)
-HIT = pack_color(.75, .60, .15, .45)
-GUIDE = pack_color(1., 1., 1., .07)
-SCOPE = pack_color(1., 1., 1., .014)
-FOLDED = pack_color(.55, .60, .68)
-ERROR = pack_color(.94, .33, .31)
-BREAK = pack_color(.86, .24, .24)
-PAUSE = pack_color(.98, .80, .25)
-PAUSED = pack_color(.98, .80, .25, .16)
-VALUE = pack_color(.45, .78, .66)
-PILL = pack_color(.45, .78, .66, .13)
-GHOST = pack_color(.66, .70, .78, .5)
-THUMB = pack_color(1., 1., 1., .18)
-POP = pack_color(.17, .18, .20)
-PICK = pack_color(.21, .39, .64)
-DIM = pack_color(.50, .53, .57)
+CREEP = 1.5                      # rows a second a held selection scrolls, per pixel past the edge
+PLAIN = pack_color(.66, .72, .78)        # text without a token colour
+Look = namedtuple('Look', 'back gutter number caret band select guide guide_width scope block symbol hit flash folded '
+                          'error breakpoint pause paused value pill ghost thumb pop pick dim')
+
+
+def look(tint=None):
+    """The colour table for a file tinted `tint` ((r, g, b); None: the theme)."""
+    return Look(
+        # The body: the host's background shows through; a file tint washes it.
+        back=pack_color(*tint[:3], .06) if tint else None,
+        gutter=pack_color(*Tint.line_number_bg()[:3]),
+        number=pack_color(*Tint.line_number_tint(tint)[:3]),
+        caret=pack_color(*Tint.cursor_tint()[:3]),
+        band=pack_color(*Tint.cursor_line_tint()[:3], Toggles.TextEditor.cursor_line_alpha),
+        select=pack_color(*Tint.text_selection()[:3], .4),
+        guide=pack_color(*(tint or Tint.scope_guide())[:3], Toggles.TextEditor.scope_guide_alpha),
+        guide_width=Toggles.TextEditor.scope_guide_thickness,
+        scope=pack_color(1., 1., 1., .014),                         # a scope without a tint
+        block=.055 * Toggles.TextEditor.def_block_alpha,            # strength of a definition's tint wash
+        symbol=.14 * Toggles.TextEditor.def_symbol_alpha,           # strength of the wash behind its uses
+        hit=pack_color(.75, .60, .15, .45),
+        flash=pack_color(.98, .80, .25, .3),
+        folded=pack_color(.55, .60, .68),
+        error=pack_color(.94, .33, .31),
+        breakpoint=pack_color(.86, .24, .24),
+        pause=pack_color(.98, .80, .25),
+        paused=pack_color(.98, .80, .25, .16),
+        value=pack_color(.45, .78, .66),
+        pill=pack_color(.45, .78, .66, .13),
+        ghost=pack_color(.66, .70, .78, .5),
+        thumb=pack_color(1., 1., 1., .18),
+        pop=pack_color(.17, .18, .20),
+        pick=pack_color(.21, .39, .64),
+        dim=pack_color(.50, .53, .57))
 
 
 def font():
@@ -73,272 +103,510 @@ def palette():
     return syntax.tools().COLORS if syntax.ready() else {}
 
 
-def wash(rgb, alpha):
-    return pack_color(rgb[0], rgb[1], rgb[2], alpha)
-
-
 # --- painting -------------------------------------------------------------
-def paint(ed, index, width, numbers, show_scopes):
-    """Draw the rows of block `index` in block-local coordinates. Returns the
-    widget sites [(row, line, column, text, entry)] and live value sites."""
+class Row:
+    """What a shape painter gets: the draw list, one row's pixels and its
+    column map (`cx`). `tail` is where the next thing after the line's text
+    goes; a painter that puts something there moves it on."""
+    __slots__ = ('dl', 'ed', 'look', 'line', 'at', 'y', 'ty', 'lh', 'cw', 'left', 'width', 'gutter', 'text', 'cx', 'end',
+                 'tail', 'number', 'spots', 'values')
+
+
+def tone(rgb, alpha, fallback):
+    """A mark's colour (an (r, g, b) tuple) at `alpha`, or the shape's own."""
+    return pack_color(rgb[0], rgb[1], rgb[2], alpha) if rgb else fallback
+
+
+def span(row, mark):
+    """(x0, x1) of a mark: its columns, or the line's text from its indent."""
+    if mark.high is None:
+        return row.cx(len(row.text) - len(row.text.lstrip())), max(row.end, row.left + row.cw)
+    return row.cx(mark.low), row.cx(mark.high - 1) + row.cw
+
+
+def label(row, text, color, back=None, frame=None, action=None):
+    """Text after the line; `action(ed, line)` makes it clickable."""
+    x, wide = row.tail, len(text) * row.cw
+    if back is not None:
+        row.dl.add_rect_filled(x, row.y + 2, x + wide, row.y + row.lh - 2, back, 3.)
+    if frame is not None:
+        row.dl.add_rect(x, row.y + 2, x + wide, row.y + row.lh - 2, frame, 3.)
+    row.dl.add_text(x, row.ty, color, text)
+    if action is not None:
+        row.spots.append((row.at, x, x + wide, action, row.line))
+    row.tail = x + wide + row.cw
+
+
+def paint_band(row, mark):
+    row.dl.add_rect_filled(row.gutter, row.y, row.width, row.y + row.lh, tone(mark.color, .16, row.look.paused))
+
+
+def paint_wash(row, mark):
+    x0, x1 = span(row, mark)
+    row.dl.add_rect_filled(x0, row.y, x1, row.y + row.lh, tone(mark.color, row.look.symbol, row.look.scope), 2.)
+
+
+def paint_hit(row, mark):
+    x0, x1 = span(row, mark)
+    row.dl.add_rect_filled(x0, row.y + 1, x1, row.y + row.lh - 1, tone(mark.color, .45, row.look.hit), 2.)
+
+
+def paint_flash(row, mark):
+    x0, x1 = span(row, mark)
+    row.dl.add_rect_filled(x0 - 3, row.y, x1 + 3, row.y + row.lh, tone(mark.color, .3, row.look.flash), 3.)
+
+
+def paint_box(row, mark):
+    x0, x1 = span(row, mark)
+    row.dl.add_rect(x0, row.y + 1, x1, row.y + row.lh - 1, tone(mark.color, 1., row.look.caret), 2.)
+
+
+def paint_under(row, mark):
+    x0, x1 = span(row, mark)
+    row.dl.add_line(x0, row.y + row.lh - 2, x1, row.y + row.lh - 2, tone(mark.color, 1., row.look.error), 1.5)
+
+
+def paint_squiggle(row, mark):
+    x0, x1 = span(row, mark)
+    y, color, up = row.y + row.lh - 2, tone(mark.color, 1., row.look.error), False
+    while x0 < x1:
+        row.dl.add_line(x0, y - 2 * up, min(x0 + 3, x1), y - 2 * (not up), color, 1.)
+        x0, up = x0 + 3, not up
+
+
+def paint_error(row, mark):
+    message, fixes = mark.data
+    label(row, message.split('\n')[0][:120] + (f'   fix: {fixes[0]}' if fixes else ''), tone(mark.color, 1., row.look.error),
+          action=open_detail)
+
+
+def paint_note(row, mark):
+    label(row, str(mark.data), tone(mark.color, 1., row.look.dim))
+
+
+def paint_value(row, mark):
+    value = mark.data
+    entry = for_value(value.value)
+    if entry is not None:
+        # An inline view of the value: the block declares it where the text would go.
+        row.values.append((row.at, row.line, row.tail, value, entry))
+        row.tail += (entry.cells + 1) * row.cw
+    else:
+        label(row, f' {value.name} = {value.text if value.text is not None else type(value.value).__name__} ', row.look.value, row.look.pill)
+
+
+def paint_dot(row, mark):
+    row.dl.add_circle_filled(PAD + 4, row.y + row.lh * .5, row.lh * .28, tone(mark.color, 1., row.look.breakpoint))
+
+
+def paint_arrow(row, mark):
+    mid = row.y + row.lh * .5
+    row.dl.add_triangle_filled(PAD, mid - 5, PAD + 9, mid, PAD, mid + 5, tone(mark.color, 1., row.look.pause))
+
+
+def paint_bar(row, mark):
+    row.dl.add_rect_filled(0, row.y, 3, row.y + row.lh, tone(mark.color, 1., row.look.pause))
+
+
+def paint_heat(row, mark):
+    row.dl.add_rect_filled(PAD - 2, row.y + 1, row.gutter - FOLD, row.y + row.lh - 1, tone(mark.color, .35, row.look.pill), 3.)
+
+
+def paint_number(row, mark):
+    row.number = tone(mark.color, 1., row.look.error)
+
+
+def open_detail(ed, line):
+    ed.detail = line
+
+
+def toggle_fold(ed, line):
+    ed.toggle(line)
+
+
+# How each mark shape paints: (layer, painter). To add a shape, write its
+# painter above and list it here; a producer can then use it. A shape that is
+# not listed is data only (a 'tint' colours its scope, a caller's own notes).
+UNDER, MATCH, GLYPH, OVER, EDGE = range(5)
+SHAPES = {
+    'band': (UNDER, paint_band),            # a wash across the line
+    'wash': (UNDER, paint_wash),            # a soft wash behind a span
+    'hit': (MATCH, paint_hit),              # a search hit: over the selection, under the text
+    'flash': (MATCH, paint_flash),          # the text an undo or a jump just landed on
+    'color': (GLYPH, None),                 # the glyphs of a span take the colour (`data`: how much, 0..1)
+    'box': (OVER, paint_box),               # a frame around a span
+    'under': (OVER, paint_under),           # an underline
+    'squiggle': (OVER, paint_squiggle),     # a wavy underline
+    'error': (OVER, paint_error),           # a message after the line that opens its detail
+    'note': (OVER, paint_note),             # plain text after the line
+    'value': (OVER, paint_value),           # a live value after the line
+    'dot': (EDGE, paint_dot),               # gutter: a breakpoint
+    'arrow': (EDGE, paint_arrow),           # gutter: the paused line
+    'bar': (EDGE, paint_bar),               # gutter: a band down its left edge
+    'heat': (EDGE, paint_heat),             # gutter: a box behind the number
+    'number': (EDGE, paint_number),         # gutter: the number's colour
+}
+
+
+def recolour(runs, marks, colors):
+    """[(column, text, packed colour)] of a line's runs with its 'color'
+    marks applied: runs are cut at the marks' columns."""
+    mix, found = syntax.tools()._mix_packed, []
+    for column, piece, kind in runs:
+        base, at, stop = colors.get(kind, PLAIN), column, column + len(piece)
+        for mark in marks:
+            low, high = (0, stop) if mark.high is None else (mark.low, mark.high)
+            if high <= at or low >= stop:
+                continue
+            if low > at:
+                found.append((at, piece[at - column:low - column], base))
+                at = low
+            cut = min(high, stop)
+            found.append((at, piece[at - column:cut - column], mix(base, mark.color, mark.data or 1.)))
+            at = cut
+        if at < stop:
+            found.append((at, piece[at - column:], base))
+    return found
+
+
+def paint(ed, block, first, top, width, numbers, show_scopes):
+    """Draw the lines of `block` (its first document line is `first`, its
+    first row `top`) in block-local coordinates: per row the marks under the
+    text, the selection, the text, the marks over it, then the gutter.
+    Returns the widget sites [(row, line, column, x, text, entry)], the live
+    value sites and the click spots."""
     dl = imgui.get_window_draw_list()
-    doc, rows, folds, colors = ed.doc, ed.rows, ed.folds, palette()
+    doc, rows, folds, colors, look = ed.doc, ed.rows, ed.folds, palette(), ed.look
     cw, lh, gutter = ed.cw, ed.lh, ed.gutter
-    first = index * BLOCK
-    lines = rows.span(first, first + BLOCK)
+    texts, states = block.lines(), block.open
+    lines = [line for line in range(first, first + block.count) if not rows.hidden(line)] if rows.first \
+        else range(first, first + block.count)
     if not lines:
-        return (), ()
+        return (), (), ()
     head, tail = lines[0], lines[-1]
     left = gutter - ed.scroll_x
     low, high = doc.selection
+    base = doc.start(first)
+    starts = block.starts
     # Columns on screen: long lines only submit this band.
     band0 = int(ed.scroll_x // cw)
     band1 = band0 + int((width - gutter) // cw) + 2
+    # The marks on these lines, by layer and line, in set order.
+    layers = ({}, {}, {}, {}, {})
+    for found in ed.marks.values():
+        for line, mark in found.on(head, tail) if found is not None else ():
+            shape = SHAPES.get(mark.shape)
+            if shape is not None:
+                layers[shape[0]].setdefault(line, []).append((shape[1], mark))
+    under, match, glyph, over, edge = layers
     dl.push_clip_rect(gutter, 0, width, len(lines) * lh, True)
     if show_scopes:
-        # A tinted definition is the scope with the same last line and indent.
-        tinted = {(item[1], item[2]): item[3] for item in ed.tinted} if ed.tinted else ()
-        for start, last, indent, depth, scope in ed.scopes:
-            if start > tail:
-                break
-            if last < head or rows.hidden(start):
+        for index in folds.within(head, tail):
+            scope = folds.scopes[index]
+            start, last = folds.range(index)
+            if scope is None or rows.hidden(start):
                 continue
-            top = (rows.row(max(start, head)) - first) * lh
-            bottom = (rows.row(min(last, tail)) - first + 1) * lh
-            x = left + indent * cw
-            if scope:
-                rgb = tinted.get((last, indent)) if tinted else None
-                dl.add_rect_filled(x, top, width, bottom, wash(rgb, TINT) if rgb else SCOPE)
+            y0 = (rows.row(max(start, head)) - top) * lh
+            y1 = (rows.row(min(last, tail)) - top + 1) * lh
+            x = left + scope[0] * cw
+            if scope[1]:
+                # A tinted definition is the scope headed by a 'tint' mark.
+                tint = ed.mark('tints', start, 'tint')
+                dl.add_rect_filled(x, y0, width, y1, tone(tint and tint.color, look.block, look.scope))
             if start >= head:
-                top += lh
-            if bottom > top:
-                dl.add_line(x + .5, top, x + .5, bottom, GUIDE, 1.)
-    sites, values = [], []
-    hits = ed.hits_in(doc.start(head), doc.end(tail)) if ed.hits else ()
-    paused = ed.sources.get('paused')
+                y0 += lh
+            if y1 > y0:
+                dl.add_line(x + .5, y0, x + .5, y1, look.guide, look.guide_width)
+    row = Row()
+    row.dl, row.ed, row.look, row.lh, row.cw, row.left, row.width, row.gutter = dl, ed, look, lh, cw, left, width, gutter
+    sites, row.values, row.spots = [], [], []
+    wide = 0
     for at, line in enumerate(lines):
         y = at * lh
-        start, stop = doc.start(line), doc.end(line)
-        text = doc.text[start:stop]
-        if paused is not None and paused - 1 == line:
-            dl.add_rect_filled(gutter, y, width, y + lh, PAUSED)
-        for column, length, rgb in ed.washes.get(line, ()):
-            dl.add_rect_filled(left + column * cw, y, left + (column + length) * cw, y + lh, wash(rgb, TINT * 2.5), 2.)
+        local = line - first
+        text = texts[local]
+        start = base + starts[local]
+        stop = start + len(text)
+        state = states[local] if states else None
+        # The line's column map: `inset` is None on a line without widget cells.
+        inset = ed.syntax.insets(text, state)
+        if inset is None:
+            def cx(column):
+                return left + column * cw
+        else:
+            def cx(column, inset=inset):
+                return left + (column + shift(inset, column)) * cw
+        end = cx(len(text) - 1) + cw if text else left
+        wide = max(wide, int((end - left) / cw))
+        row.line, row.at, row.y, row.ty, row.text, row.cx, row.end = line, at, y, y + (lh - lh / LINE) * .5, text, cx, end
+        row.tail = end + cw
+        for draw, mark in under.get(line, ()):
+            draw(row, mark)
         if low < high and low <= stop and high > start:
-            dl.add_rect_filled(left + (max(low, start) - start) * cw, y,
-                               left + (min(high, stop) - start + (high > stop)) * cw, y + lh, SELECT)
-        for hit0, hit1 in hits:
-            if hit0 < stop and hit1 > start:
-                dl.add_rect_filled(left + (max(hit0, start) - start) * cw, y + 1,
-                                   left + (min(hit1, stop) - start) * cw, y + lh - 1, HIT, 2.)
-        ty = y + (lh - lh / LINE) * .5
-        for column, piece, kind in ed.syntax.runs(line, text):
-            if column >= band1:
+            dl.add_rect_filled(cx(max(low, start) - start), y,
+                               (cx(min(high, stop) - start - 1) + cw if min(high, stop) > start else left) + (high > stop) * cw,
+                               y + lh, look.select)
+        for draw, mark in match.get(line, ()):
+            draw(row, mark)
+        ty = row.ty
+        runs = ed.syntax.runs(text, state)
+        for column, piece, kind in runs:
+            if column >= band1 and inset is None:
                 break
-            if column + len(piece) <= band0:
+            entry = for_token(kind)
+            if entry is not None:
+                sites.append((at, line, column, cx(column), piece, entry))
+            if line in glyph:
+                continue
+            if column + len(piece) <= band0 and inset is None:
                 continue
             if len(piece) > band1 - band0:
                 cut = max(band0 - column, 0)
                 piece, column = piece[cut:band1 - column], column + cut
             if piece.isascii():
-                dl.add_text(left + column * cw, ty, colors.get(kind, PLAIN), piece)
+                dl.add_text(cx(column), ty, colors.get(kind, PLAIN), piece)
             else:
                 # Glyphs outside the mono face each take their own cell.
-                color = colors.get(kind, PLAIN)
+                color, x = colors.get(kind, PLAIN), cx(column)
                 for offset, char in enumerate(piece):
-                    dl.add_text(left + (column + offset) * cw, ty, color, char)
-            entry = for_token(kind)
-            if entry is not None:
-                sites.append((at, line, column, piece, entry))
-        x = left + (len(text) + 1) * cw
+                    dl.add_text(x + offset * cw, ty, color, char)
+        if line in glyph:
+            for column, piece, color in recolour(runs, [mark for _, mark in glyph[line]], colors):
+                x = cx(column)
+                for offset, char in enumerate(piece) if not piece.isascii() else ((0, piece),):
+                    dl.add_text(x + offset * cw, ty, color, char)
         hidden = rows.folded(line)
         if hidden:
-            label = f' {hidden} lines '
-            dl.add_rect(x, y + 2, x + len(label) * cw, y + lh - 2, FOLDED, 3.)
-            dl.add_text(x, ty, FOLDED, label)
-            x += (len(label) + 1) * cw
-        for value in ed.live.get(line, ()):
-            entry = for_value(value.value)
-            if entry is not None:
-                values.append((at, line, x, value, entry))
-                x += (entry.cells + 1) * cw
-                continue
-            label = f' {value.name} = {value.text if value.text is not None else type(value.value).__name__} '
-            dl.add_rect_filled(x, y + 2, x + len(label) * cw, y + lh - 2, PILL, 3.)
-            dl.add_text(x, ty, VALUE, label)
-            x += (len(label) + 1) * cw
-        message = ed.errors.get(line)
-        if message is not None:
-            dl.add_line(left + (len(text) - len(text.lstrip())) * cw, y + lh - 2, left + max(len(text), 1) * cw,
-                        y + lh - 2, ERROR, 1.5)
-            fix = ed.fixes.get(line)
-            dl.add_text(x, ty, ERROR, message.split('\n')[0][:120] + (f'   fix: {fix[0]}' if fix else ''))
+            label(row, f' {hidden} lines ', look.folded, frame=look.folded, action=toggle_fold)
+        for draw, mark in over.get(line, ()):
+            draw(row, mark)
+    block.wide = wide
     dl.pop_clip_rect()
     if gutter:
-        dl.add_rect_filled(0, 0, gutter, len(lines) * lh, GUTTER)
-        breaks = ed.sources.get('breakpoints')
+        dl.add_rect_filled(0, 0, gutter, len(lines) * lh, look.gutter)
         for at, line in enumerate(lines):
-            y = at * lh
-            ty = y + (lh - lh / LINE) * .5
-            mid = y + lh * .5
-            if breaks is not None and line + 1 in breaks:
-                dl.add_circle_filled(PAD + 4, mid, lh * .28, BREAK)
-            if paused is not None and paused - 1 == line:
-                dl.add_triangle_filled(PAD, mid - 5, PAD + 9, mid, PAD, mid + 5, PAUSE)
-            if numbers:
-                label = str(line + 1)
-                dl.add_text(gutter - FOLD - len(label) * cw, ty, ERROR if line in ed.errors else NUMBER, label)
-            item = folds.at(line)
-            if item is not None:
-                x = gutter - FOLD * .5 - 2
+            row.line, row.at, row.y, row.number = line, at, at * lh, look.number
+            for draw, mark in edge.get(line, ()):
+                draw(row, mark)
+            number = ed.numbers.number(line) if numbers else None
+            if number is not None:
+                text = str(number)
+                dl.add_text(gutter - FOLD - len(text) * cw, row.y + (lh - lh / LINE) * .5, row.number, text)
+            if ed.fold(line) is not None:
+                x, mid = gutter - FOLD * .5 - 2, row.y + lh * .5
                 if rows.folded(line):
-                    dl.add_triangle_filled(x - 3, mid - 5, x + 4, mid, x - 3, mid + 5, FOLDED)
+                    dl.add_triangle_filled(x - 3, mid - 5, x + 4, mid, x - 3, mid + 5, look.folded)
                 else:
-                    dl.add_triangle_filled(x - 5, mid - 3, x + 5, mid - 3, x, mid + 4, NUMBER)
-    return sites, values
+                    dl.add_triangle_filled(x - 5, mid - 3, x + 5, mid - 3, x, mid + 4, look.number)
+    return sites, row.values, row.spots
 
 
-@gui(listen=())
-def block(input_value, index=0, stamp=0, width=0., height=0., widgets=True, numbers=True, scopes=True):
-    """`BLOCK` rows of text and the inline widgets on them. `stamp` only
-    exists to run the body again when the rows changed."""
+@gui(listen=(), cursor=mouse_cursor.TEXT)
+def block(input_value, at=0, stamp=0, first=0, width=0., height=0., widgets=True, numbers=True, scopes=True):
+    """The lines of document block `at` (its key) and the inline widgets on
+    them. `stamp` and `first` only exist to run the body again when the
+    lines or their numbers changed."""
     ed = input_value
+    found, placed = ed.doc.keys.get(at), ed.placed.get(at)
+    if found is None or placed is None:
+        # An edit merged this block away: the pane is about to stop declaring it.
+        return False, ed
     pushed, _, _ = font()
     try:
-        sites, values = paint(ed, index, width, numbers, scopes)
+        sites, values, ed.spots[at] = paint(ed, found, placed[0], placed[1], width, numbers, scopes)
     finally:
         if pushed:
             imgui.pop_font()
     changed = False
-    cw, lh, left = ed.cw, ed.lh, ed.gutter - ed.scroll_x
+    cw, lh = ed.cw, ed.lh
     if widgets:
-        for at, line, column, text, entry in sites:
-            x = left + column * cw
-            if x < ed.gutter or x + len(text) * cw > width:
+        for row, line, column, x, text, entry in sites:
+            # Where the widget sits: its own cells before or after the token, or the token's.
+            cells = entry.lead or entry.trail or len(text)
+            if entry.lead:
+                x -= cells * cw
+            elif entry.trail:
+                x += len(text) * cw
+            elif ed.inside == (line, column):
+                continue        # the caret is in this token: it edits as text
+            if x < ed.gutter or x + cells * cw > width:
                 continue
-            edited, value = entry.view(text, key=(at, column), left=x, top=at * lh, width=len(text) * cw, height=lh)
+            edited, value = entry.view(text, key=(row, column), left=x, top=row * lh, width=cells * cw, height=lh)
             if edited and isinstance(value, str) and value != text:
+                # One undo step for a whole drag: the pointer is the widget's until it lets go.
+                ed.dragging = True
                 edit.set_token(ed.doc, line, column, len(text), value)
+                ed.dragging = False
                 changed = True
-    for at, line, x, value, entry in values:
+    for row, line, x, value, entry in values:
         if x >= ed.gutter and x + entry.cells * cw <= width:
-            entry.view(value.value, key=('live', at, value.name), left=x, top=at * lh, width=entry.cells * cw, height=lh)
+            entry.view(value.value, key=('live', row, value.name), left=x, top=row * lh, width=entry.cells * cw, height=lh)
     return changed, ed
 
 
 @gui(listen=())
-def band(input_value):
+def band(input_value, color=0):
     """The current line highlight, moved by its `top`."""
-    imgui.get_window_draw_list().add_rect_filled(0, 0, 8192, 8192, BAND)
+    imgui.get_window_draw_list().add_rect_filled(0, 0, 8192, 8192, color)
 
 
 @gui(listen=())
-def caret(input_value, shown=True, ghost='', width=0., height=0.):
+def caret(input_value, shown=True, ghost='', color=0, faint=0, width=0., height=0.):
     """The caret bar and the ghost suggestion after it, moved by `left`/`top`."""
     dl = imgui.get_window_draw_list()
     if shown:
-        dl.add_rect_filled(0, 1, 2, height - 1, CARET)
+        dl.add_rect_filled(0, 1, 2, height - 1, color)
     if ghost:
         pushed, _, lh = font()
-        dl.add_text(2, (lh - lh / LINE) * .5, GHOST, ghost.split('\n')[0])
+        dl.add_text(2, (lh - lh / LINE) * .5, faint, ghost.split('\n')[0])
         if pushed:
             imgui.pop_font()
+
+
+@gui(listen=())
+def end(input_value):
+    """Nothing: its position is the last row, which gives the pane its scroll range."""
 
 
 @gui(scroll=True, listen=())
 def pane(input_value, stamp=0, width=0., height=0., widgets=True, numbers=True, scopes=True,
          focused=False, ghost='', single=False):
-    """The scrolling viewport: one block per `BLOCK` rows, in content coordinates."""
+    """The scrolling viewport: the blocks near it, in content coordinates."""
     ed = input_value
-    lh, blocks = ed.lh, ed.stamps
-    span = BLOCK * lh
+    lh = ed.lh
     x, y = ed.where(ed.doc.caret)
     if not single:
-        _, _, ed.band = band(None, name='band', width=width, height=lh, initial={'left': 0., 'top': y},
-                             return_extras=True)
+        _, _, ed.band = band(None, name='band', color=ed.look.band, width=width, height=lh,
+                             initial={'left': 0., 'top': y}, return_extras=True)
     changed = False
-    last = len(blocks) - 1
-    low, high = ed.window
-    drawn = ed.drawn
-    for index, mark in enumerate(blocks):
-        if low <= index <= high:
-            drawn[index] = mark
-        elif drawn[index] >= 0:
-            # Out of sight: keep its old picture until it scrolls near.
-            mark = drawn[index]
-        rows = BLOCK if index < last else ed.rows.count - index * BLOCK
-        edited, _ = block(ed, key=index, index=index, stamp=mark, left=0., top=index * span,
-                          width=width, height=rows * lh, widgets=widgets, numbers=numbers, scopes=scopes)
+    base = ed.base
+    for found, first, row, count in ed.shown:
+        edited, _ = block(ed, key=found.key, at=found.key, stamp=max(found.stamp, base), first=first if numbers else 0,
+                          left=0., top=row * lh, width=width, height=count * lh, widgets=widgets, numbers=numbers,
+                          scopes=scopes)
         changed |= edited
-    _, _, ed.caret = caret(None, name='caret', shown=focused, ghost=ghost, width=max(2., len(ghost) * ed.cw + 4),
-                           height=lh, initial={'left': x - ed.scroll_x, 'top': y}, return_extras=True)
+    end(None, name='end', left=0., top=(ed.rows.count - 1) * lh, width=1., height=lh)
+    _, _, ed.caret = caret(None, name='caret', shown=focused, ghost=ghost, color=ed.look.caret, faint=ed.look.ghost,
+                           width=max(2., len(ghost) * ed.cw + 4), height=lh,
+                           initial={'left': x - ed.scroll_x, 'top': y}, return_extras=True)
     return changed, ed
 
 
 # --- popovers -------------------------------------------------------------
-@gui(listen=('pointer',))
-def choices(input_value, rows=(), index=0, first=0, width=0., height=0., view_events=None):
-    """A list popover: suggestions or quick fixes. A click picks a row by
-    setting `ed.picked`; the editor reads it on its next run."""
-    ed = input_value
+@gui(listen=('pointer', 'hover', 'wheel'))
+def choices(input_value, which='suggest', rows=(), index=0, first=0, width=0., height=0., view_events=None):
+    """The list popover: the suggestions (`which='suggest'`) or an error's
+    quick fixes ('fixes'), each a `suggest.Menu` on the session. The keyboard
+    stays with the editor, which moves the selection; here the pointer does:
+    hovering selects, the wheel scrolls, a click picks (the editor acts on
+    `Menu.picked` on its next run). `rows`, `index` and `first` only exist to
+    run the body again when the list changed."""
+    ed, look = input_value, input_value.look
+    menu = getattr(ed, which)
     dl = imgui.get_window_draw_list()
     pushed, cw, lh = font()
-    dl.add_rect_filled(0, 0, width, height, POP, 4.)
     picked = False
+    for across, down in view_events.get('wheel', ()):
+        menu.scroll(-int(down))
+    for event in view_events.get('hover', ()):
+        if event.kind == 'hover':
+            menu.point(int(event.y // lh))
     for event in view_events.get('pointer', ()):
-        if event.kind == 'press':
-            ed.picked = first + int(event.y // lh)
+        if event.kind == 'press' and not event.button:
+            menu.point(int(event.y // lh))
+            menu.picked = menu.index
             picked = True
-    for at, (name, kind) in enumerate(rows[first:first + ROWS]):
-        y = at * lh
-        if first + at == index:
-            dl.add_rect_filled(0, y, width, y + lh, PICK, 3.)
-        dl.add_text(6, y + (lh - lh / LINE) * .5, CARET, name)
-        dl.add_text(width - (len(kind) + 1) * cw, y + (lh - lh / LINE) * .5, DIM, kind)
+    dl.add_rect_filled(0, 0, width, height, look.pop, 4.)
+    for at in range(menu.first, min(menu.first + ROWS, len(menu.rows))):
+        y = (at - menu.first) * lh
+        ty = y + (lh - lh / LINE) * .5
+        text, tag = menu.rows[at]
+        tint, suffix = menu.extra(at)
+        if at == menu.index:
+            dl.add_rect_filled(0, y, width, y + lh, look.pick, 3.)
+        dl.add_text(6, ty, tone(tint, 1., look.caret), text)
+        if suffix:
+            dl.add_text(6 + (len(text) + 2) * cw, ty, look.dim, suffix)
+        dl.add_text(width - (len(tag) + 1) * cw, ty, look.dim, tag)
+    if len(menu.rows) > ROWS:
+        # Where the shown rows are in the list.
+        size = height * ROWS / len(menu.rows)
+        top = (height - size) * menu.first / (len(menu.rows) - ROWS)
+        dl.add_rect_filled(width - 4, top, width - 1, top + size, look.thumb, 2.)
     if pushed:
         imgui.pop_font()
     return picked, ed
 
 
+def pop(ed, name, which, left, top, height):
+    """Declare the list popover for the session's menu `which`, below `top` or above it when it would not fit."""
+    menu, cw, lh = getattr(ed, which), ed.cw, ed.lh
+    count = min(len(menu.rows), ROWS)
+    wide = (max(len(text) + len(tag) + (len(menu.extra(at)[1]) + 2 if menu.extra(at)[1] else 0)
+                for at, (text, tag) in enumerate(menu.rows)) + 4) * cw + 12
+    below = top + lh
+    choices(ed, name=name, melty_window=True, content_offset=(0., 0.), which=which, rows=menu.rows, index=menu.index,
+            first=menu.first, left=left, width=wide, height=count * lh,
+            top=below if below + count * lh <= height or top < count * lh else top - count * lh)
+
+
 @gui(listen=('pointer',))
-def note(input_value, lines=(), width=0., height=0., color=CARET, view_events=None):
+def note(input_value, lines=(), width=0., height=0., color=0, view_events=None):
     """A text popover: the full error message or a signature hint."""
+    look = input_value.look
     dl = imgui.get_window_draw_list()
     pushed, cw, lh = font()
-    dl.add_rect_filled(0, 0, width, height, POP, 4.)
+    dl.add_rect_filled(0, 0, width, height, look.pop, 4.)
     for at, line in enumerate(lines):
-        dl.add_text(6, at * lh + (lh - lh / LINE) * .5, color if at == 0 else DIM, line)
+        dl.add_text(6, at * lh + (lh - lh / LINE) * .5, color or look.caret if at == 0 else look.dim, line)
     if pushed:
         imgui.pop_font()
 
 
 # --- the editor -----------------------------------------------------------
-def session(state, text, language, fold_defaults, wake):
-    """The view's `Editor`, created on first use and restored from `state`."""
+def session(state, text, language, fold_defaults, wake, path):
+    """The view's `Editor`, created on first use and restored from `state`.
+    Another `path` is another document: a new session, not an edit."""
     ed = state.editor
-    if ed is None:
-        ed = state.editor = Editor(text, language)
-        ed.fold_defaults = fold_defaults
-        ed.folds.collapsed = {tuple(key) for key in state.collapsed}
-        ed.folds.seeded = bool(state.collapsed)
+    if text is LOADING:
+        if ed is None or not ed.standin:
+            # The rows the last session showed, where they were: blank lines around the snapshot.
+            below = max(state.view_rows - state.view_first - state.view_text.count('\n') - 1, 0)
+            ed = state.editor = Editor('\n' * state.view_first + state.view_text + '\n' * below, language, False)
+            ed.standin, ed.path = True, path
+            ed.numbers = Numbers(table=[None] * state.view_first + list(state.view_numbers))
+            ed.sources['numbers'] = (None, None)
+            if language == 'python':
+                syntax.warm(wake)
+        ed.wake = ed.worker.wake = wake
+        return ed
+    if ed is None or ed.path != path or ed.standin:
+        if ed is not None:
+            ed.closed = True        # its undo steps no longer apply
+        ed = state.editor = Editor(text, language, fold_defaults, state.collapsed, state.gaps)
+        ed.path = path
         ed.doc.select(state.caret, state.anchor)
         if language == 'python':
             syntax.warm(wake)
-    elif text is not ed.given and text != ed.given and text != ed.doc.text:
+    elif not any(text is known for known in (ed.given, ed.gave)) and text not in (ed.given, ed.gave, ed.doc.text):
+        # Neither what the caller passed before nor what this view returned: the caller replaced the text.
         ed.load(text)
         ed.returned = ed.doc.version
     ed.given = text
+    ed.wake = ed.worker.wake = wake
     return ed
 
 
-def remark(ed, name, value, build):
-    """Rebuild one kind of marks when its parameter object changed."""
-    if ed.sources.get(name, ed) is value:
-        return False
-    ed.sources[name] = value
-    build(value)
-    ed.touch(0)
-    return True
+def spot(ed, x, y):
+    """(action, line) of what was painted besides text at view x and content
+    y (a fold label, an error message), or None."""
+    row = int(y // ed.lh)
+    for found, _, top, count in ed.shown:
+        if top <= row < top + count:
+            for at, low, high, action, line in ed.spots.get(found.key, ()):
+                if at == row - top and low <= x < high:
+                    return action, line
+    return None
 
 
 def press(ed, event, desk, scroll_y, width, height, widgets):
@@ -347,35 +615,28 @@ def press(ed, event, desk, scroll_y, width, height, widgets):
     x, y = event.x, event.y
     line, column = ed.spot(x, y, scroll_y)
     index = doc.index(line, column)
-    if event.kind == 'press':
-        ed.hold = ed.detail = None
+    if event.kind == 'press' and not event.button:
+        ed.hold = ed.detail = ed.step = None
+        ed.creep = (0., time.monotonic())
         ed.suggest.close()
         if x >= width - BAR and not desk.single:
             ed.hold = ('bar', y, scroll_y)
         elif x < ed.gutter:
-            if x >= ed.gutter - FOLD and ed.folds.at(line) is not None:
+            if x >= ed.gutter - FOLD and ed.fold(line) is not None:
                 ed.toggle(line)
-            elif ed.sources.get('breakpoints') is not None:
-                ed.sources['breakpoints'].toggle(line + 1)
-                ed.touch_lines(line, line)
+            elif ed.slots.get('break') is not None and ed.numbers.number(line) is not None:
+                ed.slots['break'](ed.numbers.number(line))
             else:
                 edit.select_line(doc, index)
         else:
-            text = doc.line(line)
-            if column > len(text):
-                if ed.rows.folded(line):
-                    return ed.toggle(line)
-                if line in ed.errors:
-                    ed.detail = line
-                    return
-            if widgets and column < len(text):
-                for start, piece, kind in ed.syntax.runs(line, text):
-                    if start <= column < start + len(piece):
-                        entry = for_token(kind)
-                        if entry is not None:
-                            ed.hold = ('widget', index if entry.caret else None, x, y)
-                            return
-                        break
+            found = spot(ed, x, y + scroll_y)
+            if found is not None:
+                return found[0](ed, found[1])
+            found = ed.widget(line, x + ed.scroll_x) if widgets else None
+            if found is not None:
+                # The widget takes the press; a plain click may still place the caret.
+                ed.hold = ('widget', index if found[0].caret else None, x, y)
+                return
             if event.clicks == 2:
                 edit.select_word(doc, index)
             elif event.clicks == 3:
@@ -383,8 +644,20 @@ def press(ed, event, desk, scroll_y, width, height, widgets):
             else:
                 edit.move(doc, index, select=event.shift)
             ed.hold = ('text',)
+    elif event.button:
+        return      # only the left button edits; the others are for later (a context menu, a pan)
     elif ed.hold is not None:
-        if ed.hold[0] == 'text' and event.kind == 'drag':
+        if ed.hold[0] == 'text' and event.kind == 'hold':
+            # Held past the top or bottom edge: the selection creeps on, faster the further out.
+            now = time.monotonic()
+            beyond = y if y < 0 else y - height
+            ed.creep = (ed.creep[0] + beyond * CREEP * min(now - ed.creep[1], .05), now)
+            rows = int(ed.creep[0])
+            if rows:
+                ed.creep = (ed.creep[0] - rows, now)
+                edge = scroll_y if beyond < 0 else scroll_y + height - ed.lh
+                edit.move(doc, doc.index(ed.rows.line(int(edge // ed.lh) + rows), column), select=True)
+        elif ed.hold[0] == 'text' and event.kind == 'drag':
             edit.move(doc, index, select=True)
         elif ed.hold[0] == 'bar':
             reach = max(ed.rows.count * ed.lh - height, 0.)
@@ -393,7 +666,7 @@ def press(ed, event, desk, scroll_y, width, height, widgets):
             if abs(x - ed.hold[2]) + abs(y - ed.hold[3]) < 3:
                 edit.move(doc, ed.hold[1])
         if event.kind == 'release':
-            ed.hold = None
+            ed.hold = ed.step = None
 
 
 def typed(ed, events, desk, complete, tree, path, source, ghost, wake):
@@ -403,10 +676,11 @@ def typed(ed, events, desk, complete, tree, path, source, ghost, wake):
     pending = ''.join(events.get('text', ()))
     wrote = False
     for key, mods in events.get('keys', ()):
+        ed.step = None      # every press is its own undo step (typing folds by the framework's rule)
         if keys.printable(key, mods):
             # The character itself arrives as text; keep both in press order.
             if pending and desk.editable:
-                edit.insert(doc, pending[0], merge=True)
+                edit.insert(doc, pending[0])
                 pending, wrote = pending[1:], True
             continue
         chord = mods & keys.MODS
@@ -414,12 +688,17 @@ def typed(ed, events, desk, complete, tree, path, source, ghost, wake):
             menu.close()
             ed.detail = menu.signature = None
             continue
-        if menu.open and not chord:
+        # An open list takes the navigation keys: the suggestions, else the quick fixes of the open detail.
+        found = menu if menu.open else ed.fixes if ed.detail is not None and ed.fixes.open else None
+        if found is not None and not chord:
             if key in (glfw.KEY_UP, glfw.KEY_DOWN):
-                menu.step(-1 if key == glfw.KEY_UP else 1)
+                found.step(-1 if key == glfw.KEY_UP else 1)
                 continue
-            if key in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER, glfw.KEY_TAB):
-                menu.accept(ed, path)
+            if key in (glfw.KEY_PAGE_UP, glfw.KEY_PAGE_DOWN):
+                found.page(-1 if key == glfw.KEY_PAGE_UP else 1)
+                continue
+            if key in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER, glfw.KEY_TAB) and desk.editable:
+                found.picked = found.index
                 continue
         if key == glfw.KEY_TAB and not chord and ghost and desk.editable:
             edit.insert(doc, ghost)
@@ -429,70 +708,107 @@ def typed(ed, events, desk, complete, tree, path, source, ghost, wake):
             menu.refresh(ed, False, explicit=True, tree=tree, path=path, source=source, wake=wake)
             continue
         if key == glfw.KEY_ENTER and chord == keys.ALT and desk.editable:
-            fix = ed.fixes.get(doc.line_of(doc.caret))
-            if fix:
-                suggest.fix_import(ed, fix[0], path)
+            found = ed.mark('errors', doc.line_of(doc.caret), 'error')
+            if found is not None and found.data[1]:
+                suggest.fix_import(ed, found.data[1][0], path)
             continue
         if keys.press(ed, desk, key, mods):
             menu.close()
             ed.detail = None
     if pending and desk.editable:
-        edit.insert(doc, pending.split('\n')[0] if desk.single else pending, merge=True)
+        ed.step = None
+        edit.insert(doc, pending.split('\n')[0] if desk.single else pending)
         wrote = True
+    ed.step = None
     return wrote
 
 
-@gui(listen=('keys', 'text', 'pointer', 'wheel', 'scroll', 'focus'), no_save=('on_submit', 'completion_source'))
+@gui(listen=('keys', 'text', 'pointer', 'hold', 'wheel', 'scroll', 'focus'), no_save=('on_submit', 'completion_source'))
 def draw_editor(input_value: str = '', state: EditorState = None, editable=True, single_line=False,
                 line_numbers=True, language='python', widgets=True, scopes=True, fold_defaults=True,
-                folds=None, search='', errors=None, imports=None, tints=None, live=None, live_offset=0,
-                breakpoints=None, paused=None, code_tree=None, path=None, complete=True,
+                first_line=1, file_tint=None, folds=None, search='', errors=None, imports=None, tints=None, live=None,
+                breakpoints=None, paused=None, marks=None, code_tree=None, path=None, complete=True,
                 completion_source=None, ghost='', on_submit=None, focus=False,
                 width=None, height=None, cache=None, view_events=None):
-    """Edit `input_value`; returns `(changed, text)`.
+    """Edit `input_value`; returns `(changed, text)`. While the text is
+    still loading pass `LOADING` (state/editor_state.py): the rows the last
+    session showed are painted from the state's snapshot, read only.
 
-    Marks are plain values, rebuilt only when the object passed changes:
-    `errors` [(line, message)] or an exception, `imports` {line: [statement]}
-    (quick fixes), `tints` (a `collect_def_tints` result), `live` (a live
-    value store), `breakpoints` (a `Breakpoints` set, edited in place by
-    gutter clicks), `paused` (the debugger's line), `folds` (extra collapsible
-    `(head, last)` ranges such as unchanged diff context), `search` (a term to
+    What is shown besides the text comes from plain values, read again only
+    when the object passed changes: `errors` [(line, message)] or an
+    exception, `imports` {line: [statement]} (quick fixes), `tints` (a
+    `marks.tints` set), `live` (a live value store), `breakpoints` (a set of
+    lines, edited in place by gutter clicks and by edits that move them),
+    `paused` (the debugger's line), `marks` ({name: `Marks`}: any further
+    decorations, see `editor/marks.py`), `folds` (extra collapsible `(head,
+    last)` ranges such as unchanged diff context), `search` (a term to
     highlight), `ghost` (a suggestion drawn after the caret, Tab accepts it).
-    Lines in parameters are 1 based file lines. `code_tree` (a parse from
-    `cst_module_to_dict`) and `path` improve suggestions. `on_submit(text)`
-    makes Enter submit. `focus=True` takes the keyboard.
+    Lines in parameters are file lines. The buffer is the part of its file
+    that starts at `first_line`; or `line_numbers` is a list with each buffer
+    line's file line (None: no number, as in a diff). `file_tint` ((r, g, b))
+    tints the body, the gutter numbers and the guides. `code_tree` (a parse
+    from `cst_module_to_dict`) and `path` improve suggestions.
+    `on_submit(text)` makes Enter submit. `focus=True` takes the keyboard.
+    The injected `state` gives the caller a handle on the running editor:
+    `state.pane` (`editor.Pane`: jump, select, focus; geometry).
     """
     node = cache.current
     wake = lambda: cache.wake(node)
-    ed = session(state, input_value, language if not single_line else None, fold_defaults, wake)
+    ed = session(state, input_value, language if not single_line else None, fold_defaults, wake, path)
     doc, menu, events = ed.doc, ed.suggest, view_events
     pushed, ed.cw, ed.lh = font()
     if pushed:
         imgui.pop_font()
-    digits = len(str(doc.lines)) if line_numbers and not single_line else 0
-    gutter = 0. if single_line else PAD + max(digits, 3) * ed.cw * bool(line_numbers) + FOLD + 12 * (breakpoints is not None)
+    # The look and the line numbering: a change of either repaints every block.
+    found = look(file_tint)
+    if found != ed.look:
+        ed.look = found
+        ed.touch()
+    table = line_numbers if isinstance(line_numbers, (list, tuple)) else None
+    if not ed.standin and ed.changed('numbers', (first_line, table)):
+        ed.numbers = Numbers(first_line, table)
+        ed.touch()
+    numbers = ed.numbers
+    gutter = 0. if single_line else (PAD + numbers.digits(doc.lines) * ed.cw * bool(line_numbers) + FOLD
+                                     + 12 * (breakpoints is not None))
     if gutter != ed.gutter:
         ed.gutter = gutter
-        ed.touch(0)
+        ed.touch()
+    # Background results first: what the worker finished since the last run.
+    ed.land()
     scroll_y = ed.pane.scroll_offset[1] if ed.pane is not None else 0.
     ed.scroll_to = None
     view = height
+    editable = editable and not ed.standin
     desk = keys.Desk(editable, single_line, on_submit, imgui.set_clipboard_text, imgui.get_clipboard_text,
                      max(int(view // ed.lh) - 1, 1))
-    # Marks follow their parameter objects.
-    remark(ed, 'errors', errors, lambda value: setattr(ed, 'errors', marks.errors(value)))
-    remark(ed, 'imports', imports, lambda value: setattr(ed, 'fixes', marks.fixes(value)))
-    remark(ed, 'live', live, lambda value: setattr(ed, 'live', marks.live(value, live_offset)))
-    remark(ed, 'paused', paused, lambda value: None)
-    remark(ed, 'breakpoints', breakpoints, lambda value: None)
-    if remark(ed, 'folds', folds, lambda value: setattr(ed, 'extra', tuple(value or ()))):
-        ed.scanned = False
-    if ed.sources.get('tints', ed) is not tints or ed.sources.get('tint_version') != doc.version:
-        ed.sources['tint_version'] = doc.version
-        if remark(ed, 'tints', tints, lambda value: None) or tints:
-            ed.tinted, ed.washes = marks.tints(tints, doc)
+    # Decorations: each parameter that shows something is a producer of marks,
+    # run again when the objects it reads are others than last time.
+    ed.produce('errors', (errors, imports, numbers), problems)
+    ed.produce('live', (live, numbers), values)
+    ed.produce('paused', (paused, numbers), pause)
+    ed.produce('breaks', (None if breakpoints is None else frozenset(breakpoints), numbers), breaks)
+    ed.produce('tints', (tints,), given)
+    for name, found in (marks or {}).items():
+        ed.produce(name, (found,), given)
+    ed.slots['break'] = breakpoints.toggle if breakpoints is not None else None
+    if ed.changed('folds', (folds,)):
+        ed.ranges(folds)
+    if ed.changed('search', (search,)):
+        ed.find(search)
     before = (doc.caret, doc.anchor, doc.version)
     # --- input ---
+    for command in ed.asks:
+        # What the caller asked of the handle since the last run.
+        if command[0] == 'jump':
+            found = ed.jump(*command[1:5])
+            ed.landing = found and (*found, command[5])
+        elif command[0] == 'select':
+            doc.select(*command[1:])
+        elif command[0] == 'focus':
+            cache.imgui_input.take_keyboard(node)
+    asked = bool(ed.asks)
+    ed.asks.clear()
     for gained in events.get('focus', ()):
         ed.focused = gained
         if not gained:
@@ -501,32 +817,39 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
         ed.tick += 1
     if focus and not ed.focused:
         cache.imgui_input.take_keyboard(node)
-    for event in events.get('pointer', ()):
+    for event in (*events.get('pointer', ()), *events.get('hold', ())):
         press(ed, event, desk, scroll_y, width, height, widgets and editable)
     wrote = typed(ed, events, desk, complete, code_tree, path, completion_source, ghost, wake) \
         if ('keys' in events or 'text' in events) else False
     for across, down in events.get('wheel', ()):
-        ed.scroll_x = max(ed.scroll_x - across * 40., 0.)
-        ed.touch(0)
-    if ed.picked is not None:
-        # A popover row was clicked.
-        if ed.detail is not None and ed.fixes.get(ed.detail):
-            suggest.fix_import(ed, ed.fixes[ed.detail][min(ed.picked, len(ed.fixes[ed.detail]) - 1)], path)
-            ed.detail = None
-        elif menu.open:
-            menu.index = min(ed.picked, len(menu.rows) - 1)
-            menu.accept(ed, path)
-        ed.picked = None
+        # Sideways no further than the longest line on screen.
+        reach_x = max((max((found.wide for found, *_ in ed.shown), default=0) + 4) * ed.cw - (width - gutter - BAR), 0.)
+        scroll_x = min(max(ed.scroll_x - across * 40., 0.), max(reach_x, ed.scroll_x))
+        if scroll_x != ed.scroll_x:
+            ed.scroll_x = scroll_x
+            ed.touch()
+    # A row picked in a list popover, by Enter or a click.
+    if menu.picked is not None and menu.open:
+        ed.step = None
+        menu.index = min(menu.picked, len(menu.rows) - 1)
+        menu.accept(ed, path)
+    elif ed.fixes.picked is not None and ed.detail is not None and ed.fixes.open:
+        ed.step = None
+        suggest.fix_import(ed, ed.fixes.rows[min(ed.fixes.picked, len(ed.fixes.rows) - 1)][0], path)
+        ed.detail = None
+    menu.picked = ed.fixes.picked = None
     # --- follow the edits ---
-    for change in doc.changes:
-        delta = change.added - change.removed
-        if delta:
-            # Marks and breakpoints follow their lines until fresh ones arrive.
-            ed.live, ed.errors, ed.fixes = (marks.moved(found, change.line, delta)
-                                            for found in (ed.live, ed.errors, ed.fixes))
-            if breakpoints is not None:
-                breakpoints.moved(change.line + 1, delta)
     edited = ed.sync()
+    if breakpoints is not None:
+        if edited:
+            # The dots moved with their lines: the caller's set follows them.
+            lines = {numbers.number(line) for line, _ in ed.marks['breaks'].on(0, doc.lines)} if ed.marks['breaks'] else set()
+            if lines != breakpoints:
+                breakpoints.clear()
+                breakpoints.update(lines)
+            ed.sources['breaks'] = (frozenset(breakpoints), numbers)
+        # A gutter click toggled one.
+        ed.produce('breaks', (frozenset(breakpoints), numbers), breaks)
     if edited or doc.version != before[2]:
         if complete and editable and not single_line:
             menu.refresh(ed, wrote, tree=code_tree, path=path, source=completion_source, wake=wake)
@@ -536,30 +859,42 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
         menu.pending = None
         menu.refresh(ed, True, tree=code_tree, path=path, source=completion_source, wake=wake)
         menu.hint(ed, path, wake)
-    if not remark(ed, 'search', search, ed.find) and search and ed.sources.get('searched') != doc.version:
-        ed.find(search)
-    ed.sources['searched'] = doc.version
+    if ed.landing is not None:
+        # An undo or redo changed text that may be out of sight: unfold it, bring it into view, flash it.
+        ed.scroll_to = ed.reveal(*ed.landing[:2], scroll_y, view, ed.landing[2])
+        ed.landing = None
+        threading.Timer(FLASH, wake).start()
+    elif ed.flash and time.monotonic() >= ed.flash:
+        ed.flash = 0.
+        ed.put('flash', None)
     moved = (doc.caret, doc.anchor) != before[:2]
     if moved or edited:
         ed.show(doc.caret)
         low, high = doc.selection
         old_low, old_high = ed.selection
         if (low != high or old_low != old_high) and (low, high) != (old_low, old_high):
-            ed.touch_lines(doc.line_of(min(low, old_low, len(doc.text))), doc.line_of(min(max(high, old_high), len(doc.text))))
+            ed.touch_lines(doc.line_of(min(low, old_low, doc.size)), doc.line_of(min(max(high, old_high), doc.size)))
         ed.selection = (low, high)
         if not edited and not menu.explicit:
             menu.close()
             menu.hint(ed, path, wake) if complete and editable and not single_line else None
-        state.caret, state.anchor = doc.caret, doc.anchor
-    collapsed = sorted(ed.folds.collapsed, key=repr)
-    if collapsed != state.collapsed:
-        state.collapsed = collapsed
+        if not ed.standin:
+            state.caret, state.anchor = doc.caret, doc.anchor
+    if moved or edited or 'focus' in events:
+        ed.enter()
+    if not ed.standin:
+        # Each fold layer's collapsed set, for the next session. (A snapshot has no folds: the saved ones stay.)
+        collapsed, gaps = sorted(ed.folds.collapsed, key=repr), ed.extra.ranges()
+        if collapsed != state.collapsed:
+            state.collapsed = collapsed
+        if gaps != state.gaps:
+            state.gaps = gaps
     # --- scroll: keep the caret in view, follow the bar ---
     x, y = ed.where(doc.caret)
     reach = max(ed.rows.count * ed.lh - view, 0.)
     target = scroll_y if ed.scroll_to is None else ed.scroll_to
-    # Only the user's own caret movement scrolls: a widget or quick fix edit elsewhere does not.
-    if (moved or edited) and ('keys' in events or 'text' in events or (ed.hold is not None and ed.hold[0] == 'text')):
+    # Only the user's own caret movement (or the caller's jump) scrolls: a widget or quick fix edit elsewhere does not.
+    if (moved or edited) and ('keys' in events or 'text' in events or asked or (ed.hold is not None and ed.hold[0] == 'text')):
         target = min(target, y)
         target = max(target, y + ed.lh - view)
         text_width = width - gutter - BAR - ed.cw
@@ -567,19 +902,23 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
         scroll_x = max(scroll_x, x - gutter - text_width, 0.)
         if scroll_x != ed.scroll_x:
             ed.scroll_x = scroll_x
-            ed.touch(0)
+            ed.touch()
     target = float(int(min(max(target, 0.), reach)))
     if ed.pane is not None and target != scroll_y:
         ed.pane.scroll_offset = (0., target)
         scroll_y = target
-    ed.look(scroll_y, view)
+    ed.window(scroll_y, view)
+    if ed.settling:
+        # String state is catching up with the viewport a slice a frame.
+        wake()
     if ed.caret is not None:
         ed.caret.left, ed.caret.top = x - ed.scroll_x, y
     if ed.band is not None:
         ed.band.top = y
     # --- views ---
     dl = imgui.get_window_draw_list()
-    dl.add_rect_filled(0, 0, width, height, BACK)
+    if ed.look.back is not None:
+        dl.add_rect_filled(0, 0, width, height, ed.look.back)
     shown = ghost if editable and not menu.open else ''
     changed, _, ed.pane = pane(ed, name='pane', stamp=ed.tick, left=0., top=0., width=width, height=height,
                                widgets=widgets and editable, numbers=bool(line_numbers), scopes=scopes,
@@ -587,14 +926,22 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
     if reach and not single_line:
         size = max(view * view / (reach + view), 24.)
         top = (view - size) * scroll_y / reach
-        dl.add_rect_filled(width - BAR + 2, top, width - 2, top + size, THUMB, 3.)
+        dl.add_rect_filled(width - BAR + 2, top, width - 2, top + size, ed.look.thumb, 3.)
     popovers(ed, x - ed.scroll_x, y - scroll_y, width, height)
     if changed:
         # An inline widget edited the text: run again to follow it.
         cache.invalidate_id(node)
+    if moved or edited:
+        ed.rest()
+    if ed.standin:
+        return False, input_value
+    if ed.tick != ed.kept:
+        # What is shown changed: keep the viewport snapshot for the next session's first frame.
+        ed.kept = ed.tick
+        state.view_first, state.view_rows, state.view_text, state.view_numbers = ed.snapshot()
     done = doc.version != ed.returned
-    ed.returned = doc.version
-    return done, doc.text
+    ed.returned, ed.gave = doc.version, doc.text
+    return done, ed.gave
 
 
 def popovers(ed, x, y, width, height):
@@ -603,29 +950,24 @@ def popovers(ed, x, y, width, height):
     menu, cw, lh = ed.suggest, ed.cw, ed.lh
     below = y + lh
     if menu.open:
-        rows = menu.rows
-        first = max(menu.index - ROWS + 1, 0)
-        wide = (max(len(name) + len(kind) for name, kind in rows) + 4) * cw + 12
-        tall = min(len(rows), ROWS) * lh
-        choices(ed, name='suggestions', melty_window=True, content_offset=(0., 0.), rows=rows,
-                index=menu.index, first=first, left=x, width=wide, height=tall,
-                top=below if below + tall <= height or y < tall else y - tall)
+        pop(ed, 'suggestions', 'suggest', x, y, height)
     elif menu.signature is not None and ed.detail is None:
         name, parameters, active = menu.signature
         label = f'{name}(' + ', '.join(f'[{item}]' if at == active else item for at, item in enumerate(parameters)) + ')'
-        note(None, name='signature', melty_window=True, content_offset=(0., 0.), lines=(label,),
+        note(ed, name='signature', melty_window=True, content_offset=(0., 0.), lines=(label,),
              left=x, top=y - lh - 4 if y > lh + 4 else below, width=(len(label) + 2) * cw, height=lh)
-    if ed.detail is not None and ed.detail in ed.errors:
-        fixes = ed.fixes.get(ed.detail, ())
-        lines = ed.errors[ed.detail].split('\n')
-        wide = (max(len(item) for item in lines + list(fixes)) + 10) * cw
+    found = ed.mark('errors', ed.detail, 'error') if ed.detail is not None else None
+    if found is not None:
+        message, fixes = found.data
+        lines = message.split('\n')
+        wide = (max(len(item) for item in lines) + 4) * cw
         line_y = ed.rows.row(ed.detail) * lh - (ed.pane.scroll_offset[1] if ed.pane is not None else 0.) + lh
-        note(None, name='detail', melty_window=True, content_offset=(0., 0.), lines=tuple(lines), color=ERROR,
+        note(ed, name='detail', melty_window=True, content_offset=(0., 0.), lines=tuple(lines), color=ed.look.error,
              left=ed.gutter, top=line_y, width=wide, height=len(lines) * lh)
+        if [text for text, _ in ed.fixes.rows] != fixes:
+            ed.fixes.set([(statement, 'import') for statement in fixes])
         if fixes:
-            choices(ed, name='fixes', melty_window=True, content_offset=(0., 0.),
-                    rows=tuple((item, 'import') for item in fixes), index=0, left=ed.gutter,
-                    top=line_y + len(lines) * lh, width=wide, height=len(fixes) * lh)
+            pop(ed, 'fixes', 'fixes', ed.gutter, line_y + (len(lines) - 1) * lh, height)
 
 
 # --- built in inline widgets ----------------------------------------------
@@ -664,12 +1006,13 @@ def drag(input_value: str, width=0., height=0., origin=None, draw_state=None):
 
 
 def _swatch(input_value, width, height, rgb, write, color, draw_state):
-    """Shared colour widget body: an underline in the colour; a click opens a picker."""
+    """Shared colour widget body: a swatch in the colour, in its own cells
+    left of the literal; a click opens a picker."""
     dl = imgui.get_window_draw_list()
     if imgui.invisible_button('##colour', width, height):
         # A state write does not run the view again: carry on with the new value.
         draw_state.color = color = None if color else list(rgb)
-    dl.add_rect_filled(0, height - 4, width, height - 1, pack_color(*rgb[:3]), 1.)
+    dl.add_rect_filled(1, 3, width - 3, height - 3, pack_color(*rgb[:3]), 3.)
     if not color:
         return False, input_value
     edited, picked = picker(color, name='picker', melty_window=True, content_offset=(0., 0.),
@@ -684,7 +1027,7 @@ def _swatch(input_value, width, height, rgb, write, color, draw_state):
 def picker(input_value, width=0., height=0.):
     """Channel sliders over a preview of the colour."""
     dl = imgui.get_window_draw_list()
-    dl.add_rect_filled(0, 0, width, height, POP, 4.)
+    dl.add_rect_filled(0, 0, width, height, look().pop, 4.)
     dl.add_rect_filled(width - 34, 6, width - 6, height - 6, pack_color(*input_value[:3]), 3.)
     value, changed = list(input_value), False
     imgui.push_item_width(width - 70)
@@ -696,7 +1039,7 @@ def picker(input_value, width=0., height=0.):
     return changed, value
 
 
-@inline('color3')
+@inline('color3', lead=2)
 def colour_tuple(input_value: str, width=0., height=0., color=None, draw_state=None):
     """An `(r, g, b[, a])` tuple of floats."""
     try:
@@ -710,7 +1053,7 @@ def colour_tuple(input_value: str, width=0., height=0., color=None, draw_state=N
                    color, draw_state)
 
 
-@inline('colorhex')
+@inline('colorhex', lead=2)
 def colour_hex(input_value: str, width=0., height=0., color=None, draw_state=None):
     """A `'#rrggbb'` string."""
     rgb = syntax.tools()._parse_hex_color(input_value)

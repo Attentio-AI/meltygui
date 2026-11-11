@@ -46,12 +46,14 @@ def printable(key, mods):
 
 
 def press(ed, desk, key, mods):
-    """Run the command bound to a press. True when one ran."""
+    """Run the command bound to a press, as one undo step. True when one ran."""
     chord = (key, mods & MODS)
     command = COMMANDS.get(chord)
     if command is None or (chord in EDITS and not desk.editable):
         return False
+    ed.step = None
     command(ed, desk)
+    ed.step = None
     return True
 
 
@@ -140,15 +142,9 @@ def _untab(ed, desk):
 @bind(glfw.KEY_SLASH, CTRL, edits=True)
 def _comment(ed, desk): edit.comment(ed.doc)
 
-@bind(glfw.KEY_Z, CTRL, edits=True)
-def _undo(ed, desk): ed.doc.undo()
-
-@bind(glfw.KEY_Z, CTRL | SHIFT, edits=True)
-def _redo(ed, desk): ed.doc.redo()
-
-COMMANDS[(glfw.KEY_Y, CTRL)] = _redo
-EDITS.add((glfw.KEY_Y, CTRL))
-
+# Undo and redo are not bound here: Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y are the
+# framework's hotkeys (`Melty.fire_global_hotkeys`) over its one undo stack,
+# where the editor's steps live (history.py).
 
 # --- clipboard -----------------------------------------------------------
 @bind(glfw.KEY_C, CTRL)
@@ -171,16 +167,16 @@ def _paste(ed, desk):
 @bind(glfw.KEY_LEFT_BRACKET, CTRL | SHIFT)
 def _fold(ed, desk):
     """Collapse the innermost open range around the caret."""
-    line = ed.doc.line_of(ed.doc.caret)
-    inside = [item for item in ed.folds.ranges if item[0] <= line <= item[1] and not ed.folds.is_closed(item)]
-    if inside:
-        ed.toggle(inside[-1][0])
+    folds = ed.folds
+    for at in folds.around(ed.doc.line_of(ed.doc.caret)):
+        if not folds.is_closed(at):
+            return ed.toggle(folds.range(at)[0])
 
 @bind(glfw.KEY_RIGHT_BRACKET, CTRL | SHIFT)
 def _unfold(ed, desk):
     line = ed.doc.line_of(ed.doc.caret)
-    item = ed.folds.at(line)
-    if item is not None and ed.folds.is_closed(item):
+    found = ed.fold(line)
+    if found is not None and found[0].is_closed(found[1]):
         ed.toggle(line)
 
 @bind(glfw.KEY_MINUS, CTRL | SHIFT)

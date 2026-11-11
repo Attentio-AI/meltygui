@@ -1,5 +1,6 @@
 """Suggestion, snippet and import flows of the native editor (no window)."""
 from meltygui.core.runtime.toggles import Toggles, Snippet
+from meltygui.editor.rows import Numbers
 from meltygui.editor import edit, marks, suggest
 from meltygui.editor.editor import Editor
 from meltygui.editor.syntax import tools
@@ -15,7 +16,9 @@ def session(text, caret=None):
 
 def type_in(ed, text, **options):
     for char in text:
-        edit.insert(ed.doc, char, merge=True)
+        ed.step = None
+        edit.insert(ed.doc, char)
+        ed.step = None
         ed.sync()
         ed.suggest.refresh(ed, True, **options)
 
@@ -81,8 +84,9 @@ def test_an_import_shortcut_row_completes_the_name_and_adds_its_import():
     lines = ed.doc.text.split('\n')
     assert 'from meltygui.core.conversion import path_finder' in lines
     assert lines[-1] == 'value = path_finder' and ed.doc.caret == len(ed.doc.text)
-    ed.doc.undo(); ed.doc.undo()
-    assert ed.doc.text == 'import os\n\nvalue = path_fin'
+    from meltygui.state.core_undo import UndoManager
+    UndoManager.undo()
+    assert ed.doc.text == 'import os\n\nvalue = path_fin', 'the name and its import are one step'
 
 
 def test_import_fix_inserts_after_the_import_block_and_keeps_the_caret():
@@ -95,17 +99,51 @@ def test_import_fix_inserts_after_the_import_block_and_keeps_the_caret():
 
 
 def test_marks_from_parameters():
-    assert marks.errors([(3, 'a'), (3, 'b'), (1, 'c')]) == {2: 'a; b', 0: 'c'}
-    assert marks.fixes({4: ('import x',)}) == {3: ['import x']}
+    numbers = Numbers()
+    found = marks.problems([(3, 'a'), (3, 'b'), (1, 'c')], {3: ('import x',)}, numbers)
+    assert [(line, mark.shape) for line, mark in found.on(0, 9)] == [
+        (0, 'under'), (0, 'number'), (0, 'error'), (2, 'under'), (2, 'number'), (2, 'error')]
+    assert found.on(2)[2][1].data == ('a; b', ['import x']) and found.on(0)[2][1].data == ('c', [])
+    assert [line for line, _ in marks.problems(SyntaxError('bad', ('x', 3, 1, 'x')), None, numbers).on(0, 9)] == [2, 2, 2]
 
     class Store:
         __live_values__ = {('line:2#total',): 3, ('line:2#mean',): 1.5, ('other',): 1, ('line:9#big',): object()}
-    found = marks.live(Store)
-    assert [(value.name, value.text) for value in found[1]] == [('total', '3'), ('mean', '1.5')]
-    assert found[8][0].text is None
-    assert marks.live(Store, offset=1)[0][0].name == 'total'
-    assert marks.moved({1: 'a', 3: 'b', 5: 'c'}, 2, 2) == {1: 'a', 5: 'b', 7: 'c'}
-    assert marks.moved({1: 'a', 3: 'b', 5: 'c'}, 2, -2) == {1: 'a', 3: 'c'}
-    ed = session('@x(tint=(1, 0, 0))\ndef a():\n    pass\n')
-    blocks, washes = marks.tints((((0, 0, 2, (1, 0, 0)),), ((23, 24, (1, 0, 0), 1.),)), ed.doc)
-    assert blocks == [(0, 2, 0, (1, 0, 0))] and washes == {1: [(4, 1, (1, 0, 0))]}
+    found = marks.values(Store, numbers)
+    assert [(mark.data.name, mark.data.text) for _, mark in found.on(1)] == [('total', '3'), ('mean', '1.5')]
+    assert found.on(8)[0][1].data.text is None
+    assert marks.values(Store, Numbers(2)).on(0)[0][1].data.name == 'total' and marks.values(None, numbers) is None
+    assert marks.breaks({4, 2}, numbers).on(0, 9) == [(1, marks.Mark('dot')), (3, marks.Mark('dot'))]
+    assert [mark.shape for _, mark in marks.pause(3, numbers).on(2)] == ['band', 'arrow'] and marks.pause(None, numbers) is None
+    diff = Numbers(table=[10, 11, None, 12, 40])
+    assert [diff.number(line) for line in range(6)] == [10, 11, None, 12, 40, None] and diff.line(12) == 3 and diff.line(13) is None
+    assert marks.breaks({12, 99, 40}, diff).on(0, 9) == [(3, marks.Mark('dot')), (4, marks.Mark('dot'))]
+    assert Numbers(120).number(0) == 120 and Numbers(120).line(125) == 5 and Numbers(120).line(7) is None
+    assert Numbers(120).digits(900) == 4 and diff.digits(3) == 5
+    text = '@x(tint=(1, 0, 0))\ndef a():\n    pass\n'
+    found = marks.tints((((0, 0, 2, (1, 0, 0)),), ((23, 24, (1, 0, 0), 1.),)), text, version=4)
+    assert found.version == 4 and found.on(0, 9) == [(1, marks.Mark('tint', 0, None, (1, 0, 0))),
+                                                     (1, marks.Mark('wash', 4, 5, (1, 0, 0)))]
+
+
+def test_a_menu_keeps_its_selection_among_the_rows_shown():
+    menu = suggest.Menu()
+    menu.set([(f'row {n}', 'tag') for n in range(25)])
+    assert menu.open and (menu.index, menu.first) == (0, 0) and menu.extra(3) == (None, '')
+    menu.step(-1)
+    assert (menu.index, menu.first) == (24, 15), 'around the end, and into view'
+    menu.step(1)
+    assert (menu.index, menu.first) == (0, 0)
+    menu.page(1)
+    menu.page(1)
+    assert (menu.index, menu.first) == (20, 11)
+    menu.page(5)
+    assert (menu.index, menu.first) == (24, 15)
+    menu.scroll(-4)
+    assert (menu.index, menu.first) == (24, 11), 'the wheel moves the rows, not the selection'
+    menu.point(2)
+    assert menu.index == 13
+    menu.scroll(-99)
+    menu.point(40)
+    assert (menu.index, menu.first) == (24, 0)
+    menu.set(menu.rows[:5])
+    assert (menu.index, menu.first) == (4, 0) and menu.picked is None

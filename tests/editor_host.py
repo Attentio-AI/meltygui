@@ -18,6 +18,12 @@ class Host:
             io.keys_down[i] = False
         io.key_ctrl = io.key_alt = io.key_shift = io.key_super = False
         io.mouse_wheel = io.mouse_wheel_horizontal = 0
+        # The editor reads its colours from the theme: give the bare test host one.
+        from meltygui.core.melty import Melty
+        from meltygui.core.styling.style_core import ImGuiStyleManager
+        self.style = Melty.style_manager
+        if not isinstance(self.style, ImGuiStyleManager):
+            Melty.style_manager = ImGuiStyleManager()
         self.window = _GuiWindow()
         self.cache = self.window.cache
         self.view, self.arguments = view, arguments
@@ -58,4 +64,6 @@ class Host:
             self.frame((x, y), False)
 
     def close(self):
+        from meltygui.core.melty import Melty
+        Melty.style_manager = self.style
         self.window.close()

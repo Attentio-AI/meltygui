@@ -16,7 +16,7 @@ from pathlib import Path
 
 from meltygui import os_window, imgui
 from meltygui.model.editor_model import Analysis
-from meltygui.state.editor_state import Breakpoints
+from meltygui.state.editor_state import Breakpoints, EditorState
 from meltygui.view.editor_view import draw_editor
 from meltygui.editor.inline import inline
 from meltygui.hdr_color import pack_color
@@ -33,6 +33,7 @@ class Model:
     def __init__(self):
         self.text = PATH.read_text()
         self.analysis = Analysis(PATH, self.text)
+        self.state = EditorState()      # the caller's handle on the editor: `state.pane`
         self.breakpoints = Breakpoints()
         self.paused = None
         self.live = None
@@ -103,10 +104,10 @@ def app(width=None, height=None):
     analysis = model.analysis
     imgui.text(f'{len(analysis.errors)} findings   {model.status}')
     changed, model.text = draw_editor(
-        model.text, name='source', left=0., top=BAR + 36., width=width, height=height - BAR - 36 - 30, path=str(PATH),
+        model.text, name='source', state=model.state, left=0., top=BAR + 36., width=width, height=height - BAR - 36 - 30, path=str(PATH),
         editable=not model.read_only, search=model.search, errors=analysis.errors, imports=analysis.imports,
         tints=analysis.tints, code_tree=analysis.tree, live=model.live, breakpoints=model.breakpoints,
         paused=model.paused, ghost='  # Tab accepts this ghost text' if model.ghost else '')
-    analysis.text = model.text
+    analysis.feed(model.text, model.state.pane.version)
     changed, model.search = draw_editor(model.search, name='find', left=0., top=height - 26., width=width,
                                         height=24., single_line=True)
