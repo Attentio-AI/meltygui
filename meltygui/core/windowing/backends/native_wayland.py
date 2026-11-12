@@ -1114,3 +1114,8 @@ class Backend:
                 return previous
             return setter
         raise AttributeError(f'Native Wayland has no window operation {name}')
+
+
+# TEMPORARY (pacing debug, remove): trace this process's pacing to /tmp/pacedbg/live-<pid>.log while the flag file exists.
+if os.path.exists('/tmp/pacedbg/on'):
+    exec(open('/tmp/pacedbg/hooks.py').read(), {'__name__': 'pacedbg'})
