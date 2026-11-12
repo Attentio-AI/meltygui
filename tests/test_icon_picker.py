@@ -72,7 +72,7 @@ def test_an_icon_glyph_is_a_chip_also_with_the_caret_next_to_it(editor):
 
 
 def test_a_click_opens_the_picker_and_enter_replaces_the_glyph(editor):
-    ed, focus = editor.ed, editor.cache.imgui_input
+    ed, focus = editor.ed, editor.cache.focus
     editor.click(*at(editor, 2, 3))
     editor.click(*at(editor, 0, 9))
     assert len(declared(editor, 'icons')) == 1 and ed.doc.line_of(ed.doc.caret) == 2, 'the click is the chip\'s, not the caret\'s'
@@ -132,6 +132,21 @@ def test_escape_a_second_click_and_a_click_elsewhere_close_it_without_a_change(e
     editor.click(*at(editor, 0, 9))
     editor.frame()
     assert state_of(editor).query == '' and picker.catalog()[state_of(editor).index][0] == STAR
+
+
+def test_an_editor_asked_to_hold_the_keyboard_leaves_it_with_its_own_picker(editor):
+    ed, focus = editor.ed, editor.cache.focus
+    editor.frame(focus=True)
+    editor.click(*at(editor, 0, 9))
+    for _ in range(4):
+        editor.frame()
+    picker_node = declared(editor, 'icons')[0]
+    assert focus.keyboard == picker_node and focus.within(declared(editor, 'draw_editor')[0]), 'focus=True does not take it back'
+    typed(editor, 'coffee')
+    assert state_of(editor).query == 'coffee' and ed.doc.text == SOURCE
+    keys(editor, glfw.KEY_ESCAPE)
+    editor.frame()
+    assert not declared(editor, 'icons') and focus.keyboard == declared(editor, 'draw_editor')[0] and ed.focused
 
 
 def test_a_click_in_the_grid_picks_for_the_glyph_that_was_clicked_in_a_run(editor):

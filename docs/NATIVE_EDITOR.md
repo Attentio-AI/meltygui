@@ -215,8 +215,9 @@ decorators the nearest one's tint wins.
   imports), the fold chords (Ctrl+Minus, Ctrl+Equal, with Shift for all).
 - **Inline widgets.** A switch on booleans (a double click flips it: a single
   click puts the caret in the word), a drag on numbers, swatches with a
-  picker on colour tuples and hex colours, the icon chip with its picker, and
-  widgets by type for live values. A widget may add cells to its line (`lead`,
+  picker on colour tuples and hex colours, the icon chip with its picker (both
+  pickers are [temporary popups](GUI_PROTOTYPE.md#temporary-popups): a click
+  elsewhere or Escape closes them), and widgets by type for live values. A widget may add cells to its line (`lead`,
   `trail`); positions go through the line's column map.
 - **Code facts shown.** Undefined names, call misfits, syntax errors (a chip
   in the gutter, the message in a popover on a click), quick-fix
@@ -502,7 +503,7 @@ Run modules one at a time; a whole-suite run segfaults in
 | `test_editor_hints.py` | 8 | |
 | `test_breakpoint_model.py` | 8 | |
 | `test_spell_model.py` | 6 | |
-| `test_icon_picker.py` | 6 | |
+| `test_icon_picker.py` | 7 | |
 | `test_editor_view.py` | 40 | a desktop (GL) |
 | `test_gui_readers.py` | 2 | a desktop (GL) |
 | `test_editor_hints_view.py` | 8 | a desktop (GL) |

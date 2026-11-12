@@ -9,7 +9,8 @@ It opens on the glyph the text has, which is offered even when the font
 table does not list it.
 
 `icon` is the chip (registered with `@inline('icon')`; it is one token for a
-run of glyphs and picks for the one clicked), `icons` the picker popover.
+run of glyphs and picks for the one clicked), `icons` the picker: a temporary
+popup (`popup=`), so opening, closing and the keyboard are core/input/focus.py's.
 The grid's size is the levers below; what is offered is `catalog`.
 """
 import meltygui_imgui as imgui
@@ -53,27 +54,22 @@ def size(lh):
     return COLUMNS * CELL + 2 * PAD, lh + 6 + ROWS * CELL + 2 * PAD
 
 
-@gui(listen=('keys', 'text', 'pointer', 'hover', 'wheel', 'focus'), no_save=('seen', 'query', 'index', 'first', 'back'))
-def icons(input_value: str = '', turn=0, seen=None, query='', index=0, first=0, back=None, width=0., height=0.,
+@gui(listen=('keys', 'text', 'pointer', 'hover', 'wheel'), no_save=('query', 'index', 'first'))
+def icons(input_value: str = '', query='', index=None, first=0, width=0., height=0.,
           draw_state=None, cache=None, view_events=None):
-    """The picker popover for the glyph `input_value`. Returns `(True,
-    glyph)` when one was picked and `(True, '')` when it was closed without.
-    `turn` counts the chip's openings (another one starts the picker afresh:
-    `seen`), `index` is the selected glyph among the offered ones, `first`
-    the first row shown, `back` the view the keyboard returns to."""
-    node, events = cache.current, view_events
+    """The picker popup for the glyph `input_value`. Returns `(True, glyph)`
+    when one was picked. `query` is what was typed, `index` the selected
+    glyph among the offered ones (None: just opened), `first` the first row
+    shown; none is saved, so every opening starts afresh."""
+    events = view_events
     pushed, cw, lh = font()
     head = lh + 6
-    fresh = seen != turn
-    if fresh:
-        # Just opened: the keyboard comes here, the selection starts on the glyph the text has.
-        draw_state.seen, query, first = turn, '', 0
-        back = draw_state.back = cache.imgui_input.keyboard
-        cache.imgui_input.take_keyboard(node)
     found = offered(input_value, query)
+    fresh = index is None
     if fresh:
+        # Just opened: the selection starts on the glyph the text has.
         index = next((at for at, (glyph, _) in enumerate(found) if glyph == input_value), 0)
-    picked = closed = False
+    picked = False
     typed, was = ''.join(events.get('text', ())), query
     for key, mods in events.get('keys', ()):
         if printable(key, mods):
@@ -87,8 +83,6 @@ def icons(input_value: str = '', turn=0, seen=None, query='', index=0, first=0, 
             query, typed = query[:-1], ''
         elif key in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER):
             picked = True
-        elif key == glfw.KEY_ESCAPE:
-            closed = True
     query += typed
     if query != was:
         found, index = offered(input_value, query), 0
@@ -101,7 +95,6 @@ def icons(input_value: str = '', turn=0, seen=None, query='', index=0, first=0, 
         if event.kind in ('hover', 'press') and 0 <= column < COLUMNS and 0 <= row < ROWS and at < len(found):
             index = at
             picked |= event.kind == 'press' and not event.button
-    closed |= any(not gained for gained in events.get('focus', ()))
     # Keep the selection among the offered glyphs and, when the keyboard moved it, in sight.
     index = min(max(index, 0), max(len(found) - 1, 0))
     if fresh or 'keys' in events or 'text' in events:
@@ -132,42 +125,37 @@ def icons(input_value: str = '', turn=0, seen=None, query='', index=0, first=0, 
                            table.thumb, 1.)
     if pushed:
         imgui.pop_font()
-    picked &= bool(found)
-    if picked or closed:
-        if back is not None and back in cache.records and cache.imgui_input.keyboard == node:
-            cache.imgui_input.take_keyboard(back)       # the editor types again
-        return True, found[index][0] if picked else ''
+    if picked and found:
+        cache.focus.close()        # the editor types again
+        return True, found[index][0]
     return False, input_value
 
 
 @inline('icon', solid=True)
-@gui(no_save=('shown', 'turn', 'held'))
-def icon(input_value: str, width=0., height=0., shown=None, turn=0, held=None, draw_state=None):
+@gui(no_save=('shown',))
+def icon(input_value: str, width=0., height=0., shown=0, draw_state=None):
     """The chip over a run of icon glyphs: a press on one opens the picker
-    for it (`shown` is its place in the run, `turn` counts the openings), a
-    press on the open one closes it. `held` is the glyph the button is down
-    on: the view runs more than once while it is, and toggles once."""
+    for it (`shown` is its place in the run), a press on the open one closes it."""
     dl = imgui.get_window_draw_list()
     count = max(len(input_value), 1)
     cell = width / count
+    pressed, over = False, None
     for at in range(count):
         imgui.set_cursor_pos((at * cell, 0.))
         imgui.invisible_button(f'##icon{at}', cell, height)
-        if imgui.is_item_active() and held is None:
-            # A state write does not run the view again: carry on with the new values.
-            draw_state.held = held = at
-            draw_state.shown = shown = None if shown == at else at
-            draw_state.turn = turn = turn + 1
-        elif held == at and not imgui.is_item_active():
-            draw_state.held = held = None
-        if imgui.is_item_hovered() or shown == at:
-            dl.add_rect(at * cell - 1, 1, (at + 1) * cell + 1, height - 1, pack_color(1., 1., 1., .5 if shown == at else .25), 4.)
-    if shown is None or shown >= len(input_value):
-        return False, input_value
+        if imgui.is_item_activated():
+            # A state write does not run the view again: carry on with the new value.
+            draw_state.shown = shown = at
+            pressed = True
+        if imgui.is_item_hovered():
+            over = at
+    shown = min(shown, count - 1)
     wide, tall = size(height)
-    edited, picked = icons(input_value[shown], name='icons', melty_window=True, content_offset=(0., 0.), turn=turn,
-                           left=shown * cell, top=height + 2, width=wide, height=tall)
+    edited, picked, opened = icons(input_value[shown:shown + 1], name='icons', popup=pressed, return_extras=True,
+                                   left=shown * cell, top=height + 2, width=wide, height=tall)
+    for at in {over, shown if opened is not None else None} - {None}:
+        dl.add_rect(at * cell - 1, 1, (at + 1) * cell + 1, height - 1,
+                    pack_color(1., 1., 1., .5 if at == shown and opened is not None else .25), 4.)
     if not edited:
         return False, input_value
-    draw_state.shown = None
-    return bool(picked), input_value[:shown] + picked + input_value[shown + 1:] if picked else input_value
+    return True, input_value[:shown] + picked + input_value[shown + 1:]

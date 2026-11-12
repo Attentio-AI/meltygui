@@ -25,7 +25,8 @@ and key samples never rerun them, and each name they list arrives as a list in
 A left press gives the keyboard, any press the pointer, to the innermost
 listening view around the hit one, so popovers and inline widgets leave the
 keyboard with their editor. Views that list nothing cost one dictionary truth
-test a frame.
+test a frame. Who has the keyboard, and the temporary popups a press or Escape
+closes, are `cache.focus` (core/input/focus.py).
 
 Window gestures are the host's by default, over every view: a left drag moves
 the Melty or OS window, a right drag resizes it. A view overrides the left
@@ -77,7 +78,7 @@ class ImGuiInput:
         # Event delivery to listening views: presses queued by the host, the
         # views owning the keyboard and the held pointer, the last press.
         self.keys = []
-        self.keyboard = self.grab = self.over = None
+        self.grab = self.over = None
         # A view that listens for the pointer is under it or holds it: left drags are that view's, not a window move.
         self.left = False
         self.shape = None          # the declared pointer shape under the pointer, as of the last press while a button is held
@@ -149,13 +150,6 @@ class ImGuiInput:
         if cache.request_frame:
             cache.request_frame()
 
-    def take_keyboard(self, node):
-        """Move the keyboard to `node` (None releases it)."""
-        if node != self.keyboard:
-            self.post(self.keyboard, 'focus', False)
-            self.keyboard = node
-            self.post(node, 'focus', True)
-
     def deliver(self, position, buttons, old, wheel, modifiers, scrolled):
         """Turn this frame's sample into events for the listening views."""
         cache, listeners = self.cache, self.cache.listeners
@@ -170,7 +164,7 @@ class ImGuiInput:
             if pressed and self.grab is None:
                 self.grab = self.taker(target, position)
             if 0 in pressed:
-                self.take_keyboard(self.owner(target, 'keys'))
+                cache.focus.take(self.owner(target, 'keys'))
                 now = time.monotonic()
                 then, x, y, clicks = self.press
                 near = abs(position[0] - x) + abs(position[1] - y) <= CLICK_PIXELS
@@ -210,11 +204,11 @@ class ImGuiInput:
                 self.post(target, 'touch', touch._replace(**dict(zip('xy', self.local(target, (touch.x, touch.y))))))
         self.touches.clear()
         if self.keys or self.text:
+            keyboard = cache.focus.keyboard
             for item in self.keys:
-                self.post(self.keyboard, 'keys', item)
+                self.post(keyboard, 'keys', item)
             if self.text:
-                self.post(self.keyboard, 'text', ''.join(map(chr, self.text)))
-        self.keys.clear()
+                self.post(keyboard, 'text', ''.join(map(chr, self.text)))
 
     def hit(self, position):
         cache = self.cache
@@ -239,9 +233,18 @@ class ImGuiInput:
         self.text, self.characters = tuple(self.characters), []
         if old != self.sample or self.text or any(buttons) or self.pressed_keys:
             self.cache.calibration.input()
-        listeners = self.cache.listeners
+        listeners, focus = self.cache.listeners, self.cache.focus
+        pressed = any(down and (old is None or not old[1][i]) for i, down in enumerate(buttons))
+        if focus.stack or focus.shut:
+            # Open popups: a press outside one closes it, Escape the innermost (core/input/focus.py).
+            if pressed:
+                focus.press(self.hit(position))
+            if self.keys:
+                focus.escape(self.keys)
         if listeners:
             self.deliver(position, buttons, old, wheel, modifiers, scrolled)
+        if self.keys:
+            self.keys.clear()
         # During a wheel gesture keep cached content frozen. Settle hover once
         # the wheel stops; keyboard edits and captured widgets still get input.
         if scrolled and old is not None and old[2:4] == self.sample[2:4] and not self.text and not self.active:
@@ -249,7 +252,6 @@ class ImGuiInput:
         previous_hover, previous_focus, previous_blur = self.hover, self.focus, self.blur
         self.blur = None
         self.hover = None if self.cache.drag else self.hit(position)
-        pressed = any(down and (old is None or not old[1][i]) for i, down in enumerate(buttons))
         if pressed:
             self.capture = self.hover
             self.focus = self.hover
@@ -339,6 +341,8 @@ class ImGuiInput:
         self.right_active.discard(node)
         self.pointer_claims.pop(node, None)
         self.reaches.pop(node, None)
-        for name in ('hover', 'capture', 'focus', 'mouse_owner', 'blur', 'keyboard', 'grab', 'over'):
+        for name in ('hover', 'capture', 'focus', 'mouse_owner', 'blur', 'grab', 'over'):
             if getattr(self, name) == node:
                 setattr(self, name, None)
+        if self.cache is not None:
+            self.cache.focus.retire(node)

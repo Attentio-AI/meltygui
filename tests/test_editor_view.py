@@ -286,6 +286,26 @@ def test_lead_cells_move_the_line_through_the_column_map(editor):
     editor.click(ed.x(4, 9) - cw, at(editor, 4, 0)[1])
     editor.frame()
     assert ed.doc.place(ed.doc.caret) == (4, 4) and declared(editor, 'picker'), 'the swatch takes its own click'
+    # The picker is a temporary popup (core/input/focus.py): a slider drag in it edits the literal and keeps
+    # it open, the keyboard stays with the editor, Escape or a click elsewhere closes it.
+    focus, editor_node = editor.cache.focus, declared(editor, 'draw_editor')[0]
+    assert focus.keyboard == editor_node and ed.focused
+    x, y = editor.cache.position(declared(editor, 'picker')[0])
+    editor.frame((x + 20., y + 14.), True)
+    editor.frame((x + 80., y + 14.), True)
+    editor.frame((x + 80., y + 14.), False)
+    editor.frame()
+    assert ed.doc.line(4).startswith('TIxyNT = (0.') and '(0.2,' not in ed.doc.line(4) and declared(editor, 'picker')
+    assert focus.keyboard == editor_node, 'the sliders take no keyboard'
+    keys(editor, glfw.KEY_ESCAPE)
+    editor.frame()
+    assert not declared(editor, 'picker') and focus.keyboard == editor_node
+    editor.click(ed.x(4, 9) - cw, at(editor, 4, 0)[1])
+    editor.frame()
+    assert declared(editor, 'picker')
+    editor.click(*at(editor, 1, 2))
+    editor.frame()
+    assert not declared(editor, 'picker') and ed.doc.place(ed.doc.caret)[0] == 1, 'the closing click also places the caret'
 
 
 def test_widget_cells_appear_once_the_lexer_has_loaded(monkeypatch):
@@ -747,7 +767,7 @@ def test_listening_views_get_events_and_plain_views_cost_nothing():
         assert got[-1][1]['pointer'][0].kind == 'release'
         IO.mouse_pos = (500, 500); IO.mouse_down = [True] + [False] * 4
         cache.imgui_input.process(IO); cache.flush()
-        assert got[-1][1] == {'focus': [False]} and cache.imgui_input.keyboard is None
+        assert got[-1][1] == {'focus': [False]} and cache.focus.keyboard is None
     finally:
         cache.close()
 
@@ -789,7 +809,7 @@ def test_pointer_buttons_hold_hover_touch_and_the_declared_cursor():
         found = step(down=(False, True))
         press = found['owner']['pointer'][0]
         assert (press.kind, press.button, press.x, press.y) == ('press', 1, 50, 60) and 'focus' not in found['owner']
-        assert cache.imgui_input.keyboard is None, 'only a left press moves the keyboard'
+        assert cache.focus.keyboard is None, 'only a left press moves the keyboard'
         assert step((70, 70))['owner']['pointer'][0][:3] == ('drag', 60, 60)
         assert step() == {}, 'held still inside the view: nothing to do'
         release = step(down=())['owner']['pointer'][0]

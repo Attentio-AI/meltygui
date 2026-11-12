@@ -55,8 +55,8 @@ class _GuiWindow:
         scope = (_state['app_id'], _renderer_name(func, options.get('state_id')))
         self.native.begin_frame(scope=scope, width=width, cache=self.cache)
         try:
-            if self.cache.listeners:
-                # The frame's ordered key presses and repeats, for listening views.
+            if self.cache.listeners or self.cache.focus.stack:
+                # The frame's ordered key presses and repeats, for listening views and open popups (Escape).
                 self.cache.imgui_input.keys.extend(Melty.frame_key_events)
             self.cache.process_host_input(
                 drag_position=(self.input_backend.drag_mouse_pos

@@ -1043,7 +1043,7 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
         elif command[0] == 'select':
             doc.select(*command[1:])
         elif command[0] == 'focus':
-            cache.imgui_input.take_keyboard(node)
+            cache.focus.take(node)
         elif command[0] == 'find':
             ed.search.step(ed, command[1])
     asked = bool(ed.asks)
@@ -1051,7 +1051,7 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
     # What Ctrl+B asked for, once its lookup is in: a jump, the picker, or a red flash.
     asked |= ed.lookup.arrive(ed, roster, on_open)
     if ed.search.clicked is not None and ed.search.press(ed) and not ed.focused:
-        cache.imgui_input.take_keyboard(node)
+        cache.focus.take(node)
     for gained in events.get('focus', ()):
         ed.focused = gained
         if not gained:
@@ -1059,8 +1059,9 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
             ed.lookup.drop()
             ed.detail = None
         ed.tick += 1
-    if focus and not ed.focused:
-        cache.imgui_input.take_keyboard(node)
+    if focus and not cache.focus.within(node):
+        # (Not from a popup opened in here, such as the icon picker: the keyboard is still within.)
+        cache.focus.take(node)
     for event in (*events.get('pointer', ()), *events.get('hold', ())):
         press(ed, event, desk, scroll_y, width, height, widgets and editable)
     wrote = typed(ed, events, desk, complete, path, completion_source, ghost, wake, roster) \
@@ -1271,22 +1272,17 @@ def drag(input_value: str, width=0., height=0., origin=None, draw_state=None):
     return moved != input_value, moved
 
 
-def _swatch(input_value, width, height, rgb, write, color, draw_state):
+def _swatch(input_value, width, height, rgb, write):
     """Shared colour widget body: a swatch in the colour, in its own cells
-    left of the literal; a click opens a picker."""
+    left of the literal; a click opens a picker (a temporary popup: a click
+    elsewhere or Escape closes it, core/input/focus.py)."""
     dl = imgui.get_window_draw_list()
-    if imgui.invisible_button('##colour', width, height):
-        # A state write does not run the view again: carry on with the new value.
-        draw_state.color = color = None if color else list(rgb)
+    pressed = imgui.invisible_button('##colour', width, height)
     dl.add_rect_filled(1, 3, width - 3, height - 3, pack_color(*rgb[:3]), 3.)
-    if not color:
-        return False, input_value
-    edited, picked = picker(color, name='picker', melty_window=True, content_offset=(0., 0.),
-                            left=0., top=height + 2, height=len(color) * 24 + 12)
-    if edited:
-        draw_state.color = list(picked)
-        return True, write(picked)
-    return False, input_value
+    edited, picked = picker(rgb, name='picker', popup=pressed, left=0., top=height + 2, height=len(rgb) * 24 + 12)
+    # (A held slider reports the literal's rounding as a change on every frame: only another text is an edit.)
+    text = write(picked) if edited else input_value
+    return text != input_value, text
 
 
 @gui(width=230, height=110)
@@ -1306,7 +1302,7 @@ def picker(input_value, width=0., height=0.):
 
 
 @inline('color3', lead=2)
-def colour_tuple(input_value: str, width=0., height=0., color=None, draw_state=None):
+def colour_tuple(input_value: str, width=0., height=0.):
     """An `(r, g, b[, a])` tuple of floats."""
     try:
         rgb = [float(part) for part in input_value.strip('()').split(',') if part.strip()]
@@ -1315,20 +1311,18 @@ def colour_tuple(input_value: str, width=0., height=0., color=None, draw_state=N
     if len(rgb) not in (3, 4):
         return False, input_value
     return _swatch(input_value, width, height, rgb,
-                   lambda picked: '(' + ', '.join(f'{part:.3g}' if part % 1 else f'{part:.1f}' for part in picked) + ')',
-                   color, draw_state)
+                   lambda picked: '(' + ', '.join(f'{part:.3g}' if part % 1 else f'{part:.1f}' for part in picked) + ')')
 
 
 @inline('colorhex', lead=2)
-def colour_hex(input_value: str, width=0., height=0., color=None, draw_state=None):
+def colour_hex(input_value: str, width=0., height=0.):
     """A `'#rrggbb'` string."""
     rgb = syntax.tools()._parse_hex_color(input_value)
     if rgb is None:
         return False, input_value
     quote = input_value[0]
     return _swatch(input_value, width, height, rgb,
-                   lambda picked: quote + '#' + ''.join(f'{int(part * 255 + .5):02x}' for part in picked) + quote,
-                   color, draw_state)
+                   lambda picked: quote + '#' + ''.join(f'{int(part * 255 + .5):02x}' for part in picked) + quote)
 
 
 # The icon picker registers itself for 'icon' tokens (it reads this module's look and font, so it is imported last).

@@ -51,6 +51,11 @@ def gui(func=None, *, glfw_window=False, **decoration):
     independently; an omitted axis follows the existing flow/default placement.
     ``initial={"left": ..., "top": ...}`` seeds placement once. Raw ImGui drawing
     in the viewport body is fixed chrome; put scrolling content in child views.
+
+    ``popup=<open event>`` on a call shows the view as a temporary popup (a
+    dropdown list, a picker): open from the run the event is true in until a
+    press outside it, Escape or its own ``cache.focus.close()``. The caller
+    keeps no open flag; rules and levers are core/input/focus.py.
     """
     _check_position_arguments(decoration, decoration.get('no_save', ()))
     if func is None:

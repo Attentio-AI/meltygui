@@ -147,6 +147,9 @@ class RetainedGui:
         self.layout_log = deque(maxlen=64)
         # `input` decides which views execute for pointer and keyboard input.
         self.imgui_input = input(self)
+        # Who has the keyboard, and the open temporary popups (`popup=` on a call).
+        from meltygui.core.input.focus import Focus
+        self.focus = Focus(self)
         from meltygui.core.rendering.gui_layout_prototype import GuiGeometry
         self.geometry = GuiGeometry(self)
         # Runs one view execution natively over these same dictionaries and
@@ -331,7 +334,7 @@ class RetainedGui:
             kind = type(outcome)
             if kind is tuple:
                 return outcome
-            portal = False
+            portal = popup = False
             if kind is list:
                 # Declared from the remembered resolution; continue below with
                 # change detection, execution and placement.
@@ -341,6 +344,13 @@ class RetainedGui:
                 arguments, x, y, w, h, auto_height, scrollable, extras, caller_keys = resolved
             else:
                 identity_handle = outcome
+                if 'popup' in kwargs:
+                    # A temporary popup (core/input/focus.py): its value is the open event, and it is
+                    # declared only while it is open. Closed, this lookup is all the call costs.
+                    popup = True
+                    if not self.focus.shown(identity_handle, kwargs.pop('popup')):
+                        closed = self.focus.result(identity_handle, input_value)
+                        return (*closed, None) if kwargs.get('return_extras') else closed
                 binding = bindings.get(identity_handle)
                 if binding is None:
                     if not shared:
@@ -356,7 +366,13 @@ class RetainedGui:
                     raise TypeError('@gui uses relative left and top, not window_pos')
                 raw = kwargs.copy()
                 kwargs.pop('key', None)
-                portal = kwargs.pop('melty_window', False)
+                portal = kwargs.pop('melty_window', False) or popup
+                if popup and identity_handle not in self.focus.open:
+                    # Each opening starts afresh: what is not saved returns to its default.
+                    for name in no_save:
+                        parameter = parameters.get(name)
+                        if parameter is not None and parameter.default is not inspect.Parameter.empty:
+                            setattr(state, name, parameter.default)
                 scrollable = kwargs.pop('scroll', scroll)
                 caller = dict(kwargs)
                 if kwargs.pop('glfw_window', False):
@@ -396,12 +412,14 @@ class RetainedGui:
                         or not math.isfinite(h) or h < 0):
                     raise ValueError('cached boundaries require positive width and nonnegative height')
                 caller = {k: v for k, v in caller.items() if not (k in ('left', 'top', 'width', 'height') and v is None)}
+                if popup and 'left' in caller and 'top' in caller:
+                    caller['left'], caller['top'] = self._fit(parent, caller['left'], caller['top'], w, h)
                 if allocation is not None:
                     caller.update(width=w, height=h, left=x, top=y)
                 state.configure({'width': w, 'height': h,
                                  'left': float(x) if left is None else left,
                                  'top': float(y) if top is None else top,
-                                 'scroll_offset': (0., 0.), 'content_offset': (0., 28. if portal else 0.)},
+                                 'scroll_offset': (0., 0.), 'content_offset': (0., 28. if portal and not popup else 0.)},
                                 caller, initial)
                 x, y = state.left, state.top
                 w, h = state.width, state.height
@@ -411,6 +429,10 @@ class RetainedGui:
                 w, h = float(w), min(maximum, max(minimum, float(h)))
                 arguments = {**decoration, **kwargs, 'width': w, 'height': None if auto_height else h,
                              'min_height': minimum, 'max_height': maximum}
+                if popup:
+                    # No window gestures (gui_layout_prototype.py reads these): a popup stays where it opened.
+                    arguments.setdefault('movable', False)
+                    arguments.setdefault('resizable', False)
                 caller_keys = tuple(caller)
                 # The cursor only matters to an axis that neither the caller nor
                 # a position default fixes, and to an automatic width.
@@ -466,6 +488,8 @@ class RetainedGui:
                 self.associate(func, node)
                 self.associate(wrapper, node)
                 graph.associate(node, f'renderer:{renderer_id}', func)
+            if popup:
+                self.focus.push(identity_handle, node, parent)
             # Identity aliases remain registered until replacement or retirement.
             # Path-like values can supply changing text, so resolve those again.
             if previous is None or previous[0] is not input_value or isinstance(input_value, (str, Path)):
@@ -541,6 +565,29 @@ class RetainedGui:
         finally:
             imgui.end()
             imgui.render()
+
+    def _fit(self, parent, left, top, width, height):
+        """Where a popup asked for at (left, top) of its declaring view goes to stay on the surface: one
+        hanging below (right of) that view with no room there goes above (left of) it, by the same gap;
+        then it is moved inside, never resized."""
+        if not self.graphics:
+            return left, top
+        wide, tall = self.imgui.get_io().display_size
+        wide, tall, height = wide - self.origin[0], tall - self.origin[1], height or 0.
+        if parent:
+            # The declaring view's corner on the surface, as its content sees it, and its own size.
+            x, y = self.graph.convert_point((0., 0.), source=parent, source_content=True)
+            scroll_x, scroll_y = self.graph.state(parent).scroll_offset
+            _, _, across, down = self.graph.rect(parent)
+            above, before = 2 * scroll_y + down - top - height, 2 * scroll_x + across - left - width
+            if top - scroll_y >= down and y + top + height > tall and y + above >= 0:
+                top = above
+            if left - scroll_x >= across and x + left + width > wide and x + before >= 0:
+                left = before
+        else:
+            x = y = 0.
+        return (min(max(left, -x), max(wide - width - x, -x)),
+                min(max(top, -y), max(tall - height - y, -y)))
 
     def _capture(self, node):
         if node not in self.captures:
@@ -1050,6 +1097,10 @@ class RetainedGui:
             self.imgui_input.characters.clear()
             self.imgui_input.text = ()
             self.imgui_input.cache = None
+            # (No cycle may outlive close(): a collector thread would drop the native objects.)
+            self.focus.stack.clear()
+            self.focus.open.clear()
+            self.focus.cache = None
             self.geometry.axes = ()
             self.geometry.transactions.clear()
             # The shared snapshot owns solver forks; release them on this thread.
