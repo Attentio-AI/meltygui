@@ -14,6 +14,8 @@ EXPORTS = {
     'draw_any': 'meltygui.core.rendering.gui_any',
     'is_default_for': 'meltygui.core.rendering.gui_any',
     'Shaped': 'meltygui.core.rendering.shaped',
+    'Keyed': 'meltygui.core.rendering.keyed',
+    'keyed_as': 'meltygui.core.rendering.keyed',
     'draw_collection': 'meltygui.view.dict_view',
     'draw_bool': 'meltygui.view.value_view',
     'draw_int': 'meltygui.view.value_view',

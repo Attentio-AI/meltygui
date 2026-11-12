@@ -8,8 +8,9 @@
     changed, value = draw_any(value, name='gain', width=160)
 
 `draw_any` is called like the view it picks: it takes that view's arguments
-and returns its `(changed, value)`. A dict goes to `draw_collection`
-(view/dict_view.py), which draws every value of the dict the same way.
+and returns its `(changed, value)`. A value that is read by keys (a dict, a
+list, a dataclass: core/rendering/keyed.py) goes to `draw_collection`
+(view/dict_view.py), which draws every item of it the same way.
 
 What `@is_default_for` takes, and which registration wins (`default_for`,
 most specific first):
@@ -20,6 +21,9 @@ most specific first):
    three floats, tensors of two dimensions. The most constrained one wins.
 3. A type, or the `__name__` of one this code should not import ('Tensor'):
    the value's own type first, then its base classes in order.
+4. `Keyed`: the view of every type that is read by keys (`keyed`) and has
+   no class of its own registered.
+5. `object`: the view of the rest.
 
 A later registration of the same key replaces the earlier one, and an app
 overrides a built in view by registering its own, before or after the built
@@ -34,6 +38,7 @@ shape registered.
 import importlib
 
 from meltygui.core.rendering.gui_prototype import gui
+from meltygui.core.rendering.keyed import Keyed, keyed
 from meltygui.core.rendering.shaped import Shaped, best_match
 
 # The modules of the built in views: to add one, list its module here and register its views there.
@@ -71,10 +76,12 @@ def route(kind):
     for module in BUILT_IN:
         importlib.import_module(module)
     view = None
-    for base in kind.__mro__:
+    for base in kind.__mro__[:-1]:
         view = TYPES.get(base) or NAMES.get(base.__name__)
         if view is not None:
             break
+    else:
+        view = keyed(kind) and TYPES.get(Keyed) or TYPES.get(object)
     found = ROUTES[kind] = (view, tuple(item for item in SHAPES.items() if item[0].matches_type(kind) >= 0))
     return found
 

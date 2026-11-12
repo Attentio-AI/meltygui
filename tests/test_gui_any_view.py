@@ -164,7 +164,10 @@ def test_collection_press_opens_and_closes_a_branch(show):
     host = collection(show, data)
     rows = host.tree.rows
     assert rows.count == 3
-    host.click(30, ROW * 1.5)
+    views = len(host.cache.records)
+    host.frame((30., ROW * 1.5), True)                         # a press on the branch's key
+    assert len(host.cache.records) == views + 2                # its two values are shown in the frame of the press
+    host.frame((30., ROW * 1.5), False)
     assert host.tree.rows.count == 5 and host.tree.flipped == [('inner',)]
     host.click(*field(3))                                      # 'c' is now row 3
     host.frame(text='7')
@@ -250,3 +253,35 @@ def test_typing_ends_when_its_row_goes_out_of_sight(show):
     host.frame((200., 100.), wheel=50.)                         # and back: the same row is a new view
     host.frame()
     assert not typing(host) and data['item 1'] == 1             # what was typed and not taken is gone
+
+
+def taken(host, x, y):
+    """Whether a view keeps a left drag that starts at (x, y) from the window the host would move."""
+    from test_editor_pointer import kept
+    host.frame((x, y))
+    held = kept(host, (x, y))
+    assert 'right_mouse_dragged' not in held, 'a right drag resizes the window over every view'
+    assert host.cache.imgui_input.left == ('left_mouse_dragged' in held)
+    return host.cache.imgui_input.left
+
+
+def test_a_left_drag_is_the_windows_except_over_a_control(show):
+    data = {'flag': True, 'count': 3, 'name': 'melty', 'none': None, 'inner': {'a': 1}}
+    host = collection(show, data)
+    assert not taken(host, 40., ROW * 1.5), "a leaf's key"
+    assert not taken(host, 200., 240.), 'the empty space below the rows'
+    assert not taken(host, 380., ROW * .5), 'beside the True chip, in its row'
+    assert not taken(host, 200., ROW * 3.5), 'None, which is read only'
+    assert not taken(host, 300., ROW * 4.5), "beside a branch's key"
+    assert taken(host, 180., ROW * .5), 'the chip: a press flips it'
+    assert taken(host, 200., ROW * 1.5), 'a number: the drag changes it'
+    assert taken(host, 200., ROW * 2.5), 'a text: the drag selects in it'
+    assert taken(host, 30., ROW * 4.5), "a branch's key: a press opens it"
+
+
+def test_read_only_values_leave_the_left_drag_to_the_window(show):
+    data = {'flag': True, 'count': 3, 'name': 'melty', 'inner': {'a': 1}}
+    host = collection(show, data, editable=False)
+    for row in range(3):
+        assert not taken(host, 180., ROW * (row + .5))
+    assert taken(host, 30., ROW * 3.5), "a branch's key still opens"

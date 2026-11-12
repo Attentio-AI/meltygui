@@ -11,6 +11,10 @@
 Each view fills the box it is given (`width`, `height`) and listens for its own events, so a value
 nobody touches is drawn once and never runs again. An edit returns a value of the input's own type.
 
+The pointer is a view's only where it has a gesture of its own (`claim`): the chip of a boolean,
+the field of a number or a text that can be edited. Everywhere else, and over every value that is
+read only, a left drag moves the window the value is in (docs/WINDOW_COLLISION_COLUMNS.md, "Gestures").
+
 To add a view for another type, write it and put `@is_default_for(type)` above `@gui`. A view's
 colours are `look(tint)`: the `Tint` palette of the legacy value views, made from the view's own
 tint (the constants below). The sizes are the levers below. Typing is a single line session of the
@@ -82,6 +86,12 @@ def box(draw_list, table, width, height, fill=None):
     draw_list.add_rect_filled(0., 0., width, height, fill or table.field, ROUND)
     draw_list.add_rect(.5, .5, width - .5, height - .5, table.outline, ROUND, 0, RING)
     return (height - imgui.get_text_line_height()) * .5
+
+
+def claim(cache, width, height):
+    """The running view takes the pointer over its first `width` by `height` pixels, and nowhere when
+    `width` is 0: the rest of its box stays the window's, which a left drag there moves."""
+    cache.imgui_input.reach(cache.current, (0., 0., width, height))
 
 
 # --- typing ------------------------------------------------------------------
@@ -206,26 +216,28 @@ def draw_value(input_value: object = None, width=0., height=0.):
 
 @is_default_for(bool)
 @gui(listen=('pointer',), cursor=mouse_cursor.HAND, height=ROW)
-def draw_bool(input_value: bool, editable=True, width=0., height=0., view_events=None):
+def draw_bool(input_value: bool, editable=True, width=0., height=0., cache=None, view_events=None):
     """A chip as wide as its label; a press on it flips the value."""
     table, draw_list = look(BOOL), imgui.get_window_draw_list()
     on, off = f" True", f" False"
     # Lever: the chip's width. Both labels are measured so that a flip does not move its edge.
     wide = min(max(imgui.calc_text_size(on).x, imgui.calc_text_size(off).x) + 2 * PAD, width)
-    flipped = editable and any(event.kind == 'press' and not event.button and event.x < wide
-                               for event in view_events.get('pointer', ()))
+    claim(cache, wide * editable, height)
+    flipped = editable and any(event.kind == 'press' and not event.button for event in view_events.get('pointer', ()))
     value = input_value != flipped
     y = box(draw_list, table, wide, height, table.on if value else table.field)
     draw_list.add_text(PAD, y, table.text if value else table.dim, on if value else off)
     return flipped, value
 
 
-def number(value, tint, shown, step, editable, width, height, node, draw_state, field, grab, events):
+def number(value, tint, shown, step, editable, width, height, cache, draw_state, field, grab, events):
     """The body `draw_int` and `draw_float` share: returns the value after this frame's input, of the
     type it came in. `shown(value)` is its text, `step(start)` what one notch of a drag adds to a
     value that started at `start`. `field` is the typing session, `grab` the press that may become a
     drag: (x, the value there, dragged)."""
     kind, was, held = type(value), field, grab
+    claim(cache, width * editable, height)
+    node = cache.current
     if field is not None and field.node != node:
         field = None
 
@@ -278,8 +290,8 @@ def draw_int(input_value: int, editable=True, field=None, grab=None, width=0., h
              view_events=None):
     """A whole number: drag sideways to change it, click to type it."""
     warm()
-    value = number(input_value, INT, str, lambda start: 1, editable, width, height, cache.current, draw_state, field,
-                   grab, view_events)
+    value = number(input_value, INT, str, lambda start: 1, editable, width, height, cache, draw_state, field, grab,
+                   view_events)
     return value != input_value, value
 
 
@@ -290,7 +302,7 @@ def draw_float(input_value: float, editable=True, field=None, grab=None, width=0
     """A number: drag sideways to change it by hundredths of what it was, click to type it."""
     warm()
     value = number(input_value, FLOAT, lambda value: format(value, DIGITS), lambda start: max(abs(start), 1.) * FINE,
-                   editable, width, height, cache.current, draw_state, field, grab, view_events)
+                   editable, width, height, cache, draw_state, field, grab, view_events)
     return value != input_value, value
 
 
@@ -302,6 +314,7 @@ def draw_str(input_value: str, editable=True, field=None, width=0., height=0., d
     warm()
     value, was = input_value, field
     lines = value.count('\n') + 1 if len(value) <= LONG else 0
+    claim(cache, width * (editable and lines == 1), height)
     if field is not None and field.node != cache.current:
         field = None
     elif field is not None and value != field.gave:

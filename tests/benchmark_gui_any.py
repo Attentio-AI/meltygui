@@ -49,36 +49,45 @@ def timed(host, frames):
 
 
 def measure(size):
-    found = data(size)
-    host = Host(draw_any, input_value={}, name='data', left=0., top=0., width=WIDE, height=TALL, tree=Tree())
+    found, tree = data(size), Tree()
+    host = Host(draw_any, input_value={}, name='data', left=0., top=0., width=WIDE, height=TALL, tree=tree)
     # The frame the dict is first shown in: its keys are listed, the rows in view are mounted.
     rows = {'mount': timed(host, [lambda: host.frame(input_value=found)])}
-    y = lambda row: row * ROW + ROW * .5
+    state = host.cache.states[next(iter(host.cache.root_ids))]
+    y = lambda row: row * ROW + ROW * .5 - state.scroll_offset[1]
+
+    def wheel(pixels):
+        """Scroll by the wheel, as a user does: the view runs for it and shows the rows there."""
+        host.frame((FIELD, 200.), wheel=-pixels / 40.)
+        host.frame()
+
     rows['idle'] = timed(host, [host.frame] * 60)
     rows['scroll'] = timed(host, [lambda: host.frame((FIELD, 200.), wheel=-1.)] * 120)
     rows['fling'] = timed(host, [lambda: host.frame((FIELD, 200.), wheel=-30.)] * 60)
-    # Back to the top: row 0 is a float, row 1 an int, row 2 a text.
-    state = host.cache.states[next(iter(host.cache.root_ids))]
-    state.scroll_offset = (0., 0.)
-    host.frame()
+    wheel(-1e9)
+    # Row 0 is a float, row 1 an int, row 2 a text. Every step must change its value, or it measured nothing.
     host.frame((FIELD, y(0)), True)
     rows['drag'] = timed(host, [lambda at=at: host.frame((FIELD + 4. * at, y(0)), True) for at in range(1, 61)])
     host.frame((FIELD + 240., y(0)), False)
+    assert found['item 0'] == 0.6, found['item 0']
     host.click(FIELD, y(1))
     rows['type'] = timed(host, [lambda at=at: host.frame(text=str(at % 10)) for at in range(40)])
     host.frame(keys=[(glfw.KEY_ENTER, 0)])
+    assert found['item 1'] == int('0123456789' * 4), found['item 1']
     host.click(FIELD + 200., y(2))
     rows['text'] = timed(host, [lambda at=at: host.frame(text='abcdefghij'[at % 10]) for at in range(40)])
-    # A branch, when the dict has one in its first rows: open, then shut.
+    assert found['item 2'] == 'text 2' + 'abcdefghij' * 4, found['item 2']
+    # A branch, when the dict has one: open, then shut.
     branch = next((at for at, key in enumerate(found) if key.startswith('group')), None)
     if branch is not None:
-        state.scroll_offset = (0., max(branch - 3, 0) * ROW)
-        host.frame()
-        where = (60., (branch - max(branch - 3, 0)) * ROW + ROW * .5)
+        wheel(max(branch - 3, 0) * ROW)
+        where, count = (60., y(branch)), tree.rows.count
         rows['open'] = timed(host, [lambda: host.frame(where, True)])
         host.frame(where, False)
+        assert tree.rows.count == count + 12, tree.rows.count
         rows['shut'] = timed(host, [lambda: host.frame(where, True)])
         host.frame(where, False)
+        assert tree.rows.count == count, tree.rows.count
     views = len(host.cache.records)
     held = len(host.cache.bindings)
     host.close()

@@ -42,49 +42,51 @@ LATE = True
 # take a frame and put it up. Smaller is less latency and closer to a missed refresh (the frame
 # shows a whole period late: a stutter). The refreshes are the times the compositor reports frames
 # presented at (`presented`), not when its frame callbacks arrive: those shift with its own load.
-# The guard finds its own length (`Backend.tune`, levers below); `GUARD` is where it starts, at
-# most half a period, `LOW` the shortest it gets and `LONG` (a share of the period) the longest:
-# a compositor may draw up to half a period before its refresh, and the guard has to get past
-# that. Measured 2026-11-12 on a Hyprland desktop shown through a 120 Hz panel with
-# tools/pace_calibrate.py: 4 ms before missed none of 480
-# frames, 3.5 ms 0.2 % (the compositor's own), 3 ms 1.1 %, 2.5 ms 2.8 %.
+# The guard is a base plus a lift (`Backend.tune`, levers below). `GUARD` is where the base starts
+# and what it returns to (at most half a period); base and lift together never exceed `LONG` (a
+# share of the period). Measured 2026-11-12 on a Hyprland desktop shown through a 120 Hz panel
+# with tools/pace_calibrate.py (small window): 4 ms before missed none of 480 frames, 3.5 ms 0.2 %
+# (the compositor's own), 3 ms 1.1 %, 2.5 ms 2.8 %. A 2130x1763 window there needs about 4.5 ms.
 # `ADAPT` False keeps the guard at `GUARD` (the calibration tool steps it by hand).
 GUARD = 0.0035
-LOW = 0.0005
 LONG = 0.75
 ADAPT = True
-# Frames whose drawing time is remembered, and which of them (sorted, as a share) a frame is given:
-# 0.9 leaves the slowest tenth to `GUARD`.
+# Frames whose drawing time is remembered, for how many seconds, and which of them (sorted, as a
+# share) a frame is given: 0.9 leaves the slowest tenth to the guard. `FRESH` is what lets a few
+# slow frames go: without it they would count until `COSTS` more were drawn, long when frames are sparse.
 COSTS = 24
+FRESH = 0.5
 COST = 0.9
-# How the guard finds its length. A late frame missed when it is on screen two refreshes after the
-# frame before it: one was skipped (a visible stutter). Misses get more frequent as the guard gets
-# shorter, gradually (see the measurements above), so the guard goes by how many there were in the
-# last `RECENT` seconds:
-# - `MISSES` or more: `MISS` longer (up to `LONG` of a period), then no
-#   shorter for `REST` seconds. When that happens again after it had eased back to about the same
-#   length, the rest doubles (up to `REST_MAX`).
-# - `FEW` or fewer: `STEP` shorter every `CALM` seconds. This is how it eases back when the
-#   compositor has become quicker, and finds its level on a new display or refresh rate.
-# - in between: it stays. The compositor skips a refresh now and then however early a frame was
-#   handed over, so `FEW` = 0 would never get shorter.
-# Only frames handed over in time count (no more than `SLIP` after the guard began): one that took
-# longer to draw than the frames before it misses whatever the guard, and a guard that grew for
-# those would only add latency. Less latency for more stutters: raise `FEW` and `MISSES`.
+# How the guard finds its length. A frame missed when it was handed over in time (no more than
+# `SLIP` after its guard began) and still came on screen later than the refresh it was for. Not
+# judged: a frame that took longer to draw than the ones before it (no guard helps it), and the
+# first frame after a pause or a slow frame (the compositor is not in step then).
+# - Lift, the answer to what happens now: `MISSES` misses within `RECENT` seconds make the guard
+#   `MISS` longer at once. The lift fades to nothing over `FADE` seconds, so a disturbance costs
+#   latency for about that long and no longer. Misses in the `SETTLE` seconds after a lift do not
+#   count (frames already on their way).
+# - Base, what the display needs: lifts that keep following each other (each within `AGAIN`
+#   seconds of the one before) for `LEARN` seconds say it is no disturbance, and the base gets
+#   `MISS` longer. After `REST` seconds without that it eases back towards `GUARD`, `STEP` every
+#   `CALM` seconds, never below `GUARD`: it does not search for the edge. Misses while easing
+#   put it back `MISS` (no higher than where the easing began); when that happens again at
+#   about the same length the rest doubles, up to `REST_MAX`.
+# Less latency for more stutters: raise `MISSES`, lower `GUARD`. Quicker return of a learned
+# base: lower `REST` / `REST_MAX` (each return that fails costs `MISSES` late frames).
 # A new refresh rate starts over; misses in the first `CALM` seconds after that (a window
-# opening) do not count, nor those in the `SETTLE` seconds after the guard got longer: frames on
-# their way and the compositor need that long to show what the step did, and steps taken
-# meanwhile overshoot.
-MISSES = 6
-FEW = 1
-RECENT = 10.
+# opening) do not count.
+MISSES = 3
+RECENT = 0.5
 MISS = 0.0005
-STEP = 0.0001
+FADE = 0.5
+AGAIN = 1.
+LEARN = 2.
 SLIP = 0.0003
-SETTLE = 1.
-CALM = 4.
-REST = 30.
-REST_MAX = 600.
+SETTLE = 0.25
+STEP = 0.0001
+CALM = 1.
+REST = 10.
+REST_MAX = 120.
 # Longest wait for the compositor to ask for a frame: a hidden or covered window is never asked.
 WAIT = 0.05
 
@@ -164,11 +166,14 @@ class Backend:
         self.late = False          # that frame started late: it is judged when it is presented
         self.aim = None            # the refresh the frame being drawn started late for
         self.due = 0.              # when that frame is to be handed over: the guard before `aim`
-        # The guard as it tunes itself (`tune`): its length, the period it was found for and since
-        # when, when the late frames of lately missed, when it may next get shorter, the rest after misses, the
-        # length it last missed at and whether it got shorter since.
-        self.guard, self.paced, self.deaf = GUARD, 0., 0.
-        self.missed, self.settled, self.rest, self.failed, self.eased = [], 0., REST, 0., False
+        # The guard as it tunes itself (`tune`): base plus lift, the period it was found for, until
+        # when misses do not count, the lift as it was at `hit` (it fades from then), since when
+        # lifts follow each other, when frames lately missed, when the base may next ease, its rest
+        # after misses, the length easing last failed at and where the easing under way began
+        # (None: not easing).
+        self.guard, self.base, self.paced, self.deaf = GUARD, GUARD, 0., 0.
+        self.lift, self.hit, self.since, self.missed = 0., 0., 0., []
+        self.settled, self.rest, self.failed, self.held = 0., REST, 0., None
 
     def init(self):
         if self.display:
@@ -401,7 +406,8 @@ class Backend:
                 self.callbacks_due[window.frame_due] = window
                 window.frame_asked = time.monotonic()
             if self.sampled:
-                window.costs = (window.costs + [time.clock_gettime(self.clock) - self.sampled])[-COSTS:]
+                now = time.clock_gettime(self.clock)
+                window.costs = (window.costs + [(now, now - self.sampled)])[-COSTS:]
         self.egl_check(self.egl.eglSwapBuffers(self.egl_display, window.egl_surface), 'eglSwapBuffers')
 
     def pace(self, drawing=lambda: True):
@@ -433,7 +439,7 @@ class Backend:
             live = [window for window in self.windows if window.costs and 0 <= now - window.shown < 4 * self.period(window)]
             if live:
                 period = max(self.period(window) for window in live)
-                cost = sum(sorted(window.costs)[int((len(window.costs) - 1) * COST)] for window in live)
+                cost = sum(self.cost(window, now) for window in live)
                 guard = self.tune(period, now) if ADAPT else GUARD
                 shown = max(window.shown for window in live)
                 # The first refresh the frame can make, counted on from the last one a frame
@@ -454,25 +460,40 @@ class Backend:
                         self.wait_events_timeout(left)
         self.sampled = time.clock_gettime(self.clock)
 
+    def cost(self, window, now):
+        """Seconds to allow for drawing the window's next frame: the `COST` share of its frames of
+        the last `FRESH` seconds (the newest one when none is that fresh)."""
+        costs = sorted(cost for at, cost in window.costs if now - at < FRESH) or [window.costs[-1][1]]
+        return costs[int((len(costs) - 1) * COST)]
+
     def tune(self, period, now, missed=None):
-        """The guard for `period`, moved one step when due (levers and the rule: top of this
-        file). `missed` is how a late frame did when it was presented; None only reads the guard
-        and shortens it when due: also a guard too long to start late gets back."""
+        """The guard for `period` (base plus what is left of the lift), moved when due (levers and
+        the rule: top of this file). `missed` is how a frame handed over in time did when it was
+        presented; None only reads the guard and eases the base when due."""
+        floor, longest = min(GUARD, period / 2), period * LONG
         if abs(period - self.paced) > .05 * period:
-            self.guard, self.paced, self.deaf = min(GUARD, period / 2), period, now + CALM
-            self.missed, self.settled, self.rest, self.failed, self.eased = [], now + CALM, REST, 0., False
-        self.missed = [at for at in self.missed if now - at < RECENT]
+            self.base, self.paced, self.deaf = floor, period, now + CALM
+            self.lift, self.hit, self.since, self.missed = 0., 0., 0., []
+            self.settled, self.rest, self.failed, self.held = now + CALM, REST, 0., None
+        lift = self.lift * max(0., 1. - (now - self.hit) / FADE)
         if missed and now >= self.deaf:
-            self.missed.append(now)
+            self.missed = [at for at in self.missed if now - at < RECENT] + [now]
             if len(self.missed) >= MISSES:
-                if self.eased:         # a shorter guard was tried and missed (not: still getting longer)
-                    self.rest = min(self.rest * 2, REST_MAX) if self.failed and self.guard >= self.failed - MISS else REST
-                    self.failed = self.guard
-                self.guard, self.missed, self.eased = min(self.guard + MISS, period * LONG), [], False
-                self.settled, self.deaf = now + self.rest, now + SETTLE
-        elif now >= self.settled and len(self.missed) <= FEW:
-            self.guard = max(self.guard - STEP, min(LOW, self.guard))
-            self.settled, self.eased = now + CALM, True
+                if self.held is not None:      # easing found a length that misses: back, and rest longer when it is the same again
+                    self.rest = min(self.rest * 2, REST_MAX) if abs(self.base - self.failed) < MISS else REST
+                    self.failed, self.base, self.held = self.base, min(self.base + MISS, self.held), None
+                    self.settled, self.since = now + self.rest, now
+                elif now - self.hit >= AGAIN:
+                    self.since = now           # a first lift: a disturbance until it keeps coming back
+                elif now - self.since >= LEARN:
+                    self.base, self.since, self.settled = min(self.base + MISS, longest), now, now + self.rest
+                lift += MISS
+                self.lift, self.hit, self.missed, self.deaf = lift, now, [], now + SETTLE
+        elif now >= self.settled and self.base > floor:
+            if self.held is None:
+                self.held = self.base
+            self.base, self.settled = max(self.base - STEP, floor), now + CALM
+        self.guard = min(self.base + lift, longest)
         return self.guard
 
     def period(self, window):
@@ -501,13 +522,12 @@ class Backend:
             shown = (high << 32 | low) + nanoseconds * 1e-9
             window.latency_ms = (shown - sampled) * 1000.
             window.refresh = refresh * 1e-9
-            gap, window.shown = shown - window.shown, shown
-            if aim is not None:
-                # A frame that started late and shows two refreshes after the frame before it
-                # skipped one. (Longer apart: a pause in drawing, not judged.)
-                period = self.period(window)
-                if ADAPT:
-                    self.tune(period, shown, 1.5 * period < gap < 2.5 * period)
+            before, window.shown = window.shown, shown
+            period = self.period(window)
+            if aim is not None and ADAPT and aim - before < 1.5 * period:
+                # Handed over in time for `aim`, the refresh after the frame before it, and on
+                # screen a refresh or two later: a miss. (Later still: the compositor paused.)
+                self.tune(period, shown, .5 * period < shown - aim < 2.5 * period)
 
     def discarded(self, proxy):
         self.feedbacks.pop(proxy, None)
