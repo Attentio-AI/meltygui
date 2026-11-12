@@ -668,9 +668,9 @@ def session(state, value, language, fold_defaults, wake, path, waker=None):
         ed.doc.select(state.caret, state.anchor)
         if language == 'python':
             syntax.warm(wake)
-    elif source is None and not any(value is known for known in (ed.given, ed.gave)) \
-            and value not in (ed.given, ed.gave, ed.doc.text):
-        # Neither what the caller passed before nor what this view returned: the caller replaced the text.
+    elif source is None and value is not ed.gave and value != ed.gave:
+        # Not what this view returned: the caller's text. The host hands a run its own last edit until
+        # the caller passes another value, or still passes the old one a few frames on (retained.rs, `SETTLE`).
         ed.load(value)
         ed.returned = ed.doc.version
     ed.given = value
@@ -897,7 +897,8 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
     that is no editor may `splice` it: each session follows the rest. Read
     the text with `source.text` where all of it is needed. A `str` is for
     small fields (a search box, a message): it is joined again for every
-    edit returned, which costs the whole text each time.
+    edit returned, which costs the whole text each time. Pass the returned
+    text back to keep an edit: the view shows what its caller passes.
 
     What is shown besides the text comes from plain values, read again only
     when the object passed changes: `errors` [(line, message)] or an

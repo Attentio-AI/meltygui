@@ -72,6 +72,31 @@ changed. Keep mutable input identity when editing the model.
 Use `use_cache=False` for an immediate host/toolbar body. `live=True` requests
 more host frames; it does not force every cached descendant body to execute.
 
+### A view shows what its caller passes
+
+Every view behaves as an immediate mode widget, whether it is drawn directly
+(`use_cache=False`), retained, or retained in a Melty window:
+
+```python
+changed, model.name = field(model.name)   # the edit is kept: the caller passes it back
+field('fixed')                            # edits show for a few frames, then 'fixed' again
+```
+
+A retained view does not run every frame, so the host holds the edit it
+returned as its live input while the caller has not answered: typing is never
+lost to a caller that is a frame behind. A caller that still passes its old
+value `SETTLE` frames later (3, in
+[retained.rs](../native/gui_prototype/src/retained.rs)) is run once more and
+what it passes then is shown. A caller that keeps the edit in a model passes the
+model's value at that point, so nothing is reverted; one that passes a new value
+of its own is followed at once. Small differences in timing between the hosts
+are expected, the value a few frames later is not: see
+[test_gui_immediate.py](../tests/test_gui_immediate.py),
+[test_gui_immediate_view.py](../tests/test_gui_immediate_view.py) and the
+bridge cases in [test_gui_legacy_bridge.py](../tests/test_gui_legacy_bridge.py).
+A value edited in place (a dict, a `Source`) is the caller's own object and has
+nothing to settle.
+
 ### Identity and repeated calls
 
 ```python
@@ -403,6 +428,12 @@ for timing conditions, resource counts, profiles and failure controls.
 
 ## Known issues, limits and next work
 
+- Found on 2026-11-11 while testing nested Melty windows, present before and
+  after the caller-following change: with an editor (`draw_editor`) in a Melty
+  window and another in a Melty window declared inside it, the text of the
+  editor in whichever of the two windows was not clicked last is drawn as
+  garbled glyphs, and that window is dimmed. Input and values are right. Not
+  investigated.
 - Initial declarations and CPU state storage remain O(number of declared views).
   The benchmark mounted 10,000 rows in roughly 0.4 seconds. It is not a virtualized
   declaration/provider API.
@@ -469,7 +500,7 @@ for timing conditions, resource counts, profiles and failure controls.
 | Wake from native threads | [wake.rs](../native/gui_prototype/src/wake.rs), `waker` / `drain_wakes` / `close_wakes` / `park` in [glfw_utils.py](../meltygui/core/windowing/glfw_utils.py), `poke` in [window_api.py](../meltygui/core/windowing/window_api.py) |
 | Largest user so far | the [native editor](NATIVE_EDITOR.md): [editor_view.py](../meltygui/view/editor_view.py) |
 | Session persistence | [app_session.py](../meltygui/core/runtime/app_session.py), [load_save_v2.py](../meltygui/core/conversion/load_save_v2.py) |
-| Contract tests | [identity](../tests/test_gui_identity.py), [persistence](../tests/test_gui_persistence.py), [positions](../tests/test_gui_position_api.py), [scroll/geometry](../tests/test_gui_scroll_geometry.py) |
+| Contract tests | [a view follows its caller](../tests/test_gui_immediate.py), [identity](../tests/test_gui_identity.py), [persistence](../tests/test_gui_persistence.py), [positions](../tests/test_gui_position_api.py), [scroll/geometry](../tests/test_gui_scroll_geometry.py) |
 | Interactive and measured checks | [scroll lab](../examples/gui_scroll_lab.py), [benchmark](../tests/benchmark_gui_scrolling.py) |
 
 Run graphics tests and the lab on a reserved agent desktop with isolated session

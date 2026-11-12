@@ -225,6 +225,9 @@ class RetainedGui:
         if self._frame_started is None:
             self._frame_started = time.monotonic()
         self.identities.begin_frame()
+        # A view follows its caller within a few frames of an edit the caller did not take (retained.rs, `SETTLE`).
+        if self.graph.settle() and self.request_frame:
+            self.request_frame()
         previous = self.root_ids.copy()
         self.frame_roots = set()
         try:

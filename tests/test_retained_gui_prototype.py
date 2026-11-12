@@ -244,6 +244,7 @@ def test_body_hot_replacement_invalidates_without_changing_identity():
 
 
 def test_stale_caller_echo_does_not_undo_independent_edit():
+    """Within the frames a caller has to answer in. After them its value shows: test_gui_immediate.py."""
     cache = RetainedGui(graphics=False)
 
     @cache.gui

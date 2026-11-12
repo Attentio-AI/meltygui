@@ -88,7 +88,10 @@ analysis.feed(); spelling.feed()                  # after every run; cheap
 - **A code file is passed as a `Source`.** It is edited in place and returned, so
   no edit copies the text and the caller's models read the same facts. A `str`
   is joined again for every returned edit (at 100k lines: 8.3 ms to mount and
-  2.4 ms a keystroke, against 3.9 and 1.2).
+  2.4 ms a keystroke, against 3.9 and 1.2). A `str` is the caller's: pass the
+  returned text back to keep an edit. A caller that keeps passing the same text
+  sees it again a few frames after each edit, as with any `@gui` view
+  ([GUI prototype](GUI_PROTOTYPE.md#a-view-shows-what-its-caller-passes)).
 - **Everything shown besides the text is a plain value**, read again only when
   the object passed changes: `errors`, `imports`, `tints`, `live`, `breakpoints`,
   `paused`, `marks`, `folds`, `search`, `ghost`. A retained view does not see an

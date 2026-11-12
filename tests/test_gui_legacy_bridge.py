@@ -463,3 +463,88 @@ def test_idle_top_level_views_give_their_textures_back(host):
     shown[0] = 0
     frame(host, body)
     assert len(set(bridge.nodes) - set(nodes)) == 1
+
+
+def pressed(input_value, where, shown):
+    """A widget body for any host: a button that adds one. `shown` is what it last drew."""
+    shown['runs'] = shown.get('runs', 0) + 1
+    where['button'] = tuple(imgui.get_cursor_screen_pos())
+    press = imgui.button('add one', 100, 24)
+    shown['value'] = input_value + press
+    return press, input_value + press
+
+
+def followed(host, body, where, shown):
+    """Press the widget once; what it shows right after, and a few frames on."""
+    for _ in range(5):
+        frame(host, body)
+    x, y = where['button']
+    click(host, body, (x + 20, y + 10))
+    first = shown['value']
+    for _ in range(8):
+        frame(host, body, (x + 20, y + 10))
+    return first, shown['value']
+
+
+@pytest.mark.parametrize('take', [False, True])
+def test_a_native_view_follows_its_legacy_caller_within_a_few_frames(host, take):
+    """As on the native host (test_gui_immediate.py): the edit shows at once
+    and stays only when the caller passes it back. The cached legacy caller
+    is run again to be asked."""
+    model, where, shown = {'count': 0}, {}, {}
+
+    @gui(width=200, height=40)
+    def stepper(input_value: int):
+        return pressed(input_value, where, shown)
+
+    @render_func(use_cache=True)
+    def panel(input_value, draw_state):
+        changed, value = stepper(model['count'], name='stepper')
+        if changed and take:
+            model['count'] = value
+        return False, input_value
+
+    body = lambda: panel(1, name='panel', width=300, height=120)
+    assert followed(host, body, where, shown) == (1, int(take))
+    runs, (x, y) = shown['runs'], where['button']
+    for _ in range(4):
+        frame(host, body, (x + 20, y + 10))     # the pointer rests where it pressed
+    assert shown['runs'] == runs
+
+
+@pytest.mark.parametrize('take', [False, True])
+@pytest.mark.parametrize('cached', [True, False])
+def test_a_legacy_view_follows_its_native_caller_within_a_few_frames(host, take, cached):
+    model, where, shown = {'count': 0}, {}, {}
+
+    @render_func(use_cache=cached)
+    def child(input_value, draw_state):
+        return pressed(input_value, where, shown)
+
+    @gui(width=260, height=120)
+    def shell(input_value: dict):
+        changed, value = child(input_value['count'], name='child', width=200, height=70)
+        if changed and take:
+            input_value['count'] = value
+            return True, input_value
+
+    assert followed(host, lambda: shell(model, name='shell'), where, shown)[1] == int(take)
+
+
+@pytest.mark.parametrize('take', [False, True])
+@pytest.mark.parametrize('cached', [True, False])
+def test_a_legacy_view_follows_its_legacy_caller_on_the_bridge(host, take, cached):
+    model, where, shown = {'count': 0}, {}, {}
+
+    @render_func(use_cache=cached)
+    def child(input_value, draw_state):
+        return pressed(input_value, where, shown)
+
+    @render_func(use_cache=True)
+    def panel(input_value, draw_state):
+        changed, value = child(model['count'], name='child', width=200, height=70)
+        if changed and take:
+            model['count'] = value
+        return False, input_value
+
+    assert followed(host, lambda: panel(1, name='panel', width=300, height=120), where, shown)[1] == int(take)

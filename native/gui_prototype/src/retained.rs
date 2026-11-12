@@ -9,6 +9,12 @@ use crate::hash::{Map as HashMap, Set as HashSet};
 use crate::geometry::{Geometry, POSITION, SIZE, SCROLL, CONTENT};
 use crate::{NativeState, Value};
 
+/// Lever: host frames a returned edit stays a view's live input while its
+/// caller still passes the value from before it. Then the caller is run
+/// again and what it passes is shown: a view follows its caller, as an
+/// immediate mode widget does, within this many frames.
+const SETTLE: u8 = 3;
+
 struct Node {
     identity: Py<PyAny>,
     parent: u64,
@@ -19,6 +25,10 @@ struct Node {
     kwargs: Py<PyDict>,
     value: Py<PyAny>,
     pending: bool,
+    // Frames left before the caller is asked again whether it took the
+    // returned edit (`settle`), and whether its next declaration answers that.
+    settle: u8,
+    verify: bool,
     dirty: bool,
     // Caller-bound (bind): this body only runs where its caller declares it.
     bound: bool,
@@ -72,6 +82,8 @@ pub struct RetainedGraph {
     visibility_revision: u64,
     // Caller-bound nodes dirtied by the graph itself, for their host (take_woken).
     woken: Vec<u64>,
+    // Views whose returned edit their caller has not passed back yet (`settle`).
+    settling: HashSet<u64>,
 }
 
 impl RetainedGraph {
@@ -205,6 +217,7 @@ impl RetainedGraph {
             placements: HashMap::default(),
             visibility_revision: 0,
             woken: Vec::new(),
+            settling: HashSet::default(),
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -263,6 +276,8 @@ impl RetainedGraph {
                     kwargs: kwargs.clone_ref(py),
                     value: input.clone_ref(py),
                     pending: false,
+                    settle: 0,
+                    verify: false,
                     dirty: true,
                     bound: false,
                     compose: true,
@@ -312,13 +327,26 @@ impl RetainedGraph {
             state.put("width",Value::Float(rect.2));
             if rect.3>=0. {state.put("height",Value::Float(rect.3));}
         }
-        if !node.pending {
-            // A caller can echo its pre-edit scalar while processing a returned
-            // edit. Keep the live value until that caller actually supplies a
-            // different value; pixel-only redraws must not resurrect the echo.
-            if !same_argument(input.bind(py), node.caller_input.bind(py))? {
-                node.input = input.clone_ref(py);
-                node.caller_input = input;
+        if node.pending {
+            // The caller only now receives the edit: it gets the frames again.
+            if node.verify {
+                node.verify = false;
+                node.settle = SETTLE;
+                self.settling.insert(id);
+            }
+        } else if !same_argument(input.bind(py), node.caller_input.bind(py))? {
+            node.input = input.clone_ref(py);
+            node.caller_input = input;
+            (node.settle, node.verify) = (0, false);
+        } else if node.verify {
+            // A caller can echo its pre-edit value while processing a returned
+            // edit, so the live value is kept through `SETTLE` frames and
+            // pixel-only redraws. This declaration was asked for after them
+            // (`settle`): what the caller passes now is the value.
+            node.verify = false;
+            if !same_argument(node.input.bind(py), input.bind(py))? {
+                node.input = input;
+                node.dirty = true;self.dirty_set.insert(id);if !in_scroll {self.unclipped_dirty.insert(id);}
             }
         }
         // A pending returned edit protects the value, not current layout/style
@@ -522,6 +550,8 @@ impl RetainedGraph {
         n.value = result.get_item(1)?.unbind();
         if changed {
             n.input = n.value.clone_ref(py);
+            (n.settle, n.verify) = (SETTLE, false);
+            self.settling.insert(id);
         }
         n.pending |= changed;
         let parent = n.parent;
@@ -569,6 +599,32 @@ impl RetainedGraph {
     fn pending(&self, id: u64) -> bool {
         self.nodes.get(&id).is_some_and(|n| n.pending)
     }
+    /// One host frame went by. A view whose caller still passes the value
+    /// from before its returned edit, `SETTLE` frames on, has that caller
+    /// run again: its declaration then decides the value (`declare`). A root
+    /// is declared by its host every frame. Returns whether the host owes
+    /// another frame: a view still waits, or a caller was asked.
+    fn settle(&mut self, py: Python<'_>) -> PyResult<bool> {
+        if self.settling.is_empty() { return Ok(false); }
+        let mut asked = false;
+        for id in std::mem::take(&mut self.settling) {
+            let Some(node) = self.nodes.get_mut(&id) else { continue };
+            node.settle = node.settle.saturating_sub(1);
+            if node.settle > 0 {
+                self.settling.insert(id);
+            } else if !same_argument(node.input.bind(py), node.caller_input.bind(py))? {
+                node.verify = true;
+                asked = true;
+                let parent = node.parent;
+                self.mark(parent);
+            }
+        }
+        Ok(asked || !self.settling.is_empty())
+    }
+    /// The frames `settle` waits (the lever `SETTLE`).
+    #[classattr]
+    #[pyo3(name = "SETTLE")]
+    fn settle_frames() -> u8 { SETTLE }
     fn in_scroll(&self, id:u64)->bool {self.nodes.get(&id).is_some_and(|n|n.in_scroll)}
     pub(crate) fn invalidate_node(&mut self, id: u64) { self.mark(id); }
     /// Make a node caller-bound: flush never runs it on its own (its body

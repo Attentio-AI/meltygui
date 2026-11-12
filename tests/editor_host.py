@@ -28,6 +28,7 @@ class Host:
         self.cache = self.window.cache
         self.view, self.arguments = view, arguments
         self.result = None
+        self.adopt = True          # False: a caller that keeps passing the value it started with
         self.frame()
 
     def frame(self, position=None, down=None, keys=(), text='', wheel=0., **arguments):
@@ -56,6 +57,9 @@ class Host:
         finally:
             self.window.native.end_frame()
             _window.reset(token)
+        # As an immediate mode caller does: a returned edit is the value passed from the next frame on.
+        if self.adopt and isinstance(self.result, tuple) and self.result[0] and 'input_value' in self.arguments:
+            self.arguments['input_value'] = self.result[1]
         return self.result
 
     def click(self, x, y, count=1):
