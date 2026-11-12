@@ -37,6 +37,7 @@ implementation is the oracle.
 | `bind.rs` | What a line binds, uses and calls, with the bracket stack (`Flaw`) and `match` captures. Cached per chunk as `Bound`. | `Binder::statement` |
 | `call.rs` | `misfit`: do a call's arguments fit a signature. Port of `code_checks._match_spec`. | |
 | `facts.rs` | One pass over the lines: folds, definitions, bindings by scope, undefined names, miscalls (findings kept per chunk), syntax flaws, top-level statements, the symbol table, tints, lookup, source sites, live-view spans, the rows a roster keeps. | `Facts::read` |
+| `tree.rs` | The text as a tree of keys and values, what `Source.tree` reads and writes: a part per top-level statement (a flat table of its entries), shared between readings while the statement's text is where it was. | `Grower::simple`, `compound`, `fill`; `AHEAD`, `MISSES` |
 | `rows.rs` | A session's fold layers, collapsed state and line to row mapping; `Hits` for search. Edits are followed in place. | `Rows::set`, `follow`, `land` |
 | `roster.rs` | The project roster: one table per file, a module index, the files that define a name and the files that use it; its own thread. | `Ask`, `Index::install` |
 | `lib.rs` | The Python classes (`Source`, `Rows`, `Hits`, `Roster`, `Needs`), the reading thread, the wake handles, the exit hook. | |
@@ -48,13 +49,18 @@ Each file's header says how to change it. Read it first.
 - **Facts are tables, never a syntax tree.** The boundary to Python is rows
   (line, column, kind, ...) asked by line range or by key, so another parser can
   fill them. Whole tables as Python lists are the exception: at 91k lines `sites`
-  and `table` as Python values cost about 50 MB.
+  and `table` as Python values cost about 50 MB. The tree of `tree.rs` is rows
+  too (key, kind, parent, span), asked by entry and key: `tree_keys`,
+  `tree_item`, `tree_find`, `tree_span`, `tree_text`, for the rows a view shows.
 - **The lexer is tolerant.** It reads line by line and never fails on broken
   code. Every lint rule errs on silence. CPython's `compile` remains the judge of
   real syntax errors (`Analysis.compile`, per top-level statement, in Python).
 - **What depends on one chunk is cached on the chunk** (tokens, bindings, lint
   findings with the key they hold under). A reading after an edit rereads the
-  edited chunk and merges. Do not add a per-reading pass over all tokens.
+  edited chunk and merges. Do not add a per-reading pass over all tokens. What
+  depends on one top-level statement is kept by the statement: a tree part is
+  taken from the reading before while its text is in the same chunks and its
+  keys are numbered as they were (`Tree::grow`).
 - **The reading thread never runs Python.** It wakes the frame loop through C
   handles (`Waker`; the queue is `native/gui_prototype/src/wake.rs`). A job
   holds no `Py<PyAny>`.
@@ -167,6 +173,19 @@ Smaller, from the same review:
   after it. Not measured.
 
 ## Known gaps
+
+- **A tree part is a whole top-level statement.** An edit inside a class or a
+  function grows the tree of all of it again, on the reading thread, before the
+  reading is handed over: 0.2 ms more in a file of small statements, 4.3 ms more
+  for an edit inside a 4,000 line function (`text_view.py`). Parts per nested
+  statement would bound it; the entry names (`u64`: part, row) would need a level.
+- The first reading with a tree costs about twice the reading alone (4.3 to 9 ms
+  at 9,000 lines): every statement is read by the site reader, a statement whose
+  key is numbered (a name the module gave before, an `if`) twice.
+- The tree does not surface targets that are no single name (`self.x = 1`,
+  `a, b = 1, 2`), decorators, imports, and `return` and the other keyword
+  statements; a string over several lines, bytes, f-strings and implicit
+  concatenations are code (their source text), not values.
 
 - An edit that changes a binding or a `def` / `class` header makes the lint read
   every chunk again (off the render thread: 20 ms at 91k lines against 6 to 7.5).

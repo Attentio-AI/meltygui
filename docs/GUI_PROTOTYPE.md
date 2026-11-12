@@ -345,6 +345,8 @@ keyed_as('Module', keys=lambda module: [name for name, _ in module.named_childre
 ```
 
 A view registered for the type, a shape or the name still wins over `draw_collection`.
+The code of a `Source` is such a value: `draw_any(source.tree)` draws it as keys and values, and an
+edit there is a splice of the text ([Native editor](NATIVE_EDITOR.md#sourcetree-the-code-as-keys-and-values)).
 
 ```python
 from meltygui.rust import Shaped, draw_any, is_default_for

@@ -298,7 +298,8 @@ class Editor:
         mine = [entry[5] is self for entry in entries]
         last = max((at for at, own in enumerate(mine) if own), default=-1)
         # Typing inside a line that keeps its structure cannot change the folds
-        # (it can change what the lint finds: a source that lints is read again).
+        # (it can change what the lint finds and the values of the source's tree: a source
+        # that lints, or whose tree someone reads, is read again).
         only = entries[0][1]
         calm = (len(entries) == 1 and mine[0] and not (only.gone or only.came)
                 and self.shape == (only.line, structure(doc.line(only.line))))
@@ -315,7 +316,7 @@ class Editor:
                 doc.caret, doc.anchor = (spot + came - gone if spot >= low + gone else min(spot, low + came)
                                          for spot in (doc.caret, doc.anchor))
         self.tick += 1
-        if self.term or not calm or source.lint:
+        if self.term or not calm or source.lint or source.grown is not None:
             self.ask(rest=True)
         if last >= 0:
             self.show(doc.caret)
@@ -341,7 +342,7 @@ class Editor:
     def ask(self, rest=False, now=False):
         """Ask the source for the facts of the current text: fold ranges and
         the occurrences of the search term. `rest`: once typing rests."""
-        if self.term or self.syntax.language == 'python':
+        if self.term or self.syntax.language == 'python' or self.source.grown is not None:
             self.source.ask(self.term, QUIET if rest else 0., now, self.rows)
 
     def read(self):

@@ -33,6 +33,7 @@ pub mod roster;
 pub mod rows;
 pub mod scan;
 pub mod store;
+pub mod tree;
 
 use std::collections::HashSet;
 use std::ffi::c_void;
@@ -41,7 +42,7 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyCapsule, PyList, PyString, PyTuple};
+use pyo3::types::{PyBool, PyBytes, PyCapsule, PyList, PyString, PyTuple};
 
 use facts::{Facts, Name, Specs};
 use rows::{Hits, Parcel, Rows, Shut};
@@ -67,6 +68,10 @@ struct Job {
     lint: Option<(Arc<HashSet<String>>, Arc<Specs>, u64)>,
     /// Source site keys to find the lines of (breakpoints); the statement table is made with them.
     sites: Option<Vec<Vec<String>>>,
+    /// Grow the tree of keys and values too (`tree.rs`): someone reads `Source.tree`.
+    tree: bool,
+    /// The tree of the reading before: its parts are taken for the statements that did not change.
+    grown: Option<Arc<tree::Tree>>,
     /// Who is told when the reading waits: without the interpreter.
     wake: Vec<Waker>,
     /// When the thread may start on it.
@@ -113,6 +118,8 @@ struct Desk {
 struct Shared {
     desk: Mutex<Desk>,
     bell: Condvar,
+    /// The tree of keys and values the last reading grew (`tree.rs`): the next one starts from it.
+    grown: Mutex<Option<Arc<tree::Tree>>>,
 }
 
 impl Shared {
@@ -167,7 +174,7 @@ impl Drop for Waker {
     fn drop(&mut self) { unsafe { (self.free)(self.data) } }
 }
 
-fn read(job: Job) -> (Found, Vec<Waker>) {
+fn read(job: Job, shared: &Shared) -> (Found, Vec<Waker>) {
     let hits = job.terms.iter().filter(|term| !term.is_empty()).map(|term| (term.clone(), Hits::new(facts::find(&job.chunks, term)))).collect();
     let mut facts = Facts::read(job.chunks, job.version, job.blocks);
     facts.term = job.terms.into_iter().next().unwrap_or_default();
@@ -180,6 +187,13 @@ fn read(job: Job) -> (Found, Vec<Waker>) {
         let lines = facts.places(&keys);
         keys.into_iter().zip(lines).collect()
     });
+    if job.tree {
+        let grown = facts.grown(job.grown.as_deref()).clone();
+        // (The tree before goes with the job: on a thread of its own when this was its last holder.)
+        if let Some(old) = shared.grown.lock().unwrap().replace(grown) {
+            if Arc::strong_count(&old) == 1 { let _ = std::thread::Builder::new().name("melty-source-retire".into()).spawn(move || drop(old)); }
+        }
+    }
     (Found { facts: Arc::new(facts), folds, hits, undefined, miscalls, callees, relinted, placed }, job.wake)
 }
 
@@ -218,7 +232,7 @@ fn work(shared: Arc<Shared>) {
                 }
             }
         };
-        let (found, wake) = read(job);
+        let (found, wake) = read(job, &shared);
         shared.desk.lock().unwrap().found = Some(found);
         // Nothing here touches the interpreter: a wake is a token queued for the frame loop.
         for waker in &wake { unsafe { (waker.wake)(waker.data, waker.token) } }
@@ -248,6 +262,22 @@ pub(crate) fn name<'py>(py: Python<'py>, name: &Name) -> PyResult<Bound<'py, PyT
     PyTuple::new(py, parts)
 }
 
+/// A tree key as Python has it: a name or an index.
+fn key<'py>(py: Python<'py>, key: &tree::Key) -> PyResult<Bound<'py, PyAny>> {
+    Ok(match key {
+        tree::Key::Name(name) => (&**name).into_pyobject(py)?.into_any(),
+        tree::Key::Index(at) => at.into_pyobject(py)?.into_any(),
+    })
+}
+
+/// The tree key a Python value is: a str or an int; None for anything else.
+fn keyed(key: &Bound<'_, PyAny>) -> Option<tree::Key> {
+    match key.downcast::<PyString>() {
+        Ok(name) => name.to_str().ok().map(|name| tree::Key::Name(name.into())),
+        Err(_) => key.extract::<i64>().ok().map(tree::Key::Index),
+    }
+}
+
 /// (is class, name, line, last line, indent, parent index) of every definition.
 fn defs(facts: &Facts) -> Vec<(bool, &str, u32, u32, u32, i32)> {
     facts.defs.iter().enumerate()
@@ -266,7 +296,7 @@ pub struct Source {
 impl Source {
     #[allow(clippy::too_many_arguments)]
     fn job(&self, mut terms: Vec<String>, blocks: bool, rows: Vec<PyRef<'_, Rows>>, wake: Vec<Waker>, rest: f64, lint: bool,
-           sites: Option<Vec<Vec<String>>>) -> Job {
+           sites: Option<Vec<Vec<String>>>, tree: bool) -> Job {
         let mut seen = HashSet::new();
         terms.retain(|term| seen.insert(term.clone()));
         Job { chunks: self.store.chunks.clone(), version: self.version, blocks,
@@ -275,7 +305,7 @@ impl Source {
                   let desk = self.shared.desk.lock().unwrap();
                   (desk.live.clone(), desk.specs.clone(), desk.serial)
               }),
-              sites,
+              sites, tree, grown: if tree { self.shared.grown.lock().unwrap().clone() } else { None },
               due: Instant::now() + Duration::from_secs_f64(rest.max(0.0)) }
     }
 }
@@ -441,12 +471,13 @@ impl Source {
     /// site key paths to find the lines of (`placed`); with them the
     /// statement table is made on the reading thread and `site` answers.
     /// `sessions`: the (term, rows) of every further session on the source:
-    /// one reading serves them all.
-    #[pyo3(signature = (wake=None, term=None, blocks=true, rest=0.0, rows=None, now=false, lint=false, sites=None, sessions=vec![]))]
+    /// one reading serves them all. `tree`: also grow the tree of keys and
+    /// values on the reading thread (`tree_shape` and the `tree_` answers).
+    #[pyo3(signature = (wake=None, term=None, blocks=true, rest=0.0, rows=None, now=false, lint=false, sites=None, sessions=vec![], tree=false))]
     #[allow(clippy::too_many_arguments)]
     fn ask(&self, py: Python<'_>, wake: Option<Vec<(Bound<'_, PyCapsule>, u64)>>, term: Option<String>, blocks: bool, rest: f64,
            rows: Option<PyRef<'_, Rows>>, now: bool, lint: bool, sites: Option<Vec<Vec<String>>>,
-           sessions: Vec<(String, PyRef<'_, Rows>)>) -> PyResult<()> {
+           sessions: Vec<(String, PyRef<'_, Rows>)>, tree: bool) -> PyResult<()> {
         if EXITING.load(Ordering::Relaxed) { return Ok(()); }
         let (mut terms, mut all): (Vec<String>, Vec<PyRef<'_, Rows>>) = (term.into_iter().collect(), rows.into_iter().collect());
         for (term, rows) in sessions {
@@ -454,9 +485,10 @@ impl Source {
             all.push(rows);
         }
         let wake = if now { vec![] } else { wake.unwrap_or_default().iter().map(|(handle, token)| Waker::new(handle, *token)).collect::<PyResult<_>>()? };
-        let job = self.job(terms, blocks, all, wake, rest, lint, sites);
+        let job = self.job(terms, blocks, all, wake, rest, lint, sites, tree);
         if now {
-            let found = py.allow_threads(|| read(job).0);
+            let shared = self.shared.clone();
+            let found = py.allow_threads(|| read(job, &shared).0);
             let mut desk = self.shared.desk.lock().unwrap();
             (desk.job, desk.found) = (None, Some(found));
             return Ok(());
@@ -696,6 +728,72 @@ impl Source {
         self.landed.as_ref().map_or(vec![], |found| found.facts.statements(first, last))
     }
 
+    // --- the tree of keys and values (`tree.rs`), of the landed reading --------
+    // An entry is named by a number that is good until the next reading lands; 0 is the module.
+
+    /// (shape, entries, parts taken from the reading before, parts grown)
+    /// of the landed reading's tree, or None when the reading was made
+    /// without one. Two readings of one shape have the same keys everywhere.
+    fn tree_shape(&self) -> Option<(u64, usize, u32, u32)> {
+        let tree = self.landed.as_ref()?.facts.tree()?;
+        Some((tree.shape, tree.size, tree.kept, tree.grown))
+    }
+
+    /// How many entries entry `node` has.
+    fn tree_count(&self, node: u64) -> usize {
+        self.landed.as_ref().and_then(|found| found.facts.tree()).map_or(0, |tree| tree.count(node))
+    }
+
+    /// The keys of up to `count` entries of `node` from place `first`, in text order.
+    fn tree_keys<'py>(&self, py: Python<'py>, node: u64, first: usize, count: usize) -> PyResult<Vec<Bound<'py, PyAny>>> {
+        let Some(tree) = self.landed.as_ref().and_then(|found| found.facts.tree()) else { return Ok(vec![]) };
+        (first..first.saturating_add(count).min(tree.count(node)))
+            .filter_map(|at| tree.child(node, at).and_then(|child| tree.entry(child))).map(|entry| key(py, &entry.key)).collect()
+    }
+
+    /// (entry, its place among its siblings) of the entry of `node` under `key`.
+    fn tree_find(&self, node: u64, key: &Bound<'_, PyAny>) -> Option<(u64, u32)> {
+        let tree = self.landed.as_ref()?.facts.tree()?;
+        let found = tree.find(node, &keyed(key)?)?;
+        Some((found, tree.place(found)))
+    }
+
+    /// (entry, kind, value) of the entry of `node` under `key`: the value a
+    /// leaf holds (a number, a text, True / False, None, the source text of
+    /// other code); None for a branch and for an empty default. The kinds
+    /// are indexes into `TREE_KINDS`; those below `TREE_LEAF` are branches.
+    fn tree_item<'py>(&self, py: Python<'py>, node: u64, key: &Bound<'py, PyAny>) -> PyResult<Option<(u64, u8, Bound<'py, PyAny>)>> {
+        let Some(facts) = self.landed.as_ref().map(|found| &found.facts) else { return Ok(None) };
+        let Some(tree) = facts.tree() else { return Ok(None) };
+        let Some((found, entry)) = keyed(key).and_then(|key| tree.find(node, &key)).and_then(|found| Some((found, tree.entry(found)?))) else { return Ok(None) };
+        let value = match tree.leaf(facts, found) {
+            tree::Leaf::Int(value) => value.into_pyobject(py)?.into_any(),
+            tree::Leaf::Float(value) => value.into_pyobject(py)?.into_any(),
+            tree::Leaf::Str(value) | tree::Leaf::Code(value) => value.into_pyobject(py)?.into_any(),
+            tree::Leaf::Bool(value) => PyBool::new(py, value).to_owned().into_any(),
+            tree::Leaf::None | tree::Leaf::Nothing => py.None().into_bound(py),
+        };
+        Ok(Some((found, entry.kind, value)))
+    }
+
+    /// Where the text of entry `node` stands in the text the landed reading
+    /// was read from: (line, column, last line, end column, offset, end
+    /// offset). What a write replaces, once brought forward over the
+    /// splices made since (`Tree.where`, model/tree_model.py).
+    fn tree_span(&self, node: u64) -> Option<(u32, u32, u32, u32, usize, usize)> {
+        let facts = &self.landed.as_ref()?.facts;
+        let (line, column, last, end) = facts.tree()?.span(node)?;
+        Some((line, column, last, end, facts.offset(line, column), facts.offset(last, end)))
+    }
+
+    /// (kind, source text) of entry `node`; the module is (0, "").
+    fn tree_text(&self, node: u64) -> Option<(u8, String)> {
+        let facts = &self.landed.as_ref()?.facts;
+        let tree = facts.tree()?;
+        if node == 0 { return Some((tree::MODULE, String::new())); }
+        Some((tree.entry(node)?.kind, tree.text(facts, node)?))
+    }
+
     /// The parameters of the function whose `def` is on `line`, by the
     /// landed facts: (name, line, column, where the default value is as
     /// (line, column, last line, end column) or None).
@@ -713,8 +811,9 @@ impl Source {
     /// as a new one.
     #[pyo3(signature = (term=None, blocks=true))]
     fn read<'py>(&self, py: Python<'py>, term: Option<String>, blocks: bool) -> PyResult<Bound<'py, PyAny>> {
-        let job = self.job(term.into_iter().collect(), blocks, vec![], vec![], 0.0, false, None);
-        let found = py.allow_threads(|| read(job).0);
+        let job = self.job(term.into_iter().collect(), blocks, vec![], vec![], 0.0, false, None, false);
+        let shared = self.shared.clone();
+        let found = py.allow_threads(|| read(job, &shared).0);
         let facts = &found.facts;
         let (names, defaults) = (PyList::empty(py), PyList::empty(py));
         for at in 0..facts.heads.len() { names.append(name(py, &facts.name(at))?)?; }
@@ -789,6 +888,8 @@ fn builtins(names: Vec<String>) {
 #[pymodule]
 fn _source_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("LINES", store::LINES)?;
+    module.add("TREE_KINDS", tree::KINDS.to_vec())?;
+    module.add("TREE_LEAF", tree::INT)?;
     module.add_function(wrap_pyfunction!(runs, module)?)?;
     module.add_function(wrap_pyfunction!(builtins, module)?)?;
     module.add_function(wrap_pyfunction!(known, module)?)?;
