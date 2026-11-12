@@ -38,6 +38,13 @@ from meltygui.core.windowing.backends.wayland_protocol import I
 # True: start each frame late (step 2 of `pace`), so that it is handed to the compositor `GUARD`
 # seconds before the refresh it is meant for. Input is then that much fresher on screen.
 LATE = True
+# True: a frame that started late waits for the GPU to finish drawing it before it is handed over,
+# and that wait counts as drawing time (`cost`). Handed over with the GPU still on it, the frame
+# reaches the compositor as it starts its own draw on the same GPU: its draw measures slow, its
+# deadline moves ahead of ours, and every frame shows a refresh late (60 fps, 16 ms; measured
+# 2026-11-12 on the panel, set off by a window resize). Costs the GPU time in latency (about 1 ms
+# for a 4000 px wide editor). False hands over at once.
+FINISH = True
 # Seconds before a refresh by which the frame for it is handed over: what the compositor needs to
 # take a frame and put it up. Smaller is less latency and closer to a missed refresh (the frame
 # shows a whole period late: a stutter). The refreshes are the times the compositor reports frames
@@ -291,6 +298,7 @@ class Backend:
         if not count.value:
             raise RuntimeError('No native EGL OpenGL RGBA8/stencil8 config')
         library = ctypes.CDLL('libwayland-egl.so.1')
+        self.finish = function(ctypes.CDLL('libOpenGL.so.0'), 'glFinish', None)
         self.egl_window_create = function(library, 'wl_egl_window_create', P, P, I, I)
         self.egl_window_resize = function(library, 'wl_egl_window_resize', None, P, I, I, I, I)
         self.egl_window_destroy = function(library, 'wl_egl_window_destroy', None, P)
@@ -393,6 +401,8 @@ class Backend:
     def swap_buffers(self, window):
         if window.surface:
             native = self.native
+            if FINISH and self.late:
+                self.finish()
             if self.presentation is not None:
                 # When this frame reaches the screen (`presented`): what `get_presentation_latency_ms` reports.
                 proxy = native.request(self.presentation, 1, P(window.surface), P(), interface='wp_presentation_feedback')
