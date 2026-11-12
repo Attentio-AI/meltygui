@@ -72,6 +72,10 @@ def __getattr__(name):
     if name == 'window_api':
         import meltygui.core.windowing.window_api as window_api
         return window_api
+    if name == 'rust':
+        # The `@gui` draw functions (`meltygui.rust.draw_any`): a table of names, loaded when asked for.
+        import meltygui.rust as rust
+        return rust
     if name == '__all__':
         value = list(dict.fromkeys([*_PUBLIC_NAMES, *_LAZY_EXPORTS, *_render_exports()]))
         globals()[name] = value
@@ -92,7 +96,7 @@ def __getattr__(name):
 _PUBLIC_NAMES = [
     'Style', 'boot', 'embedded_imports', 'glfw_window', 'run', 'pressed',
     'content_size', 'mark', 'persisted', 'after_first_frame', 'checkpoint',
-    'toggles', 'window_api', 'imgui',
+    'toggles', 'window_api', 'imgui', 'rust',
 ]
 
 

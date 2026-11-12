@@ -245,6 +245,46 @@ innermost declaring view around the hovered one wins, and the shape a press
 began with is kept until every button is up. The contract is the module text of
 [gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py).
 
+### Default views: `draw_any`
+
+`draw_any` draws a value with the view registered for it and is called like that view. A dict goes
+to `draw_collection`, which draws every value the same way; a dict among them is a branch that a
+press opens.
+
+```python
+from meltygui.rust import Shaped, draw_any, is_default_for
+
+@is_default_for('tint', Shaped(tuple, (3,), float))     # a name and a shape; a type works the same
+@gui(listen=())
+def swatch(input_value: tuple, width=0., height=0.):
+    ...
+
+changed, settings = draw_any(settings, name='settings', expand=2, left=8, top=40, width=420, height=600)
+```
+
+The public names are in `meltygui.rust` ([rust.py](../meltygui/rust.py)): `draw_any`,
+`is_default_for`, `Shaped`, `draw_collection` and the value views. Importing it loads nothing; a
+name is loaded from its module when it is first asked for.
+
+`@is_default_for` goes above `@gui` and takes types, names and `Shaped` patterns in any mix. The
+most specific registration wins: the name the value is drawn under (`name=`, or its key in a dict),
+then its shape, then its type and base classes. A string also matches a type by its `__name__`, for
+types the registering module should not import. A later registration replaces an earlier one, so
+an app overrides a built in view. The built in ones are `draw_bool`, `draw_int`, `draw_float`,
+`draw_str`, `draw_none` and `draw_value` (a bounded `repr` for the rest) in
+[value_view.py](../meltygui/view/value_view.py), and `draw_collection` in
+[dict_view.py](../meltygui/view/dict_view.py). Each module's docstring says how to change it.
+
+Cost (`tests/benchmark_gui_any.py`, hidden window, no swap, 2026-11-12): routing a value takes about
+0.1 us. A dict's frame does not depend on its size, 1,000 against 1,000,000 entries: idle 0.2 ms,
+a wheel step 0.5 ms, a fling of 30 rows a frame 1.1 ms, dragging a number 0.4 ms, a typed character
+0.4 to 0.5 ms, opening a branch 1.2 ms. The frame a dict is first shown in lists its keys: 1.5 ms at
+1,000 entries, 2.5 ms at 100,000, 15 to 18 ms at 1,000,000.
+
+Not there yet: rows of different heights, lists and tuples as branches, add / delete / reorder,
+search, an enum or colour view, undo of an edit. `meltygui.draw_any` is still the legacy one.
+Every row keeps its view state once it was shown, about 1.5 to 3 KB a row (see the known issues).
+
 ### Results from other threads
 
 A view whose background result arrived asks for another run. The injected
@@ -478,6 +518,11 @@ for timing conditions, resource counts, profiles and failure controls.
 - Automatic selection is a bounded local heuristic, with roots and portals
   remaining raster boundaries. It is not a globally optimal cache partition.
   Tested translucent representation changes can differ by two channel values.
+- A view that is no longer declared keeps its state for the session, so that it has it when it is
+  shown again. A long list that declares only the rows in view therefore grows by one state per row
+  ever shown: `draw_collection` measured 1.5 to 3 KB a row (140 MB after 45,000 rows were scrolled
+  past), and the collector's passes over them reached 43 ms once. The rows in view stay at about
+  1 ms a frame.
 - Anonymous identity is intentionally sensitive to conditional omissions and
   insertion/reordering of anonymous calls to the same renderer. Names change
   identity unless a key overrides them. Module/qualified-name changes need an
@@ -518,6 +563,7 @@ for timing conditions, resource counts, profiles and failure controls.
 | Window/input/layout integration | [gui_window_prototype.py](../meltygui/core/rendering/gui_window_prototype.py), [gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py), [gui_layout_prototype.py](../meltygui/core/rendering/gui_layout_prototype.py) |
 | Wake from native threads | [wake.rs](../native/gui_prototype/src/wake.rs), `waker` / `drain_wakes` / `close_wakes` / `park` in [glfw_utils.py](../meltygui/core/windowing/glfw_utils.py), `poke` in [window_api.py](../meltygui/core/windowing/window_api.py) |
 | Largest user so far | the [native editor](NATIVE_EDITOR.md): [editor_view.py](../meltygui/view/editor_view.py) |
+| Default views | [gui_any.py](../meltygui/core/rendering/gui_any.py) (`draw_any`, `is_default_for`), [value_view.py](../meltygui/view/value_view.py), [dict_view.py](../meltygui/view/dict_view.py); tests [routing and rows](../tests/test_gui_any.py), [views](../tests/test_gui_any_view.py) |
 | Session persistence | [app_session.py](../meltygui/core/runtime/app_session.py), [load_save_v2.py](../meltygui/core/conversion/load_save_v2.py) |
 | Contract tests | [a view follows its caller](../tests/test_gui_immediate.py), [identity](../tests/test_gui_identity.py), [persistence](../tests/test_gui_persistence.py), [positions](../tests/test_gui_position_api.py), [scroll/geometry](../tests/test_gui_scroll_geometry.py) |
 | Interactive and measured checks | [scroll lab](../examples/gui_scroll_lab.py), [benchmark](../tests/benchmark_gui_scrolling.py) |
