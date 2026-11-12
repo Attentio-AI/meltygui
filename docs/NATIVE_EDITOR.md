@@ -40,6 +40,7 @@ Editor (editor/editor.py)              one session: caret, rows, marks, what the
   Document (editor/document.py)        the session's face on the text; holds none of it
 Source (model/source_model.py)         the text, its version, its splices; facts by line
   native/source (Rust)                 chunks, lexer, bindings, lint, tables, the reading thread
+  Tree, Branch (model/tree_model.py)   `source.tree`: the code as keys and values, for `draw_any`
 Analysis (model/editor_model.py)       what only the running process knows: compile, imports, signatures
 Roster (model/roster_model.py)         the project's symbols across files, in Rust
 Spelling (model/spell_model.py)        spell check as a decoration
@@ -63,6 +64,7 @@ Spelling (model/spell_model.py)        spell check as a decoration
 | `editor/lookup.py` | Ctrl+B: `seek` (the places a name leads to, on a pool thread), `Lookup` (the press, the usage picker); Ctrl+Shift+B: `external` | `MOST`, `WIDE`, `external` |
 | `editor/find.py` | Search: `Find` (the find bar's field, the current hit, next and previous), `Search` (what a caller reads) | `Find.typed`, `LONGEST` |
 | `model/source_model.py` | `Source` | a fact is a method here plus one in `lib.rs` |
+| `model/tree_model.py` | `Source.tree`: `Tree`, `Branch`, `Code` ([below](#sourcetree-the-code-as-keys-and-values)) | `spell`, `QUIET`, `INLINE` |
 | `model/editor_model.py` | `Analysis` worker | `QUIET`, `SLOW`, `LARGE`, `LONG` |
 | `model/roster_model.py` | `Roster`, `project(path)` | |
 | `model/spell_model.py` | `Spelling` | `QUIET`, `SLICE` |
@@ -171,6 +173,117 @@ included. The boundary is fact tables, never a syntax tree, so the parser can be
 replaced; it is home-built and tolerant. Real syntax errors stay CPython's
 `compile`, off the render thread. Views take plain values. For stacked
 decorators the nearest one's tint wins.
+
+## `Source.tree`: the code as keys and values
+
+A prototype (2026-11-12, branch `rust-source-tree`): the Rust counterpart of what
+the code dict (`core_syntax.parse_to_dict`, `CodeDict`) reads and writes.
+`source.tree` is the code of a `Source` as a mapping, read and written like a
+dict, and `draw_any` draws it unmodified:
+
+```python
+source = Source(text, path)
+draw_editor(source, state=state, ...)                # the text
+draw_any(source.tree, name='tree', ...)              # the same code as rows of keys and values
+
+source.tree['Knobs']['gain']                         # 0.5
+source.tree['Knobs']['gain'] = 0.75                  # one splice: every editor on the source shows it
+source.tree['Knobs']['scale']['parameters']['factor'] = 3.0
+```
+
+`examples/gui_editor_tree.py` shows both side by side: drag a number or press a
+chip on the right and the text changes; type on the left and the rows follow
+once typing rests.
+
+- **What is in it.** The names a module, a class or a function assigns, with
+  the value: a number, a text, True / False, None; a `Branch` of the items of a
+  list, tuple, dict, set or call; `Code` (a `str`: the source text) for any
+  other expression. A class is a `Branch` of its body, a function one of
+  `parameters` (the default, or `EMPTY`) and `locals`, a block (`if##0`,
+  `for x in y`) one of its body, an `if` holds its test as `##if`, a call
+  statement its arguments (`print()`). The keys are the source site keys, so a
+  path of statements names a breakpoint's statement too.
+- **It is a fact of the source.** Rust reads the tree on the source's thread
+  (`native/source/src/tree.rs`) and keeps it; a `Branch` is a path of keys that
+  asks for the entries it is looked at for (`tree_keys`, `tree_item`), so a
+  view pays for its rows, never for the file. From the first `source.tree` on
+  every reading of that source grows the tree too; a source nobody asked the
+  tree of pays nothing.
+- **It follows the text.** An edit, by an editor or anyone, is read once it
+  rests (the editor's own request, or the tree's after `QUIET`), and the views
+  that read the tree are woken by the reading thread through their handles. A
+  reading that changed no key runs the rows whose values changed and nothing else.
+- **`source.tree` is the same object while the keys are the same.** When a key
+  was added, removed or renamed anywhere it is another object, which is how a
+  retained view sees that its rows changed; open branches are kept by their
+  paths. Branches held from before stay good and answer from the text as it is.
+- **A write replaces one value's text** (`Tree.put`): the entry's span, brought
+  forward over the splices made since its reading. The tree answers the value
+  written until the reading of that text lands, so a drag does not snap back. A
+  str is quoted like the literal it replaces, a float is written without float
+  noise, a `Code` as it is (and is answered as `Code` from then on, so a field
+  that is typed into stays a text field).
+
+### Cost of the tree
+
+`tests/benchmark_source_tree.py` on a reserved desktop, 2026-11-12: hidden
+window, no swap, `draw_editor(source)` beside `draw_any(source.tree)`, the
+generated sources of `benchmark_editor.py`. Median ms of three runs:
+
+| Row | 1,030 lines | 10,036 lines | 100,020 lines |
+| --- | --- | --- | --- |
+| idle | 0.22 | 0.22 | 0.22 |
+| a character typed in the editor, no tree on the source | 1.19 | 1.19 | 1.24 |
+| the same with the tree beside it | 1.22 | 1.25 | 1.30 |
+| the frame a reading is taken in, no tree | 0.59 | 0.60 | 0.84 |
+| the same with the tree: its rows run again | 0.89 | 0.91 | 1.40 |
+| a number dragged in the tree (a splice a frame, the editor repaints its line) | 1.38 | 1.74 | 1.21 |
+| the wheel over the tree's rows | 0.61 | 0.61 | 0.62 |
+| a branch opened or shut | 0.71 | 0.71 | 0.71 |
+| off the render thread: a first reading, without and with the tree | 0.34, 0.84 | 2.7, 11.1 | 29.4, 120 |
+| a reading after an edit, without and with (21,056 top-level statements at the largest) | 0.06, 0.13 | 0.34, 0.63 | 4.4, 7.4 |
+
+The frame of a landed reading is slower at 100,000 lines with and without the
+tree (the editor's rows take the folds, and the frame runs right after the
+thread's work); the tree's share is one run of the collection, 0.3 to 0.55 ms.
+A reading after an edit takes the tree parts of every top-level statement
+that did not change (`Tree::grow`); before that, growing the whole tree cost
+61 ms a reading at 100,000 lines. On the repository's own large files (6,000
+to 9,800 lines) a first reading goes from 2.7 to 4.8 ms to 6.5 to 10.3 ms with
+the tree, a reading after an edit from 0.4 to 0.6 ms to 0.6 to 0.8 ms, or to
+3.7 to 5.3 ms where the edit is inside a top-level statement of thousands of
+lines (`text_view.py`, `melty.py`, `core_render.py`): see the gaps below.
+
+No row of the existing benchmarks moved. Two sets of three interleaved runs of
+each tree (before / after, median ms at 1k, 10k, 100k lines, the second set):
+`type` 1.18 / 1.18, 1.17 / 1.16, 1.31 / 1.20; `caret` 1.59 / 1.61, 1.67 / 1.59,
+1.57 / 1.77 (its two modes, as above); `enter` 1.48 / 1.49, 1.39 / 1.40, 1.42 /
+1.42; `busy` 1.54 / 1.54, 2.05 / 2.06, 1.73 / 1.77; `find` 1.62 / 1.64, 2.16 /
+2.17, 1.76 / 1.77; `word` 1.30 / 1.30, 1.44 / 1.42, 1.50 / 1.50; `scan` 0.2 /
+0.2, 0.5 / 0.5, 5.0 / 5.0. `benchmark_gui_any.py` at 1,000, 100,000 and
+1,000,000 entries: every row within 0.03 ms (mount 1.51 / 1.57, 2.42 / 2.52,
+15.5 / 15.9). `benchmark_editor_session.py --lines 10000` (a real window,
+everything on, one run each): 7 frames over 8.33 ms before, 6 after, the
+frames named above (`launch`, `type#45`, `type#221`, `header#37`), typing
+median 2.38 / 2.43 ms, p99 5.04 / 4.90 ms.
+
+### Not there yet
+
+- Adding, removing and reordering keys (`tree['NEW'] = 1` raises).
+- Undo of a write: it is an edit from outside for the editor's history.
+- **An edit inside a large top-level statement grows that statement's tree
+  again**, before the reading is handed over (3.7 to 5.3 ms inside a class or
+  function of thousands of lines). Parts per nested statement would bound it
+  ([the crate's README](../native/source/README.md#known-gaps)).
+- A tuple is a `Branch`, so a view registered for a shape of tuples (a colour
+  swatch for three floats) does not see it.
+- Targets that are no single name (`self.x = 1`, `a, b = 1, 2`), decorators,
+  imports and the keyword statements are not surfaced; strings over several
+  lines, bytes, f-strings and implicit concatenations are `Code`.
+- `CodeDict`'s other sinks (the live object, launch overrides, pending saves)
+  and its runtime side (positional arguments bound to signatures, enums
+  resolved) are not on it: the tree is of the text alone.
+- A `Branch` holds its source weakly: keep the `Source`.
 
 ## Background models
 
@@ -282,7 +395,8 @@ listed.
 | Swap into `meltygui_pro` and `melty_code_editor` | untouched; they call `draw_text` |
 
 Code hosts are still what `draw_text` and `CodeDict` use. `Source` replaces them
-only inside the native editor so far.
+only inside the native editor so far; `Source.tree` is the first part of the
+code dict on it ([above](#sourcetree-the-code-as-keys-and-values)).
 
 ## Performance
 
@@ -504,6 +618,8 @@ Run modules one at a time; a whole-suite run segfaults in
 | `test_breakpoint_model.py` | 8 | |
 | `test_spell_model.py` | 6 | |
 | `test_icon_picker.py` | 7 | |
+| `test_source_tree.py` | 15 | |
+| `test_source_tree_view.py` | 8 | a desktop (GL) |
 | `test_editor_view.py` | 40 | a desktop (GL) |
 | `test_gui_readers.py` | 2 | a desktop (GL) |
 | `test_editor_hints_view.py` | 8 | a desktop (GL) |

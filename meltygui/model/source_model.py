@@ -27,6 +27,9 @@ source's: every session sees the same. Background models (`models`) are told
 of every splice and every landed reading (`tell`): they follow the text by
 these events, never by a call from a frame.
 
+`source.tree` is the code as a mapping of keys and values that is read and
+written like a dict, and drawn by `draw_any` (model/tree_model.py).
+
 Facts: fold ranges, `defs` (is class, name, line, last line, indent, parent
 index), the bindings of every scope, the names used and the calls made
 (`names`, `bound`, `bindings`, `references`, `calls`, asked by line) and `hits` (line, column, end column) of `term`; `read` returns the
@@ -81,11 +84,32 @@ class Source:
         self.stale = False         # what the readings depend on changed (`live`): the writer asks again
         self.keys = None           # source site keys whose lines readings find (`placed`, `site`), besides every session's
         self.found = {}            # the landed fact tables read so far, by name
+        self.grown = None          # the `Tree` behind `tree` (model/tree_model.py), once someone read it
+        self.inline = False        # the reading last asked for was read by its asker (`now`): the thread woke nobody for it
 
     @property
     def text(self):
         """The whole text as one string: a copy, for where all of it is needed."""
         return self.native.text()
+
+    @property
+    def tree(self):
+        """The code as a mapping of keys and values, read and written like a
+        dict (model/tree_model.py): `source.tree['Knobs']['gain'] = 0.75`
+        splices the text. `draw_any(source.tree)` draws it. The same object
+        while its keys are the same; from the first time it is asked for,
+        every reading of the source grows the tree too."""
+        grown = self.grown
+        if grown is None:
+            from meltygui.model.tree_model import Tree, INLINE
+            grown = self.grown = Tree(self)
+            self.models.add(grown)
+            if self.native.size <= INLINE:
+                grown.read()
+            else:
+                grown.ask()
+        grown.sync()
+        return grown.top
 
     # The version the text is at: it rises with every splice.
     head = property(lambda self: self.native.version)
@@ -149,7 +173,12 @@ class Source:
         others = [(session.term, session.rows) for session in sessions if session.rows is not rows]
         # The reading thread holds no interpreter: it wakes by handle (`RetainedCache.waker`), never by calling Python.
         wakers = [found for found in [self.waker] + [session.waker for session in sessions] if found is not None]
-        self.native.ask(wakers, term, Toggles.TextEditor.block_fold_ranges, rest, rows, now, self.lint, keys, others)
+        grown = self.grown
+        if grown is not None:
+            # The tree is grown with the reading, and the views that read it are woken for it.
+            wakers.extend(grown.waking())
+        self.inline = now
+        self.native.ask(wakers, term, Toggles.TextEditor.block_fold_ranges, rest, rows, now, self.lint, keys, others, grown is not None)
         if now:
             # Read already: the sessions that did not ask find it on their next run.
             for session in sessions:

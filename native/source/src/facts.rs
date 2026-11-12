@@ -139,6 +139,9 @@ pub struct Facts {
     /// The statement table by line (`sited`), made once when a reading is
     /// asked for with site keys: what breakpoints are found by.
     sited: std::sync::OnceLock<(Vec<Site>, Vec<u32>)>,
+    /// The text as a tree of keys and values (`tree.rs`), made once when a
+    /// reading is asked for with it: what `Source.tree` reads.
+    grown: std::sync::OnceLock<Arc<crate::tree::Tree>>,
 }
 
 /// One source site: (line, column, last line, end column, kind, key path).
@@ -201,7 +204,7 @@ enum Callee {
 }
 
 /// A word of a statement: (line, column, end column, token kind, text).
-type Word<'a> = (u32, u32, u32, u8, &'a str);
+pub(crate) type Word<'a> = (u32, u32, u32, u8, &'a str);
 
 /// The counters a statement's key takes its number from, shared by an
 /// `if` with its branches and what they hold: `if` / `elif` / `else`
@@ -232,6 +235,8 @@ struct Sites<'a> {
     open: Vec<Body>,
     /// The decorators read since the last definition: (their site, their key).
     decorators: Vec<(usize, String)>,
+    /// The tree grown from the same statements (`Facts::grown`), when one is asked for.
+    tree: Option<crate::tree::Grower>,
 }
 
 /// `base`, then `base#1`, `base#2` .. (`mark` "#"), as often as it was given before.
@@ -400,6 +405,7 @@ impl<'a> Sites<'a> {
         path.push(key);
         let counts = if shared { around.counts.clone() } else { Default::default() };
         self.found.push((first.0, first.1, end.0, end.2, kind, path.clone()));
+        if let Some(tree) = self.tree.as_mut() { tree.compound(&path, head.4, header); }
         if matches!(head.4, "def" | "class") {
             // The decorators above belong to it, numbered by their own names.
             let mut seen = HashMap::new();
@@ -478,6 +484,13 @@ impl<'a> Sites<'a> {
         }.map(|name| format!("{}()", name.as_deref().unwrap_or("call")));
         const WORDS: [&str; 18] = ["return", "raise", "assert", "import", "from", "pass", "break", "continue", "del", "global", "nonlocal", "yield",
                                    "while", "with", "match", "case", "async", "await"];
+        // What the tree holds of it: the value a name is assigned, or the call it is.
+        let value = match kind {
+            _ if self.tree.is_none() => None,
+            "Assign" | "AnnAssign" if name.is_some() => Some(&words[equals[0] + 1..]),
+            "Expr" if Sites::call(words).is_some() => Some(words),
+            _ => None,
+        };
         let key = name.or_else(call).unwrap_or_else(|| {
             let starts = matches!(first.3, scan::NAME | scan::KEYWORD) && WORDS.contains(&first.4);
             format!("##{}", if starts { first.4 } else { "statement" })
@@ -485,6 +498,7 @@ impl<'a> Sites<'a> {
         let around = self.open.last_mut().unwrap();
         let mut path = around.path.clone();
         path.push(numbered(&mut around.seen, key, "#"));
+        if let (Some(tree), Some(value)) = (self.tree.as_mut(), value) { tree.simple(&path, value); }
         self.found.push((first.0, first.1, last.0, last.2, kind, path));
     }
 }
@@ -1422,6 +1436,14 @@ impl Facts {
     /// lines before the first are one too. The key is the same while the
     /// chunks it lies in are: the same text, in the same place in them.
     pub fn tops(&self) -> Vec<(u32, u32, u64)> {
+        self.topped(false).into_iter().map(|(first, last, key, _)| (first, last, key)).collect()
+    }
+
+    /// `tops`, each with the chunk it starts in (`Chunk::id`); with
+    /// `entered` each key also holds the string state its chunks are
+    /// entered in, so it is the same while its tokens are: what a tree
+    /// part is kept by (`tree.rs`).
+    fn topped(&self, entered: bool) -> Vec<(u32, u32, u64, u64)> {
         let (mut starts, mut decorated) = (vec![(0u32, 0usize)], false);
         for (at, chunk) in self.chunks.iter().enumerate() {
             let (scan, strings, bound) = (chunk.scan(), chunk.strings(self.entries[at]), self.chunk(at));
@@ -1439,8 +1461,11 @@ impl Facts {
             let ((first, at), next) = (starts[index], starts.get(index + 1).map_or(lines, |next| next.0));
             let last = next.saturating_sub(1).max(first);
             let end = self.line0[..self.chunks.len()].partition_point(|&start| start <= last) - 1;
-            let key = (at..=end).fold(mix(first as u64 - self.line0[at] as u64, (last - first) as u64), |key, chunk| mix(key, self.chunks[chunk].id));
-            (first, last, key)
+            let key = (at..=end).fold(mix(first as u64 - self.line0[at] as u64, (last - first) as u64), |key, chunk| {
+                let key = mix(key, self.chunks[chunk].id);
+                if entered { mix(key, self.entries[chunk] as u64) } else { key }
+            });
+            (first, last, key, self.chunks[at].id)
         }).collect()
     }
 
@@ -1932,29 +1957,96 @@ impl Facts {
     /// ClassDef, else, except, finally, decorator. The key path names the
     /// site from the module down (`Sites::key`): what a breakpoint is kept by.
     pub fn sites(&self) -> Vec<Site> {
-        let mut sites = Sites { facts: self, found: vec![], open: vec![Body { indent: -1, ..Body::default() }], decorators: vec![] };
+        let mut sites = Sites { facts: self, found: vec![], open: vec![Body { indent: -1, ..Body::default() }], decorators: vec![], tree: None };
+        self.pass(&mut sites, 0, u32::MAX);
+        sites.found
+    }
+
+    /// The text as a tree of keys and values (`tree.rs`), made once per
+    /// reading on whichever thread first asks: the reading thread when the
+    /// request asked for it. `before`: the tree of an earlier reading,
+    /// whose parts are taken for the statements that did not change.
+    pub fn grown(&self, before: Option<&crate::tree::Tree>) -> &Arc<crate::tree::Tree> {
+        self.grown.get_or_init(|| Arc::new(crate::tree::Tree::grow(self, before)))
+    }
+
+    /// The tree, when the reading was asked for with one (it is never made here).
+    pub fn tree(&self) -> Option<&Arc<crate::tree::Tree>> {
+        self.grown.get()
+    }
+
+    /// The top-level statements as `tops` gives them, as (first line, last
+    /// line, key, the chunk it starts in). The key is the same while its
+    /// tokens are: the same text in the same chunks, entered in the same
+    /// string state. What a tree part is kept by.
+    pub(crate) fn units(&self) -> Vec<(u32, u32, u64, u64)> {
+        self.topped(true)
+    }
+
+    /// The tree part of the top-level statement on lines `first ..= last`:
+    /// its statements read as the site table reads them, with the module's
+    /// key counters standing at `seeds` (0 where none is given).
+    pub(crate) fn unit(&self, first: u32, last: u32, seeds: &[(crate::tree::Counter, u32)]) -> crate::tree::Part {
+        use crate::tree::Counter;
+        let mut root = Body { indent: -1, ..Body::default() };
+        for (counter, start) in seeds {
+            match counter {
+                Counter::Seen(key) => { root.seen.insert(key.clone(), *start); }
+                Counter::Branch(at) => root.counts.borrow_mut().branches[*at as usize] = *start,
+                Counter::Block(text) => { root.counts.borrow_mut().blocks.insert(text.clone(), *start); }
+            }
+        }
+        let mut sites = Sites { facts: self, found: vec![], open: vec![root], decorators: vec![], tree: Some(crate::tree::Grower::new(first)) };
+        self.pass(&mut sites, first, last);
+        // What the module's counters were moved by: they number the keys of the statements after this one.
+        let started = |counter: &Counter| seeds.iter().find(|seed| seed.0 == *counter).map_or(0, |seed| seed.1);
+        let root = &sites.open[0];
+        let counts = root.counts.borrow();
+        let moved = root.seen.iter().map(|(key, count)| (Counter::Seen(key.clone()), *count))
+            .chain(counts.branches.iter().enumerate().map(|(at, count)| (Counter::Branch(at as u8), *count)))
+            .chain(counts.blocks.iter().map(|(text, count)| (Counter::Block(text.clone()), *count)));
+        let touched = moved.map(|(counter, count)| { let start = started(&counter); (counter, start, count - start) })
+            .filter(|(_, _, moved)| *moved > 0).collect();
+        drop(counts);
+        sites.tree.take().map(|tree| tree.done(touched)).unwrap_or_default()
+    }
+
+    /// The characters before `column` of `line`, in the text the facts were read from.
+    pub fn offset(&self, line: u32, column: u32) -> usize {
+        let (at, local, _) = self.rows(line, line).next().unwrap_or((0, 0, 0));
+        let before: usize = self.chunks[..at].iter().map(|chunk| chunk.chars as usize).sum();
+        let chunk = &self.chunks[at];
+        let start = chunk.scan().lines.get(local).map_or(chunk.text.len(), |line| line.start as usize);
+        before + if chunk.chars as usize == chunk.text.len() { start } else { chunk.text[..start].chars().count() } + column as usize
+    }
+
+    /// Feed `sites` the statements that start on lines `first ..= last`.
+    fn pass<'a>(&'a self, sites: &mut Sites<'a>, first: u32, last: u32) {
         // The words of the statement being read: (line, column, end column, token kind, text).
         let mut words: Vec<Word> = vec![];
-        for (at, chunk) in self.chunks.iter().enumerate() {
+        let from = self.line0[..self.chunks.len()].partition_point(|&start| start <= first).saturating_sub(1);
+        for (at, chunk) in self.chunks.iter().enumerate().skip(from) {
+            if self.line0[at] > last { break; }
             let (scan, strings, bound) = (chunk.scan(), chunk.strings(self.entries[at]), self.chunk(at));
             for (local, line) in scan.lines.iter().enumerate() {
+                let row = self.line0[at] + local as u32;
+                if row < first { continue; }
+                if row > last { break; }
                 let inside = strings.lines[local] & 1 != 0;
                 if !inside && !bound.continued[local] && line.flags & (scan::BLANK | scan::COMMENT) == 0 {
                     sites.statement(&words);
                     words.clear();
                 }
-                let row = self.line0[at] + local as u32;
                 words.extend(strings.on(local).iter().filter(|tok| tok.kind != scan::NOTE).map(|tok| {
                     (row, self.chars(at, local, tok.start), self.chars(at, local, tok.start + tok.len as u32), tok.kind, word(&chunk.text, tok))
                 }).filter(|word| word.4 != "\\"));
             }
         }
         sites.statement(&words);
-        sites.found
     }
 
     /// The text from `column` of `line` to `end` of line `last` (columns in characters).
-    fn slice(&self, line: u32, column: u32, last: u32, end: u32) -> String {
+    pub(crate) fn slice(&self, line: u32, column: u32, last: u32, end: u32) -> String {
         (line..=last).map(|row| {
             let text = text(&self.chunks, &self.line0, row);
             let from = if row == line { column as usize } else { 0 };

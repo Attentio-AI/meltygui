@@ -38,7 +38,7 @@ shape registered.
 import importlib
 
 from meltygui.core.rendering.gui_prototype import gui
-from meltygui.core.rendering.keyed import Keyed, keyed
+from meltygui.core.rendering.keyed import DERIVED, Keyed, keyed
 from meltygui.core.rendering.shaped import Shaped, best_match
 
 # The modules of the built in views: to add one, list its module here and register its views there.
@@ -48,6 +48,7 @@ SHAPES = {}        # Shaped -> view
 TYPES = {}         # type -> view
 # type -> (its view by type, the shape registrations that can fit it): filled on demand, cleared by a registration.
 ROUTES = {}
+DERIVED.append(ROUTES)        # (a `keyed_as` registration changes which types are collections)
 
 
 def is_default_for(*keys):
