@@ -23,7 +23,9 @@ splices (`since`). Anyone may splice it. Every editor session on it
 (`sessions`: editor/editor.py) follows the splices it did not make, is woken
 for them and for every reading, and gets its own fold ranges and search hits
 out of one reading. Breakpoint keys, lint settings and live names are the
-source's: every session sees the same.
+source's: every session sees the same. Background models (`models`) are told
+of every splice and every landed reading (`tell`): they follow the text by
+these events, never by a call from a frame.
 
 Facts: fold ranges, `defs` (is class, name, line, last line, indent, parent
 index), the bindings of every scope, the names used and the calls made
@@ -67,6 +69,9 @@ class Source:
         self.waker = None          # (handle, token) the reading thread wakes when facts wait, besides every session's (`ask`)
         # The editor sessions on this text. Each has `term`, `rows`, `keys`, `wake` and `waker`; the source holds none of them alive.
         self.sessions = weakref.WeakSet()
+        # The background models on this text (model/editor_model.py, model/spell_model.py): `feed()` of each is called
+        # when the text or the landed reading moved on, so none needs a caller's frame to hear of it.
+        self.models = weakref.WeakSet()
         # The last splices as (version after, Splice, offset, characters gone, characters come, who made it), from version `base` on.
         self.log, self.base = [], version
         self.version = -1          # of the landed facts
@@ -103,7 +108,14 @@ class Source:
         for session in self.each():
             if session is not by and session.wake is not None:
                 session.wake()
+        self.tell()
         return change
+
+    def tell(self):
+        """The text or the landed reading moved on: the models on it hear of it (any thread)."""
+        if self.models:
+            for model in self.each(self.models):
+                model.feed()
 
     def since(self, version):
         """The log entries of the splices made after `version`, oldest
@@ -115,11 +127,11 @@ class Source:
             at -= 1
         return log[at:]
 
-    def each(self):
-        """The sessions on the source (a copy: another thread may ask)."""
+    def each(self, found=None):
+        """The sessions on the source, or the members of another of its weak sets (a copy: another thread may ask)."""
         while True:
             try:
-                return list(self.sessions)
+                return list(self.sessions if found is None else found)
             except RuntimeError:
                 pass
 
@@ -161,6 +173,7 @@ class Source:
         self.version, self.term = found
         self.found = {}
         self.stamp += 1
+        self.tell()
         return True
 
     def fact(self, name):

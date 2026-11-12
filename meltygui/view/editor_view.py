@@ -57,8 +57,11 @@ CREEP = 1.5                      # rows a second a held selection scrolls, per p
 PLAIN = pack_color(.66, .72, .78)        # text without a token colour
 FOUND = (.98, .62, .12)                  # the current search hit: its fill and frame
 FIELD = 24                               # cells of the find bar's field (it grows with a longer term)
+CHIP = 3                                 # cells of an error's chip over the line number
+DETAIL = 6.                              # an error's detail window: its vertical padding, and its gap to the chip
+BRIGHT = .8                              # a symbol's tint as text (a list row): its brightest channel is lifted to this
 Look = namedtuple('Look', 'back gutter number caret band select guide guide_width scope block symbol hit flash folded '
-                          'error breakpoint pause paused value pill ghost thumb pop pick dim')
+                          'error chip glyph breakpoint pause paused value pill ghost thumb pop pick dim')
 
 
 def look(tint=None):
@@ -80,6 +83,8 @@ def look(tint=None):
         flash=pack_color(.98, .80, .25, .3),
         folded=pack_color(.55, .60, .68),
         error=pack_color(.94, .33, .31),
+        chip=pack_color(.62, .13, .15),                             # an error's chip in the gutter
+        glyph=pack_color(1., .80, .78),                             # the glyph on it
         breakpoint=pack_color(.86, .24, .24),
         pause=pack_color(.98, .80, .25),
         paused=pack_color(.98, .80, .25, .16),
@@ -116,6 +121,13 @@ class Row:
     goes; a painter that puts something there moves it on."""
     __slots__ = ('dl', 'ed', 'look', 'line', 'at', 'y', 'ty', 'lh', 'cw', 'left', 'width', 'gutter', 'text', 'cx', 'end',
                  'tail', 'number', 'spots', 'values')
+
+
+def lit(rgb):
+    """A symbol's tint as a text colour: the same hue, lifted to `BRIGHT` when it is darker (tints are
+    chosen as background washes, and many are too dark to read). None for none, or for black."""
+    most = max(rgb[:3]) if rgb else 0.
+    return None if most <= 0. else rgb if most >= BRIGHT else tuple(channel * BRIGHT / most for channel in rgb[:3])
 
 
 def tone(rgb, alpha, fallback):
@@ -186,10 +198,34 @@ def paint_squiggle(row, mark):
         x0, up = x0 + 3, not up
 
 
+def roomy(row):
+    """Whether the gutter holds an error's chip: over the line number, so the numbers must be shown."""
+    return row.gutter - FOLD - CHIP * row.cw >= PAD
+
+
+
+def paint_chip(row, mark):
+    """An error's chip in place of its line number: a click opens the detail (the message and
+    its quick fixes, `popovers`), another closes it. Framed while it is open."""
+    if not roomy(row):
+        return
+    x1 = row.gutter - FOLD + 1
+    x0 = x1 - CHIP * row.cw - 1
+    icon = f''
+    row.dl.add_rect_filled(x0, row.y + 2, x1, row.y + row.lh - 2, tone(mark.color, 1., row.look.chip), 4.)
+    if row.ed.detail == row.line:
+        row.dl.add_rect(x0, row.y + 2, x1, row.y + row.lh - 2, row.look.glyph, 4.)
+    row.dl.add_text((x0 + x1 - imgui.calc_text_size(icon).x) * .5, row.y + (row.lh - row.lh / LINE) * .5, row.look.glyph, icon)
+    row.spots.append((row.at, x0, x1, open_detail, row.line))
+    row.number = None
+
+
 def paint_error(row, mark):
-    message, fixes = mark.data
-    label(row, message.split('\n')[0][:120] + (f'   fix: {fixes[0]}' if fixes else ''), tone(mark.color, 1., row.look.error),
-          action=open_detail)
+    """The message after the line, only where no gutter holds the chip (a single line field, hidden numbers)."""
+    if not roomy(row):
+        message, fixes = mark.data
+        label(row, message.split('\n')[0][:120] + (f'   fix: {fixes[0]}' if fixes else ''), tone(mark.color, 1., row.look.error),
+              action=open_detail)
 
 
 def paint_note(row, mark):
@@ -250,13 +286,14 @@ SHAPES = {
     'box': (OVER, paint_box),               # a frame around a span
     'under': (OVER, paint_under),           # an underline
     'squiggle': (OVER, paint_squiggle),     # a wavy underline
-    'error': (OVER, paint_error),           # a message after the line that opens its detail
+    'error': (OVER, paint_error),           # an error's (message, fixes); painted after the line only without a gutter
     'note': (OVER, paint_note),             # plain text after the line
     'value': (OVER, paint_value),           # a live value after the line
     'dot': (EDGE, paint_dot),               # gutter: a breakpoint
     'arrow': (EDGE, paint_arrow),           # gutter: the paused line
     'bar': (EDGE, paint_bar),               # gutter: a band down its left edge
     'heat': (EDGE, paint_heat),             # gutter: a box behind the number
+    'chip': (EDGE, paint_chip),             # gutter: an error's chip in place of the number, opens its detail
     'number': (EDGE, paint_number),         # gutter: the number's colour
 }
 
@@ -400,7 +437,7 @@ def paint(ed, block, first, top, width, numbers, show_scopes):
             row.line, row.at, row.y, row.number = line, at, at * lh, look.number
             for draw, mark in edge.get(line, ()):
                 draw(row, mark)
-            number = ed.numbers.number(line) if numbers else None
+            number = ed.numbers.number(line) if numbers and row.number is not None else None
             if number is not None:
                 text = str(number)
                 dl.add_text(gutter - FOLD - len(text) * cw, row.y + (lh - lh / LINE) * .5, row.number, text)
@@ -487,6 +524,12 @@ def trail(input_value, lines=(), shift=0., color=0, width=0., height=0.):
         imgui.pop_font()
 
 
+@gui(listen=(), cursor=mouse_cursor.HAND)
+def margin(input_value):
+    """Nothing: the pointer's shape over the gutter, a hand. What is there is pressed (a fold, a
+    breakpoint, an error's chip, a line's number), never typed in. Its presses are the editor's."""
+
+
 @gui(listen=())
 def end(input_value):
     """Nothing: its position is the last row, which gives the pane its scroll range."""
@@ -523,14 +566,14 @@ def pane(input_value, stamp=0, width=0., height=0., widgets=True, numbers=True, 
 
 # --- popovers -------------------------------------------------------------
 @gui(listen=('pointer', 'hover', 'wheel'))
-def choices(input_value, which='suggest', rows=(), index=0, first=0, width=0., height=0., view_events=None):
+def choices(input_value, which='suggest', rows=(), index=0, first=0, tick=0, width=0., height=0., view_events=None):
     """The list popover: the suggestions (`which='suggest'`), an error's
     quick fixes ('fixes') or the usage picker ('lookup'), each a
     `suggest.Menu` on the session. The keyboard
     stays with the editor, which moves the selection; here the pointer does:
     hovering selects, the wheel scrolls, a click picks (the editor acts on
-    `Menu.picked` on its next run). `rows`, `index` and `first` only exist to
-    run the body again when the list changed."""
+    `Menu.picked` on its next run). `rows`, `index`, `first` and `tick` only
+    exist to run the body again when the list or what its rows show changed."""
     ed, look = input_value, input_value.look
     menu = getattr(ed, which)
     dl = imgui.get_window_draw_list()
@@ -554,9 +597,10 @@ def choices(input_value, which='suggest', rows=(), index=0, first=0, width=0., h
         tint, suffix = menu.extra(at)
         if at == menu.index:
             dl.add_rect_filled(0, y, width, y + lh, look.pick, 3.)
-        dl.add_text(6, ty, tone(tint, 1., look.caret), text)
+        dl.add_text(6, ty, tone(lit(tint), 1., look.caret), text)
         if suffix:
-            dl.add_text(6 + (len(text) + 2) * cw, ty, look.dim, suffix)
+            # (A parameter list stands right after its name; anything else two cells on.)
+            dl.add_text(6 + (len(text) + 2 * (suffix[0] != '(')) * cw, ty, look.dim, suffix)
         dl.add_text(width - (len(tag) + 1) * cw, ty, look.dim, tag)
     if len(menu.rows) > ROWS:
         # Where the shown rows are in the list.
@@ -568,27 +612,31 @@ def choices(input_value, which='suggest', rows=(), index=0, first=0, width=0., h
     return picked, ed
 
 
-def pop(ed, name, which, left, top, height):
-    """Declare the list popover for the session's menu `which`, below `top` or above it when it would not fit."""
+def pop(ed, name, which, left, top, height, at=None):
+    """Declare the list popover for the session's menu `which`, below the row at `top` or above it
+    when it would not fit; `at` puts its top edge there instead."""
     menu, cw, lh = getattr(ed, which), ed.cw, ed.lh
     count = min(len(menu.rows), ROWS)
-    wide = (menu.cells or max(len(text) + len(tag) + (len(menu.extra(at)[1]) + 2 if menu.extra(at)[1] else 0)
-                              for at, (text, tag) in enumerate(menu.rows)) + 4) * cw + 12
+    wide = (menu.cells or menu.wide() + 4) * cw + 12
     below = top + lh
+    if at is None:
+        at = below if below + count * lh <= height or top < count * lh else top - count * lh
     choices(ed, name=name, melty_window=True, content_offset=(0., 0.), which=which, rows=menu.rows, index=menu.index,
-            first=menu.first, left=left, width=wide, height=count * lh,
-            top=below if below + count * lh <= height or top < count * lh else top - count * lh)
+            first=menu.first, tick=menu.tick, left=left, width=wide, height=count * lh, top=at)
 
 
 @gui(listen=('pointer',))
-def note(input_value, lines=(), width=0., height=0., color=0, view_events=None):
-    """A text popover: the full error message or a signature hint."""
+def note(input_value, lines=(), width=0., height=0., color=0, frame=0, view_events=None):
+    """A text popover: the full error message (a little window: `frame` is its outline) or a signature hint."""
     look = input_value.look
     dl = imgui.get_window_draw_list()
     pushed, cw, lh = font()
     dl.add_rect_filled(0, 0, width, height, look.pop, 4.)
+    if frame:
+        dl.add_rect(.5, .5, width - .5, height - .5, frame, 4.)
+    top = (height - len(lines) * lh) * .5
     for at, line in enumerate(lines):
-        dl.add_text(6, at * lh + (lh - lh / LINE) * .5, color or look.caret if at == 0 else look.dim, line)
+        dl.add_text(8, top + at * lh + (lh - lh / LINE) * .5, color or look.caret if at == 0 else look.dim, line)
     if pushed:
         imgui.pop_font()
 
@@ -680,7 +728,7 @@ def session(state, value, language, fold_defaults, wake, path, waker=None):
 
 def spot(ed, x, y):
     """(action, line) of what was painted besides text at view x and content
-    y (a fold label, an error message), or None."""
+    y (a fold label, an error's chip in the gutter), or None."""
     row = int(y // ed.lh)
     for found, _, top, count in ed.shown:
         if top <= row < top + count:
@@ -722,12 +770,14 @@ def press(ed, event, desk, scroll_y, width, height, widgets):
     """A pointer press, drag or release in view coordinates. The left button
     places the caret and selects (`ed.hold` says what it holds: text, by
     character or, after a double or triple click, by word or line; the
-    scroll bar; a widget); the right button pans."""
+    scroll bar; a widget). The other buttons are not the editor's: a right
+    drag resizes the window around it, as everywhere."""
     doc = ed.doc
     x, y = event.x, event.y
     line, column = ed.spot(x, y, scroll_y)
     index = doc.index(line, column)
     if event.kind == 'press' and not event.button:
+        opened = ed.detail
         ed.hold = ed.detail = ed.step = None
         ed.creep = (0., time.monotonic())
         ed.suggest.drop()
@@ -736,7 +786,12 @@ def press(ed, event, desk, scroll_y, width, height, widgets):
         if x >= width - BAR and not desk.single:
             ed.hold = ('bar', y, scroll_y)
         elif x < ed.gutter:
-            if x >= ed.gutter - FOLD and ed.rows.fold(line) is not None:
+            found = spot(ed, x, y + scroll_y)
+            if found is not None:
+                found[0](ed, found[1])
+                if ed.detail == opened:
+                    ed.detail = None        # a press on the chip of the open detail closes it
+            elif x >= ed.gutter - FOLD and ed.rows.fold(line) is not None:
                 ed.toggle(line)
             elif ed.slots.get('break') is not None:
                 ed.slots['break'](line)
@@ -746,6 +801,13 @@ def press(ed, event, desk, scroll_y, width, height, widgets):
             found = spot(ed, x, y + scroll_y)
             if found is not None:
                 return found[0](ed, found[1])
+            found = ed.widget(line, x + ed.scroll_x, False) if widgets and event.clicks == 2 else None
+            if found is not None and found[0].double is not None:
+                # A double click on a token whose widget takes it (a boolean flips), whether the first
+                # click put the caret in it or not.
+                was = doc.line(line)[found[1]:found[1] + found[2]]
+                edit.set_token(doc, line, found[1], found[2], found[0].double(was))
+                return
             found = ed.widget(line, x + ed.scroll_x) if widgets else None
             if found is not None:
                 # The widget takes the press; a plain click may still place the caret.
@@ -759,17 +821,8 @@ def press(ed, event, desk, scroll_y, width, height, widgets):
                 edit.move(doc, index, select=event.shift)
             # A drag from a double or triple click extends by word or line around the one it selected.
             ed.hold = ('text', (None, None, 'word', 'line')[event.clicks], *doc.selection) if event.clicks > 1 else ('text',)
-    elif event.button == 1:
-        # The right button pans both axes: the text under the pointer follows it.
-        if event.kind == 'press':
-            ed.hold = ('pan', x, y, ed.scroll_x, scroll_y)
-        elif ed.hold is not None and ed.hold[0] == 'pan' and event.kind == 'drag':
-            slide(ed, ed.hold[3] - (x - ed.hold[1]), width)
-            ed.scroll_to = min(max(ed.hold[4] - (y - ed.hold[2]), 0.), max(ed.rows.count * ed.lh - height, 0.))
-        elif event.kind == 'release':
-            ed.hold = None
     elif event.button:
-        return      # the middle button is for later
+        return
     elif ed.hold is not None:
         if ed.hold[0] == 'text' and event.kind == 'hold':
             # Held past the top or bottom edge: the selection creeps on, faster the further out.
@@ -839,7 +892,7 @@ def typed(ed, events, desk, complete, path, source, ghost, wake, roster):
             continue
         if key == glfw.KEY_SPACE and chord == keys.CTRL and complete and desk.editable:
             ed.sync()
-            menu.refresh(ed, False, explicit=True, path=path, source=source, wake=wake)
+            menu.refresh(ed, False, explicit=True, path=path, source=source, wake=wake, roster=roster)
             continue
         if key == glfw.KEY_P and chord == keys.CTRL and complete and desk.editable and not desk.single:
             ed.sync()
@@ -902,7 +955,9 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
 
     What is shown besides the text comes from plain values, read again only
     when the object passed changes: `errors` [(line, message)] or an
-    exception, `imports` {line: [statement]} (quick fixes), `tints` (a
+    exception (a `marks.Findings` says which version of the text its lines
+    are of; an error is a chip over its line number that opens the message),
+    `imports` {line: [statement]} (quick fixes), `tints` (a
     `marks.tints` set), `live` (a live value store), `breakpoints` ({source site key:
     {'enabled': bool}}, as a file's metadata keeps them: a gutter click
     toggles the statement on its line, by key, never by line; a change
@@ -979,16 +1034,7 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
         ed.search.seek(ed, search)
     before = (doc.caret, doc.anchor, doc.version)
     # --- input ---
-    # The right button is the editor's own (it pans, see `press`), so the host's window gestures
-    # must leave it alone. Two things decide that, both before the press reaches this view: the
-    # hit region makes the pointer over the editor a drag the host keeps from the OS window frame
-    # (`register_host_pointer`), and the item, which takes a right press and nothing else (the
-    # items of the views declared below overlap it), keeps it from the host's own layout resize
-    # (core/rendering/gui_imgui_input.py, `finish`).
-    cache.region('body', (0., 0., width, height))
-    imgui.set_cursor_pos((0., 0.))
-    imgui.invisible_button('##pan', width, height, imgui.BUTTON_MOUSE_BUTTON_RIGHT)
-    imgui.set_item_allow_overlap()
+    # (Listening for the pointer is what keeps left drags from moving the window: gui_imgui_input.py.)
     for command in ed.asks:
         # What the caller asked of the handle since the last run.
         if command[0] == 'jump':
@@ -1039,7 +1085,7 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
     edited = ed.sync()
     if edited or doc.version != before[2]:
         if complete and editable and not single_line:
-            menu.refresh(ed, wrote, path=path, source=completion_source, wake=wake)
+            menu.refresh(ed, wrote, path=path, source=completion_source, wake=wake, roster=roster)
             # Editing inside a call's parentheses arms its hint. An open list hides it: the call is
             # looked for (a scan back from the caret) once the list closes.
             if menu.open:
@@ -1048,7 +1094,7 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
                 menu.hint(ed, path, wake, edited=True)
     elif menu.pending is not None and menu.pending.done():
         if menu.arrived():
-            menu.refresh(ed, True, path=path, source=completion_source, wake=wake)
+            menu.refresh(ed, True, path=path, source=completion_source, wake=wake, roster=roster)
         menu.hint(ed, path, wake)
     if ed.landing is not None:
         # An undo or redo changed text that may be out of sight: unfold it, bring it into view, flash it.
@@ -1107,11 +1153,16 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
         ed.pane.scroll_offset = (0., target)
         scroll_y = target
     ed.window(scroll_y, view)
+    # The pointer is the editor's over its rows; the empty space below the last one is the window's (a left drag moves it).
+    below = min(ed.rows.count * ed.lh - scroll_y, height)
+    cache.imgui_input.reach(node, None if single_line else (0., 0., width, below))
     if ed.caret is not None:
         ed.caret.left, ed.caret.top = x - ed.scroll_x, y
     if ed.band is not None:
         ed.band.top = y
     # --- views ---
+    if ed.detail is not None and ed.mark('errors', ed.detail, 'error') is None:
+        ed.detail = None        # its error went: the detail closes
     dl = imgui.get_window_draw_list()
     if ed.look.back is not None:
         dl.add_rect_filled(0, 0, width, height, ed.look.back)
@@ -1123,6 +1174,8 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
         size = max(view * view / (reach + view), 24.)
         top = (view - size) * scroll_y / reach
         dl.add_rect_filled(width - BAR + 2, top, width - 2, top + size, ed.look.thumb, 3.)
+    if gutter and below > 0:
+        margin(None, name='margin', left=0., top=0., width=gutter, height=below)
     popovers(ed, x - ed.scroll_x, y - scroll_y, width, height)
     if ed.search.open:
         bar(ed, width, height)
@@ -1161,29 +1214,39 @@ def popovers(ed, x, y, width, height):
              left=x, top=y - lh - 4 if y > lh + 4 else below, width=(len(label) + 2) * cw, height=lh)
     found = ed.mark('errors', ed.detail, 'error') if ed.detail is not None else None
     if found is not None:
+        # A little window beside the chip, above the error's line (below it when there is no room): the
+        # message, then its quick fixes. Levers: `DETAIL` is its padding and its gap to the line.
         message, fixes = found.data
         lines = message.split('\n')
-        wide = (max(len(item) for item in lines) + 4) * cw
-        line_y = ed.rows.row(ed.detail) * lh - (ed.pane.scroll_offset[1] if ed.pane is not None else 0.) + lh
-        note(ed, name='detail', melty_window=True, content_offset=(0., 0.), lines=tuple(lines), color=ed.look.error,
-             left=ed.gutter, top=line_y, width=wide, height=len(lines) * lh)
         if [text for text, _ in ed.fixes.rows] != fixes:
             ed.fixes.set([(statement, 'import') for statement in fixes])
+        wide = (max(len(item) for item in lines) + 2) * cw
+        tall, list_tall = len(lines) * lh + DETAIL, min(len(fixes), ROWS) * lh
+        left = ed.gutter - FOLD + DETAIL if roomy(ed) else ed.gutter      # (the session has a row's `gutter` and `cw`)
+        line_y = ed.rows.row(ed.detail) * lh - (ed.pane.scroll_offset[1] if ed.pane is not None else 0.)
+        top = line_y - tall - list_tall - 2
+        if top < 0:
+            top = line_y + lh + 2
+        note(ed, name='detail', melty_window=True, content_offset=(0., 0.), lines=tuple(lines), color=ed.look.error,
+             frame=ed.look.chip, left=left, top=top, width=wide, height=tall)
         if fixes:
-            pop(ed, 'fixes', 'fixes', ed.gutter, line_y + (len(lines) - 1) * lh, height)
+            pop(ed, 'fixes', 'fixes', left, 0., height, at=top + tall)
 
 
 # --- built in inline widgets ----------------------------------------------
-@inline('bool')
+def flip(text):
+    return 'False' if text == 'True' else 'True'
+
+
+@inline('bool', caret=True, double=flip)
 def switch(input_value: str, width=0., height=0.):
-    """True / False: a click flips it."""
+    """True / False: a frame with a dot on the side that is on. A double click flips it (the editor
+    does, `press`: the first click only puts the caret in the word, as in any text)."""
     dl = imgui.get_window_draw_list()
-    clicked = imgui.invisible_button('##flip', width, height)
-    on = input_value == 'True'
-    hovered = imgui.is_item_hovered()
-    dl.add_rect(0, 1, width, height - 1, pack_color(.80, .47, .20, .9 if hovered else .45), 4.)
-    dl.add_circle_filled(width - 4 if on else 4, height - 3, 2., pack_color(.80, .47, .20))
-    return clicked, ('False' if on else 'True') if clicked else input_value
+    imgui.invisible_button('##flip', width, height)
+    dl.add_rect(0, 1, width, height - 1, pack_color(.80, .47, .20, .9 if imgui.is_item_hovered() else .45), 4.)
+    dl.add_circle_filled(width - 4 if input_value == 'True' else 4, height - 3, 2., pack_color(.80, .47, .20))
+    return False, input_value
 
 
 @inline('number', caret=True)

@@ -46,7 +46,7 @@ def test_unknown_words_get_a_wavy_underline_tagged_with_the_version_read(on):
     spelling = Spelling(source)
     found = rested(spelling)
     assert words(found, source) == [(0, 'smal'), (2, 'anothr')]
-    assert {mark.shape for _, mark in found.on(0, 9)} == {'squiggle'} and found.on(0)[0][1].color == (1., 0., 0.)
+    assert {mark.shape for _, mark in found.on(0, 9)} == {'squiggle'} and found.on(0)[0][1].color == spell_model.COLOR == (.16, .71, .65), 'teal: never read as an error'
     assert found.version == source.native.version
     assert spelling.feed() is None and spelling.marks is found, 'a rested text is not read again'
     spelling.close()
@@ -83,8 +83,8 @@ def test_only_changed_lines_are_looked_up_again(on, monkeypatch):
     rested(spelling)
     assert sorted(looked) == sorted(line for line in TEXT.split('\n') if line)
     looked.clear()
-    source.splice(source.native.size, source.native.size, 'a nwe line', source.native.version + 1)
-    assert words(rested(spelling), source) == [(0, 'smal'), (2, 'anothr'), (3, 'nwe')] and looked == ['a nwe line']
+    source.splice(source.native.size, source.native.size, 'a wrogn line', source.native.version + 1)
+    assert words(rested(spelling), source) == [(0, 'smal'), (2, 'anothr'), (3, 'wrogn')] and looked == ['a wrogn line']
     spelling.close()
 
 
@@ -115,3 +115,19 @@ def test_underlining_asks_the_word_list_and_never_builds_the_suggestion_index(on
     assert words(rested(spelling), source) == [(0, 'smal'), (2, 'anothr')]
     spelling.close()
     assert [found[2] for found in spell_check.find_misspellings("It's a wrod, don't worry")] == ['wrod']
+
+
+def test_words_are_read_the_way_code_spells_them():
+    from meltygui.editor.spell_check import find_misspellings
+
+    def flagged(text):
+        return [word for _, _, word in find_misspellings(text)]
+
+    assert flagged("@os_window(name='Code editor', app_id='cleanslate-code-editor', use_cache=False)") == [], 'quotes, dashes and underscores delimit'
+    assert flagged("state = EditorState()  # caret, folds; {'enabled': bool}, the project's lookups") == [], 'camel case parts, possessives, plurals'
+    assert flagged('from pathlib import Path; text.lstrip().isascii(); kwargs, imgui') == [], 'what code has: modules, methods, its terms'
+    assert flagged("it doesn't, wouldn't and can't") == [], 'a contraction is its stem'
+    assert flagged('HTTPServer and fontawesome') == [], 'an acronym ends where the next part starts; two words run together'
+    assert flagged('recieved the EditrState in draw_editr') == ['recieved', 'Editr', 'editr'], 'a misspelled part is still found, alone'
+    assert find_misspellings('x = recieved')[0][:2] == (4, 12)
+    assert flagged('teh cw lh') == [], 'parts shorter than SHORTEST are left alone'

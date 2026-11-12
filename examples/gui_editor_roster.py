@@ -116,4 +116,3 @@ def app(width=None, height=None):
         draw_editor(buffer.source, name=buffer.path.name, state=buffer.state, left=at * half, top=BAR + 36., width=half - 4, height=height - BAR - 40,
                     path=str(buffer.path), errors=analysis.errors, imports=analysis.imports, tints=analysis.tints,
                     roster=model.roster, on_open=show)
-        analysis.feed()

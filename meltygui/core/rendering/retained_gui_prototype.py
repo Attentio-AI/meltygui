@@ -122,6 +122,8 @@ class RetainedGui:
         self.states = {}
         self.backgrounds = {}
         self.texture_refs = {}
+        # Set by melty_colors(): the raster follows the host's glyph settings each frame.
+        self.melty = False
         self.auto_layout = False
         # Hosts that declare retained views from inside an immediate tree (the
         # legacy bridge, gui_compat.py): a root's image is drawn where it is
@@ -565,6 +567,31 @@ class RetainedGui:
             self.declared.set_gpu(self.gpu)
         return self.gpu
 
+    def melty_colors(self):
+        """Give the Rust raster the host's colour pipeline (hdr_color.py):
+        packed vertex colours, linear half-float targets and, per frame, the
+        host's glyph treatment (_glyphs). Call before the first capture."""
+        import meltygui_imgui as imgui
+        from meltygui import hdr_color
+        hdr_range, octaves = hdr_color._curve_params()
+        matrix = hdr_color.P3_TO_SRGB
+        self._ensure_gpu().melty_colors(
+            float(hdr_range), float(octaves), [float(matrix[row][column]) for column in range(3) for row in range(3)],
+            1., int(imgui.get_io().fonts.texture_id))
+        self.melty = True
+
+    def _glyphs(self):
+        # The atlas is shared and replaced by any surface's font load; the
+        # toggles and the window's output are live. A change repaints every raster.
+        import meltygui_imgui as imgui
+        import meltygui.core.windowing.window_api as window_api
+        fonts = imgui.get_io().fonts
+        gamma = float(self._toggles.Fonts.text_gamma)
+        tap = window_api.text_subpixel() / max(1, fonts.texture_width)
+        if self.gpu.glyphs(int(fonts.texture_id), gamma if gamma > 0 else 1., tap):
+            for node in self.backgrounds:
+                self.graph.request_composition(node)
+
     def _keepalive_list(self):
         # One list for the binding's lifetime; new frames clear it in place.
         return self.imgui.get_current_context()._keepalive_cache
@@ -697,6 +724,8 @@ class RetainedGui:
 
     def _compose(self):
         if self.graphics and self.gpu:
+            if self.melty:
+                self._glyphs()
             self._select_rasters()
             # The complete bottom-up replay, including one save/restore of host
             # GL state for the batch, runs natively. Views still executing are
@@ -926,7 +955,7 @@ class RetainedGui:
         if self.geometry.gesture is None:
             self.pointer(imgui.get_mouse_pos())
         claims=self.imgui_input.pointer_claims.get(self.imgui_input.mouse_owner,(False,False))
-        claims=(claims[0] or self.hover is not None or self.drag is not None,claims[1])
+        claims=(claims[0] or self.imgui_input.left or self.hover is not None or self.drag is not None,claims[1])
         self.geometry.pointer(imgui.get_mouse_pos(),pressed=imgui.is_mouse_clicked(0),
                               down=imgui.is_mouse_down(0),released=imgui.is_mouse_released(0),
                               right_pressed=imgui.is_mouse_clicked(1),right_down=imgui.is_mouse_down(1),
@@ -940,18 +969,21 @@ class RetainedGui:
             self.geometry.native.release()
 
     def register_host_pointer(self, handler, position):
+        """Keep from the host's OS window gestures what is not theirs here. Over a Melty window
+        both buttons are the layout's (it moves and resizes that window). Elsewhere a left drag
+        is kept when a view takes it (a hit region, a view listening for the pointer, an ImGui
+        item) and a right drag only when an ImGui item was activated by it: over everything
+        else the right drag resizes the OS window."""
         x, y = position[0] - self.origin[0], position[1] - self.origin[1]
-        occupied = self.hover is not None or self.drag is not None
-        if not occupied:
-            occupied = any(wx <= x < wx + w and wy <= y < wy + h + self.title_height(node)
-                           for node in self.graph.windows()
-                           for wx, wy, w, h in (self.window_rect(node),))
+        window = self.drag is not None or any(wx <= x < wx + w and wy <= y < wy + h + self.title_height(node)
+                                              for node in self.graph.windows()
+                                              for wx, wy, w, h in (self.window_rect(node),))
         left, right = self.imgui_input.pointer_claims.get(self.imgui_input.mouse_owner, (False, False))
         subscriptions = []
-        if occupied or left or self.geometry.claim[0]:
+        if window or left or self.imgui_input.left or self.hover is not None or self.geometry.claim[0]:
             subscriptions.extend(['left_mouse_dragged', 'left_mouse_double_dragged',
                                   'left_mouse_double_clicked'])
-        if occupied or right or self.geometry.claim[1]:
+        if window or right or self.geometry.claim[1]:
             subscriptions.extend(['right_mouse_dragged', 'right_mouse_double_dragged'])
         if subscriptions:
             handler.register_hovered(

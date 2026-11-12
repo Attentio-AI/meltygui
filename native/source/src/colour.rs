@@ -1,19 +1,23 @@
 //! The colour runs of one line: what the editor paints a line's text with.
 //!
-//! `runs(line, state)` is a function of the line's text and the string it
+//! `runs(line, state, call)` is a function of the line's text, the string it
 //! starts inside (`state`, from the chunk lexer in `scan.rs`: the one string
-//! model). The kinds are the editor's colour keys (`KINDS`); neighbours of
+//! model) and whether it starts right inside a call's parentheses (`call`:
+//! `Strings::calls`, what a keyword argument at the start of a continuation
+//! line is told by). The kinds are the editor's colour keys (`KINDS`); neighbours of
 //! one plain kind come out as one run. The rules are the legacy tokenizer's
 //! (`text_editor._tokenize_from`): words by role, numbers with their sign,
 //! `(r, g, b)` tuples of floats as one colour token, hex colour strings,
-//! icon glyphs, f-string fields as code, values in `# [key=value]` comments.
+//! icon glyphs, f-string fields as code, values in `# [key=value]` comments;
+//! and, beyond the legacy rules, the name of a keyword argument in a call
+//! (`kwarg`: never a parameter's default in a `def` or a `lambda`).
 //! To add a kind: name it in `KINDS`, emit it in `raw`.
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-pub const KINDS: [&str; 18] = [
+pub const KINDS: [&str; 19] = [
     "default", "comment", "string", "string_doc", "keyword", "operator_word", "def", "def_name", "keyword_const", "bool",
-    "builtin_pseudo", "builtin", "decorator", "number", "color3", "colorhex", "icon", "fstring_delim"];
+    "builtin_pseudo", "builtin", "decorator", "number", "color3", "colorhex", "icon", "fstring_delim", "kwarg"];
 const DEFAULT: u8 = 0;
 const COMMENT: u8 = 1;
 const STRING: u8 = 2;
@@ -32,6 +36,10 @@ const COLOR3: u8 = 14;
 const HEX: u8 = 15;
 const ICON: u8 = 16;
 const DELIM: u8 = 17;
+const KWARG: u8 = 18;
+/// What a bracket was opened as (`raw`, and `scan::Strings::calls` with the same values).
+pub const CALL: u8 = 1;
+pub const PARAMS: u8 = 2;
 /// Kinds below this join their neighbours of the same kind into one run.
 const JOINED: u8 = 6;
 
@@ -129,7 +137,7 @@ fn field(s: &str, i: usize, end: usize, out: &mut Vec<Piece>, nest: u8) -> usize
         k += 1;
     }
     k = k.min(end);
-    if k > i + 1 { raw(s, i + 1, k, out); }
+    if k > i + 1 { raw(s, i + 1, k, false, out); }
     if k < end && bytes[k] == b'!' {
         let mut m = k + 1;
         while m < end && (at(s, m).is_alphanumeric() || bytes[m] == b'_') { m += at(s, m).len_utf8(); }
@@ -233,7 +241,7 @@ fn overrides(s: &str, a: usize, b: usize, out: &mut Vec<Piece>) {
     while split < b && matches!(bytes[split], b' ' | b'\t') { split += 1; }
     out.push((a, split, COMMENT));
     let mut inner = vec![];
-    raw(s, split, b, &mut inner);
+    raw(s, split, b, false, &mut inner);
     for (from, to, kind) in tuples(s, signs(s, inner, true), true) {
         out.push((from, to, if matches!(kind, BOOL | NUMBER | COLOR3 | ICON) { kind } else { COMMENT }));
     }
@@ -249,11 +257,18 @@ fn overriding(text: &str) -> bool {
 }
 
 /// The tokens of code `from .. to`, before the merges.
-fn raw(s: &str, from: usize, to: usize, out: &mut Vec<Piece>) {
+fn raw(s: &str, from: usize, to: usize, call: bool, out: &mut Vec<Piece>) {
     let bytes = s.as_bytes();
     let (mut i, mut after_def) = (from, false);
+    // For keyword argument names: the brackets open here (0 any, `CALL` the parentheses of a call,
+    // `PARAMS` those of a `def`), the last character that was no space (b'a': a word, a literal),
+    // and whether a `lambda`'s parameters are being read.
+    let mut open: Vec<u8> = if call { vec![CALL] } else { vec![] };
+    let (mut last, mut lambda) = (if call { b',' } else { 0u8 }, false);
     while i < to {
         let c = at(s, i);
+        let before = last;
+        if !matches!(c, ' ' | '\t') { last = b'a'; }
         let prefixed = b"fFrRbBuU".contains(&bytes[i]) && i + 1 < to
             && (matches!(bytes[i + 1], b'"' | b'\'') || (i + 2 < to && b"fFrRbBuU".contains(&bytes[i + 1]) && matches!(bytes[i + 2], b'"' | b'\'')));
         if c == '#' {
@@ -301,9 +316,17 @@ fn raw(s: &str, from: usize, to: usize, out: &mut Vec<Piece>) {
                 _ if KEYWORDS.contains(&word) => KEYWORD,
                 "self" | "cls" => PSEUDO,
                 _ if after_def => DEF_NAME,
+                // `name=` right after the `(` or a `,` of a call: a keyword argument, whatever else the name is.
+                _ if open.last() == Some(&CALL) && !lambda && matches!(before, b'(' | b',') && {
+                    let rest = s[end..to].trim_start_matches(' ').as_bytes();
+                    rest.first() == Some(&b'=') && rest.get(1) != Some(&b'=')
+                } => KWARG,
                 _ if !(i > from && bytes[i - 1] == b'.') && BUILTINS.get().is_some_and(|names| names.contains(word)) => BUILTIN,
                 _ => DEFAULT,
             }));
+            lambda |= word == "lambda";
+            // (A keyword before a parenthesis groups, it does not call: `return (`, `in (`.)
+            last = if after_def { b'd' } else if out.last().is_some_and(|piece| matches!(piece.2, KEYWORD | WORD_OP)) { b'k' } else { b'a' };
             after_def = word == "def";
             i = end;
         } else if c.is_ascii_digit() || (c == '.' && i + 1 < to && bytes[i + 1].is_ascii_digit()) {
@@ -312,6 +335,14 @@ fn raw(s: &str, from: usize, to: usize, out: &mut Vec<Piece>) {
             i = end;
         } else {
             if !matches!(c, ' ' | '\t') { after_def = false; }
+            match c {
+                '(' => open.push(match before { b'd' => PARAMS, b'a' | b')' | b']' => CALL, _ => 0 }),
+                '[' | '{' => open.push(0),
+                ')' | ']' | '}' => { open.pop(); }
+                ':' => lambda = false,
+                _ => {}
+            }
+            if !matches!(c, ' ' | '\t') { last = if c.is_ascii() { c as u8 } else { b'a' }; }
             out.push((i, i + c.len_utf8(), if icon(c) { ICON } else { DEFAULT }));
             i += c.len_utf8();
         }
@@ -417,10 +448,11 @@ fn tuples(s: &str, pieces: Vec<Piece>, mut open: bool) -> Vec<Piece> {
 /// The colour runs of `line`, which starts in string state `state` (0: in
 /// code; else 1 + 2 * kind + quote, kind 0 a docstring, 1 a prefixed string,
 /// 2 an f-string, quote 0 `"""`, 1 `'''`), as (column, characters, kind).
-pub fn runs(line: &str, state: u8) -> Vec<(u32, u32, &'static str)> {
+/// `call`: the line starts right inside the parentheses of a call.
+pub fn runs(line: &str, state: u8, call: bool) -> Vec<(u32, u32, &'static str)> {
     let mut pieces: Vec<Piece> = vec![];
     if state == 0 {
-        raw(line, 0, line.len(), &mut pieces);
+        raw(line, 0, line.len(), call, &mut pieces);
         pieces = tuples(line, signs(line, pieces, true), true);
     } else {
         // The string the line starts in, then code as after any string.
@@ -431,7 +463,7 @@ pub fn runs(line: &str, state: u8) -> Vec<(u32, u32, &'static str)> {
             kind => icons(line, 0, cut, if kind == 0 { DOC } else { STRING }, &mut pieces),
         }
         let mut rest = vec![];
-        raw(line, cut, line.len(), &mut rest);
+        raw(line, cut, line.len(), false, &mut rest);
         pieces.extend(tuples(line, signs(line, rest, false), false));
     }
     let mut found: Vec<(u32, u32, &'static str)> = vec![];

@@ -12,11 +12,16 @@ about 20 ms). The SymSpell index that suggestions need takes over a second of
 interpreter time to build and several hundred MB of small objects (`_get_sym`):
 it is built with the first `suggest`, never for underlining.
 
-NOTE: this currently spell-checks *every* alphabetic word handed to it. Making it
-symbol-aware (only comments / strings / identifiers, with identifier splitting)
-is driven from the caller via the libcst tree — see the TODO at the integration
-point in text_editor.draw_text. Deliberately not coupled to that view's syntax
-`tokenize()`.
+What is handed to it is code as often as prose, so a word is read the way
+code spells it (`find_misspellings`): every character that is no letter
+delimits (quotes, underscores, digits, dots), a camel case name is its parts
+(`TextEditor`: Text, Editor), a possessive or a contraction is its stem
+(`window's`: window; `doesn't`: does), and
+a part is known when the dictionary has it, its singular, or the two words it
+is run together from (`cleanslate`), or when code has it: Python's keywords
+and builtins with the methods of the plain types, the standard library's and
+the loaded modules' names, and the terms of `CODE`. Parts shorter than `SHORTEST` are never flagged (`os`, `cw`).
+To make it stricter or laxer, edit `known`; to teach it a term, add it to `CODE`.
 """
 
 import importlib.resources
@@ -24,13 +29,24 @@ import re
 
 _MAX_EDIT = 2
 
-# A "word" for spell checking purposes is a run of letters, allowing internal
-# apostrophes (don't, it's). Digits/underscores end a word, so identifiers like
-# x1 or foo_bar split into their alphabetic runs.
-_WORD_RE = re.compile(r"[A-Za-z][A-Za-z']*")
+# A part of a word: a capitalised or lower case run of letters, or a run of capitals (an acronym,
+# which ends before the capital that starts the next part: `HTTPServer` is HTTP, Server).
+_PART_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+")
+# Lever: parts shorter than this are never flagged.
+SHORTEST = 4
+# Lever: terms of code the dictionary lacks. One per word, lower case.
+CODE = frozenset("""
+    args kwargs argv async await bool calc config const ctrl ctx dict enum env func glfw gui imgui init int iter json
+    kwarg len rebase rgba utils
+    lexer melty meltygui metadata middleware namespace noqa nullable param params parser popover popovers pragma
+    pyproject readme regex repo repr runtime schema stderr stdin stdout str struct subclass submodule sync
+    todo toml tooltip tuple uint unicode utf uuid wayland whitespace xdg yaml
+""".split())
 
 _sym = None    # lazy SymSpell singleton: suggestions only
 _words = None  # lazy set of the dictionary's words: detection
+_code = None   # lazy set of the words code has (`_get_code`)
+_seen = 0      # the modules loaded when `_code` was last put together
 
 
 def _dictionary():
@@ -65,20 +81,48 @@ def _get_sym():
     return _sym
 
 
+def _get_code():
+    """The words code has that the dictionary may lack: `CODE`, and the parts of Python's keywords and
+    builtins, the plain types' methods and the names of the standard library's and the loaded modules. Put together again
+    when more modules were loaded (a set of a few thousand short strings)."""
+    global _code, _seen
+    import sys
+    if _code is None or len(sys.modules) != _seen:
+        import builtins
+        import keyword
+        _seen = len(sys.modules)
+        names = [*keyword.kwlist, *dir(builtins), *sys.stdlib_module_names, *{name.partition('.')[0] for name in list(sys.modules)},
+                 *{name for kind in (str, bytes, list, dict, set, int, float) for name in dir(kind)}]
+        _code = CODE | {part.lower() for name in names for part in _PART_RE.findall(name)}
+    return _code
+
+
+def known(word, words, code):
+    """Whether `word` (lower case) is no misspelling: the dictionary's or code's, a plural of one of
+    theirs, or two of the dictionary's words run together (each at least 3 letters)."""
+    if word in words or word in code:
+        return True
+    if word.endswith('s') and (word[:-1] in words or word[:-1] in code or (word.endswith('es') and word[:-2] in words)):
+        return True
+    return any(word[:cut] in words and word[cut:] in words for cut in range(3, len(word) - 2))
+
+
 def find_misspellings(text):
-    """Return ``[(start, end, word), ...]`` for words not found in the dictionary.
+    """Return ``[(start, end, word), ...]`` for the parts of words that are misspelled.
 
     ``start``/``end`` are absolute indices into ``text`` (so the caller can map
-    them straight to screen coordinates). A word is "misspelled" if it is not a
-    known dictionary entry.
+    them straight to screen coordinates). See the module text for what a part
+    is and when it is known.
     """
-    words = _get_words()
+    words, code = _get_words(), _get_code()
     errors = []
-    for match in _WORD_RE.finditer(text):
+    for match in _PART_RE.finditer(text):
         word = match.group(0)
-        if len(word) < 2:
-            continue  # single characters are never flagged
-        if word.lower() not in words:
+        if len(word) < SHORTEST:
+            continue
+        # (What follows an apostrophe is shorter than `SHORTEST`: `'s`, `'re`. Of `doesn't` the word is `does`.)
+        stem = word[:-1] if word.endswith('n') and text.startswith("'t", match.end()) else word
+        if not known(stem.lower(), words, code):
             errors.append((match.start(), match.end(), word))
     return errors
 

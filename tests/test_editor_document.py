@@ -702,6 +702,72 @@ def test_the_worker_compiles_only_the_statement_that_changed(monkeypatch):
         analysis.close()
 
 
+def test_findings_stay_on_their_text_until_the_worker_reads_it_again():
+    from meltygui.editor.marks import Findings
+    from meltygui.model import editor_model
+    from meltygui.model.source_model import LOG
+    text = 'a = 1\n\ndef f():\n    return 1 +\n\nb = nowhere\n'
+    source = Source(text, version=1)
+    analysis = editor_model.Analysis(source)
+    analysis.close()        # no worker: `compile` is called here, so the test decides when the text is read again
+
+    def landed():
+        source.ask(now=True)
+        assert source.land()
+        return analysis.errors
+
+    try:
+        landed()
+        analysis.compile()
+        found = analysis.errors
+        assert isinstance(found, Findings) and found.version == source.version
+        assert found == [(4, 'invalid syntax'), (6, "name 'nowhere' is not defined")]
+        # Lines typed above: the reading lands at once, the worker has not compiled yet.
+        source.splice(0, 0, '\n\n', 2)
+        found = landed()
+        assert analysis.checked < source.version == found.version
+        assert found == [(6, 'invalid syntax'), (8, "name 'nowhere' is not defined")], 'the syntax error moved with its line'
+        # A line break inside the statement, before the broken line.
+        at = source.text.index('    return')
+        source.splice(at, at, '\n', 3)
+        assert landed() == [(7, 'invalid syntax'), (9, "name 'nowhere' is not defined")]
+        analysis.compile()
+        assert analysis.syntax == [(7, 'invalid syntax')] and analysis.errors == [(7, 'invalid syntax'), (9, "name 'nowhere' is not defined")]
+        # The broken line goes: so does its finding, before the worker looked again.
+        at = source.text.index('    return')
+        source.splice(at, at + len('    return 1 +\n'), '    pass\n', 4)
+        assert landed() == [(9, "name 'nowhere' is not defined")]
+        # More splices than the log keeps: what cannot be followed is dropped until the worker tells it again.
+        source.splice(0, 0, 'c = 1 +\n', 5)
+        landed()
+        analysis.compile()
+        assert (1, 'invalid syntax') in analysis.errors
+        for version in range(6, 8 + 2 * LOG):
+            source.splice(source.native.size, source.native.size, '\n', version)
+        assert (1, 'invalid syntax') not in landed()
+        analysis.compile()
+        assert (1, 'invalid syntax') in analysis.errors
+    finally:
+        analysis.close()
+
+
+def test_the_source_tells_its_models_of_every_splice_and_every_landed_reading():
+    class Model:
+        fed = 0
+
+        def feed(self):
+            self.fed += 1
+
+    source, model = Source('a = 1\n', version=1), Model()
+    source.models.add(model)
+    source.splice(0, 0, 'b = 2\n', 2)
+    assert model.fed == 1
+    source.ask(now=True)
+    assert source.land() and model.fed == 2 and not source.land() and model.fed == 2
+    del model
+    source.splice(0, 0, '\n', 3)       # a model that is gone is not held
+
+
 SHARED = '''import os
 
 

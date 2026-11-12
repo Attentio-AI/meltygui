@@ -190,7 +190,7 @@ impl TextureCache {
             glBindTexture(TEX,targets[0].tex);
             if operation=="composite" {
                 glEnable(0x0BE2); glBlendEquationSeparate(0x8006,0x8006);
-                glBlendFuncSeparate(0x0302,0x0303,1,0x0303);
+                glBlendFuncSeparate(0x88F9,0x88FA,1,0x0303);
             } else {glDisable(0x0BE2);}
         }
         let data = if operation == "upload" {vec![0_u8; units as usize*4]} else {vec![]};

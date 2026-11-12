@@ -138,4 +138,3 @@ def app(width=None, height=None):
             model.source, name='second', state=model.second, left=first + 4., top=BAR + 36., width=width - first - 4.,
             height=height - BAR - 40, path=str(PATH), editable=not model.read_only, errors=analysis.errors,
             imports=analysis.imports, tints=analysis.tints, breakpoints=model.breakpoints)
-    analysis.feed()

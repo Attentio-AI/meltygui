@@ -386,7 +386,8 @@ impl Source {
 
     /// The string state each of `count` lines from `first` starts in, for
     /// `runs`: 0 in code, 255 not known yet (the text above was never lexed:
-    /// it is once a reading has landed).
+    /// it is once a reading has landed). 16 is added for a line that starts
+    /// right inside a call's parentheses (`Strings::calls`).
     fn states(&mut self, first: usize, count: usize) -> Vec<u8> {
         let mut found = Vec::with_capacity(count);
         let last = self.store.breaks;
@@ -399,7 +400,7 @@ impl Source {
             let strings = self.store.chunks[at].strings(entry);
             for line in local..strings.lines.len() {
                 if found.len() == count { break; }
-                found.push(if line == 0 { entry } else { strings.lines[line - 1] >> 2 });
+                found.push(if line == 0 { entry } else { strings.lines[line - 1] >> 2 } | (strings.calls[line] as u8) << 4);
             }
             // (The text's last line, after its last break, is in no chunk when it is empty.)
             if local >= strings.lines.len() { found.push(strings.exit); }
@@ -763,11 +764,13 @@ fn close(py: Python<'_>) {
 }
 
 /// The colour runs of `line`, which starts in string state `state`
-/// (`Source.states`): (column, characters, kind), neighbours of one plain
-/// kind joined. The kinds are the editor's colour keys (`colour.rs`).
+/// (`Source.states`, with its 16 for a line that starts inside a call):
+/// (column, characters, kind), neighbours of one plain kind joined. The
+/// kinds are the editor's colour keys (`colour.rs`).
 #[pyfunction]
 fn runs(line: &str, state: u8) -> Vec<(u32, u32, &'static str)> {
-    colour::runs(line, if state > 6 { 0 } else { state })
+    let known = state != 255;
+    colour::runs(line, if known && state & 15 <= 6 { state & 15 } else { 0 }, known && state & 16 != 0)
 }
 
 /// The names every module sees without binding them (once: the running

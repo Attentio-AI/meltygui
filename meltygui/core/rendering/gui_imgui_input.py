@@ -27,10 +27,19 @@ listening view around the hit one, so popovers and inline widgets leave the
 keyboard with their editor. Views that list nothing cost one dictionary truth
 test a frame.
 
+Window gestures are the host's by default, over every view: a left drag moves
+the Melty or OS window, a right drag resizes it. A view overrides the left
+one by listening for ``pointer`` (``left``: text selection, a list's rows),
+over its whole rectangle or over the part of it the view says it uses
+(``reach``: an editor's rows, so the empty space below them still moves the
+window); nothing a view listens for overrides the right one. An ImGui item still owns
+the button that activated it (``finish``).
+
 ``@gui(cursor=shape)`` (a ``core/input/mouse_cursor.py`` shape) declares the
 pointer's shape over a view: the innermost declaring view around the hovered
-one wins, and the view holding a drag keeps its shape until release. No body
-runs for it.
+one wins, and the shape a press began with is kept until every button is up
+(a text selection keeps the text cursor wherever the drag goes). No body runs
+for it.
 """
 from collections import namedtuple
 import time
@@ -69,6 +78,11 @@ class ImGuiInput:
         # views owning the keyboard and the held pointer, the last press.
         self.keys = []
         self.keyboard = self.grab = self.over = None
+        # A view that listens for the pointer is under it or holds it: left drags are that view's, not a window move.
+        self.left = False
+        self.shape = None          # the declared pointer shape under the pointer, as of the last press while a button is held
+        # View to the part of its rectangle it takes the pointer in, (x0, y0, x1, y1) in its own coordinates (`reach`).
+        self.reaches = {}
         self.press = (0., 0., 0., 0)
         self.touches = []
 
@@ -104,6 +118,26 @@ class ImGuiInput:
             node = parent(node)
         return None
 
+    def reach(self, node, rect=None):
+        """A listening view says where it takes the pointer: `rect` (x0, y0, x1, y1) in its own coordinates,
+        None for its whole rectangle. Outside it presses and left drags are the window's (it moves)."""
+        if rect is None:
+            self.reaches.pop(node, None)
+        else:
+            self.reaches[node] = rect
+
+    def taker(self, node, position):
+        """The view that takes the pointer at `position` over `node`: the innermost one around it that
+        listens for it, inside its own rectangle (a Melty window's title strip above it is the window's)
+        and inside what it said it uses of that (`reach`)."""
+        node = self.owner(node, 'pointer')
+        if node is not None:
+            x, y = self.local(node, position)
+            left, top, right, bottom = self.reaches.get(node) or (0., 0., *self.cache.graph.rect(node)[2:])
+            if not (left <= x < right and top <= y < bottom):
+                return None
+        return node
+
     def post(self, node, name, item):
         """Queue one event; the view's next run reads the list in view_events[name]."""
         cache = self.cache
@@ -134,7 +168,7 @@ class ImGuiInput:
         if pressed or scrolled or any(wheel):
             target = self.hit(position)
             if pressed and self.grab is None:
-                self.grab = self.owner(target, 'pointer')
+                self.grab = self.taker(target, position)
             if 0 in pressed:
                 self.take_keyboard(self.owner(target, 'keys'))
                 now = time.monotonic()
@@ -220,15 +254,18 @@ class ImGuiInput:
             self.capture = self.hover
             self.focus = self.hover
         self.mouse_owner = self.capture if self.capture is not None else self.hover
+        self.left = bool(listeners) and (self.grab is not None or self.taker(self.hover, position) is not None)
         cursors = self.cache.cursors
         if cursors:
-            # The declared pointer shape: the drag's owner keeps its own, else the innermost around the hovered view.
-            node, parent = self.grab or self.hover, self.cache.graph.parent
-            while node and node not in cursors:
-                node = parent(node)
-            if node:
+            # The declared pointer shape: the innermost around the hovered view, held from a press to the release.
+            if pressed or not any(buttons):
+                node, parent = self.hover, self.cache.graph.parent
+                while node and node not in cursors:
+                    node = parent(node)
+                self.shape = cursors[node] if node else None
+            if self.shape is not None:
                 from meltygui.core.input import mouse_cursor
-                mouse_cursor.request(cursors[node])
+                mouse_cursor.request(self.shape)
         dirty = {previous_blur}  # settle the old context's synthetic outside click
         if old is None or old[:2] != self.sample[:2] or any(wheel) or self.hover != previous_hover:
             dirty.update((previous_hover, self.hover, self.capture))
@@ -301,6 +338,7 @@ class ImGuiInput:
         self.settle_hover.discard(node)
         self.right_active.discard(node)
         self.pointer_claims.pop(node, None)
+        self.reaches.pop(node, None)
         for name in ('hover', 'capture', 'focus', 'mouse_owner', 'blur', 'keyboard', 'grab', 'over'):
             if getattr(self, name) == node:
                 setattr(self, name, None)

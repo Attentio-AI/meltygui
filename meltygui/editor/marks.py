@@ -165,11 +165,35 @@ def given(found):
     return found
 
 
+class Findings(list):
+    """[(file line, message)] with the document version its lines are of.
+    What a model gives as `errors` when its findings were read from an older
+    text than the one shown (a landed reading, a worker's pass): the editor
+    brings them forward over the edits made since, so each stays on its text."""
+    __slots__ = ('version',)
+
+    def __init__(self, found=(), version=None):
+        super().__init__(found)
+        self.version = version
+
+
+def carried(found, changes):
+    """`found` ([(line, data)], sorted, lines from 0) after `changes`: each
+    stays with its line's text as a whole line mark does (`Marks.follow`)
+    and goes with it when the line is removed."""
+    marks = Marks([(line, Mark('note', data=data)) for line, data in found]).follow_all(changes)
+    return [(line, mark.data) for line, mark in marks.on(0, 1 << 62)]
+
+
 def problems(found, imports, numbers):
     """Errors, and the import statements that would fix them, from
-    `[(line, message)]`, an exception or a parse tree carrying error markers,
-    and `{line: [statement]}`. A line gets an underline, a red number and
-    the message after its text; the 'error' mark carries (message, fixes)."""
+    `[(line, message)]` (a `Findings` says which version its lines are of),
+    an exception or a parse tree carrying error markers, and `{line:
+    [statement]}`. A line gets an underline and a chip over its number in
+    the gutter that opens the message; the 'error' mark carries (message,
+    fixes) and paints the message after the text only where there is no
+    gutter to hold the chip."""
+    version = found.version if isinstance(found, Findings) else None
     if isinstance(found, BaseException):
         from meltygui.editor.syntax import tools
         found = tools()._exception_errors(found)
@@ -181,8 +205,8 @@ def problems(found, imports, numbers):
     fixes = {numbers.line(int(number)): list(statements) for number, statements in (imports or {}).items()}
     marks = []
     for line in sorted(notes):
-        marks += [(line, Mark('under')), (line, Mark('number')), (line, Mark('error', data=(notes[line], fixes.get(line, []))))]
-    return Marks(marks)
+        marks += [(line, Mark('under')), (line, Mark('chip')), (line, Mark('error', data=(notes[line], fixes.get(line, []))))]
+    return Marks(marks, version)
 
 
 def values(store, numbers):

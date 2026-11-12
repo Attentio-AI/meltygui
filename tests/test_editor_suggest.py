@@ -104,9 +104,61 @@ def test_members_of_a_loaded_imported_module():
     ed = session('import os.path as paths\nfrom os import path\nx = ')
     type_in(ed, 'paths.jo')
     assert ed.suggest.rows[0][0] == 'join'
-    assert suggest.loaded_members(session('from os import path\npath.'), 25)
-    assert suggest.loaded_members(session('import nothing_loaded\nnothing_loaded.'), 37) == []
-    assert suggest.loaded_members(session('def f():\n    import os\n    os.'), 30), 'an import inside the function'
+    rows, receiver, owner = suggest.loaded_members(session('from os import path\npath.'), 25)
+    import os
+    assert rows and receiver == 'path' and owner is os.path
+    assert suggest.loaded_members(session('import nothing_loaded\nnothing_loaded.'), 37) == ([], '', None)
+    assert suggest.loaded_members(session('def f():\n    import os\n    os.'), 30)[0], 'an import inside the function'
+
+
+def shown(ed, name):
+    """(tint, suffix) the suggestion list shows for the row called `name`."""
+    menu = ed.suggest
+    return menu.extra([row[0] for row in menu.rows].index(name))
+
+
+def test_a_row_shows_the_parameters_of_what_it_names_and_the_tint_its_definition_states(monkeypatch):
+    text = 'import os\n\ndef area(self, side, scale=1):\n    return side\n\nclass Shape:\n    pass\n\nvalue = 3\n'
+    ed = session(text)
+    ed.put('tints', marks.tints([(2, 0, 0, .9, .2, .1), (5, 0, 0, .1, .5, .9)]))
+    read = []
+    parameters = ed.source.parameters
+    monkeypatch.setattr(ed.source, 'parameters', lambda line: read.append(line) or parameters(line))
+    type_in(ed, 'are')
+    assert shown(ed, 'area') == ((.9, .2, .1), '(side, scale)'), 'the source\'s facts and the tint mark on its line, without self'
+    assert shown(ed, 'area') and read == [2], 'read once for a list'
+    type_in(ed, '\nSha')
+    assert shown(ed, 'Shape') == ((.1, .5, .9), ''), 'a class has its tint and no parameter list'
+    type_in(ed, '\nval')
+    assert shown(ed, 'value') == (None, '')
+    type_in(ed, '\nisinst')
+    assert shown(ed, 'isinstance')[1].startswith('('), 'a builtin, from the loaded object'
+    type_in(ed, '\nos.getc')
+    assert ed.suggest.wide() >= suggest.HINT and not ed.suggest.notes, 'the width leaves room for parameter lists without reading one'
+    assert shown(ed, 'getcwd') == (None, '()') and ed.suggest.scope[2] is os_module(), 'a member of a loaded module'
+    type_in(ed, '\nos.pat')
+    assert shown(ed, 'path') == (None, ''), 'what is not tagged as a method is never read off the object'
+    assert suggest.cut(['a'] * 40).endswith('...)') and len(suggest.cut(['a'] * 40)) == suggest.HINT
+
+
+def os_module():
+    import os
+    return os
+
+
+def test_the_tints_of_a_receivers_members_come_from_the_rosters_tables(tmp_path):
+    from meltygui.model.roster_model import Roster
+    (tmp_path / 'settings.py').write_text('class Options:\n    class Editor:  # [tint=(0.9, 0.5, 0.1)]\n        size = 3\n\n'
+                                          '    class Menu:\n        pass\n\n    depth = 2  # [tint=(0.2, 0.9, 0.2)]\n')
+    (tmp_path / 'app.py').write_text('from settings import Options\nOptions.\n')
+    roster = Roster(str(tmp_path), paths=[str(tmp_path / 'settings.py'), str(tmp_path / 'app.py')], roots=[str(tmp_path)])
+    try:
+        roster.settle()
+        assert suggest.tinted(roster, str(tmp_path / 'app.py'), 'Options') == {'Editor': (.9, .5, .1), 'depth': (.2, .9, .2)}
+        assert suggest.tinted(roster, str(tmp_path / 'app.py'), 'Options.Editor') == {}
+        assert suggest.tinted(roster, str(tmp_path / 'app.py'), 'nowhere') == {}
+    finally:
+        roster.close()
 
 
 def test_snippet_rows_insert_their_template_with_the_caret_at_the_stop(monkeypatch):
@@ -146,7 +198,7 @@ def test_marks_from_parameters():
     numbers = Numbers()
     found = marks.problems([(3, 'a'), (3, 'b'), (1, 'c')], {3: ('import x',)}, numbers)
     assert [(line, mark.shape) for line, mark in found.on(0, 9)] == [
-        (0, 'under'), (0, 'number'), (0, 'error'), (2, 'under'), (2, 'number'), (2, 'error')]
+        (0, 'under'), (0, 'chip'), (0, 'error'), (2, 'under'), (2, 'chip'), (2, 'error')]
     assert found.on(2)[2][1].data == ('a; b', ['import x']) and found.on(0)[2][1].data == ('c', [])
     assert [line for line, _ in marks.problems(SyntaxError('bad', ('x', 3, 1, 'x')), None, numbers).on(0, 9)] == [2, 2, 2]
 

@@ -1336,6 +1336,23 @@ def legacy_runs(text, state):
     return found
 
 
+def plain(text, state):
+    """The native colour runs of one line as the legacy tokenizer names them: it has no kind for a keyword
+    argument's name (`kwarg`), which it paints as any other name (a builtin's as a builtin)."""
+    import builtins
+    from meltygui.model.source_model import runs
+    joined = ('default', 'comment', 'string', 'string_doc', 'keyword', 'operator_word')
+    found = []
+    for column, size, kind in runs(text, state):
+        if kind == 'kwarg':
+            kind = 'builtin' if hasattr(builtins, text[column:column + size]) and not text[column:column + size].startswith('_') else 'default'
+        if found and found[-1][2] == kind and kind in joined:
+            found[-1] = (found[-1][0], found[-1][1] + size, kind)
+        else:
+            found.append((column, size, kind))
+    return found
+
+
 def test_colour_runs_and_string_states_agree_with_the_legacy_lexer_on_every_line_here():
     from meltygui.model.source_model import runs
     lines = 0
@@ -1345,10 +1362,11 @@ def test_colour_runs_and_string_states_agree_with_the_legacy_lexer_on_every_line
         states = Source(text).native.states(0, len(rows))
         legacy = [None] + [state for _, state in tools()._iter_newline_states(text)]
         for line, row in enumerate(rows):
-            assert runs(row, states[line]) == legacy_runs(row, states[line]), (path, line)
+            # (16 in a state: the line starts inside a call's parentheses, which only keyword arguments are told by.)
+            assert plain(row, states[line]) == legacy_runs(row, states[line] & 15), (path, line)
             # The legacy lexer let an ordinary string run over its line's end; no file here has one that does.
-            assert legacy[line] is None or len(legacy[line][0]) == 1 or legacy_runs('', 0) == [] and LEGACY[states[line]] == legacy[line], (path, line)
-            assert legacy[line] is not None or states[line] == 0, (path, line)
+            assert legacy[line] is None or len(legacy[line][0]) == 1 or legacy_runs('', 0) == [] and LEGACY[states[line] & 15] == legacy[line], (path, line)
+            assert legacy[line] is not None or states[line] & 15 == 0, (path, line)
         lines += len(rows)
     assert lines > 100000
 
@@ -1365,7 +1383,28 @@ def test_colour_runs_agree_with_the_legacy_tokenizer_on_mangled_lines():
             at = random.randint(0, len(row))
             row = row[:at] + random.choice(pieces) + row[at + random.choice([0, 0, 1, 5]):]
         for state in (0, random.randint(1, 6)):
-            assert runs(row, state) == legacy_runs(row, state), (row, state)
+            assert plain(row, state) == legacy_runs(row, state), (row, state)
+            assert plain(row, state | 16) == legacy_runs(row, state), (row, state)
+
+
+def test_the_name_of_a_keyword_argument_is_its_own_kind_in_calls_only():
+    from meltygui.model.source_model import runs
+
+    def named(line, state=0):
+        return [line[column:column + size] for column, size, kind in runs(line, state) if kind == 'kwarg']
+
+    assert named("draw_editor(source, name='source', state=state, top=BAR)") == ['name', 'state', 'top']
+    assert named("@gui(listen=('pointer',), cursor=TEXT)") == ['listen', 'cursor'] and named('class A(Base, metaclass=Meta):') == ['metaclass']
+    assert named("print(a, end = '')") == ['end'] and named('f(id=3, type=4)') == ['id', 'type'], 'whatever else the name is'
+    assert named('def draw(a=1, b=2, *, c=None):') == [] and named('f(key=lambda a=1, b=2: a, other=3)') == ['key', 'other']
+    assert named('x=1') == [] and named('x = f(a == b, c=d)') == ['c'] and named('x = (y := 3)') == [] and named('return (a=1)') == []
+    assert named("d = {'a': f(x=1)}[k](y=2)") == ['x', 'y']
+    # A continuation line is told by its state: 16 when it starts right inside a call's parentheses.
+    text = "draw_editor(source,\n            errors=found, imports=fixes)\ndef draw(a=1,\n         numbers=True):\n    x = dict(\n        one=[\n            y=2])\nvalue=3\n"
+    rows = text.split('\n')
+    states = list(Source(text).native.states(0, len(rows)))
+    assert states[:8] == [0, 16, 0, 0, 0, 16, 0, 0]
+    assert [named(row, state) for row, state in zip(rows, states)][:8] == [[], ['errors', 'imports'], [], [], [], ['one'], [], []]
 
 
 def test_search_hits_agree_with_python():

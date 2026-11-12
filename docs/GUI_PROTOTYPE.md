@@ -224,13 +224,25 @@ def field(input_value: str, view_events=None):
 | `wheel` | `(horizontal, vertical)` steps no viewport consumed |
 | `scroll` | True after a viewport under the pointer scrolled |
 
+Window gestures are the host's by default over every view: a left drag moves
+the Melty or OS window, a right drag resizes it
+([rules](WINDOW_COLLISION_COLUMNS.md#gestures)). Listening for `pointer` is
+what overrides the left one (`ImGuiInput.left`: text selection, a list's
+rows), inside the view's own rectangle, so a Melty window's title strip still
+moves it. A view that uses only part of its rectangle says so each run with
+`cache.imgui_input.reach(node, (x0, y0, x1, y1))`: `draw_editor` takes the
+pointer over its rows, and the empty space below the last one moves the
+window. Nothing a view listens for overrides the right one; right-button
+`Pointer` events still arrive (a click is the view's to use), the drag also
+resizes. An ImGui item keeps the button that activated it.
+
 A left press gives the keyboard, any press the pointer, to the innermost
 listening view around the hit one, so a popover or an inline widget leaves the
 keyboard with its editor. A view that lists nothing (`listen=()`) costs one
 dictionary truth test a frame. `cursor=shape` (a `core/input/mouse_cursor.py`
 shape) declares the pointer's shape over the view without running a body: the
-innermost declaring view around the hovered one wins, and the view holding a
-drag keeps its shape until release. The contract is the module text of
+innermost declaring view around the hovered one wins, and the shape a press
+began with is kept until every button is up. The contract is the module text of
 [gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py).
 
 ### Results from other threads
@@ -254,6 +266,16 @@ frame loop turns queued tokens into `cache.wake(node)` in `app.run`,
 worker that computes between frames must also give way to them:
 `glfw_utils.park()` between pieces of well under a millisecond
 ([why](NATIVE_EDITOR.md#rules)).
+
+A model that is read as a plain value (`errors=analysis.errors`) is read in
+its caller's body, so it is the caller that has to run again when a worker
+swaps the value. `Readers`
+([gui_readers.py](../meltygui/core/rendering/gui_readers.py)) does that for
+any model: `readers.note()` in the getter records the view whose body is
+running, `readers.wake()` (thread safe) runs every recorded view again. A
+host that runs its root on every frame has nothing recorded and gets a frame
+request, as before. Without it a cached root keeps passing the value it read
+on its last run ([test_gui_readers.py](../tests/test_gui_readers.py)).
 
 ## Design decisions
 
@@ -468,9 +490,6 @@ for timing conditions, resource counts, profiles and failure controls.
 - The wake handle rouses GLFW and native Wayland. The iOS host has no entry
   point to request a frame without the interpreter, and this host draws with
   OpenGL only.
-- A right-button press reaches a listening view only if the view also keeps the
-  host's window gestures off it (`draw_editor` declares a hit region and an item
-  for that). The claim belongs in the input bridge.
 - Coordinate conversion does not span different native OS surfaces. Rotations,
   scaling and a general transform system are not implemented here.
 - Python body/signature edits have focused state-preservation tests. One

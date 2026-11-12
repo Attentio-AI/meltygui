@@ -198,10 +198,11 @@ class Backend:
             output = self.native.request(self.registry, 0, U(name), ctypes.c_char_p(b'wl_output'),
                                          U(min(version, 2)), P(), interface='wl_output', version=min(version, 2))
             record = SimpleNamespace(proxy=output, name=name, x=0, y=0, width=1280, height=800,
-                                     scale=1, refresh=60000)
+                                     scale=1, refresh=60000, subpixel=0)
             self.outputs[output] = record
             def geometry(x, y, physical_width, physical_height, subpixel, make, model, transform):
                 record.x, record.y = x, y
+                record.subpixel = subpixel
             def mode(flags, width, height, refresh):
                 if flags & 1:
                     record.width, record.height, record.refresh = width, height, refresh
@@ -317,6 +318,16 @@ class Backend:
             self.egl_window_resize(window.egl_window, *self.get_framebuffer_size(window), 0, 0)
             window.emit('window_size', window.width, window.height)
             window.emit('framebuffer_size', *self.get_framebuffer_size(window))
+
+    def subpixel(self, window):
+        """Stripe order of the outputs `window` is on, for window_api.text_subpixel:
+        'rgb' / 'bgr', 'off' for vertical stripes or outputs that disagree, None
+        when no output says. wl_output.subpixel 0 (unknown) and 1 (none) both
+        count as silence: Hyprland sends 1 for every output, LCD or not."""
+        known = {self.outputs[o].subpixel for o in getattr(window, 'outputs', ()) if o in self.outputs} - {0, 1}
+        if not known:
+            return None
+        return {2: 'rgb', 3: 'bgr'}.get(known.pop(), 'off') if len(known) == 1 else 'off'
 
     def surface_output(self, window, output, entered):
         if entered:

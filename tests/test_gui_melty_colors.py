@@ -35,11 +35,7 @@ def linear_pixels(texture, width, height):
 
 def melty_cache():
     cache = RetainedGui(calibration=False)
-    hdr_range, octaves = hdr_color._curve_params()
-    matrix = hdr_color.P3_TO_SRGB
-    cache._ensure_gpu().melty_colors(
-        float(hdr_range), float(octaves), [float(matrix[row][column]) for column in range(3) for row in range(3)],
-        1., int(imgui.get_io().fonts.texture_id))
+    cache.melty_colors()
     return cache
 
 
@@ -107,3 +103,43 @@ def test_view_tints_are_srgb_colors_in_the_linear_target(gl_context):
         np.testing.assert_allclose(image[10, 10], [*expected, 0.5], atol=TOLERANCE)
     finally:
         cache.close()
+
+
+def glyph_pixels(monkeypatch, layout, tint=(0., 0., 0., 1.)):
+    """White text in a view, rasterized under Toggles.Fonts.subpixel = layout."""
+    from meltygui.core.runtime.toggles import Toggles
+    monkeypatch.setattr(Toggles.Fonts, 'subpixel', layout)
+    cache, ids = melty_cache(), {}
+
+    @cache.gui(width=80, height=24, tint=tint)
+    def label():
+        ids['node'] = cache.current
+        imgui.get_window_draw_list().add_text(3, 3, hdr_color.pack_color(1., 1., 1., 1.), 'milk WAVE')
+    try:
+        label()
+        return linear_pixels(cache.gpu.texture(ids['node']), 80, 24).copy()
+    finally:
+        cache.close()
+
+
+def test_glyphs_take_per_stripe_coverage(gl_context, monkeypatch):
+    gray, rgb, bgr = (glyph_pixels(monkeypatch, layout) for layout in ('off', 'rgb', 'bgr'))
+    # Grayscale: one coverage for all three channels.
+    assert gray[..., 0].max() > 0.5
+    np.testing.assert_allclose(gray[..., 0], gray[..., 2], atol=1e-3)
+    np.testing.assert_allclose(gray[..., 3], 1.0, atol=1e-3)
+    # Stripes: red and blue sample the neighbouring atlas texels, green the grayscale one.
+    assert np.abs(rgb[..., 0] - rgb[..., 2]).max() > 0.1
+    np.testing.assert_allclose(rgb[..., 1], gray[..., 1], atol=1e-3)
+    # BGR is the same coverage with the outer stripes swapped.
+    np.testing.assert_allclose(bgr[..., 0], rgb[..., 2], atol=1e-3)
+    np.testing.assert_allclose(bgr[..., 2], rgb[..., 0], atol=1e-3)
+
+
+def test_stripes_survive_a_transparent_raster(gl_context, monkeypatch):
+    image = glyph_pixels(monkeypatch, 'rgb', tint=(0., 0., 0., 0.))
+    alpha = image[..., 3:4]
+    premultiplied = image[..., :3] * alpha
+    # Alpha is the mean stripe coverage, so colour times alpha gives back each stripe's own.
+    assert np.abs(premultiplied[..., 0] - premultiplied[..., 2]).max() > 0.1
+    np.testing.assert_allclose(premultiplied.mean(axis=2), alpha[..., 0], atol=TOLERANCE)

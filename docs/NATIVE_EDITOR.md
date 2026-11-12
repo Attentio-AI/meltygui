@@ -82,7 +82,6 @@ changed, source = draw_editor(source, state=state, path=path,
                               errors=analysis.errors, imports=analysis.imports, tints=analysis.tints,
                               breakpoints=breakpoints, marks={'spelling': spelling.marks},
                               roster=roster, on_open=open_place)   # Ctrl+B across files
-analysis.feed(); spelling.feed()                  # after every run; cheap
 ```
 
 - **A code file is passed as a `Source`.** It is edited in place and returned, so
@@ -96,6 +95,24 @@ analysis.feed(); spelling.feed()                  # after every run; cheap
   the object passed changes: `errors`, `imports`, `tints`, `live`, `breakpoints`,
   `paused`, `marks`, `folds`, `search`, `ghost`. A retained view does not see an
   in-place change of its argument: pass another object.
+- **The models need no call per frame.** `Analysis` and `Spelling` hear of
+  every splice and every landed reading from the source (`Source.models`), and
+  a result that lands runs the view that read it again (`Readers`,
+  [GUI prototype](GUI_PROTOTYPE.md#results-from-other-threads)). The caller
+  may be a cached view: an `@os_window` root without `use_cache=False` works.
+  One call is left: `spelling.feed()` after `enable_spell_check` was switched,
+  since no event tells the model of the setting.
+- **`errors` are `[(line, message)]`.** A plain list is of the text as it is.
+  A model whose findings were read from an older text gives a
+  `marks.Findings`, a list with the `version` its lines are of
+  (`Analysis.errors` does): the editor brings them forward over what was typed
+  since, so an error never stands on the line number it had before a line
+  break. An error shows as an underline and a chip in place of its line
+  number; a click on the chip opens the message and its quick fixes in a
+  little window beside the chip, above the error's line (below it on the first
+  rows); another click, Escape, a press elsewhere or the error's end closes it. Without a
+  number column (`line_numbers=False`, a single line field) the message
+  stands after the line instead.
 - **Breakpoints are keyed by source site, never by line**:
   `{site key: {'enabled': bool}}`, the shape file metadata keeps. A gutter click
   toggles the statement on that line by its key.
@@ -160,7 +177,9 @@ decorators the nearest one's tint wins.
 - **`Analysis(source, roster=None)`**: one worker thread. Compiles each
   top-level statement once (kept by the statement's key), reads the attributes a
   running module lacks, resolves import suggestions and signatures, turns tint
-  rows into marks. It shares the interpreter with the frame, so it works in
+  rows into marks. What it found in an older text than the landed reading is
+  carried over the splices between the two (`Analysis.carried`), so `errors`
+  is of one version. It shares the interpreter with the frame, so it works in
   pieces of one statement and calls `glfw_utils.park()` between them.
 - **`Roster`** (`project(path)`): one per project, kept in `Melty.rosters` and
   injected. Rust holds a symbol table per file, a module index and, per name,
@@ -169,8 +188,11 @@ decorators the nearest one's tint wins.
   an edit; an open `Source` is its file's table (`roster.join(source)`). Ask
   `tints`, `lookup`, `resolve` and `uses` off the render thread; each `tints`
   answer names what it hung on, and only watchers whose needs went stale wake.
-- **`Spelling(source)`**: wavy underlines while
-  `Toggles.TextEditor.enable_spell_check` is on. Detection uses a word set; the
+- **`Spelling(source)`**: teal wavy underlines while
+  `Toggles.TextEditor.enable_spell_check` is on. Words are read the way code
+  spells them (`editor/spell_check.py`): every character that is no letter
+  delimits, camel case names are their parts, and Python's and the loaded
+  modules' own terms are known; parts under four letters are left alone. Detection uses a word set; the
   suggestion index is built only on the first suggest.
 
 ## What works
@@ -183,17 +205,21 @@ decorators the nearest one's tint wins.
   indent and bracket alignment, comment toggle, cut of a whole line, copy, paste.
 - **Undo.** Every command is a `Step` on `UndoManager.stack`; typing folds by
   the framework's rule. There is no editor history.
-- **Display.** Python colouring from the Rust lexer, line numbers, scope guides,
+- **Display.** Python colouring from the Rust lexer (with the names of keyword
+  arguments in calls in their own colour, `kwarg`, which the legacy lexer does
+  not have), line numbers, scope guides,
   cursor line, file tint, search hits, a flash where a jump or undo lands,
-  sideways scroll, scroll bar, right-button pan, single line fields, ghost text.
+  sideways scroll, scroll bar, single line fields, ghost text.
 - **Folds.** Scope folds collapsed by name (they survive edits and restarts), a
   caller's ranges as a second layer, default folds (comment runs, strings,
   imports), the fold chords (Ctrl+Minus, Ctrl+Equal, with Shift for all).
-- **Inline widgets.** A switch on booleans, a drag on numbers, swatches with a
+- **Inline widgets.** A switch on booleans (a double click flips it: a single
+  click puts the caret in the word), a drag on numbers, swatches with a
   picker on colour tuples and hex colours, the icon chip with its picker, and
   widgets by type for live values. A widget may add cells to its line (`lead`,
   `trail`); positions go through the line's column map.
-- **Code facts shown.** Undefined names, call misfits, syntax errors, quick-fix
+- **Code facts shown.** Undefined names, call misfits, syntax errors (a chip
+  in the gutter, the message in a popover on a click), quick-fix
   imports (Alt+Enter), definition tints and their washes over uses (across files
   with a roster), live values, breakpoints, the paused line, spelling.
 - **Search (Ctrl+F).** The find bar opens in the editor's lower right corner
@@ -224,7 +250,10 @@ decorators the nearest one's tint wins.
   of the landed reading (a press on text typed since waits for its reading);
   the press frame only queues it. Ctrl+Shift+B opens the caret's file line in
   the external editor (IntelliJ, `lookup.external`), on a thread of its own.
-- **Completion.** Names in sight from the source, members of loaded modules,
+- **Completion.** A row shows the tint its symbol states and, for a function
+  or a method, its parameters (`Suggest.extra`: read for the rows on screen,
+  from the source's facts or the loaded object; the tints of a receiver's
+  members from the roster on a pool thread). Names in sight from the source, members of loaded modules,
   looked-up members and signatures, snippets with Tab stops, import shortcut
   rows, a caller's `completion_source`; Ctrl+Space, the signature hint (Ctrl+P),
   and the Escape rules of the legacy editor.
@@ -242,12 +271,12 @@ listed.
 | The usage picker as a tree (file, enclosing scopes, line) with tints and coloured code, its resize and "N more" expansion | the picker is a flat list (`editor/lookup.py`), cut at `MOST` rows with a count |
 | Ctrl+B from the binding of a local to its uses | `Source.bound` leads from a use to the binding |
 | The tint settings `usage_tint`, `def_tint_propagation`, `roster_def_tints` | definition tints and washes, always on |
-| Error buttons in the gutter | the message after the line opens the detail |
+| Error chips of lines out of sight, pinned to the top and bottom row with an arrow that scrolls there | an error on screen has its chip in the gutter; the click opens the message |
 | Compare / diff rendering | `folds=` and a `line_numbers` list carry the layout |
 | Live-view overlays | `Source.spans`, `label`, `closes` give their geometry |
 | Run buttons | |
 | Console and bash modes; colouring for other languages | non-Python text paints plain |
-| Context menu, middle button | the right button pans |
+| Context menu, middle button, right-drag pan | a right drag over the editor resizes its window, as over any view (Lukas, 2026-11-12) |
 | Touch | the host delivers `touch` events; the editor does not listen |
 | Swap into `meltygui_pro` and `melty_code_editor` | untouched; they call `draw_text` |
 
@@ -449,6 +478,10 @@ reading.
   (`core/styling/fonts.py`, `warm_start.py`); the kwarg-names warm-up in
   `core_render.py` was cut from 65 to 115 ms down to 20 to 28 ms.
 - **`Melty.rosters`**: the project rosters.
+- **`Readers`** (`core/rendering/gui_readers.py`, 2026-11-12): a model notes
+  the view that reads its values and wakes it when a worker swaps in new
+  ones. Before it a result only asked for a frame, which a cached caller
+  answers without running.
 - **Build:** `tools/build_source.py`, `hatch_build.py`, the hook in
   `pyproject.toml`.
 
@@ -460,7 +493,7 @@ Run modules one at a time; a whole-suite run segfaults in
 | Module | Tests | Needs |
 | --- | --- | --- |
 | `test_source.py` | 100 | |
-| `test_editor_document.py` | 36 | |
+| `test_editor_document.py` | 38 | |
 | `test_editor_keys.py` | 16 | |
 | `test_roster.py` | 13 | |
 | `test_editor_suggest.py` | 11 | |
@@ -470,7 +503,8 @@ Run modules one at a time; a whole-suite run segfaults in
 | `test_breakpoint_model.py` | 8 | |
 | `test_spell_model.py` | 6 | |
 | `test_icon_picker.py` | 6 | |
-| `test_editor_view.py` | 38 | a desktop (GL) |
+| `test_editor_view.py` | 40 | a desktop (GL) |
+| `test_gui_readers.py` | 2 | a desktop (GL) |
 | `test_editor_hints_view.py` | 8 | a desktop (GL) |
 | `test_editor_lookup_view.py` | 6 | a desktop (GL) |
 | `test_editor_find_view.py` | 8 | a desktop (GL) |
@@ -509,8 +543,6 @@ steps made within two frames into one undo.
   whole text for jedi.
 - `Editor.sync` asks for a reading after every edit of a source that lints;
   `Source.ask` clones the chunk list (15 us at 100k lines).
-- The right button reaches the editor through a hit region and an item declared
-  in `draw_editor`; the proper place is the host's input.
 - An intermittent `NativeState is unsendable` message appears in GL test runs.
 - Code debts are listed in [Architecture gaps](ARCHITECTURE_DEBT.md#native-editor-and-source-debts-from-the-port).
 - The crate's own gaps are in [its README](../native/source/README.md#known-gaps).

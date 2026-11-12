@@ -211,7 +211,7 @@ class Bridge:
         self.cache.on_declare = self.declared
         self.cache.on_failure = self.failed
         self.cache.request_frame = surface.request_frame
-        self.colors()
+        self.cache.melty_colors()
         self.views = {}       # legacy wrapper -> retained view
         self.entries = {}     # legacy unique -> Entry
         self.nodes = {}       # retained node -> Entry (the legacy-hosting nodes)
@@ -245,19 +245,6 @@ class Bridge:
         routing = BridgeInput(cache)
         routing.bridge = self
         return routing
-
-    def colors(self):
-        """Give the Rust raster the host's colour pipeline (hdr_color.py):
-        packed vertex colours, linear half-float targets, glyph gamma."""
-        import meltygui_imgui as imgui
-        from meltygui import hdr_color
-        from meltygui.core.runtime.toggles import Toggles
-        hdr_range, octaves = hdr_color._curve_params()
-        matrix = hdr_color.P3_TO_SRGB
-        gamma = float(Toggles.Fonts.text_gamma)
-        self.cache._ensure_gpu().melty_colors(
-            float(hdr_range), float(octaves), [float(matrix[row][column]) for column in range(3) for row in range(3)],
-            gamma if gamma > 0 else 1., int(imgui.get_io().fonts.texture_id))
 
     # ---- frame ----------------------------------------------------------
     def begin(self):

@@ -61,6 +61,12 @@ def at(host, line, column):
             (ed.rows.row(line) + .5) * ed.lh - host.ed.pane.scroll_offset[1])
 
 
+def chip(host, line):
+    """Window point of the error chip over a line's number in the gutter."""
+    ed = host.ed
+    return ed.gutter - view.FOLD - 1.5 * ed.cw, at(host, line, 0)[1]
+
+
 def declared(host, name='block'):
     return [node for node, record in host.cache.records.items() if record[2].__name__ == name]
 
@@ -237,7 +243,19 @@ def test_inline_widgets_edit_their_token(editor):
     assert inline.for_token('bool').view is view.switch
     editor.click(*at(editor, 3, 9))
     editor.frame()
-    assert ed.doc.line(3) == 'READY = False' and editor.frame()[1].split('\n')[3] == 'READY = False'
+    assert ed.doc.line(3) == 'READY = True' and ed.doc.place(ed.doc.caret) == (3, 9), 'one click puts the caret in the word'
+    editor.click(*at(editor, 3, 9))
+    editor.frame()
+    assert ed.doc.line(3) == 'READY = False' and editor.frame()[1].split('\n')[3] == 'READY = False', 'the second click of a double click flips it'
+    editor.click(*at(editor, 6, 0))
+    editor.frame()
+    import time
+    time.sleep(.45)     # (not a third click of the same spot)
+    editor.click(*at(editor, 3, 10), count=2)
+    assert ed.doc.line(3) == 'READY = True', 'also when the caret was elsewhere'
+    UndoManager.undo()
+    editor.frame()
+    assert ed.doc.line(3) == 'READY = False', 'a flip is one undo step'
     x, y = at(editor, 2, 9)
     editor.frame((x, y), False)
     editor.frame((x, y), True)
@@ -367,7 +385,7 @@ def test_the_list_popover_follows_keys_hover_wheel_and_clicks(editor):
 def test_the_quick_fix_chooser_is_the_same_list(editor):
     ed = editor.ed
     editor.frame(errors=[(11, "name 'np' is not defined")], imports={11: ['import numpy as np', 'import numpy']})
-    editor.click(ed.x(10, 15), at(editor, 10, 0)[1])
+    editor.click(*chip(editor, 10))
     editor.frame()
     assert ed.detail == 10 and [text for text, _ in ed.fixes.rows] == ['import numpy as np', 'import numpy']
     assert len(declared(editor, 'choices')) == 1 and len(declared(editor, 'note')) == 1
@@ -389,13 +407,13 @@ def test_import_fix_and_error_marks(editor):
     editor.frame(errors=None, imports=None)
     assert len(ed.marks['errors']) == 0
     editor.frame(errors=SyntaxError('bad', ('x', 3, 1, 'x')))
-    assert ed.mark('errors', 2, 'error') is not None and len(ed.marks['errors']) == 3
+    assert ed.mark('errors', 2, 'error') is not None and ed.mark('errors', 2, 'chip') is not None and len(ed.marks['errors']) == 3
 
 
 def test_error_detail_popover_applies_a_clicked_fix_and_closes_on_escape(editor):
     ed = editor.ed
     editor.frame(errors=[(11, "name 'np' is not defined")], imports={11: ['import numpy as np']})
-    x, y = at(editor, 10, 30)
+    x, y = chip(editor, 10)
     editor.click(x, y)
     editor.frame()
     assert ed.detail == 10 and len(editor.cache.graph.windows()) == 2
@@ -403,9 +421,20 @@ def test_error_detail_popover_applies_a_clicked_fix_and_closes_on_escape(editor)
     assert ed.detail is None and editor.cache.graph.windows() == []
     editor.click(x, y)
     editor.frame()
-    editor.click(ed.gutter + 20, y + ed.lh * 1.5)
+    # The detail is a little window beside the chip, above the line: the message, then its fixes down to the line.
+    note, fixes = (next(editor.cache.window_rect(node) for node in editor.cache.graph.windows()
+                        if editor.cache.records[node][2].__name__ == name) for name in ('note', 'choices'))
+    line_top = y - ed.lh * .5
+    assert note[0] == fixes[0] == ed.gutter - view.FOLD + view.DETAIL and note[1] + note[3] == fixes[1] and fixes[1] + fixes[3] == line_top - 2
+    editor.click(fixes[0] + 20, fixes[1] + ed.lh * .5)
     changed, text = editor.frame()
     assert 'import numpy as np' in editor.ed.doc.text and ed.detail is None
+    # On the first line there is no room above: the window goes below it.
+    editor.frame(errors=[(1, 'broken')], imports=None)
+    editor.click(*chip(editor, 0))
+    editor.frame()
+    note = next(editor.cache.window_rect(node) for node in editor.cache.graph.windows())
+    assert note[1] == ed.lh + 2
 
 
 def test_a_callers_marks_paint_by_shape_and_follow_edits_made_since_they_were_computed(editor, monkeypatch):
@@ -444,10 +473,53 @@ def test_a_click_beside_a_line_hits_only_what_is_painted_there(editor):
     editor.click(label, y)
     assert ed.rows.folded(7) == 0, 'the label itself unfolds'
     editor.frame(errors=[(11, 'broken')])
-    editor.click(ed.x(10, 40), at(editor, 10, 0)[1])
-    assert ed.detail is None and ed.doc.place(ed.doc.caret) == (10, 12)
     editor.click(ed.x(10, 15), at(editor, 10, 0)[1])
-    assert ed.detail == 10
+    assert ed.detail is None and ed.doc.place(ed.doc.caret) == (10, 12), 'no message stands after the line to hit'
+    editor.click(*chip(editor, 10))
+    assert ed.detail == 10, 'the chip over the line number opens the detail'
+
+
+def test_an_error_is_a_chip_in_the_gutter_and_its_message_shows_only_in_the_detail(editor, monkeypatch):
+    ed, labels = editor.ed, []
+    label = view.label
+    monkeypatch.setattr(view, 'label', lambda row, text, *rest, **more: labels.append(text) or label(row, text, *rest, **more))
+    editor.frame(errors=[(11, 'broken'), (3, 'bad')])
+    assert not labels, 'nothing is written after the line: typing beside an error stays calm'
+    assert sorted(found[4] for found in ed.spots[ed.doc.blocks(10, 10)[0][0]]) == [2, 10], 'each error line has its chip'
+    editor.click(*chip(editor, 10))
+    editor.frame()
+    note = [record for record in editor.cache.records.values() if record[2].__name__ == 'note']
+    assert ed.detail == 10 and len(note) == 1, 'a click on the chip opens the message'
+    editor.click(*chip(editor, 2))
+    assert ed.detail == 2, 'another chip moves the detail to its line'
+    editor.click(*chip(editor, 2))
+    editor.frame()
+    assert ed.detail is None and not declared(editor, 'note'), 'a click on the open chip closes it'
+    # The open detail is a mark: it stays on its line through edits and goes with its error.
+    editor.click(*chip(editor, 10))
+    ed.source.splice(0, 0, '\n')      # (someone else's edit above it: a command key of this editor closes the detail)
+    editor.frame()
+    assert ed.detail == 11 and ed.mark('errors', 11, 'error').data[0] == 'broken'
+    editor.frame(errors=[(3, 'bad')])
+    assert ed.detail is None
+    # Without a number column there is no chip: the message stands after the line, as in a single line field.
+    editor.frame(line_numbers=False, errors=[(11, 'broken')])
+    assert labels == ['broken'] and not ed.spots[ed.doc.blocks(10, 10)[0][0]][0][1] < ed.gutter
+
+
+def test_findings_of_an_older_text_are_shown_on_the_lines_their_text_is_on_now(editor):
+    from meltygui.editor.marks import Findings
+    ed = editor.ed
+    found = Findings([(11, 'broken')], ed.doc.version)      # as a model reads them: of the text at this version
+    editor.click(*at(editor, 2, 0))
+    keys(editor, glfw.KEY_ENTER)
+    keys(editor, glfw.KEY_ENTER)
+    editor.frame(errors=found)
+    assert ed.mark('errors', 12, 'error') and not ed.mark('errors', 10, 'error'), 'brought forward over the two new lines'
+    keys(editor, glfw.KEY_ENTER)
+    assert ed.mark('errors', 13, 'error'), 'and kept on its text from then on'
+    editor.frame(errors=[(11, 'broken')])
+    assert ed.mark('errors', 10, 'error'), 'a plain list is of the text as it is'
 
 
 def test_file_lines_map_through_the_numbering_for_everything_a_caller_names(editor):

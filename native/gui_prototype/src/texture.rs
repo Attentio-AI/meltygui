@@ -282,15 +282,25 @@ pub struct TextureCache {
     p3: [f32; 9],
     gamma: f32,
     atlas: u32,
+    tap: f32,
     packed_loc: i32,
     hdr_loc: i32,
     p3_loc: i32,
     gamma_loc: i32,
     atlas_loc: i32,
+    tap_loc: i32,
 }
 
 // Lever: the colour decode mirrors hdr_color.GLSL_DECODE and the host
-// renderer's fragment stage (overlay_renderer.py), minus LCD subpixel text.
+// renderer's fragment stage (overlay_renderer.py), subpixel text included:
+// `tap` is one atlas texel (3 per screen pixel), so the texels at -1 / 0 / +1
+// are the coverage of the left / middle / right stripe; negative mirrors them
+// (BGR), 0 is grayscale. Dual-source blending applies `Cov` per channel:
+//   dst.rgb = Out.rgb * Cov.rgb + dst.rgb * (1 - Cov.rgb)
+// which is plain alpha blending for everything that is not a glyph. A
+// raster's alpha is the mean stripe coverage: exact over what the raster
+// itself painted under the text, an approximation (stripes on the text
+// colour, mean coverage on the backdrop) where it is transparent there.
 const VERTEX: &str = "#version 330 core
 layout(location=0) in vec2 pos;layout(location=1) in vec2 uv;layout(location=2) in vec4 col;
 uniform vec2 size;uniform int melty;uniform vec2 hdr;uniform mat3 p3;
@@ -305,13 +315,16 @@ void main(){UV=uv;Color=melty==1?decode(col):col;
   gl_Position=vec4(pos.x/size.x*2.-1.,1.-pos.y/size.y*2.,0.,1.);}";
 const FRAGMENT: &str = "#version 330 core
 in vec2 UV;in vec4 Color;uniform sampler2D image;uniform int resolve;uniform int melty;
-uniform int atlas;uniform float gamma;out vec4 Out;
-void main(){vec4 c;
-  if(melty==1){vec4 k=vec4(Color.rgb/max(Color.a,1e-6),Color.a);
-    if(resolve==2){c=k;}else{vec4 t=texture(image,UV);float cov=t.a;
-      if(atlas==1){vec2 fw=fwidth(UV);if(fw.x>0.0&&fw.y>0.0)cov=pow(cov,1.0/gamma);}
-      c=vec4(k.rgb*t.rgb,k.a*cov);}}
+uniform int atlas;uniform float gamma;uniform float tap;
+layout(location=0,index=0) out vec4 Out;layout(location=0,index=1) out vec4 Cov;
+void main(){vec4 c;vec3 cov=vec3(1.);float mean=1.;
+  if(melty==1){c=vec4(Color.rgb/max(Color.a,1e-6),Color.a);
+    if(resolve!=2){vec4 t=texture(image,UV);c.rgb*=t.rgb;cov=vec3(t.a);mean=t.a;
+      if(atlas==1){vec2 fw=fwidth(UV);if(fw.x>0.0&&fw.y>0.0){
+        if(tap!=0.)cov=vec3(texture(image,UV-vec2(tap,0.)).a,t.a,texture(image,UV+vec2(tap,0.)).a);
+        cov=pow(cov,vec3(1.0/gamma));mean=tap!=0.?(cov.r+cov.g+cov.b)/3.:cov.g;}}}}
   else{c=resolve==2?Color:texture(image,UV)*Color;}
+  Cov=vec4(cov*c.a,c.a*mean);c.a*=mean;
   if(resolve==1&&c.a>0.)c.rgb/=c.a;Out=c;}";
 
 unsafe fn shader(kind: u32, src: &str) -> PyResult<u32> {
@@ -390,11 +403,13 @@ impl TextureCache {
                 p3: [1., 0., 0., 0., 1., 0., 0., 0., 1.],
                 gamma: 1.,
                 atlas: 0,
+                tap: 0.,
                 packed_loc: glGetUniformLocation(p, b"melty\0".as_ptr().cast()),
                 hdr_loc: glGetUniformLocation(p, b"hdr\0".as_ptr().cast()),
                 p3_loc: glGetUniformLocation(p, b"p3\0".as_ptr().cast()),
                 gamma_loc: glGetUniformLocation(p, b"gamma\0".as_ptr().cast()),
                 atlas_loc: glGetUniformLocation(p, b"atlas\0".as_ptr().cast()),
+                tap_loc: glGetUniformLocation(p, b"tap\0".as_ptr().cast()),
             };
             glGenVertexArrays(1, &mut s.vao);
             glGenBuffers(1, &mut s.vbo);
@@ -426,6 +441,14 @@ impl TextureCache {
         self.p3 = p3;
         self.gamma = gamma;
         self.atlas = atlas;
+    }
+    /// The frame's glyph treatment: the live font atlas texture, the coverage
+    /// `gamma` and `tap`, one atlas texel in UV (negative for BGR stripes, 0
+    /// for grayscale). True when it changed: rasters holding text are stale.
+    fn glyphs(&mut self, atlas: u32, gamma: f32, tap: f32) -> bool {
+        let changed = (self.atlas, self.gamma, self.tap) != (atlas, gamma, tap);
+        (self.atlas, self.gamma, self.tap) = (atlas, gamma, tap);
+        changed
     }
     fn target(&mut self, id: u64, w: i32, h: i32) -> PyResult<u32> {
         unsafe {
@@ -890,7 +913,8 @@ impl TextureCache {
             glClear(0x4000);
             glEnable(0x0BE2);
             glBlendEquationSeparate(0x8006, 0x8006);
-            glBlendFuncSeparate(0x0302, 0x0303, 1, 0x0303);
+            // Lever: SRC1_COLOR / ONE_MINUS_SRC1_COLOR, the per-channel coverage blend.
+            glBlendFuncSeparate(0x88F9, 0x88FA, 1, 0x0303);
             glUseProgram(self.program);
             glUniform2f(self.size_loc, w as f32, h as f32);
             glUniform1i(self.resolve_loc, 0);
@@ -898,6 +922,7 @@ impl TextureCache {
             glUniform2f(self.hdr_loc, self.hdr.0, self.hdr.1);
             glUniformMatrix3fv(self.p3_loc, 1, 0, self.p3.as_ptr());
             glUniform1f(self.gamma_loc, self.gamma);
+            glUniform1f(self.tap_loc, self.tap);
             glUniform1i(self.atlas_loc, 0);
             glBindVertexArray(self.vao);
             glBindBuffer(ARRAY, self.vbo);

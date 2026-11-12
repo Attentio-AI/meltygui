@@ -72,7 +72,12 @@ pub struct Tok {
 /// + quote: kind 0 a docstring (no prefix), 1 a prefixed string, 2 an
 /// f-string; quote 0 `"""`, 1 `'''`. `toks` are the
 /// tokens of every line, `first[i]` the index of line i's first one.
+/// `calls[i]`: line i starts right inside the parentheses of a call that
+/// opened on a line above it in this chunk (what `colour::runs` tells a
+/// keyword argument at a line's start by; a call opened in the chunk above
+/// is not known here, and its arguments then paint plain).
 pub struct Strings {
+    pub calls: Vec<bool>,
     pub lines: Vec<u8>,
     pub exit: u8,
     pub toks: Vec<Tok>,
@@ -200,14 +205,34 @@ impl Chunk {
         self.strings[entry as usize].get_or_init(|| {
             let scan = self.scan();
             let mut open = entry;
-            let mut found = Strings { lines: Vec::with_capacity(scan.lines.len()), exit: 0, toks: vec![],
-                                      first: Vec::with_capacity(scan.lines.len() + 1), bound: OnceLock::new() };
+            let mut found = Strings { calls: Vec::with_capacity(scan.lines.len()), lines: Vec::with_capacity(scan.lines.len()),
+                                      exit: 0, toks: vec![], first: Vec::with_capacity(scan.lines.len() + 1), bound: OnceLock::new() };
+            // The brackets open so far, by what opened them (`colour::CALL`, `colour::PARAMS`, 0), and what
+            // stood before the last token: b'd' a `def`'s name, b'a' something that can be called, 0 neither.
+            let (mut brackets, mut before, mut def): (Vec<u8>, u8, bool) = (vec![], 0, false);
             for (at, line) in scan.lines.iter().enumerate() {
-                found.first.push(found.toks.len() as u32);
+                let from = found.toks.len();
+                found.first.push(from as u32);
+                found.calls.push(brackets.last() == Some(&crate::colour::CALL));
                 let began = (open != 0) as u8;
                 let (closed, exit) = lex(&self.text, line.start as usize, line.end as usize, at as u8, open, &mut found.toks);
                 open = exit;
                 found.lines.push(began | (closed as u8) << 1 | open << 2);
+                for tok in &found.toks[from..] {
+                    let byte = self.text.as_bytes()[tok.start as usize];
+                    before = match tok.kind {
+                        NAME => if def { b'd' } else { b'a' },
+                        OP => match byte {
+                            b'(' => { brackets.push(match before { b'd' => crate::colour::PARAMS, b'a' => crate::colour::CALL, _ => 0 }); 0 }
+                            b'[' | b'{' => { brackets.push(0); 0 }
+                            b')' | b']' | b'}' => { brackets.pop(); b'a' }
+                            _ => 0,
+                        },
+                        NOTE => before,
+                        _ => 0,
+                    };
+                    def = tok.kind == KEYWORD && tok.len == 3 && self.text[tok.start as usize..].starts_with("def");
+                }
             }
             found.first.push(found.toks.len() as u32);
             found.exit = open;

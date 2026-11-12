@@ -95,8 +95,8 @@ class SplitOverlayRenderer(WindowRenderer):
     uniform sampler2D Texture;
     uniform vec2 TexelSize;   // 1 / font atlas size
     uniform int Atlas;        // 1: this command samples the font atlas
-    uniform int Lcd;          // Toggles.Fonts.lcd_subpixel
-    uniform int Bgr;          // Toggles.Fonts.lcd_bgr
+    uniform int Lcd;          // window_api.text_subpixel: stripes or grayscale
+    uniform int Bgr;          // window_api.text_subpixel: mirrored stripes
     uniform float Gamma;      // Toggles.Fonts.text_gamma
     in vec2 Frag_UV;
     in vec4 Frag_Color;   // premultiplied (see VERTEX_SHADER_SRC)
@@ -321,8 +321,9 @@ class SplitOverlayRenderer(WindowRenderer):
         gl.glUniform1i(self._loc_dynamic_styles, int(Toggles.dynamic_styles))
         gl.glUniform1i(self._loc_style_context, 1)
         gl.glUniform1f(self._loc_text_contrast, Toggles.dynamic_text_contrast)
-        gl.glUniform1i(self._loc_lcd, 1 if Toggles.Fonts.lcd_subpixel else 0)
-        gl.glUniform1i(self._loc_bgr, 1 if Toggles.Fonts.lcd_bgr else 0)
+        stripes = glfw.text_subpixel(self.window)
+        gl.glUniform1i(self._loc_lcd, 1 if stripes else 0)
+        gl.glUniform1i(self._loc_bgr, 1 if stripes < 0 else 0)
         gamma = float(Toggles.Fonts.text_gamma)
         gl.glUniform1f(self._loc_gamma, gamma if gamma > 0.0 else 1.0)
         # Surfaces share an atlas: any renderer can replace its texture.

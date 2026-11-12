@@ -55,6 +55,22 @@ def supports_dual_source_blending():
     return getattr(_state['backend'], 'dual_source_blending', True)
 
 
+def text_subpixel(window=None):
+    """Stripe order for glyph coverage on `window` (default: the current
+    context's): 1 RGB, -1 BGR, 0 grayscale. Toggles.Fonts.subpixel decides;
+    'auto' asks the backend's `subpixel(window)` ('rgb' / 'bgr' / 'off' /
+    None when the output does not say) and reads silence as RGB."""
+    from meltygui.core.runtime.toggles import Toggles
+    layout = Toggles.Fonts.subpixel
+    if layout == 'auto':
+        backend = _state['backend']
+        report = getattr(backend, 'subpixel', None)
+        layout = report(window or backend.get_current_context()) if report else None
+    if not supports_dual_source_blending():
+        return 0
+    return {'bgr': -1, 'off': 0}.get(layout, 1)
+
+
 def owns_touch_input():
     """External hosts can own gestures while Melty consumes their mouse events."""
     backend = _state['backend']

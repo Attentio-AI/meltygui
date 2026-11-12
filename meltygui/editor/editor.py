@@ -210,8 +210,8 @@ class Editor:
         self.slots = {}            # gutter slot name -> action(line) for a click on it
         self.term = ''
         # View state: the suggestion list, what the pointer holds, the open
-        # error detail, a clicked popover row, and the native states of the
-        # pane, caret and line band (moved by writing their geometry).
+        # error detail (`detail`: a line, kept as a mark), a clicked popover row, and the
+        # native states of the pane, caret and line band (moved by writing their geometry).
         self.suggest = Suggest()
         self.fixes = Menu()        # the quick fixes of the open error detail
         self.lookup = Lookup()     # Ctrl+B: the lookup under way and the usage picker
@@ -463,6 +463,23 @@ class Editor:
         self.read()
 
     # --- marks -----------------------------------------------------------
+    @property
+    def detail(self):
+        """The line whose error detail is open, or None. It is a mark of its
+        own, so it stays on its line through edits and goes with it."""
+        found = self.marks.get('detail')
+        return found.lines.line(0) if found else None
+
+    @detail.setter
+    def detail(self, line):
+        was = self.detail
+        if line != was:
+            self.marks['detail'] = None if line is None else marks.Marks([(line, marks.Mark('open'))])
+            # The chips of the two lines show which one is open.
+            for item in (was, line):
+                if item is not None and item < self.doc.lines:
+                    self.touch_lines(item, item)
+
     def put(self, name, found):
         """Show `found` (a `Marks`; None clears) as the set called `name`.
         A set computed for an older version is brought forward first; one too
@@ -690,10 +707,10 @@ class Editor:
         line, column = self.doc.place(index)
         return self.x(line, column), self.rows.row(line) * self.lh
 
-    def widget(self, line, x):
+    def widget(self, line, x, aside=True):
         """(entry, column, length) of the inline widget under content x on
         `line`, or None. A widget that is its token is not there while the
-        caret is inside the token."""
+        caret is inside the token (`aside=False`: it is asked for all the same)."""
         doc, cw = self.doc, self.cw
         text = doc.line(line)
         inset = self.insets(line)
@@ -706,7 +723,7 @@ class Editor:
                 low, high = left - entry.lead * cw, left
             elif entry.trail:
                 low, high = left + len(piece) * cw, left + (len(piece) + entry.trail) * cw
-            elif self.inside == (line, start):
+            elif aside and self.inside == (line, start):
                 continue
             else:
                 low, high = left, left + len(piece) * cw

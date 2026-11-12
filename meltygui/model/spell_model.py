@@ -2,7 +2,11 @@
 
     spelling = Spelling(source)
     draw_editor(source, state=state, marks={'spelling': spelling.marks})
-    spelling.feed()                 # after every run; cheap
+
+The model follows its source by events (`Source.models`: every splice calls
+`feed`) and wakes the views that read `marks` when a result lands
+(`Readers`): a caller makes no call per frame and may be a cached view.
+`feed()` is still the caller's after it switched the setting.
 
 While `Toggles.TextEditor.enable_spell_check` is on, the words
 `editor/spell_check.py` does not know get a wavy underline. A worker reads
@@ -15,12 +19,14 @@ setting is on. Nothing here runs on the render thread, and the worker shares
 the interpreter with it: the text is read `SLICE` lines at a time and the
 worker gives way to a frame between them (`glfw_utils.park`).
 
-What is checked is every word, as in the legacy editor. To check only
-comments and strings, filter in `Spelling.spans` (the source knows where they
-are: `Source.native.inside`).
+What is checked is every word, read the way code spells it
+(`editor/spell_check.py`: delimiters, camel case parts, code's own terms).
+To check only comments and strings, filter in `Spelling.spans` (the source
+knows where they are: `Source.native.inside`).
 """
 import threading
 
+from meltygui.core.rendering.gui_readers import Readers
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.windowing.glfw_utils import park
 
@@ -31,31 +37,39 @@ QUIET = 0.4
 SLICE = 100
 # Lever: remembered line texts; beyond it the memory starts over.
 KEPT = 50000
-# The underline (`SHAPES` in view/editor_view.py) and its colour.
-SHAPE, COLOR = 'squiggle', (1., 0., 0.)
+# The underline (`SHAPES` in view/editor_view.py) and its colour: teal, so it never reads as an error.
+SHAPE, COLOR = 'squiggle', (.16, .71, .65)
 
 
 class Spelling:
     def __init__(self, source):
         self.source = source
-        self.marks = None          # the 'squiggle' marks of the last reading; None while the setting is off
+        self.readers = Readers()   # the views that read `marks`: run again when a result lands
+        self._marks = None         # `marks`
         self.checked = -1          # the source version `marks` belongs to
         self.fed = -1              # the version the worker was last woken for
         self.known = {}            # line text -> the marks of its unknown words
         self._wake = threading.Event()
         self._thread = None
         self.closed = False
+        source.models.add(self)
         self.feed()
+
+    @property
+    def marks(self):
+        """The 'squiggle' marks of the last reading; None while the setting is off."""
+        self.readers.note()
+        return self._marks
 
     def feed(self):
         """Wake the worker when the text moved on since it last looked; drop
-        the marks when the setting went off."""
+        the marks when the setting went off. The source calls this for every
+        splice (`Source.tell`)."""
         if not Toggles.TextEditor.enable_spell_check:
-            if self.marks is not None:
+            if self._marks is not None:
                 # Switched off: the underlines go with the next frame.
-                from meltygui.core.windowing.glfw_utils import request_render
-                self.marks = None
-                request_render()
+                self._marks = None
+                self.readers.wake()
             self.checked = self.fed = -1
             return
         version = self.source.native.version
@@ -68,6 +82,7 @@ class Spelling:
 
     def close(self):
         self.closed = True
+        self.source.models.discard(self)
         self._wake.set()
 
     def spans(self, text):
@@ -83,7 +98,6 @@ class Spelling:
 
     def check(self):
         """Read the text as it is now and swap in its marks."""
-        from meltygui.core.windowing.glfw_utils import request_render
         from meltygui.editor.marks import Marks, Lines
         from meltygui.editor import spell_check
         native = self.source.native
@@ -107,8 +121,8 @@ class Spelling:
             # (Put together from the two lists as they are: no pass over every mark in one piece.)
             found = Marks(version=version)
             found.lines, found.items = Lines(lines), items
-            self.marks, self.checked = found, version
-            request_render()
+            self._marks, self.checked = found, version
+            self.readers.wake()
 
     def _work(self):
         while not self.closed:

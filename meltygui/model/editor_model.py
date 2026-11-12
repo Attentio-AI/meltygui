@@ -3,7 +3,11 @@
     source = Source(text, path)
     analysis = Analysis(source)
     draw_editor(source, state=state, errors=analysis.errors, imports=analysis.imports, tints=analysis.tints)
-    analysis.feed()                 # after every run; cheap
+
+The model follows its source by events (`Source.models`: every splice and
+every landed reading calls `feed`) and wakes the views that read `errors`,
+`imports` or `tints` when a result lands (`Readers`): a caller makes no call
+per frame and may be a cached view.
 
 Undefined names are the source's own (`Source.undefined`: read in Rust with
 every reading of the text, see model/source_model.py). Which import
@@ -28,9 +32,11 @@ other files state, and the roster wakes it when one of those changes. Only an
 extension's `source_diagnostics` still gets the whole text (`analyse`).
 The worker also tells the source which names the running module has
 (`Source.live`), again when a definition is hotswapped. Results
-are swapped in as new objects and a frame is asked for; the view only
-compares object identity, so they repaint once when they land. Marks
-(`tints`) carry the document version they were computed for. Nothing here
+are swapped in as new objects and the views that read them are run again;
+the editor only compares object identity, so they repaint once when they
+land. `errors` (a `marks.Findings`) and `tints` carry the document version
+their lines are of: the editor keeps them on their text through what was
+typed since. Nothing here
 runs on the render thread, and the worker shares the interpreter with it: it
 works in pieces of one statement and gives way to a frame between them
 (`glfw_utils.park`). Keep it so: one long call here is one long frame.
@@ -40,8 +46,10 @@ import re
 import threading
 import weakref
 
+from meltygui.core.rendering.gui_readers import Readers
 from meltygui.core.runtime import extensions
 from meltygui.core.windowing.glfw_utils import park
+from meltygui.editor import marks
 
 # Seconds the text must rest before it is analysed.
 QUIET = 0.25
@@ -67,9 +75,10 @@ class Analysis:
         self.roster = roster if source.path else None
         self.washed, self.needs = [], None     # the source's own tint rows; what the roster's answer hung on
         source.lint = True
-        self.found, self.tints = [], None      # the attributes the running module's modules lack, by `compile`
+        self.readers = Readers()   # the views that read the results: run again when one lands
+        self.found, self._tints = [], None     # the attributes the running module's modules lack, by `compile`; `tints`
         self.told = []             # what extensions report of the whole text (`analyse`)
-        self.syntax = []           # syntax errors by `compile`, of the source text at version `checked`
+        self.syntax = []           # syntax errors by `compile`; they and `found` are of the source text at version `checked`
         self.checked = -1
         self.compiled = {}         # top-level statement key -> (its errors, what `chains` read off it), lines from its first
         self.passed = None         # (text version, running module, statements left waiting) of the last whole pass of `compile`
@@ -79,7 +88,7 @@ class Analysis:
         self.fixes, self.fixed = {}, None      # `imports` likewise
         self.suggested = {}        # name -> the import statements that would bring it ([]: none), by the worker
         self.wanted = set()        # names the worker is still to look up
-        self.analysed = -1         # the source version the results belong to
+        self.analysed = -1         # the source version `told` belongs to
         self.fed = -1              # the version the worker was last woken for
         self.names = None          # the live module's names as last told to the source
         self.signed = {}           # chain -> the signature told to the source (None: not to be judged)
@@ -90,6 +99,7 @@ class Analysis:
         self._thread = None
         self.closed = False
         LIVE.add(self)
+        source.models.add(self)
         self.feed()
 
     def statements(self, name):
@@ -103,23 +113,51 @@ class Analysis:
 
     @property
     def errors(self):
-        """[(line, message)]: the worker's findings (syntax errors first),
-        the names the source finds undefined and the calls it finds not to
-        fit; a new list whenever either changed. A name the running module has is an error only when
-        an import would bring it."""
+        """[(line, message)] as a `marks.Findings`: the worker's findings
+        (syntax errors first), the names the source finds undefined and the
+        calls it finds not to fit; a new list whenever either changed. Its
+        lines are those of the landed reading (`version`): what the worker
+        found in an older text is brought forward to it (`carried`), and the
+        editor brings the whole on to the text as it is. A name the running
+        module has is an error only when an import would bring it."""
+        self.readers.note()
         key = (id(self.found), id(self.told), id(self.syntax), self.checked, self.source.stamp, len(self.suggested))
         if key != self.key:
+            at = self.source.version
             # Until the worker compiled this text, what the source's reader is sure of.
-            flawed = [] if self.checked == self.source.version else [(line + 1, message) for line, message in self.source.flaws]
+            flawed = [] if self.checked == at else [(line + 1, message) for line, message in self.source.flaws]
             names = [(line + 1, f"name '{name}' is not defined") for line, _, name, live, noted in self.source.undefined
                      if not noted and (not live or self.statements(name))]
-            self.key, self.merged = key, sorted(set(self.syntax + flawed + self.found + self.told + names + self.source.misfits))
+            found = self.carried(sorted(self.syntax + self.found), self.checked) + self.carried(self.told, self.analysed)
+            self.key = key
+            self.merged = marks.Findings(sorted(set(found + flawed + names + self.source.misfits)), at if at >= 0 else None)
         return self.merged
+
+    def carried(self, found, version):
+        """`found` ([(file line, message)], sorted, of the text at
+        `version`) on the lines of the landed reading: each finding stays
+        with its line through the splices between the two. [] when they are
+        no longer kept: the worker's next pass tells them again."""
+        at = self.source.version
+        if not found or version >= at:
+            return found
+        entries = self.source.since(version)
+        if entries is None:
+            return []
+        changes = [entry[1] for entry in entries if entry[0] <= at]
+        return [(line + 1, message) for line, message in marks.carried([(line - 1, message) for line, message in found], changes)]
+
+    @property
+    def tints(self):
+        """The definition tints as a `Marks` set (None: none yet): what `draw_editor` takes as `tints`."""
+        self.readers.note()
+        return self._tints
 
     @property
     def imports(self):
         """{line: [import statements]} for the names the source finds
         undefined that an import would bring: what `draw_editor` takes as `imports`."""
+        self.readers.note()
         key = (self.source.stamp, len(self.suggested))
         if key != self.fixed:
             found = {}
@@ -131,15 +169,19 @@ class Analysis:
         return self.fixes
 
     def feed(self):
-        """Wake the worker when the text moved on since it last looked."""
+        """Wake the worker when the text moved on since it last looked. The
+        source calls this for every splice and every landed reading
+        (`Source.tell`); nobody else has to."""
         version = self.source.native.version
         if version != self.fed:
             self.fed = version
             self.wake()
-        # A reading landed: its statements are to compile, its calls may reach what has no signature yet.
+        # A reading landed: its statements are to compile, its calls may reach what has no signature yet,
+        # and `errors` reads its names and calls: the views that read them run again.
         if self.source.stamp != self.seen:
             self.seen = self.source.stamp
             self.wake()
+            self.readers.wake()
 
     def wake(self):
         if self._thread is None:
@@ -149,6 +191,7 @@ class Analysis:
 
     def close(self):
         self.closed = True
+        self.source.models.discard(self)
         self._wake.set()
 
     def _work(self):
@@ -182,7 +225,6 @@ class Analysis:
         is another than last time, so an edit costs the statement it is in.
         One of more than `SLOW` lines waits for `patient`. Returns whether
         some still wait."""
-        from meltygui.core.windowing.glfw_utils import request_render
         native, stamp, module = self.source.native, self.source.stamp, self.module
         # A reading of the same text (a search term changed, a breakpoint was set) has the same
         # statements: nothing to go over again, unless long ones still wait for this patient pass.
@@ -211,19 +253,20 @@ class Analysis:
             self.wake()
             return False
         found = lacking(pieces, module) if module is not None else []
-        self.compiled, self.checked = kept, self.source.version
-        self.passed = (self.checked, module, waiting)
+        version, moved = self.source.version, self.checked != self.source.version
         if syntax != self.syntax or found != self.found:
-            self.syntax, self.found = syntax, found
-            request_render()
+            self.syntax, self.found, moved = syntax, found, True
+        # (The findings first, then the version they are of: a frame reading between the two only carries them once more.)
+        self.compiled, self.checked = kept, version
+        self.passed = (version, module, waiting)
+        if moved:
+            self.readers.wake()
         return waiting
 
     def tint(self):
         """The definition tints of the source's landed reading, as marks (`tints`): those its own table
         states and, with a roster, those other files state for the names this text uses of them. Made
         again when a reading lands, and when the roster woke for something its last answer hung on."""
-        from meltygui.core.windowing.glfw_utils import request_render
-        from meltygui.editor import marks
         stamp, version, roster = self.source.stamp, self.source.version, self.roster
         fresh = stamp != self.tinted
         if fresh or (self.needs is not None and roster.stale(self.needs)):
@@ -234,15 +277,16 @@ class Analysis:
             self.tinted, self.washed, self.needs = stamp, rows, needs
             if needs is not None:
                 roster.watch(self, needs)
-            if rows or others or self.tints:
-                self.tints = washes(rows, others, version) if roster is not None else marks.tints(rows, version)
-                request_render()
+            if rows or others or self._tints:
+                self._tints = washes(rows, others, version) if roster is not None else marks.tints(rows, version)
+                self.readers.wake()
 
     def analyse(self):
-        """What extensions report of the whole text (`source_diagnostics`): nothing is read without one."""
-        from meltygui.core.windowing.glfw_utils import request_render
+        """What extensions report of the whole text (`source_diagnostics`): nothing is read without one.
+        Only of a text the source's reading has landed for, so that every finding in `errors` is of a
+        version the others can be brought to (typed on since: the next landing wakes the worker)."""
         native = self.source.native
-        if native.version == self.analysed:
+        if native.version == self.analysed or native.version != self.source.version:
             return
         told = []
         if self.path and extensions.get('source_diagnostics') is not None:
@@ -259,19 +303,18 @@ class Analysis:
             self.analysed = native.version
         if told != self.told:
             self.told = told
-            request_render()
+            self.readers.wake()
 
     def look_up(self):
         """Ask the running process which import statements would bring the names wanted."""
         from meltygui.code import code_checks
-        from meltygui.core.windowing.glfw_utils import request_render
         while self.wanted:
             name = self.wanted.pop()
             try:
                 self.suggested[name] = list(code_checks._suggest_import_for_path(name, self.path) or ())
             except Exception:
                 self.suggested[name] = []      # a lookup must never break the analysis
-            request_render()
+            self.readers.wake()
 
     def live(self):
         """Tell the source the names its running module has, when they changed."""

@@ -21,7 +21,9 @@ into rows never painted, `busy` Enter and Backspace with a reading asked for
 on every frame: what the thread costs the frames beside it, plus landing
 its facts in each. `find` is `busy` with a search term found all over the
 text (its hits land every frame). `word` starts a new word every frame: the
-suggestions ask the source for the names in sight each time.
+suggestions ask the source for the names in sight each time. `errors` is
+`type` with an error on every other line around the caret (their chips, or
+whatever shows them, are painted with the block).
 To add a row, add it to `ROWS`; to change the generated code, edit `UNIT`.
 The caret is put on the same line of a unit at every size (`HOME`), so the
 rows do the same work whatever the length.
@@ -86,7 +88,7 @@ def describe_{n}(shape):
 
 '''
 NAMES = 24
-ROWS = ('idle', 'type', 'caret', 'enter', 'scroll', 'fresh', 'busy', 'find', 'word')
+ROWS = ('idle', 'type', 'caret', 'enter', 'scroll', 'fresh', 'busy', 'find', 'word', 'errors')
 # The line of a unit the caret is put on (the one nearest the text's middle).
 HOME = '    total = 0'
 
@@ -155,6 +157,7 @@ def bench(path, frames, profile='', folded=False, plain=False):
         'busy': lambda i: (host.frame(keys=[(glfw.KEY_ENTER if i % 2 == 0 else glfw.KEY_BACKSPACE, 0)]), ed.ask()),
         'find': lambda i: (host.frame(keys=[(glfw.KEY_ENTER if i % 2 == 0 else glfw.KEY_BACKSPACE, 0)], search='shape'), ed.ask()),
         'word': lambda i: host.frame(keys=[(glfw.KEY_SPACE, 0), (glfw.KEY_A, 0)], text=' a'),
+        'errors': lambda i: host.frame(keys=[(glfw.KEY_A, 0)], text='a'),
     }
     found = {'lines': ed.doc.lines, 'build': build, 'mount': mount, 'scan': scan}
     for name in ROWS:
@@ -162,8 +165,11 @@ def bench(path, frames, profile='', folded=False, plain=False):
         # Background scans of the row before are not this row's cost.
         ed.source.settle()
         host.frame()
-        if name in ('type', 'word'):
+        if name in ('type', 'word', 'errors'):
             ed.suggest.close()
+        if name == 'errors':
+            caret = ed.doc.line_of(ed.doc.caret)
+            host.frame(errors=[(number + 1, f'finding on line {number + 1}') for number in range(caret - 12, caret + 13, 2)])
         if name == 'scroll':
             # Visit the range once so the timed frames replay captured blocks.
             measure(host, 80, step)

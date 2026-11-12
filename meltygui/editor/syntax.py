@@ -101,7 +101,9 @@ class Syntax:
     def states(self, line, count=1):
         """The string state each of `count` lines from `line` starts in, as
         bytes: 0 in code; 255 while the text above was never read (it paints
-        as code until the source's first reading lands)."""
+        as code until the source's first reading lands). 16 is added for a
+        line that starts inside a call's parentheses: `runs` colours a
+        keyword argument at its start by it."""
         return self.source.native.states(line, count)
 
     def state(self, line):
@@ -110,7 +112,7 @@ class Syntax:
     def legacy(self, line):
         """The state of `line` as the legacy string and comment helpers take it."""
         state = self.state(line)
-        return LEGACY[state] if state < len(LEGACY) else None
+        return LEGACY[state & 15] if state != 255 and state & 15 < len(LEGACY) else None
 
     def runs(self, text, state=0):
         """[(column, text, kind)] of one line that starts in string state
@@ -118,7 +120,7 @@ class Syntax:
         in a few draw calls."""
         if not self.live:
             return [(0, text, 'default')] if text else []
-        if state > 6:
+        if state == 255:
             state = 0
         key = (text, state)
         found = self.cache.get(key)

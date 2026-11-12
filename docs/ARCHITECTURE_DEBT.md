@@ -241,9 +241,6 @@ Added 2026-11-11. The port itself is described in
   worker-gives-way rule. Keep `park`.
 - **Two classes named `Rows`**: the editor's (Rust, through `editor/rows.py`)
   and `model/layout_model.Rows`.
-- **The right button** reaches the editor through a hit region and an item
-  declared in `draw_editor` so the host's window gestures leave it alone. The
-  claim belongs in `core/rendering/gui_imgui_input.py`.
 - **`window_api.poke`** asks the backend with `hasattr`; the GLFW path is a
   branch in the function, the native Wayland one a method. Give every backend
   the method.
