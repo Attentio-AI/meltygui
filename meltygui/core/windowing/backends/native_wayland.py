@@ -44,12 +44,13 @@ LATE = True
 # presented at (`presented`), not when its frame callbacks arrive: those shift with its own load.
 # The guard is a base plus a lift (`Backend.tune`, levers below). `GUARD` is where the base starts
 # and what it returns to (at most half a period); base and lift together never exceed `LONG` (a
-# share of the period). Measured 2026-11-12 on a Hyprland desktop shown through a 120 Hz panel
+# share of the period: 5.5 ms at 120 Hz. Longer bought nothing when measured, 0.4 % misses at 6 ms
+# against 0.9 % at 5.5, and from about 6 ms on frames start aiming at every second refresh). Measured 2026-11-12 on a Hyprland desktop shown through a 120 Hz panel
 # with tools/pace_calibrate.py (small window): 4 ms before missed none of 480 frames, 3.5 ms 0.2 %
 # (the compositor's own), 3 ms 1.1 %, 2.5 ms 2.8 %. A 2130x1763 window there needs about 4.5 ms.
 # `ADAPT` False keeps the guard at `GUARD` (the calibration tool steps it by hand).
 GUARD = 0.0035
-LONG = 0.75
+LONG = 0.66
 ADAPT = True
 # Frames whose drawing time is remembered, for how many seconds, and which of them (sorted, as a
 # share) a frame is given: 0.9 leaves the slowest tenth to the guard. `FRESH` is what lets a few
@@ -79,8 +80,8 @@ MISSES = 3
 RECENT = 0.5
 MISS = 0.0005
 FADE = 0.5
-AGAIN = 1.
-LEARN = 2.
+AGAIN = 2.
+LEARN = 3.
 SLIP = 0.0003
 SETTLE = 0.25
 STEP = 0.0001

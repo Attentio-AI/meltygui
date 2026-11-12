@@ -326,9 +326,25 @@ tests [test_gui_focus.py](../tests/test_gui_focus.py).
 
 ### Default views: `draw_any`
 
-`draw_any` draws a value with the view registered for it and is called like that view. A dict goes
-to `draw_collection`, which draws every value the same way; a dict among them is a branch that a
-press opens.
+`draw_any` draws a value with the view registered for it and is called like that view. A value
+that is read by keys goes to `draw_collection`, which draws every item the same way; such a value
+among them is a branch that a press opens.
+
+What is read by keys is decided by type, in [keyed.py](../meltygui/core/rendering/keyed.py): a dict
+and anything with `keys`, `__getitem__` and `__len__` (a mapping proxy, `UserDict`, `ChainMap`, an
+h5py group, a DataFrame), a list, a tuple and a deque by index, a dataclass and a named tuple by
+their fields, a `SimpleNamespace` and a `DictConversion` by their attributes. A type's `Keyed` is
+four functions (`keys`, `get`, `put`, `count`) and is all `draw_collection` knows of it; without a
+`put` (a tuple, a mapping proxy, a frozen dataclass) its values are read only. Another type is one
+registration, by type or by name:
+
+```python
+from meltygui.rust import keyed_as
+
+keyed_as('Module', keys=lambda module: [name for name, _ in module.named_children()], get=getattr)
+```
+
+A view registered for the type, a shape or the name still wins over `draw_collection`.
 
 ```python
 from meltygui.rust import Shaped, draw_any, is_default_for
@@ -342,12 +358,13 @@ changed, settings = draw_any(settings, name='settings', expand=2, left=8, top=40
 ```
 
 The public names are in `meltygui.rust` ([rust.py](../meltygui/rust.py)): `draw_any`,
-`is_default_for`, `Shaped`, `draw_collection` and the value views. Importing it loads nothing; a
+`is_default_for`, `Shaped`, `Keyed`, `keyed_as`, `draw_collection` and the value views. Importing it loads nothing; a
 name is loaded from its module when it is first asked for.
 
 `@is_default_for` goes above `@gui` and takes types, names and `Shaped` patterns in any mix. The
 most specific registration wins: the name the value is drawn under (`name=`, or its key in a dict),
-then its shape, then its type and base classes. A string also matches a type by its `__name__`, for
+then its shape, then its type and base classes, then `Keyed` (every type that is read by keys),
+then `object`. A string also matches a type by its `__name__`, for
 types the registering module should not import. A later registration replaces an earlier one, so
 an app overrides a built in view. The built in ones are `draw_bool`, `draw_int`, `draw_float`,
 `draw_str`, `draw_none` and `draw_value` (a bounded `repr` for the rest) in
@@ -360,7 +377,7 @@ a wheel step 0.5 ms, a fling of 30 rows a frame 1.1 ms, dragging a number 0.4 ms
 0.4 to 0.5 ms, opening a branch 1.2 ms. The frame a dict is first shown in lists its keys: 1.5 ms at
 1,000 entries, 2.5 ms at 100,000, 15 to 18 ms at 1,000,000.
 
-Not there yet: rows of different heights, lists and tuples as branches, add / delete / reorder,
+Not there yet: rows of different heights, sets, add / delete / reorder,
 search, an enum or colour view, undo of an edit. `meltygui.draw_any` is still the legacy one.
 Every row keeps its view state once it was shown, about 1.5 to 3 KB a row (see the known issues).
 
@@ -687,7 +704,7 @@ resolved in full.
 | Keyboard focus and temporary popups | [focus.py](../meltygui/core/input/focus.py); the `popup` branch and `_fit` in [retained_gui_prototype.py](../meltygui/core/rendering/retained_gui_prototype.py); [example](../examples/gui_popups.py), [tests](../tests/test_gui_focus.py) |
 | Wake from native threads | [wake.rs](../native/gui_prototype/src/wake.rs), `waker` / `drain_wakes` / `close_wakes` / `park` in [glfw_utils.py](../meltygui/core/windowing/glfw_utils.py), `poke` in [window_api.py](../meltygui/core/windowing/window_api.py) |
 | Largest user so far | the [native editor](NATIVE_EDITOR.md): [editor_view.py](../meltygui/view/editor_view.py) |
-| Default views | [gui_any.py](../meltygui/core/rendering/gui_any.py) (`draw_any`, `is_default_for`), [value_view.py](../meltygui/view/value_view.py), [dict_view.py](../meltygui/view/dict_view.py); tests [routing and rows](../tests/test_gui_any.py), [views](../tests/test_gui_any_view.py) |
+| Default views | [gui_any.py](../meltygui/core/rendering/gui_any.py) (`draw_any`, `is_default_for`), [keyed.py](../meltygui/core/rendering/keyed.py) (`Keyed`, `keyed_as`), [value_view.py](../meltygui/view/value_view.py), [dict_view.py](../meltygui/view/dict_view.py); tests [routing and rows](../tests/test_gui_any.py), [views](../tests/test_gui_any_view.py) |
 | Session persistence | [app_session.py](../meltygui/core/runtime/app_session.py), [load_save_v2.py](../meltygui/core/conversion/load_save_v2.py) |
 | Contract tests | [a view follows its caller](../tests/test_gui_immediate.py), [identity](../tests/test_gui_identity.py), [persistence](../tests/test_gui_persistence.py), [positions](../tests/test_gui_position_api.py), [scroll/geometry](../tests/test_gui_scroll_geometry.py) |
 | Interactive and measured checks | [scroll lab](../examples/gui_scroll_lab.py), [benchmark](../tests/benchmark_gui_scrolling.py) |

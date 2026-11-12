@@ -20,7 +20,7 @@ marked "not measured" are reasoning, not results.
 
 A frame period at 120 Hz is 8.33 ms. The remaining 5.5 ms is the drawing time (about
 1.7 ms for the test scene) plus a 3.5 ms guard that the compositor needs to take the
-frame, draw the desktop and flip (it tunes itself, see below).
+frame, draw the desktop and flip (it tunes itself, see below; larger windows need more).
 
 ## App side (MeltyGUI)
 
@@ -41,32 +41,52 @@ refresh is and waits until
 
     start = refresh - GUARD - cost
 
-- `cost` is how long recent frames took to draw (`COSTS` frames remembered, the `COST`
-  share of them covered; the slowest tenth is left to the guard).
+- `cost` is how long recent frames took to draw (`COSTS` frames of the last `FRESH`
+  seconds, the `COST` share of them covered; the slowest tenth is left to the guard).
 - `GUARD` (3.5 ms) is what the compositor needs between receiving the frame and the flip.
 - If the next refresh is already out of reach, the frame aims at the one after it. A
   frame too slow to fit a period at all starts at once.
 - The period comes from the compositor or the output mode, never from measuring frames:
   frames that miss would stretch it, and a stretched period spaces frames out further.
 
-**3. The guard finds its own length.**
-A late frame that shows two refreshes after the one before it skipped a refresh. Misses
-get more frequent gradually as the guard shortens, so `Backend.tune` goes by how many
-there were in the last `RECENT` (10) seconds:
+**3. The guard finds its own length: a base plus a lift.**
+A frame missed when it was handed over in time and still came on screen later than the
+refresh it was for. Frames that took longer to draw than expected are not judged (no guard
+helps them), nor is the first frame after a pause or a slow frame. `Backend.tune` keeps two
+things apart:
 
-- `MISSES` (6) or more: the guard gets `MISS` (0.5 ms) longer and rests `REST` (30 s).
-  If that happens again after easing back to about the same length, the rest doubles,
-  up to `REST_MAX` (10 minutes).
-- `FEW` (1) or fewer: `STEP` (0.1 ms) shorter every `CALM` (4) seconds. This is how it
-  eases back when the compositor gets quicker and finds its level on a new display.
-- In between it stays. The compositor skips a refresh now and then whatever the app does.
+- **Lift, for what happens now.** `MISSES` (3) misses within `RECENT` (0.5 s) make the
+  guard `MISS` (0.5 ms) longer at once. The lift fades to nothing over `FADE` (0.5 s): a
+  disturbance costs latency for about half a second, then the guard is back where it was.
+- **Base, for what the display needs.** Lifts that keep following each other (each within
+  `AGAIN`, 2 s, of the one before) for `LEARN` (3 s) are no disturbance: the base gets
+  `MISS` longer. After `REST` (10 s) it eases back towards `GUARD`, `STEP` (0.1 ms) every
+  `CALM` (1 s), and never below `GUARD`: it does not search for the edge. Misses while
+  easing put it back (no higher than where the easing began); when that repeats at about
+  the same length the rest doubles, up to `REST_MAX` (2 minutes).
 
-`GUARD` (3.5 ms) is only where it starts, capped at half a period, so a 240 Hz output
-starts at 2.1 ms and tunes from there. A new refresh rate starts over. Measured on the
-panel: started too short (1.5 ms) it reached its level in about 10 s; started long it
-eased down and held between 3.4 and 3.9 ms (5.3 to 5.7 ms to the flip) with 0 to 3
-missed refreshes per 1200 frames. Raise `FEW` and `MISSES` for less latency and more
-stutters; `ADAPT = False` pins the guard at `GUARD`.
+`GUARD` (3.5 ms) is where the base starts and what it returns to, capped at half a period
+(2.1 ms at 240 Hz). Base and lift together stay under `LONG` (0.66 period, 5.5 ms at 120 Hz: longer bought nothing in the
+measurement below and makes frames aim at every second refresh). A new refresh
+rate starts over. Raise `MISSES` or lower `GUARD` for less latency and more stutters;
+`ADAPT = False` pins the guard at `GUARD`.
+
+The drawing time a frame is given comes from the frames of the last `FRESH` (0.5 s) only,
+so a few slow frames stop counting half a second later, however sparse the frames are.
+
+What the base settles at depends on the window. Measured 2026-11-12 on the panel with a
+real pointer (240 moves a second): a small animating window holds at 3.5 ms; a 2130x1763
+window with three nested windows needs 4.5 to 5 ms, because the compositor also waits for
+the app's own GPU work (about 1 ms there, found by adding `glFinish`). With the guard
+pinned during a drag in that window, frames handed over in time still missed at these
+rates: 6 ms 0.4 %, 5.5 ms 0.9 %, 4.5 ms 2.5 %, 4 ms 21 %, 3.5 ms 69 %, 3 ms 96 %.
+
+What the rule replaced, and why (same day, same window): misses used to be counted as "two
+refreshes after the frame before", a slow count over 10 s with 0.1 ms eased per 4 s after
+a 30 s rest. A frame that aims past the next refresh on purpose (guard plus drawing time
+longer than a period) looked like a miss, so a long guard produced its own misses: it went
+to `LONG` (6.25 ms) within 20 s of use and stayed there for the rest of the session (9 to
+11 ms on screen, stretches at every second refresh).
 
 **Turning it off.** `LATE = False` keeps step 1 only: about 8.3 ms, with nothing that
 can miss.

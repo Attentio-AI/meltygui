@@ -27,6 +27,7 @@ from operator import getitem, setitem
 
 FOUND = {}         # type -> its Keyed or None: filled on demand, cleared by a registration
 KEYED = {}         # type or type name -> Keyed: the registrations
+DERIVED = [FOUND]  # the caches made from KEYED, cleared by a registration: the router adds its routes
 
 
 class Keyed:
@@ -44,7 +45,8 @@ def keyed_as(*kinds, keys, get=getitem, put=None, count=None):
         if not isinstance(kind, (type, str)):
             raise TypeError(f'keyed_as takes types and type names, not {kind!r}')
         KEYED[kind] = found
-    FOUND.clear()
+    for cache in DERIVED:
+        cache.clear()
     return found
 
 

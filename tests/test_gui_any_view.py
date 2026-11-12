@@ -285,3 +285,45 @@ def test_read_only_values_leave_the_left_drag_to_the_window(show):
     for row in range(3):
         assert not taken(host, 180., ROW * (row + .5))
     assert taken(host, 30., ROW * 3.5), "a branch's key still opens"
+
+
+def test_an_edit_is_written_into_a_list_an_object_and_a_mapping_that_is_no_dict(show):
+    import collections
+    import dataclasses
+
+    @dataclasses.dataclass
+    class Camera:
+        on: bool = False
+        fov: int = 60
+
+    camera, items, table = Camera(), [False, 3], collections.UserDict(on=False)
+    data = {'camera': camera, 'items': items, 'table': table}
+    host = collection(show, data, expand=2)                    # rows: camera, on, fov, items, 0, 1, table, on
+    for row in (1, 4, 7):
+        host.click(*field(row))
+    x, y = field(2)
+    drag(host, x, x + 20, y)
+    assert camera == Camera(True, 65) and items == [True, 3] and table == {'on': True}
+    assert data['camera'] is camera and data['items'] is items and data['table'] is table
+    assert host.result[1] is data
+
+
+def test_a_list_is_drawn_at_the_top_and_keeps_its_identity(show):
+    data = [False, 'text', None]
+    host = collection(show, data)
+    assert host.tree.rows.count == 3
+    host.click(*field(0))
+    assert data == [True, 'text', None] and host.result[1] is data
+
+
+def test_what_cannot_be_written_is_read_only_and_a_dict_inside_it_is_not(show):
+    import types
+    inner = {'on': False}
+    data = {'pair': (False, None, inner), 'proxy': types.MappingProxyType({'on': False})}
+    host = collection(show, data, expand=3)                    # rows: pair, 0, 1, 2, on, proxy, on
+    assert host.tree.rows.count == 7
+    assert not taken(host, 180., ROW * 1.5), "a tuple's value is the window's to be moved by"
+    for row in (1, 4, 6):
+        host.click(*field(row))
+    assert data['pair'] == (False, None, {'on': True}) and data['pair'][2] is inner
+    assert data['proxy']['on'] is False

@@ -6,7 +6,7 @@ Opens a window that redraws continuously and steps `native_wayland.GUARD` (the t
 refresh by which a frame is handed over) from long to short, a few seconds each. For every step
 it prints how many frames missed their refresh and the input-read-to-screen time. Pick the
 shortest guard whose misses are no more than the first row's (those are the compositor's own):
-that is where the self-tuning guard (`Backend.tune`) should settle, and a good `GUARD` (its start) in
+that is where the base of the self-tuning guard (`Backend.tune`) should sit, and a good `GUARD` (its start) in
 meltygui/core/windowing/backends/native_wayland.py. Move the pointer
 over the window during a second run: the compositor is busier while it handles input, and frames
 that are slower to draw than this one need the difference on top. `off grid` is how far the
