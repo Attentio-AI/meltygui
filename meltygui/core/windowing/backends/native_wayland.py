@@ -3,9 +3,20 @@
 GLFW-compatible constants/callbacks let existing input/chrome code share this
 backend without loading GLFW. All protocol dispatch and graphics calls run on
 the render thread.
+
+Latency: the frame loop calls `pace` before it reads input (app.py). It waits
+there for the compositor's frame callback, so a frame is drawn from input read
+after the previous one was taken, and `eglSwapBuffers` no longer blocks with a
+finished frame in hand: input reaches the screen one refresh sooner. It then
+waits on, so the frame is handed over shortly before the refresh it is for
+instead of right after the callback (`LATE`, `GUARD`). Every swap also asks for
+presentation feedback (`presented`): when each frame was on screen. That gives
+the refresh times `pace` aims at, and `get_presentation_latency_ms` (input read
+to on screen), which the frame-rate overlay shows. Levers: the constants below.
 """
 import ctypes
 import errno
+import math
 import mmap
 import os
 import select
@@ -21,6 +32,36 @@ from meltygui.core.windowing.backends.wayland_protocol import function
 from meltygui.core.windowing.backends.wayland_protocol import P
 from meltygui.core.windowing.backends.wayland_protocol import U
 from meltygui.core.windowing.backends.wayland_protocol import I
+
+
+# Levers of frame pacing (`Backend.pace`).
+# True: start each frame late (step 2 of `pace`), so that it is handed to the compositor `GUARD`
+# seconds before the refresh it is meant for. Input is then that much fresher on screen.
+LATE = True
+# Seconds before a refresh by which the frame for it is handed over: what the compositor needs to
+# take a frame and put it up. Smaller is less latency and closer to a missed refresh (the frame
+# shows a whole period late: a stutter). The refreshes are the times the compositor reports frames
+# presented at (`presented`), not when its frame callbacks arrive: those shift with its own load.
+# How short it can be depends on how exactly the compositor keeps its refreshes: measure it on the
+# display in question with tools/pace_calibrate.py. On a headless Hyprland output (refreshes from a
+# timer) frames handed over 3 ms before missed 3 % of the time, 1 ms before 25 %.
+GUARD = 0.003
+# Frames whose drawing time is remembered, and which of them (sorted, as a share) a frame is given:
+# 0.9 leaves the slowest tenth to `GUARD`.
+COSTS = 24
+COST = 0.9
+# A late frame missed when it is on screen two refreshes after the frame before it: one was
+# skipped. `MISSES` of them within `RECENT` late frames make `GUARD` `MISS` seconds longer (up to
+# half a period). Fewer change nothing: the compositor skips a refresh for a frame now and
+# then however early it was handed over (measured: about 0.5 % of frames, in clusters), while a
+# hand-over that is too late misses several times as often. Every late frame that made it takes
+# `EASE` of that away again, slowly (about half in 30 s at 120 Hz), so it does not creep back.
+MISSES = 4
+RECENT = 120
+MISS = 0.0005
+EASE = 0.0002
+# Longest wait for the compositor to ask for a frame: a hidden or covered window is never asked.
+WAIT = 0.05
 
 
 class NativeWindow:
@@ -42,6 +83,13 @@ class NativeWindow:
         self.outputs = set()
         self.cursor_pos = (0., 0.)
         self.keys, self.buttons, self.callbacks = {}, {}, {}
+        # Pacing (Backend.pace): the frame callback of the last swap still to come, when it was asked for,
+        # when the compositor last sent one, and the time the frames took to draw lately.
+        self.frame_due, self.frame_asked, self.frame_at = None, 0., 0.
+        self.costs = []
+        self.latency_ms = None     # input to screen of the last frame the compositor reported presented
+        self.refresh = 0.          # seconds between two refreshes of its output, as the compositor reports them
+        self.shown = 0.            # when its last frame was on screen: a refresh, on the compositor's clock
         self.saved_size = (width, height)
 
     @property
@@ -83,6 +131,15 @@ class Backend:
         self.wake_reader, self.wake_writer = socket.socketpair()
         self.wake_reader.setblocking(False)
         self.wake_writer.setblocking(False)
+        self.presentation = None
+        self.clock = time.CLOCK_MONOTONIC
+        self.feedbacks = {}        # presentation feedback proxy -> (window, when its frame's input was read)
+        self.callbacks_due = {}    # frame callback proxy -> window
+        self.sampled = 0.          # when input was last read for a frame (pace)
+        self.late = False          # that frame started late: it is judged when it is presented
+        self.slack = 0.            # what misses added to `GUARD`
+        self.aim = None            # the refresh the frame being drawn started late for
+        self.judged, self.missed = 0, []           # late frames presented so far, and which of them missed lately
 
     def init(self):
         if self.display:
@@ -110,6 +167,13 @@ class Backend:
             self.listen(self.data_device, [([P], self.data_offer),
                 ([U, P, I, I, P], lambda *args: None), ([], lambda: None),
                 ([U, I, I], lambda *args: None), ([], lambda: None), ([P], self.select_offer)])
+        # A frame callback and a presentation feedback are made per frame: one listener table for each kind.
+        self.frame_table = native.shared([([U], self.frame_done)], self.fail)
+        self.feedback_table = native.shared([([P], lambda proxy, output: None), ([U] * 7, self.presented),
+                                             ([], self.discarded)], self.fail)
+        if 'wp_presentation' in self.globals:
+            self.presentation = self.bind('wp_presentation')
+            self.listen(self.presentation, [([U], self.clock_id)])
         self.check(native.roundtrip(self.display))
         self.init_egl()
         return True
@@ -281,7 +345,115 @@ class Backend:
         return getattr(self.current, 'window', None)
 
     def swap_buffers(self, window):
+        if window.surface:
+            native = self.native
+            if self.presentation is not None:
+                # When this frame reaches the screen (`presented`): what `get_presentation_latency_ms` reports.
+                proxy = native.request(self.presentation, 1, P(window.surface), P(), interface='wp_presentation_feedback')
+                native.listen(proxy, self.feedback_table, None)
+                self.feedbacks[proxy] = window, self.sampled or time.clock_gettime(self.clock), self.aim
+            if window.frame_due is None:
+                # The compositor says when it wants the next frame: `pace` waits for that.
+                window.frame_due = native.request(window.surface, 3, P(), interface='wl_callback')
+                native.listen(window.frame_due, self.frame_table, None)
+                self.callbacks_due[window.frame_due] = window
+                window.frame_asked = time.monotonic()
+            if self.sampled:
+                window.costs = (window.costs + [time.clock_gettime(self.clock) - self.sampled])[-COSTS:]
         self.egl_check(self.egl.eglSwapBuffers(self.egl_display, window.egl_surface), 'eglSwapBuffers')
+
+    def pace(self, drawing=lambda: True):
+        """Call before the input of a frame is read. The frame is then drawn from input that is as
+        fresh as it can be when the compositor takes it:
+
+        1. wait until the compositor has asked for the next frame of every window swapped since
+           (its frame callback), handling events meanwhile. This replaces the wait `eglSwapBuffers`
+           would do after the frame is drawn, with input already read;
+        2. when `drawing()` says a frame is wanted, and `LATE`, wait on so that the frame, drawn in
+           the time the last ones took, is handed over `GUARD` before the next refresh it can
+           make. The refreshes are counted on from the last one a frame was presented at.
+
+        The price of 2 is a frame that takes much longer to draw than the ones before it: it
+        misses its refresh and shows one later. Frames that miss lengthen the guard (`presented`).
+        Levers: the constants at the top of this file."""
+        waiting = [window for window in self.windows if window.frame_due is not None]
+        if waiting:
+            until = min(window.frame_asked for window in waiting) + WAIT
+            while any(window.frame_due is not None for window in waiting):
+                left = until - time.monotonic()
+                if left <= 0:
+                    break
+                self.wait_events_timeout(left)
+        self.late, self.aim = False, None
+        if LATE and drawing():
+            now = time.clock_gettime(self.clock)
+            # Windows with a refresh known from lately: after a pause the compositor draws at once.
+            live = [window for window in self.windows if window.costs and 0 <= now - window.shown < 4 * self.period(window)]
+            if live:
+                period = max(self.period(window) for window in live)
+                cost = sum(sorted(window.costs)[int((len(window.costs) - 1) * COST)] for window in live)
+                guard = GUARD + self.slack
+                shown = max(window.shown for window in live)
+                # The next refresh, counted on from the last one a frame was on screen at. A frame
+                # that cannot be drawn in time for it starts at once, as without a late start.
+                aim = shown + math.ceil((now - shown) / period) * period
+                start = aim - guard - cost
+                while True:
+                    left = start - time.clock_gettime(self.clock)
+                    if left <= 0:
+                        break
+                    self.late, self.aim = True, aim
+                    self.wait_events_timeout(left)
+        self.sampled = time.clock_gettime(self.clock)
+
+    def period(self, window):
+        """Seconds between two refreshes of the window's output: as the compositor reports it with
+        a presented frame, else from the mode of the output the window is on. Never measured from
+        the frames themselves: frames that miss a refresh, or aim at every second one, would
+        stretch it, and a period taken too long spaces the frames out further."""
+        if window.refresh:
+            return window.refresh
+        rates = [self.outputs[output].refresh for output in window.outputs if output in self.outputs]
+        return 1000 / max(rates) if rates and max(rates) > 0 else 1 / 120
+
+    def frame_done(self, proxy, stamp):
+        window = self.callbacks_due.pop(proxy, None)
+        self.native.destroy(proxy)
+        if window is not None and window.frame_due == proxy:
+            window.frame_due, window.frame_at = None, time.monotonic()
+
+    def clock_id(self, clock):
+        self.clock = clock
+
+    def presented(self, proxy, high, low, nanoseconds, refresh, sequence_high, sequence_low, flags):
+        window, sampled, aim = self.feedbacks.pop(proxy, (None, 0., None))
+        self.native.destroy(proxy)
+        if window is not None:
+            shown = (high << 32 | low) + nanoseconds * 1e-9
+            window.latency_ms = (shown - sampled) * 1000.
+            window.refresh = refresh * 1e-9
+            gap, window.shown = shown - window.shown, shown
+            if aim is not None:
+                # A frame that started late and shows two refreshes after the frame before it
+                # skipped one. (Longer apart: a pause in drawing, not judged.)
+                period = self.period(window)
+                self.judged += 1
+                if 1.5 * period < gap < 2.5 * period:
+                    self.missed = (self.missed + [self.judged])[-MISSES:]
+                    if len(self.missed) == MISSES and self.judged - self.missed[0] <= RECENT:
+                        self.slack = min(self.slack + MISS, period / 2)
+                        self.missed = []
+                else:
+                    self.slack *= 1 - EASE
+
+    def discarded(self, proxy):
+        self.feedbacks.pop(proxy, None)
+        self.native.destroy(proxy)
+
+    def get_presentation_latency_ms(self):
+        """Input read to on screen, for the last presented frame of the window being drawn."""
+        window = self.get_current_context()
+        return window.latency_ms if window is not None else None
 
     def swap_interval(self, interval):
         self.egl_check(self.egl.eglSwapInterval(self.egl_display, interval), 'eglSwapInterval')
@@ -298,6 +470,11 @@ class Backend:
             self.egl.eglDestroyContext(self.egl_display, window.context)
         if window.egl_window:
             self.egl_window_destroy(window.egl_window)
+        for proxies in (self.callbacks_due, self.feedbacks):
+            for proxy in [proxy for proxy, held in proxies.items() if (held[0] if isinstance(held, tuple) else held) is window]:
+                del proxies[proxy]
+                self.native.destroy(proxy)
+        window.frame_due = None
         for proxy in (window.decoration, window.toplevel, window.xdg_surface, window.surface):
             if proxy:
                 self.native.request(proxy, 0, destroy=True)

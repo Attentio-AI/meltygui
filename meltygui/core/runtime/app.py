@@ -790,6 +790,8 @@ def run():
     glfw_utils.request_render()
     try:
         while Surface.all:
+            # Read input as late as the compositor's schedule allows, so the frame shows what the pointer does now.
+            glfw.pace(glfw_utils._needs_render.is_set)
             _process_events()
             # What threads without the interpreter queued: each becomes its cache's wake, which asks for the frame.
             glfw_utils.drain_wakes()

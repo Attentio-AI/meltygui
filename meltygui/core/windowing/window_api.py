@@ -122,6 +122,16 @@ def poke():
     return 'call', ctypes.cast(library.glfwPostEmptyEvent, ctypes.c_void_p).value
 
 
+def pace(drawing=lambda: True):
+    """Before the input of a frame is read: let the backend wait for the moment that leaves the
+    input freshest when the frame reaches the screen (`native_wayland.Backend.pace`). Backends
+    without pacing return at once."""
+    backend = _state['backend']
+    wait = getattr(backend, 'pace', None)
+    if wait is not None:
+        wait(drawing)
+
+
 def presentation_latency_ms():
     """Optional host presentation timing; None means this backend has no measurement."""
     backend = _state['backend']
