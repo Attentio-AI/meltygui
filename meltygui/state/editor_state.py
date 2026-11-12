@@ -47,12 +47,3 @@ class EditorState(DictConversion):
         """The running editor's handle (`editor.Pane`): commands in, geometry
         out. None before the view first ran."""
         return self.editor.handle if self.editor is not None else None
-
-
-class Breakpoints(set):
-    """Breakpoint lines (file lines). The editor toggles one on a gutter click
-    and rewrites the set when an edit moves the lines. A model with another
-    key, such as source sites, offers the same `toggle`, `clear` and `update`."""
-
-    def toggle(self, line):
-        self.symmetric_difference_update((line,))

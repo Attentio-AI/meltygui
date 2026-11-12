@@ -1105,7 +1105,7 @@ def _suggest_import_for_path(name, path, cached_only=False):
     return _project_import_suggestion_cache[key]
 
 
-_project_importables_cache = None   # (src_module_count, rows, stmts)
+_project_importables_cache = None   # (src_module_count, rows, stmts, loaded module count)
 
 
 def project_importables():
@@ -1119,6 +1119,9 @@ def project_importables():
     with a module. Cached; rebuilt when the number of loaded src. modules
     changes (imports only ever add modules mid-session)."""
     global _project_importables_cache
+    # (Asked once per word typed, on the render thread: no module came or went, nothing is looked at.)
+    if _project_importables_cache is not None and _project_importables_cache[3] == len(sys.modules):
+        return _project_importables_cache[1], _project_importables_cache[2]
     from meltygui.code.fileref import is_editable_source
     src_mods = {n: m for n, m in list(sys.modules.items())
                 if m is not None and getattr(m, "__file__", None)
@@ -1126,6 +1129,7 @@ def project_importables():
     stamp = len(src_mods)
     if (_project_importables_cache is not None
             and _project_importables_cache[0] == stamp):
+        _project_importables_cache = (*_project_importables_cache[:3], len(sys.modules))
         return _project_importables_cache[1], _project_importables_cache[2]
     stmts = {}
     for mod_name in sorted(src_mods):
@@ -1143,7 +1147,7 @@ def project_importables():
         if parent and not base.startswith("_"):
             stmts.setdefault(base, f"from {parent} import {base}")
     rows = [(n, "auto_import") for n in sorted(stmts)]
-    _project_importables_cache = (stamp, rows, stmts)
+    _project_importables_cache = (stamp, rows, stmts, len(sys.modules))
     return rows, stmts
 
 

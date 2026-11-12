@@ -14,6 +14,9 @@ separate uncached dispatch, full retained redraw, unchanged frames and culling.
 replay observations, opportunistic idle probes and their coverage limits.
 [Automatic cache selection](GUI_AUTO_CACHE.md) records the current implementation,
 code changes, matched default/calibrated results and remaining redraw overhead.
+The [native editor](NATIVE_EDITOR.md) (2026-11-11) is the first large view built
+on it; the event kinds, pointer shapes and the wake from native threads
+described below were added for it.
 
 ## Short how-to guide
 
@@ -169,6 +172,63 @@ For in-place external model changes, use the associated cache's
 The low-level harness consumes queued state changes with `cache.flush()`; the
 app host drives that lifecycle during frames. Mutation and GL work belong on the
 owning render thread.
+
+### Input events and pointer shape
+
+A view that names events with `listen=` is event driven: raw pointer and key
+samples never rerun it, and what it listed arrives as lists in `view_events`.
+
+```python
+@gui(listen=('keys', 'text', 'pointer', 'wheel'), cursor=mouse_cursor.TEXT)
+def field(input_value: str, view_events=None):
+    for key, mods in view_events.get('keys', ()):
+        ...
+    for event in view_events.get('pointer', ()):   # Pointer(kind, x, y, clicks, ctrl, shift, alt, button)
+        ...
+```
+
+| Name | Arrives as |
+| --- | --- |
+| `keys` | `(key, mods)` presses and repeats, for the keyboard owner |
+| `text` | typed strings, for the keyboard owner |
+| `focus` | True / False when the view gains / loses the keyboard |
+| `pointer` | `Pointer` press, drag and release of any button (`button`: 0 left, 1 right, 2 middle), in the view's coordinates |
+| `hold` | a `Pointer` of kind `hold` once a frame while a button is held and the pointer rests outside the view: what a drag past an edge needs to keep scrolling |
+| `hover` | a `Pointer` of kind `hover` as the pointer moves over the view with no button held, and one of kind `leave` |
+| `touch` | `Touch(kind, contact, x, y)` contacts, from hosts that report them through `ImGuiInput.touch` |
+| `wheel` | `(horizontal, vertical)` steps no viewport consumed |
+| `scroll` | True after a viewport under the pointer scrolled |
+
+A left press gives the keyboard, any press the pointer, to the innermost
+listening view around the hit one, so a popover or an inline widget leaves the
+keyboard with its editor. A view that lists nothing (`listen=()`) costs one
+dictionary truth test a frame. `cursor=shape` (a `core/input/mouse_cursor.py`
+shape) declares the pointer's shape over the view without running a body: the
+innermost declaring view around the hovered one wins, and the view holding a
+drag keeps its shape until release. The contract is the module text of
+[gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py).
+
+### Results from other threads
+
+A view whose background result arrived asks for another run. The injected
+`cache` offers two ways, and nothing else of it is safe off the render thread:
+
+```python
+node = cache.current
+wake = lambda: cache.wake(node)        # for a Python thread
+handle, token = cache.waker(node)      # for a native thread that never takes the interpreter lock
+```
+
+`cache.waker` returns a C handle and a token. The native thread calls the handle
+with the token; that queues the token and rouses the window system's event wait
+(`window_api.poke`: GLFW's empty event, the native Wayland wake socket). The
+frame loop turns queued tokens into `cache.wake(node)` in `app.run`,
+`NativeApp.frame` and `cache.flush()`. The queue is `Wakes` in
+[wake.rs](../native/gui_prototype/src/wake.rs); the Python side is `waker`,
+`drain_wakes` and `close_wakes` in `core/windowing/glfw_utils.py`. A Python
+worker that computes between frames must also give way to them:
+`glfw_utils.park()` between pieces of well under a millisecond
+([why](NATIVE_EDITOR.md#rules)).
 
 ## Design decisions
 
@@ -370,7 +430,16 @@ for timing conditions, resource counts, profiles and failure controls.
   identity unless a key overrides them. Module/qualified-name changes need an
   explicit stable `state_id` when continuity matters.
 - Arbitrary mutable input is not content-hashed or watched automatically. Use
-  explicit invalidation for external in-place model changes.
+  explicit invalidation for external in-place model changes. Strings longer than
+  4,096 characters (`PATH_ALIAS` in `retained_gui_prototype.py`) alias by
+  identity like any other object, so a whole file's text is never hashed or
+  compared per declaration: pass a new string, or a model such as `Source`.
+- The wake handle rouses GLFW and native Wayland. The iOS host has no entry
+  point to request a frame without the interpreter, and this host draws with
+  OpenGL only.
+- A right-button press reaches a listening view only if the view also keeps the
+  host's window gestures off it (`draw_editor` declares a hit region and an item
+  for that). The claim belongs in the input bridge.
 - Coordinate conversion does not span different native OS surfaces. Rotations,
   scaling and a general transform system are not implemented here.
 - Python body/signature edits have focused state-preservation tests. One
@@ -397,6 +466,8 @@ for timing conditions, resource counts, profiles and failure controls.
 | Automatic raster policy and shared replay | [gui_cache_policy.py](../meltygui/core/rendering/gui_cache_policy.py), [shared_replay.rs](../native/gui_prototype/src/shared_replay.rs), [global toggle](../meltygui/core/runtime/toggles.py) |
 | Runtime cost calibration | [gui_calibration.py](../meltygui/core/rendering/gui_calibration.py), [native probes](../native/gui_prototype/src/calibration.rs) |
 | Window/input/layout integration | [gui_window_prototype.py](../meltygui/core/rendering/gui_window_prototype.py), [gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py), [gui_layout_prototype.py](../meltygui/core/rendering/gui_layout_prototype.py) |
+| Wake from native threads | [wake.rs](../native/gui_prototype/src/wake.rs), `waker` / `drain_wakes` / `close_wakes` / `park` in [glfw_utils.py](../meltygui/core/windowing/glfw_utils.py), `poke` in [window_api.py](../meltygui/core/windowing/window_api.py) |
+| Largest user so far | the [native editor](NATIVE_EDITOR.md): [editor_view.py](../meltygui/view/editor_view.py) |
 | Session persistence | [app_session.py](../meltygui/core/runtime/app_session.py), [load_save_v2.py](../meltygui/core/conversion/load_save_v2.py) |
 | Contract tests | [identity](../tests/test_gui_identity.py), [persistence](../tests/test_gui_persistence.py), [positions](../tests/test_gui_position_api.py), [scroll/geometry](../tests/test_gui_scroll_geometry.py) |
 | Interactive and measured checks | [scroll lab](../examples/gui_scroll_lab.py), [benchmark](../tests/benchmark_gui_scrolling.py) |

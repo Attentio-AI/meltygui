@@ -1,12 +1,15 @@
 """`draw_editor`: the code and text editor as native `@gui` views.
 
     changed, text = draw_editor(text, name='source', width=800, height=600)
+    changed, source = draw_editor(source, ...)      # a `Source` (model/source_model.py), edited in place
 
 Structure, outermost first:
 
 - `draw_editor` owns the keyboard and pointer. It turns events into edit
   commands (`editor/keys.py`, `editor/edit.py`), keeps the session in step
-  (`Editor.sync`) and places the caret, scroll bar and popovers.
+  (`Editor.sync`) and places the caret, scroll bar and popovers. Ctrl+B
+  (`editor/lookup.py`) is asked here and answered on a later run; while the
+  find bar has the keyboard the keys are its field's (`editor/find.py`).
 - `pane` is the scrolling viewport. It declares one `block` view for each
   document block near the viewport (`Editor.window` chooses them), so its cost
   does not depend on the file's length.
@@ -29,7 +32,7 @@ import meltygui_imgui as imgui
 from meltygui.core.input import mouse_cursor
 from meltygui.core.rendering.gui_prototype import gui
 from meltygui.editor import edit, keys, suggest, syntax
-from meltygui.editor.marks import problems, values, pause, breaks, given
+from meltygui.editor.marks import problems, values, pause, given
 from meltygui.editor.suggest import ROWS
 from meltygui.editor.editor import Editor, FLASH
 from meltygui.editor.rows import Numbers
@@ -37,6 +40,7 @@ from meltygui.editor.inline import inline, for_token, for_value
 from meltygui.editor.syntax import shift
 from meltygui.core.runtime.toggles import Tint, Toggles
 from meltygui.hdr_color import pack_color
+from meltygui.model.source_model import Source
 from meltygui.state.editor_state import EditorState, LOADING
 import meltygui.core.windowing.window_constants as glfw
 
@@ -51,6 +55,8 @@ FOLD = 16.                       # gutter strip holding the fold chevrons
 PAD = 6.                         # space left of the line numbers
 CREEP = 1.5                      # rows a second a held selection scrolls, per pixel past the edge
 PLAIN = pack_color(.66, .72, .78)        # text without a token colour
+FOUND = (.98, .62, .12)                  # the current search hit: its fill and frame
+FIELD = 24                               # cells of the find bar's field (it grows with a longer term)
 Look = namedtuple('Look', 'back gutter number caret band select guide guide_width scope block symbol hit flash folded '
                           'error breakpoint pause paused value pill ghost thumb pop pick dim')
 
@@ -151,6 +157,12 @@ def paint_hit(row, mark):
     row.dl.add_rect_filled(x0, row.y + 1, x1, row.y + row.lh - 1, tone(mark.color, .45, row.look.hit), 2.)
 
 
+def paint_found(row, mark):
+    x0, x1 = span(row, mark)
+    row.dl.add_rect_filled(x0, row.y + 1, x1, row.y + row.lh - 1, tone(mark.color or FOUND, .35, 0), 2.)
+    row.dl.add_rect(x0 - 1, row.y, x1 + 1, row.y + row.lh, tone(mark.color or FOUND, 1., 0), 2.)
+
+
 def paint_flash(row, mark):
     x0, x1 = span(row, mark)
     row.dl.add_rect_filled(x0 - 3, row.y, x1 + 3, row.y + row.lh, tone(mark.color, .3, row.look.flash), 3.)
@@ -232,6 +244,7 @@ SHAPES = {
     'band': (UNDER, paint_band),            # a wash across the line
     'wash': (UNDER, paint_wash),            # a soft wash behind a span
     'hit': (MATCH, paint_hit),              # a search hit: over the selection, under the text
+    'found': (MATCH, paint_found),          # the current search hit
     'flash': (MATCH, paint_flash),          # the text an undo or a jump just landed on
     'color': (GLYPH, None),                 # the glyphs of a span take the colour (`data`: how much, 0..1)
     'box': (OVER, paint_box),               # a frame around a span
@@ -276,18 +289,21 @@ def paint(ed, block, first, top, width, numbers, show_scopes):
     Returns the widget sites [(row, line, column, x, text, entry)], the live
     value sites and the click spots."""
     dl = imgui.get_window_draw_list()
-    doc, rows, folds, colors, look = ed.doc, ed.rows, ed.folds, palette(), ed.look
+    doc, rows, colors, look = ed.doc, ed.rows, palette(), ed.look
     cw, lh, gutter = ed.cw, ed.lh, ed.gutter
-    texts, states = block.lines(), block.open
-    lines = [line for line in range(first, first + block.count) if not rows.hidden(line)] if rows.first \
+    texts, states = doc.rows(first, block.count), ed.syntax.states(first, block.count)
+    lines = [line for line in range(first, first + block.count) if not rows.hidden(line)] if rows.runs \
         else range(first, first + block.count)
     if not lines:
         return (), (), ()
     head, tail = lines[0], lines[-1]
     left = gutter - ed.scroll_x
     low, high = doc.selection
-    base = doc.start(first)
-    starts = block.starts
+    # The offset each line starts at.
+    starts, start = [], doc.start(first)
+    for text in texts:
+        starts.append(start)
+        start += len(text) + 1
     # Columns on screen: long lines only submit this band.
     band0 = int(ed.scroll_x // cw)
     band1 = band0 + int((width - gutter) // cw) + 2
@@ -301,15 +317,11 @@ def paint(ed, block, first, top, width, numbers, show_scopes):
     under, match, glyph, over, edge = layers
     dl.push_clip_rect(gutter, 0, width, len(lines) * lh, True)
     if show_scopes:
-        for index in folds.within(head, tail):
-            scope = folds.scopes[index]
-            start, last = folds.range(index)
-            if scope is None or rows.hidden(start):
-                continue
+        for start, last, indent, definition in rows.guides(head, tail):
             y0 = (rows.row(max(start, head)) - top) * lh
             y1 = (rows.row(min(last, tail)) - top + 1) * lh
-            x = left + scope[0] * cw
-            if scope[1]:
+            x = left + indent * cw
+            if definition:
                 # A tinted definition is the scope headed by a 'tint' mark.
                 tint = ed.mark('tints', start, 'tint')
                 dl.add_rect_filled(x, y0, width, y1, tone(tint and tint.color, look.block, look.scope))
@@ -325,9 +337,9 @@ def paint(ed, block, first, top, width, numbers, show_scopes):
         y = at * lh
         local = line - first
         text = texts[local]
-        start = base + starts[local]
+        start = starts[local]
         stop = start + len(text)
-        state = states[local] if states else None
+        state = states[local]
         # The line's column map: `inset` is None on a line without widget cells.
         inset = ed.syntax.insets(text, state)
         if inset is None:
@@ -392,7 +404,7 @@ def paint(ed, block, first, top, width, numbers, show_scopes):
             if number is not None:
                 text = str(number)
                 dl.add_text(gutter - FOLD - len(text) * cw, row.y + (lh - lh / LINE) * .5, row.number, text)
-            if ed.fold(line) is not None:
+            if rows.fold(line) is not None:
                 x, mid = gutter - FOLD * .5 - 2, row.y + lh * .5
                 if rows.folded(line):
                     dl.add_triangle_filled(x - 3, mid - 5, x + 4, mid, x - 3, mid + 5, look.folded)
@@ -407,7 +419,7 @@ def block(input_value, at=0, stamp=0, first=0, width=0., height=0., widgets=True
     them. `stamp` and `first` only exist to run the body again when the
     lines or their numbers changed."""
     ed = input_value
-    found, placed = ed.doc.keys.get(at), ed.placed.get(at)
+    found, placed = ed.blocks.get(at), ed.placed.get(at)
     if found is None or placed is None:
         # An edit merged this block away: the pane is about to stop declaring it.
         return False, ed
@@ -464,6 +476,18 @@ def caret(input_value, shown=True, ghost='', color=0, faint=0, width=0., height=
 
 
 @gui(listen=())
+def trail(input_value, lines=(), shift=0., color=0, width=0., height=0.):
+    """The lines of a ghost suggestion after its first, dim over the rows
+    below the caret: the text starts `shift` pixels left of the view."""
+    dl = imgui.get_window_draw_list()
+    pushed, _, lh = font()
+    for at, line in enumerate(lines):
+        dl.add_text(-shift, at * lh + (lh - lh / LINE) * .5, color, line)
+    if pushed:
+        imgui.pop_font()
+
+
+@gui(listen=())
 def end(input_value):
     """Nothing: its position is the last row, which gives the pane its scroll range."""
 
@@ -481,22 +505,28 @@ def pane(input_value, stamp=0, width=0., height=0., widgets=True, numbers=True, 
     changed = False
     base = ed.base
     for found, first, row, count in ed.shown:
-        edited, _ = block(ed, key=found.key, at=found.key, stamp=max(found.stamp, base), first=first if numbers else 0,
+        edited, _ = block(ed, key=found.key, at=found.key, stamp=max(found.stamp, base) + found.edit, first=first if numbers else 0,
                           left=0., top=row * lh, width=width, height=count * lh, widgets=widgets, numbers=numbers,
                           scopes=scopes)
         changed |= edited
     end(None, name='end', left=0., top=(ed.rows.count - 1) * lh, width=1., height=lh)
+    # A ghost suggestion: its first line after the caret, the others over the rows below (Tab inserts all of it).
+    ghost, *rest = ghost.split('\n')[:1 if single else None]
     _, _, ed.caret = caret(None, name='caret', shown=focused, ghost=ghost, color=ed.look.caret, faint=ed.look.ghost,
                            width=max(2., len(ghost) * ed.cw + 4), height=lh,
                            initial={'left': x - ed.scroll_x, 'top': y}, return_extras=True)
+    if rest:
+        trail(None, name='trail', lines=tuple(rest), shift=ed.scroll_x, color=ed.look.ghost,
+              left=ed.gutter, top=y + lh, width=max(width - ed.gutter - BAR, 1.), height=len(rest) * lh)
     return changed, ed
 
 
 # --- popovers -------------------------------------------------------------
 @gui(listen=('pointer', 'hover', 'wheel'))
 def choices(input_value, which='suggest', rows=(), index=0, first=0, width=0., height=0., view_events=None):
-    """The list popover: the suggestions (`which='suggest'`) or an error's
-    quick fixes ('fixes'), each a `suggest.Menu` on the session. The keyboard
+    """The list popover: the suggestions (`which='suggest'`), an error's
+    quick fixes ('fixes') or the usage picker ('lookup'), each a
+    `suggest.Menu` on the session. The keyboard
     stays with the editor, which moves the selection; here the pointer does:
     hovering selects, the wheel scrolls, a click picks (the editor acts on
     `Menu.picked` on its next run). `rows`, `index` and `first` only exist to
@@ -542,8 +572,8 @@ def pop(ed, name, which, left, top, height):
     """Declare the list popover for the session's menu `which`, below `top` or above it when it would not fit."""
     menu, cw, lh = getattr(ed, which), ed.cw, ed.lh
     count = min(len(menu.rows), ROWS)
-    wide = (max(len(text) + len(tag) + (len(menu.extra(at)[1]) + 2 if menu.extra(at)[1] else 0)
-                for at, (text, tag) in enumerate(menu.rows)) + 4) * cw + 12
+    wide = (menu.cells or max(len(text) + len(tag) + (len(menu.extra(at)[1]) + 2 if menu.extra(at)[1] else 0)
+                              for at, (text, tag) in enumerate(menu.rows)) + 4) * cw + 12
     below = top + lh
     choices(ed, name=name, melty_window=True, content_offset=(0., 0.), which=which, rows=menu.rows, index=menu.index,
             first=menu.first, left=left, width=wide, height=count * lh,
@@ -563,12 +593,61 @@ def note(input_value, lines=(), width=0., height=0., color=0, view_events=None):
         imgui.pop_font()
 
 
+@gui(listen=('pointer',))
+def finder(input_value, text='', low=0, high=0, caret=0, focused=False, count='', missed=False, width=0., height=0., view_events=None):
+    """The find bar: the glass, the term in its field with the field's own
+    caret and selection, the count, the close cross. The keyboard stays
+    with the editor, which gives it to the field (`Find.typed`); here a
+    press on the cross closes and one on the field puts its caret there
+    (the editor acts on `Find.clicked` on its next run). The parameters
+    besides the session only exist to run the body again when they change."""
+    ed, look = input_value, input_value.look
+    dl = imgui.get_window_draw_list()
+    pushed, cw, lh = font()
+    left, cross = 3.5 * cw, width - 2.5 * cw
+    pressed = False
+    for event in view_events.get('pointer', ()):
+        if event.kind == 'press' and not event.button:
+            ed.search.clicked = 'close' if event.x >= cross else max(int((event.x - left) / cw + .5), 0)
+            pressed = True
+    y = (height - lh) * .5
+    ty = y + (lh - lh / LINE) * .5
+    dl.add_rect_filled(0, 0, width, height, look.pop, 5.)
+    dl.add_text(cw, ty, look.dim, f'')
+    if low < high:
+        dl.add_rect_filled(left + low * cw, y, left + high * cw, y + lh, look.select)
+    dl.add_text(left, ty, look.caret, text)
+    if focused:
+        dl.add_rect_filled(left + caret * cw, y + 1, left + caret * cw + 2, y + lh - 1, look.caret)
+    dl.add_text(cross - (len(count) + 1.5) * cw, ty, look.error if missed else look.dim, count)
+    dl.add_text(cross + .5 * cw, ty, look.dim, f'')
+    if pushed:
+        imgui.pop_font()
+    return pressed, ed
+
+
+def bar(ed, width, height):
+    """Declare the find bar in the view's lower right corner (where the legacy editor's is)."""
+    find, cw, lh = ed.search, ed.cw, ed.lh
+    field, found = find.field.doc, find.state(ed)
+    arrived = ed.marks.get('hits') is not None
+    count = f'{found.index} of {found.count}' if found.count else 'no match' if ed.term and arrived else ''
+    low, high = field.selection
+    wide = (max(field.size + 1, FIELD) + 18) * cw
+    finder(ed, name='find', melty_window=True, content_offset=(0., 0.), text=field.text, low=low, high=high, caret=field.caret,
+           focused=find.focused and ed.focused, count=count, missed=bool(ed.term) and arrived and not found.count,
+           left=max(width - BAR - wide - 6, 0.), top=max(height - lh - 16, 0.), width=wide, height=lh + 8)
+
+
 # --- the editor -----------------------------------------------------------
-def session(state, text, language, fold_defaults, wake, path):
+def session(state, value, language, fold_defaults, wake, path, waker=None):
     """The view's `Editor`, created on first use and restored from `state`.
-    Another `path` is another document: a new session, not an edit."""
+    `wake` runs this view again from Python; `waker` is the same for the
+    source's reading thread, which holds no interpreter.
+    Another `path` (or another `Source` as the value) is another document: a
+    new session, not an edit."""
     ed = state.editor
-    if text is LOADING:
+    if value is LOADING:
         if ed is None or not ed.standin:
             # The rows the last session showed, where they were: blank lines around the snapshot.
             below = max(state.view_rows - state.view_first - state.view_text.count('\n') - 1, 0)
@@ -578,22 +657,24 @@ def session(state, text, language, fold_defaults, wake, path):
             ed.sources['numbers'] = (None, None)
             if language == 'python':
                 syntax.warm(wake)
-        ed.wake = ed.worker.wake = wake
+        ed.wake, ed.waker = wake, waker
         return ed
-    if ed is None or ed.path != path or ed.standin:
+    source = value if isinstance(value, Source) else None
+    if ed is None or ed.path != path or ed.standin or (source is not None and ed.source is not source):
         if ed is not None:
-            ed.closed = True        # its undo steps no longer apply
-        ed = state.editor = Editor(text, language, fold_defaults, state.collapsed, state.gaps)
+            ed.close()
+        ed = state.editor = Editor(value if source is None else '', language, fold_defaults, state.collapsed, state.gaps, source)
         ed.path = path
         ed.doc.select(state.caret, state.anchor)
         if language == 'python':
             syntax.warm(wake)
-    elif not any(text is known for known in (ed.given, ed.gave)) and text not in (ed.given, ed.gave, ed.doc.text):
+    elif source is None and not any(value is known for known in (ed.given, ed.gave)) \
+            and value not in (ed.given, ed.gave, ed.doc.text):
         # Neither what the caller passed before nor what this view returned: the caller replaced the text.
-        ed.load(text)
+        ed.load(value)
         ed.returned = ed.doc.version
-    ed.given = text
-    ed.wake = ed.worker.wake = wake
+    ed.given = value
+    ed.wake, ed.waker = wake, waker
     return ed
 
 
@@ -609,8 +690,39 @@ def spot(ed, x, y):
     return None
 
 
+def slide(ed, scroll_x, width):
+    """Scroll sideways to `scroll_x`, no further than the longest line on screen."""
+    reach = max((max((found.wide for found, *_ in ed.shown), default=0) + 4) * ed.cw - (width - ed.gutter - BAR), 0.)
+    scroll_x = min(max(scroll_x, 0.), max(reach, ed.scroll_x))
+    if scroll_x != ed.scroll_x:
+        ed.scroll_x = scroll_x
+        ed.touch()
+
+
+def sideways(ed, low, high, width):
+    """Scroll sideways, as little as it takes, so that the text from offset
+    `low` to `high` (what was landed on) is in view; a span over several
+    lines by its first."""
+    doc = ed.doc
+    (line, column), (last, stop) = doc.place(low), doc.place(high)
+    x0, x1 = ed.x(line, column), ed.x(line, stop if last == line else len(doc.line(line)))
+    room = width - ed.gutter - BAR - ed.cw
+    if x0 - ed.gutter < ed.scroll_x or room <= 0:
+        scroll_x = max(x0 - ed.gutter - ed.cw, 0.)
+    elif x1 - ed.gutter > ed.scroll_x + room:
+        scroll_x = min(x1 - ed.gutter - room, x0 - ed.gutter)
+    else:
+        return
+    if scroll_x != ed.scroll_x:
+        ed.scroll_x = scroll_x
+        ed.touch()
+
+
 def press(ed, event, desk, scroll_y, width, height, widgets):
-    """A pointer press, drag or release in view coordinates."""
+    """A pointer press, drag or release in view coordinates. The left button
+    places the caret and selects (`ed.hold` says what it holds: text, by
+    character or, after a double or triple click, by word or line; the
+    scroll bar; a widget); the right button pans."""
     doc = ed.doc
     x, y = event.x, event.y
     line, column = ed.spot(x, y, scroll_y)
@@ -618,14 +730,16 @@ def press(ed, event, desk, scroll_y, width, height, widgets):
     if event.kind == 'press' and not event.button:
         ed.hold = ed.detail = ed.step = None
         ed.creep = (0., time.monotonic())
-        ed.suggest.close()
+        ed.suggest.drop()
+        ed.lookup.drop()
+        ed.search.focused = False       # the bar stays open: the keyboard is the text's
         if x >= width - BAR and not desk.single:
             ed.hold = ('bar', y, scroll_y)
         elif x < ed.gutter:
-            if x >= ed.gutter - FOLD and ed.fold(line) is not None:
+            if x >= ed.gutter - FOLD and ed.rows.fold(line) is not None:
                 ed.toggle(line)
-            elif ed.slots.get('break') is not None and ed.numbers.number(line) is not None:
-                ed.slots['break'](ed.numbers.number(line))
+            elif ed.slots.get('break') is not None:
+                ed.slots['break'](line)
             else:
                 edit.select_line(doc, index)
         else:
@@ -643,9 +757,19 @@ def press(ed, event, desk, scroll_y, width, height, widgets):
                 edit.select_line(doc, index)
             else:
                 edit.move(doc, index, select=event.shift)
-            ed.hold = ('text',)
+            # A drag from a double or triple click extends by word or line around the one it selected.
+            ed.hold = ('text', (None, None, 'word', 'line')[event.clicks], *doc.selection) if event.clicks > 1 else ('text',)
+    elif event.button == 1:
+        # The right button pans both axes: the text under the pointer follows it.
+        if event.kind == 'press':
+            ed.hold = ('pan', x, y, ed.scroll_x, scroll_y)
+        elif ed.hold is not None and ed.hold[0] == 'pan' and event.kind == 'drag':
+            slide(ed, ed.hold[3] - (x - ed.hold[1]), width)
+            ed.scroll_to = min(max(ed.hold[4] - (y - ed.hold[2]), 0.), max(ed.rows.count * ed.lh - height, 0.))
+        elif event.kind == 'release':
+            ed.hold = None
     elif event.button:
-        return      # only the left button edits; the others are for later (a context menu, a pan)
+        return      # the middle button is for later
     elif ed.hold is not None:
         if ed.hold[0] == 'text' and event.kind == 'hold':
             # Held past the top or bottom edge: the selection creeps on, faster the further out.
@@ -656,9 +780,9 @@ def press(ed, event, desk, scroll_y, width, height, widgets):
             if rows:
                 ed.creep = (ed.creep[0] - rows, now)
                 edge = scroll_y if beyond < 0 else scroll_y + height - ed.lh
-                edit.move(doc, doc.index(ed.rows.line(int(edge // ed.lh) + rows), column), select=True)
+                edit.extend(doc, doc.index(ed.rows.line(int(edge // ed.lh) + rows), column), *ed.hold[1:])
         elif ed.hold[0] == 'text' and event.kind == 'drag':
-            edit.move(doc, index, select=True)
+            edit.extend(doc, index, *ed.hold[1:])
         elif ed.hold[0] == 'bar':
             reach = max(ed.rows.count * ed.lh - height, 0.)
             ed.scroll_to = min(max(ed.hold[2] + (y - ed.hold[1]) * ed.rows.count * ed.lh / max(height, 1.), 0.), reach)
@@ -669,10 +793,14 @@ def press(ed, event, desk, scroll_y, width, height, widgets):
             ed.hold = ed.step = None
 
 
-def typed(ed, events, desk, complete, tree, path, source, ghost, wake):
+def typed(ed, events, desk, complete, path, source, ghost, wake, roster):
     """Run the frame's key presses and typed text in order. Returns whether
     text was typed (suggestions follow typing only)."""
     doc, menu = ed.doc, ed.suggest
+    if ed.search.focused:
+        # The find bar's field has the keyboard (editor/find.py).
+        ed.search.typed(ed, events, desk)
+        return False
     pending = ''.join(events.get('text', ()))
     wrote = False
     for key, mods in events.get('keys', ()):
@@ -685,11 +813,14 @@ def typed(ed, events, desk, complete, tree, path, source, ghost, wake):
             continue
         chord = mods & keys.MODS
         if key == glfw.KEY_ESCAPE:
-            menu.close()
-            ed.detail = menu.signature = None
+            if ed.search.open and not (menu.open or ed.lookup.open or ed.detail is not None):
+                ed.search.close(ed)     # nothing else to close: the find bar goes
+            menu.escape(ed)
+            ed.lookup.drop()
+            ed.detail = None
             continue
-        # An open list takes the navigation keys: the suggestions, else the quick fixes of the open detail.
-        found = menu if menu.open else ed.fixes if ed.detail is not None and ed.fixes.open else None
+        # An open list takes the navigation keys: the suggestions, else the usage picker, else the quick fixes of the open detail.
+        found = menu if menu.open else ed.lookup if ed.lookup.open else ed.fixes if ed.detail is not None and ed.fixes.open else None
         if found is not None and not chord:
             if key in (glfw.KEY_UP, glfw.KEY_DOWN):
                 found.step(-1 if key == glfw.KEY_UP else 1)
@@ -697,23 +828,49 @@ def typed(ed, events, desk, complete, tree, path, source, ghost, wake):
             if key in (glfw.KEY_PAGE_UP, glfw.KEY_PAGE_DOWN):
                 found.page(-1 if key == glfw.KEY_PAGE_UP else 1)
                 continue
-            if key in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER, glfw.KEY_TAB) and desk.editable:
+            if key in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER, glfw.KEY_TAB) and (desk.editable or found is ed.lookup):
                 found.picked = found.index
                 continue
         if key == glfw.KEY_TAB and not chord and ghost and desk.editable:
-            edit.insert(doc, ghost)
+            # What the caret shows of it (`pane`): all of it, its first line in a single line field.
+            edit.insert(doc, ghost.split('\n')[0] if desk.single else ghost)
+            continue
+        if key == glfw.KEY_TAB and not chord and menu.hop(doc):
             continue
         if key == glfw.KEY_SPACE and chord == keys.CTRL and complete and desk.editable:
             ed.sync()
-            menu.refresh(ed, False, explicit=True, tree=tree, path=path, source=source, wake=wake)
+            menu.refresh(ed, False, explicit=True, path=path, source=source, wake=wake)
+            continue
+        if key == glfw.KEY_P and chord == keys.CTRL and complete and desk.editable and not desk.single:
+            ed.sync()
+            menu.hint(ed, path, wake, asked=True)
+            continue
+        if key == glfw.KEY_F and chord == keys.CTRL and not desk.single:
+            menu.close()
+            ed.lookup.drop()
+            ed.detail = None
+            ed.search.show(ed)
+            return wrote        # (what else was pressed this frame is the field's from now on: dropped)
+        if key == glfw.KEY_B and chord == keys.CTRL | keys.SHIFT and not desk.single:
+            ed.lookup.outside(ed, path)
+            continue
+        if key == glfw.KEY_B and chord == keys.CTRL and not desk.single:
+            # Go to the definition of the name at the caret, or to its uses (editor/lookup.py): answered on a later run.
+            ed.sync()
+            menu.close()
+            ed.detail = None
+            ed.lookup.ask(ed, roster)
             continue
         if key == glfw.KEY_ENTER and chord == keys.ALT and desk.editable:
             found = ed.mark('errors', doc.line_of(doc.caret), 'error')
-            if found is not None and found.data[1]:
+            if found is not None and len(found.data[1]) > 1:
+                ed.detail = doc.line_of(doc.caret)      # several imports could bind the name: the chooser
+            elif found is not None and found.data[1]:
                 suggest.fix_import(ed, found.data[1][0], path)
             continue
         if keys.press(ed, desk, key, mods):
             menu.close()
+            ed.lookup.drop()
             ed.detail = None
     if pending and desk.editable:
         ed.step = None
@@ -723,38 +880,61 @@ def typed(ed, events, desk, complete, tree, path, source, ghost, wake):
     return wrote
 
 
-@gui(listen=('keys', 'text', 'pointer', 'hold', 'wheel', 'scroll', 'focus'), no_save=('on_submit', 'completion_source'))
+@gui(listen=('keys', 'text', 'pointer', 'hold', 'wheel', 'scroll', 'focus'), no_save=('on_submit', 'completion_source', 'roster', 'on_open'))
 def draw_editor(input_value: str = '', state: EditorState = None, editable=True, single_line=False,
                 line_numbers=True, language='python', widgets=True, scopes=True, fold_defaults=True,
                 first_line=1, file_tint=None, folds=None, search='', errors=None, imports=None, tints=None, live=None,
-                breakpoints=None, paused=None, marks=None, code_tree=None, path=None, complete=True,
-                completion_source=None, ghost='', on_submit=None, focus=False,
+                breakpoints=None, paused=None, marks=None, path=None, complete=True,
+                completion_source=None, ghost='', on_submit=None, roster=None, on_open=None, focus=False,
                 width=None, height=None, cache=None, view_events=None):
     """Edit `input_value`; returns `(changed, text)`. While the text is
     still loading pass `LOADING` (state/editor_state.py): the rows the last
     session showed are painted from the state's snapshot, read only.
 
+    A code file's value is a `Source` (model/source_model.py): it is edited
+    in place and returned, so no edit copies the text, and the caller's
+    models read its facts. Several editors may be on one source and code
+    that is no editor may `splice` it: each session follows the rest. Read
+    the text with `source.text` where all of it is needed. A `str` is for
+    small fields (a search box, a message): it is joined again for every
+    edit returned, which costs the whole text each time.
+
     What is shown besides the text comes from plain values, read again only
     when the object passed changes: `errors` [(line, message)] or an
     exception, `imports` {line: [statement]} (quick fixes), `tints` (a
-    `marks.tints` set), `live` (a live value store), `breakpoints` (a set of
-    lines, edited in place by gutter clicks and by edits that move them),
+    `marks.tints` set), `live` (a live value store), `breakpoints` ({source site key:
+    {'enabled': bool}}, as a file's metadata keeps them: a gutter click
+    toggles the statement on its line, by key, never by line; a change
+    from outside arrives as another mapping),
     `paused` (the debugger's line), `marks` ({name: `Marks`}: any further
     decorations, see `editor/marks.py`), `folds` (extra collapsible `(head,
-    last)` ranges such as unchanged diff context), `search` (a term to
-    highlight), `ghost` (a suggestion drawn after the caret, Tab accepts it).
+    last)` ranges such as unchanged diff context), `search` (the term of a
+    caller's own search field: its hits are washed, the first from the caret
+    is revealed, `state.pane.find(1 / -1)` steps and `state.pane.search` is
+    (term, index, count); Ctrl+F opens the editor's own find bar without any
+    of it, see editor/find.py), `ghost` (a suggestion drawn after the caret,
+    Tab accepts it).
     Lines in parameters are file lines. The buffer is the part of its file
     that starts at `first_line`; or `line_numbers` is a list with each buffer
     line's file line (None: no number, as in a diff). `file_tint` ((r, g, b))
-    tints the body, the gutter numbers and the guides. `code_tree` (a parse
-    from `cst_module_to_dict`) and `path` improve suggestions.
+    tints the body, the gutter numbers and the guides. `path` lets member
+    and signature lookups resolve the file's own imports.
     `on_submit(text)` makes Enter submit. `focus=True` takes the keyboard.
+    Ctrl+Shift+B opens the caret's line in the external editor.
+    Ctrl+B goes from a use to its definition and from a definition's name
+    to its uses (several: a picker). `roster` (model/roster_model.py:
+    `project(path)`) makes that the project's; without one it is the text's
+    own symbols. A place in another file is the caller's to show:
+    `on_open(path, line, column)` (a file line; the column counts from 0).
+    Without it such places are listed but only the buffer's own are jumped to.
+    Give the same callable on every run (as for `on_submit`): another object,
+    such as a bound method taken anew, runs the view again.
     The injected `state` gives the caller a handle on the running editor:
     `state.pane` (`editor.Pane`: jump, select, focus; geometry).
     """
     node = cache.current
     wake = lambda: cache.wake(node)
-    ed = session(state, input_value, language if not single_line else None, fold_defaults, wake, path)
+    ed = session(state, input_value, language if not single_line else None, fold_defaults, wake, path, cache.waker(node))
     doc, menu, events = ed.doc, ed.suggest, view_events
     pushed, ed.cw, ed.lh = font()
     if pushed:
@@ -774,7 +954,7 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
     if gutter != ed.gutter:
         ed.gutter = gutter
         ed.touch()
-    # Background results first: what the worker finished since the last run.
+    # Background results first: what the source finished reading since the last run.
     ed.land()
     scroll_y = ed.pane.scroll_offset[1] if ed.pane is not None else 0.
     ed.scroll_to = None
@@ -787,17 +967,27 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
     ed.produce('errors', (errors, imports, numbers), problems)
     ed.produce('live', (live, numbers), values)
     ed.produce('paused', (paused, numbers), pause)
-    ed.produce('breaks', (None if breakpoints is None else frozenset(breakpoints), numbers), breaks)
+    ed.watch(breakpoints)
     ed.produce('tints', (tints,), given)
     for name, found in (marks or {}).items():
         ed.produce(name, (found,), given)
-    ed.slots['break'] = breakpoints.toggle if breakpoints is not None else None
+    ed.slots['break'] = ed.stop if breakpoints is not None else None
     if ed.changed('folds', (folds,)):
         ed.ranges(folds)
     if ed.changed('search', (search,)):
-        ed.find(search)
+        ed.search.seek(ed, search)
     before = (doc.caret, doc.anchor, doc.version)
     # --- input ---
+    # The right button is the editor's own (it pans, see `press`), so the host's window gestures
+    # must leave it alone. Two things decide that, both before the press reaches this view: the
+    # hit region makes the pointer over the editor a drag the host keeps from the OS window frame
+    # (`register_host_pointer`), and the item, which takes a right press and nothing else (the
+    # items of the views declared below overlap it), keeps it from the host's own layout resize
+    # (core/rendering/gui_imgui_input.py, `finish`).
+    cache.region('body', (0., 0., width, height))
+    imgui.set_cursor_pos((0., 0.))
+    imgui.invisible_button('##pan', width, height, imgui.BUTTON_MOUSE_BUTTON_RIGHT)
+    imgui.set_item_allow_overlap()
     for command in ed.asks:
         # What the caller asked of the handle since the last run.
         if command[0] == 'jump':
@@ -807,27 +997,31 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
             doc.select(*command[1:])
         elif command[0] == 'focus':
             cache.imgui_input.take_keyboard(node)
+        elif command[0] == 'find':
+            ed.search.step(ed, command[1])
     asked = bool(ed.asks)
     ed.asks.clear()
+    # What Ctrl+B asked for, once its lookup is in: a jump, the picker, or a red flash.
+    asked |= ed.lookup.arrive(ed, roster, on_open)
+    if ed.search.clicked is not None and ed.search.press(ed) and not ed.focused:
+        cache.imgui_input.take_keyboard(node)
     for gained in events.get('focus', ()):
         ed.focused = gained
         if not gained:
             menu.close()
+            ed.lookup.drop()
             ed.detail = None
         ed.tick += 1
     if focus and not ed.focused:
         cache.imgui_input.take_keyboard(node)
     for event in (*events.get('pointer', ()), *events.get('hold', ())):
         press(ed, event, desk, scroll_y, width, height, widgets and editable)
-    wrote = typed(ed, events, desk, complete, code_tree, path, completion_source, ghost, wake) \
+    wrote = typed(ed, events, desk, complete, path, completion_source, ghost, wake, roster) \
         if ('keys' in events or 'text' in events) else False
     for across, down in events.get('wheel', ()):
-        # Sideways no further than the longest line on screen.
-        reach_x = max((max((found.wide for found, *_ in ed.shown), default=0) + 4) * ed.cw - (width - gutter - BAR), 0.)
-        scroll_x = min(max(ed.scroll_x - across * 40., 0.), max(reach_x, ed.scroll_x))
-        if scroll_x != ed.scroll_x:
-            ed.scroll_x = scroll_x
-            ed.touch()
+        slide(ed, ed.scroll_x - across * 40., width)
+    # A new search term's first hit, once its hits are in (landed above, or read at once for a small text).
+    ed.search.settle(ed)
     # A row picked in a list popover, by Enter or a click.
     if menu.picked is not None and menu.open:
         ed.step = None
@@ -837,31 +1031,28 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
         ed.step = None
         suggest.fix_import(ed, ed.fixes.rows[min(ed.fixes.picked, len(ed.fixes.rows) - 1)][0], path)
         ed.detail = None
-    menu.picked = ed.fixes.picked = None
+    elif ed.lookup.picked is not None and ed.lookup.open:
+        asked |= ed.lookup.take(ed, on_open)
+    menu.picked = ed.fixes.picked = ed.lookup.picked = None
     # --- follow the edits ---
     edited = ed.sync()
-    if breakpoints is not None:
-        if edited:
-            # The dots moved with their lines: the caller's set follows them.
-            lines = {numbers.number(line) for line, _ in ed.marks['breaks'].on(0, doc.lines)} if ed.marks['breaks'] else set()
-            if lines != breakpoints:
-                breakpoints.clear()
-                breakpoints.update(lines)
-            ed.sources['breaks'] = (frozenset(breakpoints), numbers)
-        # A gutter click toggled one.
-        ed.produce('breaks', (frozenset(breakpoints), numbers), breaks)
     if edited or doc.version != before[2]:
         if complete and editable and not single_line:
-            menu.refresh(ed, wrote, tree=code_tree, path=path, source=completion_source, wake=wake)
-            if not menu.open:
-                menu.hint(ed, path, wake)
+            menu.refresh(ed, wrote, path=path, source=completion_source, wake=wake)
+            # Editing inside a call's parentheses arms its hint. An open list hides it: the call is
+            # looked for (a scan back from the caret) once the list closes.
+            if menu.open:
+                menu.owed = True
+            else:
+                menu.hint(ed, path, wake, edited=True)
     elif menu.pending is not None and menu.pending.done():
-        menu.pending = None
-        menu.refresh(ed, True, tree=code_tree, path=path, source=completion_source, wake=wake)
+        if menu.arrived():
+            menu.refresh(ed, True, path=path, source=completion_source, wake=wake)
         menu.hint(ed, path, wake)
     if ed.landing is not None:
         # An undo or redo changed text that may be out of sight: unfold it, bring it into view, flash it.
         ed.scroll_to = ed.reveal(*ed.landing[:2], scroll_y, view, ed.landing[2])
+        sideways(ed, *ed.landing[:2], width)
         ed.landing = None
         threading.Timer(FLASH, wake).start()
     elif ed.flash and time.monotonic() >= ed.flash:
@@ -875,6 +1066,11 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
         if (low != high or old_low != old_high) and (low, high) != (old_low, old_high):
             ed.touch_lines(doc.line_of(min(low, old_low, doc.size)), doc.line_of(min(max(high, old_high), doc.size)))
         ed.selection = (low, high)
+        ed.lookup.close()       # (a lookup under way stays: its answer is for the caret it was asked at)
+        if not edited:
+            menu.leave(ed)
+            if '\n' in ghost:
+                ed.tick += 1        # the ghost's further lines are placed by the pane: it runs again
         if not edited and not menu.explicit:
             menu.close()
             menu.hint(ed, path, wake) if complete and editable and not single_line else None
@@ -884,9 +1080,11 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
         ed.enter()
     if not ed.standin:
         # Each fold layer's collapsed set, for the next session. (A snapshot has no folds: the saved ones stay.)
-        collapsed, gaps = sorted(ed.folds.collapsed, key=repr), ed.extra.ranges()
-        if collapsed != state.collapsed:
-            state.collapsed = collapsed
+        if ed.saved != ed.rows.stamp:
+            ed.saved, collapsed = ed.rows.stamp, ed.rows.collapsed()
+            if collapsed != state.collapsed:
+                state.collapsed = collapsed
+        gaps = ed.rows.closed(1)
         if gaps != state.gaps:
             state.gaps = gaps
     # --- scroll: keep the caret in view, follow the bar ---
@@ -908,9 +1106,6 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
         ed.pane.scroll_offset = (0., target)
         scroll_y = target
     ed.window(scroll_y, view)
-    if ed.settling:
-        # String state is catching up with the viewport a slice a frame.
-        wake()
     if ed.caret is not None:
         ed.caret.left, ed.caret.top = x - ed.scroll_x, y
     if ed.band is not None:
@@ -922,12 +1117,14 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
     shown = ghost if editable and not menu.open else ''
     changed, _, ed.pane = pane(ed, name='pane', stamp=ed.tick, left=0., top=0., width=width, height=height,
                                widgets=widgets and editable, numbers=bool(line_numbers), scopes=scopes,
-                               focused=ed.focused, ghost=shown, single=single_line, return_extras=True)
+                               focused=ed.focused and not ed.search.focused, ghost=shown, single=single_line, return_extras=True)
     if reach and not single_line:
         size = max(view * view / (reach + view), 24.)
         top = (view - size) * scroll_y / reach
         dl.add_rect_filled(width - BAR + 2, top, width - 2, top + size, ed.look.thumb, 3.)
     popovers(ed, x - ed.scroll_x, y - scroll_y, width, height)
+    if ed.search.open:
+        bar(ed, width, height)
     if changed:
         # An inline widget edited the text: run again to follow it.
         cache.invalidate_id(node)
@@ -940,17 +1137,22 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
         ed.kept = ed.tick
         state.view_first, state.view_rows, state.view_text, state.view_numbers = ed.snapshot()
     done = doc.version != ed.returned
-    ed.returned, ed.gave = doc.version, doc.text
+    ed.returned = doc.version
+    if ed.given is ed.source:
+        return done, ed.given
+    ed.gave = doc.text
     return done, ed.gave
 
 
 def popovers(ed, x, y, width, height):
-    """Declare the open popovers at the caret: suggestions, the signature
-    hint, an error's detail with its quick fixes."""
+    """Declare the open popovers at the caret: suggestions, the usage picker,
+    the signature hint, an error's detail with its quick fixes."""
     menu, cw, lh = ed.suggest, ed.cw, ed.lh
     below = y + lh
     if menu.open:
         pop(ed, 'suggestions', 'suggest', x, y, height)
+    elif ed.lookup.open:
+        pop(ed, 'usages', 'lookup', x, y, height)
     elif menu.signature is not None and ed.detail is None:
         name, parameters, active = menu.signature
         label = f'{name}(' + ', '.join(f'[{item}]' if at == active else item for at, item in enumerate(parameters)) + ')'
@@ -1063,3 +1265,7 @@ def colour_hex(input_value: str, width=0., height=0., color=None, draw_state=Non
     return _swatch(input_value, width, height, rgb,
                    lambda picked: quote + '#' + ''.join(f'{int(part * 255 + .5):02x}' for part in picked) + quote,
                    color, draw_state)
+
+
+# The icon picker registers itself for 'icon' tokens (it reads this module's look and font, so it is imported last).
+from meltygui.view import icon_picker_view  # noqa: E402,F401

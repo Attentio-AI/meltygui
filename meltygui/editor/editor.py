@@ -2,15 +2,25 @@
 
 `Editor.sync` is the only place derived state follows an edit, and it only
 does work the edit's own blocks ask for: their stamps and lexer state, and one
-`follow` on every fold layer and mark set. What needs the whole text (fold
-ranges, search hits) is asked of the session's `Worker` and arrives through
+`follow` on the rows and every mark set. What needs the whole text (fold
+ranges, search hits) is asked of the session's `Source` (model/source_model.py:
+the text mirrored in Rust, read off the render thread) and arrives through
 `Editor.land` on a later run, brought forward over the edits made meanwhile.
+It stays in Rust: `Editor.rows` (`Rows`: lines to displayed rows and the folds
+between them) and the search hits answer for the lines asked about, so
+nothing here grows with the file.
 
 `Editor.marks` holds every decoration by producer name (`editor/marks.py`).
 A new kind of decoration is a new set: `Editor.put(name, marks)`.
 
 `Editor.window` decides which blocks the view declares: the ones near the
 viewport. Anything may edit `doc`; call `sync` afterwards.
+
+Several sessions may be on one `Source` (two panes on a file, a compare
+view), and code that is no editor may splice it too. The text, its version
+and the log of splices are the source's; a session follows the splices it
+did not make in `sync` (rows, marks, and its caret stays on its character)
+and takes its own folds and search hits out of every reading (`land`).
 """
 import re
 import sys
@@ -18,32 +28,28 @@ import time
 
 from meltygui.editor import inline, marks
 from meltygui.editor.document import Document, BLOCK
-from meltygui.editor.rows import Rows, Folds, Numbers, nest
+from meltygui.editor.find import Find
+from meltygui.editor.lookup import Lookup
+from meltygui.editor.rows import Rows, Numbers
 from meltygui.editor.suggest import Suggest, Menu
-from meltygui.editor.syntax import Syntax, outline, structure, shift, unshift
-from meltygui.editor.worker import Worker
+from meltygui.editor.syntax import Syntax, structure, shift, unshift
 
 # Levers, in rows: how far past the viewport blocks stay declared, and how
 # close the viewport may come to the end of them before they are chosen again.
 REACH = BLOCK * 3
 EDGE = BLOCK // 2
 # Lever: texts up to this many characters get their first fold scan and
-# their searches at once; larger ones on the worker.
+# their searches at once; larger ones on the source's thread.
 INLINE = 60000
+# Lever: seconds the text must rest before the source reads it again: a
+# burst of typing is read once.
+QUIET = 0.15
 # Parameter types compared by value; anything else by identity.
 PLAIN = (int, float, str, bool, frozenset)
 # The built in mark sets, in paint order within a layer; sets a caller adds come after.
-ORDER = ('tints', 'paused', 'hits', 'flash', 'live', 'errors', 'breaks')
+ORDER = ('tints', 'paused', 'hits', 'found', 'flash', 'live', 'errors', 'breaks')
 # Lever: seconds the text an undo or a jump landed on stays flashed.
 FLASH = 0.6
-
-
-def scan(text, version):
-    return version, outline(text)
-
-
-def search(text, term, version):
-    return (marks.hits(text, term, version),)
 
 
 class Pane:
@@ -79,6 +85,17 @@ class Pane:
     def focus(self):
         """Give the editor the keyboard."""
         self.ask('focus')
+
+    def find(self, delta=1):
+        """Step to the next (`delta` 1) or the previous (-1) hit of the
+        search term, around the ends: it is unfolded, brought into view and
+        flashed. For a caller with a search field of its own (`search=`)."""
+        self.ask('find', delta)
+
+    @property
+    def search(self):
+        """(term, index, count) of the search (`find.Search`): the current hit counted from 1 (0: none), the hits in all."""
+        return self.ed.search.state(self.ed)
 
     # --- geometry --------------------------------------------------------
     @property
@@ -125,44 +142,60 @@ class Pane:
         return row * self.ed.lh - self.scroll[1] if row is not None else None
 
 
+class Block:
+    """What the session keeps of a block it has shown (`Document.blocks`):
+    how it was last painted. `edit` is the version of the edit that last
+    rewrote its lines, `stamp` the tick it was last asked to repaint at."""
+    __slots__ = ('key', 'count', 'edit', 'stamp', 'open', 'wide')
+
+    def __init__(self, key):
+        self.key, self.count, self.edit, self.stamp = key, 0, 0, 0
+        self.open = None           # the string state its first line was last painted in
+        self.wide = 0              # longest line in cells, known once painted
+
+
 class Editor:
-    def __init__(self, text='', language='python', fold_defaults=True, collapsed=(), gaps=()):
+    def __init__(self, text='', language='python', fold_defaults=True, collapsed=(), gaps=(), source=None):
         """`collapsed`: the scope fold names a previous session left
-        collapsed; `gaps`: the caller ranges it left collapsed."""
-        self.doc = Document(text)
-        self.doc.record = self.record
-        self.syntax = Syntax(language)
-        self.worker = Worker()
+        collapsed; `gaps`: the caller ranges it left collapsed; `source`:
+        the caller's `Source` (the view's value): the text is the one it
+        holds, edited by this session along with any other on it. Without
+        one the session has its own for `text`."""
+        self.doc = Document(text, source)
+        self.doc.record, self.doc.by = self.record, self
+        self.source = self.doc.source
+        self.seen = self.doc.version   # the version of the text this session has followed to
+        self.took = -1             # the source reading (`Source.stamp`) this session took
+        self.keys = None           # the source site keys of this session's breakpoints
+        self.syntax = Syntax(language, self.source)
         # Undo: `step` is the framework undo step the running command is
         # adding to (history.py); `dragging` while an inline widget edits its
         # token; `landing` (low, high, flash) is what an undo or a jump wants shown.
         self.step = self.landing = self.wake = self.path = None
+        self.waker = None          # the view's (handle, token) for the source's reading thread (`RetainedCache.waker`)
         self.dragging = self.closed = False
         self.flash = 0.            # when the 'flash' marks expire (0: none shown)
-        # Fold layers, lowest first: scopes read from the text, then the
-        # caller's ranges (unchanged diff context). Each keeps its own
-        # collapsed set; one `Rows` covers all of them. A further layer is
-        # another `Folds` in `layers`.
-        self.folds, self.extra = Folds(), Folds()
-        self.layers = (self.folds, self.extra)
-        self.fold_defaults = fold_defaults
-        self.folds.collapsed = {tuple(name) for name in collapsed}
-        self.folds.seeded = bool(collapsed)
-        self.extra.collapsed = {('extra',) + tuple(item) for item in gaps}
+        # Lines to rows over two fold layers: the scopes the source reads
+        # from the text, then the caller's ranges (unchanged diff context).
+        # Each keeps its own collapsed set. Default folds collapse once, on
+        # the first reading, unless a session's own were restored.
+        self.rows = Rows(self.doc.lines, [tuple(name) for name in collapsed], bool(collapsed) or not fold_defaults,
+                         [tuple(item) for item in gaps])
+        self.saved = -1            # the `rows.stamp` the collapsed names were last saved at
         self.standin = False       # the text is a viewport snapshot, shown until the real one arrives
-        self.rows = Rows(self.doc.lines)
         self.numbers = Numbers()   # buffer lines to file lines
         self.look = None           # the colour table (view/editor_view.py), as last painted
         self.handle = Pane(self)   # what callers may reach: `EditorState.pane`
         self.asks = []             # commands from the handle, run by the view
         # Repainting: a block view runs again when its stamp or `base` rises.
         self.tick = self.base = 0
+        self.blocks = {}           # block key -> `Block`, of the blocks shown so far
         self.shown = []            # (block, first line, first row, rows): the declared blocks
         self.placed = {}           # block key -> (first line, first row), for its view
         self.held = (0, -1)        # the rows `shown` was chosen for
         self.coloured = False      # the lexer has been seen loaded
-        self.settling = False      # string state is still catching up with the viewport
-        self.given = self.gave = text      # the caller's last input value, the view's last return
+        # The caller's last input value and the view's last return (a caller's `Source` is both).
+        self.given = self.gave = text if source is None else source
         self.shape = None          # (line, structure) of the caret's line, as `rest` left it
         self.inside = None         # (line, column) of the widget token the caret is in
         self.selection = (0, 0)    # as last painted
@@ -181,13 +214,23 @@ class Editor:
         # pane, caret and line band (moved by writing their geometry).
         self.suggest = Suggest()
         self.fixes = Menu()        # the quick fixes of the open error detail
+        self.lookup = Lookup()     # Ctrl+B: the lookup under way and the usage picker
+        self.search = Find()       # the find bar and the current hit (the hits themselves are the 'hits' set)
         self.hold = self.detail = self.scroll_to = None
         self.creep = (0., 0.)      # rows owed to a selection held past an edge, and when it last moved
         self.pane = self.caret = self.band = None
         self.returned = self.doc.version
         self.kept = -1             # the tick the viewport snapshot was last kept at
-        self.outline(now=self.doc.size <= INLINE)
+        self.breakpoints = None    # the caller's {source site key: state}, toggled in place by gutter clicks
+        self.dotted = None         # the keys the breakpoint dots were last drawn for
+        self.source.sessions.add(self)
+        self.ask(now=self.doc.size <= INLINE)
         self.land()
+
+    def close(self):
+        """The session ends. Its undo steps stay: they are the text's."""
+        self.closed = True
+        self.source.sessions.discard(self)
 
     # --- stamps ----------------------------------------------------------
     def touch(self):
@@ -197,13 +240,12 @@ class Editor:
 
     def touch_lines(self, line, last):
         """The blocks holding lines `line .. last` repaint."""
-        doc = self.doc
-        low, high = doc.at_line(line), doc.at_line(last)
-        if high - low > len(self.shown):
+        if (last - line) // BLOCK > len(self.shown):
             return self.touch()
         self.tick += 1
-        for block in doc.blocks[low:high + 1]:
-            block.stamp = self.tick
+        for key, *_ in self.doc.blocks(line, last):
+            if key in self.blocks:
+                self.blocks[key].stamp = self.tick
 
     def window(self, top, height):
         """The viewport is at `top`: choose the blocks to declare and settle
@@ -212,120 +254,246 @@ class Editor:
         low, high = int(top // lh), int((top + height) // lh)
         if not (self.held[0] <= max(low - EDGE, 0) and high + EDGE <= self.held[1]):
             self.held = (low - REACH, high + REACH)
-        first, last = doc.at_line(rows.line(self.held[0])), doc.at_line(rows.line(self.held[1]))
+        blocks, shown = self.blocks, []
+        for key, line, count, edit in doc.blocks(rows.line(self.held[0]), rows.line(self.held[1])):
+            block = blocks.get(key)
+            if block is None:
+                block = blocks[key] = Block(key)
+            block.count, block.edit = count, edit
+            row = rows.before(line)
+            height = rows.before(line + count) - row
+            if height:
+                shown.append((block, line, row, height))
         if self.syntax.live:
             if not self.coloured:
                 self.coloured = True
                 self.touch()
-            changed, done = self.syntax.reach(doc, last)
-            self.settling = not done
-            if self.syntax.spilled:
-                # A string opened or closed over the lines below: the folds changed too.
-                self.syntax.spilled = False
-                self.outline(rest=True)
-            if changed:
-                self.tick += 1
-                for block in changed:
+            # A block whose first line starts in another string than it was painted in repaints
+            # (a quote typed above it; the first reading of the text above it landed).
+            for block, line, _, _ in shown:
+                state = self.syntax.state(line)
+                if state != block.open:
+                    block.open = state
+                    self.tick += 1
                     block.stamp = self.tick
-        shown = []
-        for at in range(first, last + 1):
-            block, line = doc.blocks[at], doc.first(at)
-            row = rows.before(line)
-            count = rows.before(line + block.count) - row
-            if count:
-                shown.append((block, line, row, count))
         if shown != self.shown:
             self.shown = shown
             self.placed = {block.key: (line, row) for block, line, row, _ in shown}
             self.spots = {key: found for key, found in self.spots.items() if key in self.placed}
             self.tick += 1
 
-    def layout(self):
-        """Rebuild the row mapping from the collapsed ranges of every layer."""
-        self.rows = Rows(self.doc.lines, [item for layer in self.layers for item in layer.ranges()])
-
     # --- following edits -------------------------------------------------
     def sync(self):
-        """Bring everything derived up to the document. Returns True when
-        the text changed since the last call."""
-        doc = self.doc
-        changes = doc.changes
-        if not changes:
+        """Bring everything derived up to the text: follow the splices made
+        since the last call, this session's and everyone else's. Returns
+        True when the text changed since then."""
+        doc, source = self.doc, self.source
+        if self.seen == doc.version:
             return False
-        shifted = False
-        # Typing inside a line that keeps its structure cannot change the folds.
-        only = changes[0]
-        calm = (len(changes) == 1 and not (only.gone or only.came)
+        entries = source.since(self.seen)
+        self.seen = doc.version
+        if entries is None:
+            self.renew()
+            return True
+        mine = [entry[5] is self for entry in entries]
+        last = max((at for at, own in enumerate(mine) if own), default=-1)
+        # Typing inside a line that keeps its structure cannot change the folds
+        # (it can change what the lint finds: a source that lints is read again).
+        only = entries[0][1]
+        calm = (len(entries) == 1 and mine[0] and not (only.gone or only.came)
                 and self.shape == (only.line, structure(doc.line(only.line))))
-        for change in changes:
-            for layer in self.layers:
-                layer.follow(change)
+        for at, (version, change, low, gone, came, _) in enumerate(entries):
+            self.rows.follow(change.line, change.column, change.gone, change.came)
             for found in self.marks.values():
-                if found is not None:
+                # (A set another session on the source shows too may have followed already.)
+                if found is not None and (found.version is None or found.version < version):
                     found.follow(change)
-            shifted |= bool(change.gone or change.came)
-        changes.clear()
+                    if found.version is not None:
+                        found.version = version
+            if at > last:
+                # Someone else's edit: the caret and the selection stay on their characters.
+                doc.caret, doc.anchor = (spot + came - gone if spot >= low + gone else min(spot, low + came)
+                                         for spot in (doc.caret, doc.anchor))
         self.tick += 1
-        for block in doc.dirty:
-            block.stamp = self.tick
-        doc.dirty.clear()
-        self.syntax.edited(doc.low)
-        doc.low = len(doc.blocks)      # nothing rewritten since
-        if shifted:
-            self.layout()
-        if not calm:
-            self.outline(rest=True)
-        if self.term:
-            self.worker.ask('hits', search, doc.text, self.term, doc.version, rest=True)
-        self.show(doc.caret)
+        if self.term or not calm or source.lint:
+            self.ask(rest=True)
+        if last >= 0:
+            self.show(doc.caret)
         return True
+
+    def renew(self):
+        """The text moved on by more splices than its log keeps (a session
+        that did not run for long): start over on the text as it is. The
+        folds keep their collapsed names; marks are given again by whoever
+        gives them."""
+        doc = self.doc
+        self.rows = Rows(doc.lines, [tuple(name) for name in self.rows.collapsed()], True, [tuple(item) for item in self.rows.closed(1)])
+        self.marks, self.sources = dict.fromkeys(self.marks), {}
+        doc.select(doc.caret, doc.anchor)
+        self.touch()
+        self.read()
 
     def rest(self):
         """The run is over: remember the caret line's structure for the next edit."""
         line = self.doc.line_of(self.doc.caret)
         self.shape = (line, structure(self.doc.line(line)))
 
-    def outline(self, rest=False, now=False):
-        """Ask for the fold ranges of the current text."""
-        if self.syntax.language == 'python':
-            self.worker.ask('folds', scan, self.doc.text, self.doc.version, rest=rest, now=now and self.syntax.live)
+    def ask(self, rest=False, now=False):
+        """Ask the source for the facts of the current text: fold ranges and
+        the occurrences of the search term. `rest`: once typing rests."""
+        if self.term or self.syntax.language == 'python':
+            self.source.ask(self.term, QUIET if rest else 0., now, self.rows)
+
+    def read(self):
+        """Have the facts read again: at once for a small text, else on the source's thread."""
+        small = self.doc.size <= INLINE
+        self.ask(now=small)
+        if small:
+            self.land()
+
+    def back(self, line):
+        """Where buffer line `line` was in the text the landed facts were read from."""
+        for change in reversed(self.doc.since(self.source.version) or ()):
+            if line > change.line + change.came:
+                line += change.gone - change.came
+            elif line > change.line:
+                line = change.line
+        return line
+
+    def forth(self, line):
+        """Where a line of the text the landed facts were read from is now."""
+        for change in self.doc.since(self.source.version) or ():
+            if line > change.line + change.gone:
+                line += change.came - change.gone
+            elif line > change.line:
+                line = change.line
+        return min(line, self.doc.lines - 1)
+
+    def names(self, line, prefix=''):
+        """Completion candidates on `line` as (name, kind), from the source's
+        bindings (`Source.names`). They are as of its last reading; text
+        typed since is read once typing rests."""
+        if self.source.version != self.doc.version:
+            self.ask(rest=True)
+        text = self.doc.line(line)
+        return self.source.names(self.back(line), len(text) - len(text.lstrip()), prefix)
 
     def land(self):
-        """Take what the worker finished. Returns True when anything arrived."""
-        found = self.worker.take()
-        for kind, result in found:
-            getattr(self, 'land_' + kind)(*result)
-        return bool(found)
-
-    def land_folds(self, version, found):
-        changes = self.doc.since(version)
+        """Take what the source finished reading. Returns True when anything arrived."""
+        source, doc = self.source, self.doc
+        # First the edits others made: what lands is brought forward to the text as it is.
+        self.sync()
+        if source.stale:
+            # What its readings depend on changed (the live module's names): read again.
+            source.stale = False
+            self.ask()
+        # Whichever session runs first lands the reading; each takes its own part once.
+        source.land()
+        if source.stamp == self.took:
+            return False
+        changes = doc.since(source.version)
         if changes is None:
-            return self.outline()
-        heads, spans, parents, names, scopes, defaults = found
-        if not changes and self.folds.same(heads, spans, names):
-            return
-        self.folds.set(heads, spans, parents, names, scopes, defaults if self.fold_defaults else ())
-        for change in changes:
-            self.folds.follow(change)
-        self.layout()
-        self.settle()
-        self.touch()
+            # Too many edits since to bring the facts forward: read again.
+            self.ask()
+            return False
+        self.took = source.stamp
+        if self.syntax.language == 'python':
+            # The rows take the fold ranges. The pane runs again (rows may have moved, the
+            # scroll range changed); the blocks repaint only when the folds on their lines differ.
+            first, last = (self.shown[0][1], self.shown[-1][1] + self.shown[-1][0].count) if self.shown else (0, 0)
+            if self.rows.land(source.native, [(change.line, change.column, change.gone, change.came) for change in changes],
+                              first, last):
+                self.touch()
+            self.tick += 1
+            self.settle()
+        hits = source.native.hits(self.term) if self.term else None
+        if hits is not None:
+            self.put('hits', marks.Hits(hits, source.version))
+        self.dots()
+        return True
 
-    def land_hits(self, found):
-        self.put('hits', found)
+    # --- breakpoints -----------------------------------------------------
+    def watch(self, breakpoints):
+        """Show `breakpoints` ({source site key: state}, None for none). A
+        breakpoint is kept by its statement's key, never by a line: the
+        source finds the lines (`Source.placed`) and the dots land with its
+        readings, then follow edits like every mark."""
+        self.breakpoints = breakpoints
+        keys = None if breakpoints is None else frozenset(breakpoints)
+        if self.changed('breaks', (keys,)):
+            self.keys = None if keys is None else tuple(keys)
+            if keys is None:
+                self.put('breaks', None)
+            elif keys != self.dotted:
+                # Not this session's own click (`stop` drew that one at once).
+                self.read()
+
+    def dots(self):
+        """The landed reading's breakpoint lines as the 'breaks' marks. The
+        source places the keys of every session on it; this one shows its
+        own. A reading asked for before the last click lacks a key: it is
+        not shown, the one asked for since is."""
+        points, placed = self.breakpoints, dict(self.source.placed)
+        if points is None or not set(points) <= set(placed):
+            return
+        self.dotted = frozenset(points)
+        lines = [placed[key] for key in points if placed[key] is not None and points[key].get('enabled', True)]
+        self.put('breaks', marks.breaks(lines, self.source.version))
+
+    def stop(self, line):
+        """Toggle a breakpoint on buffer `line`: on the first source site
+        that covers it; a line that has some loses them. Lines without code
+        take none."""
+        points, source, was = self.breakpoints, self.source, self.back(line)
+        found = source.site(was) if points is not None and source.spans(was, was) else ()
+        if not found:
+            return
+        had = [(first, key) for first, key in found if key in points]
+        for _, key in had:
+            del points[key]
+        if not had:
+            points[found[0][1]] = {'enabled': True}
+        # Shown at once on the lines the dots stand on now; the next reading confirms them.
+        shown = {at for at, _ in self.marks['breaks'].on(0, self.doc.lines)} if self.marks.get('breaks') else set()
+        shown ^= {self.forth(first) for first, _ in (had or found[:1])}
+        self.put('breaks', marks.breaks(shown))
+        self.dotted = frozenset(points)
+        self.keys = tuple(points)
+        self.sources['breaks'] = (self.dotted,)
+        self.read()
 
     # --- marks -----------------------------------------------------------
     def put(self, name, found):
         """Show `found` (a `Marks`; None clears) as the set called `name`.
         A set computed for an older version is brought forward first; one too
-        old to follow is dropped and the set it would replace stays."""
+        old to follow is dropped and the set it would replace stays. The
+        blocks repaint only when the new set shows something else on them:
+        most results that arrive after an edit (errors, tints, spelling,
+        breakpoints) say what is on screen already."""
         if found is not None:
             found = marks.current(found, self.doc)
             if found is None:
                 return
-        if found is not None or self.marks.get(name) is not None:
+        was = self.marks.get(name)
+        if found is not None or was is not None:
             self.marks[name] = found
-            self.touch()
+            if not self.same(was, found):
+                self.touch()
+
+    def same(self, was, found):
+        """Whether two mark sets show the same on the declared blocks: on
+        their lines, and on the first lines of the scopes around them (a
+        'tint' there colours the scope). Blocks out of sight are painted
+        when they are declared again, so they need no look."""
+        if not self.shown:
+            return False
+        first, last = self.shown[0][1], self.shown[-1][1] + self.shown[-1][0].count - 1
+        spans = [(first, last)] + [(head, head) for head, *_ in self.rows.guides(first, last) if head < first]
+        try:
+            return all((was.on(low, high) if was is not None else []) == (found.on(low, high) if found is not None else [])
+                       for low, high in spans)
+        except Exception:
+            return False        # marks whose data does not compare (a live value): painted again
 
     def changed(self, name, values):
         """Whether `values` (a tuple) differ from the ones last seen under
@@ -384,29 +552,22 @@ class Editor:
         return low, low + length
 
     def find(self, term):
-        """Highlight every occurrence of `term` (case blind)."""
+        """Highlight every occurrence of `term` (case blind). A small text
+        is read at once; a large one on the source's thread once the term
+        rests, as typing in the text is: a term typed letter by letter is
+        read once. (The current hit and stepping: editor/find.py.)"""
         self.term = term or ''
         self.put('hits', None)
         if term:
-            self.worker.ask('hits', search, self.doc.text, term, self.doc.version, now=self.doc.size <= INLINE)
-            self.land()
+            if self.doc.size <= INLINE:
+                self.read()
+            else:
+                self.ask(rest=True)
 
     def ranges(self, found):
-        """Set the caller's fold layer from `(head, last)` line ranges. A
-        range starts collapsed, unless it overlaps one the user expanded:
-        the ranges come from a live diff and drift as the text changes."""
-        layer = self.extra
-        opened = [layer.range(at) for at in range(len(layer)) if layer.names[at] is not None and not layer.is_closed(at)]
-        heads, spans, parents, found = nest(tuple(item) for item in found or ())
-        names = [('extra',) + item for item in found]
-        first = not len(layer)
-        layer.set(heads, spans, parents, names)
-        if not (first and layer.collapsed):
-            # (On the first set the collapsed ranges are the ones restored from the last session.)
-            layer.collapsed.clear()
-            layer.close(name for name in names
-                        if not any(head <= name[2] and name[1] <= last for head, last in opened))
-        self.layout()
+        """Set the caller's fold layer from `(head, last)` line ranges
+        (`Rows.gaps`: a range starts collapsed unless the user opened it)."""
+        self.rows.gaps([tuple(item) for item in found or ()])
         self.settle()
         self.touch()
 
@@ -427,7 +588,7 @@ class Editor:
         doc.select(caret, anchor)
         self.step = None
         if 'meltygui.editor.history' in sys.modules:
-            sys.modules['meltygui.editor.history'].rebase(self, low, high, len(new))
+            sys.modules['meltygui.editor.history'].rebase(self.source, low, high, len(new))
         self.sync()
 
     # --- undo ------------------------------------------------------------
@@ -438,52 +599,43 @@ class Editor:
 
     def replay(self, step, undo):
         """Undo or redo one of this session's steps. Called by the
-        framework's undo stack, at any time between runs: the view is woken
-        to follow, restore the caret and show where the text changed."""
-        if self.closed:
-            return
+        framework's undo stack, at any time between runs. The step is the
+        text's: the source changes once and every session on it follows
+        (their carets stay on their characters). This session, the one that
+        made the edit, restores its caret and shows where the text changed;
+        when it has closed, the text is restored all the same."""
         doc = self.doc
         low, high = doc.size, 0
         for at, old, new in (reversed(step.parts) if undo else step.parts):
             gone, came = (new, old) if undo else (old, new)
             doc.splice(at, at + len(gone), came)
             low, high = min(low, at), max(high, at + len(came))
-        doc.select(*(step.before if undo else step.after))
         step.version = doc.version
+        if self.closed:
+            return
+        self.sync()
+        doc.select(*(step.before if undo else step.after))
         self.step, self.landing = None, (low, max(high, low), True)
         if self.wake is not None:
             self.wake()
 
     # --- folds -----------------------------------------------------------
-    def fold(self, line):
-        """(layer, index) of the fold headed by `line`, or None."""
-        for layer in self.layers:
-            at = layer.at(line)
-            if at is not None:
-                return layer, at
-        return None
-
     def show(self, index):
         """Unfold whatever hides the line of `index`."""
         line = self.doc.line_of(index)
-        if self.rows.hidden(line) and any([layer.reveal(line) for layer in self.layers]):
-            self.layout()
+        if self.rows.hidden(line) and self.rows.reveal(line):
             self.touch()
 
     def toggle(self, line):
         """Collapse or expand the fold headed by `line`."""
-        found = self.fold(line)
-        if found is None:
+        if not self.rows.toggle(line):
             return False
-        found[0].flip(found[1])
-        self.layout()
         self.settle()
         self.touch()
         return True
 
     def fold_all(self, closed):
-        self.folds.set_all(closed)
-        self.layout()
+        self.rows.fold_all(closed)
         self.settle()
         self.touch()
 
@@ -494,14 +646,13 @@ class Editor:
         doc, rows, numbers = self.doc, self.rows, self.numbers
         if not self.shown:
             return 0, rows.count, '', []
-        if rows.first:
+        if rows.runs:
             lines = [line for block, first, _, _ in self.shown for line in range(first, first + block.count)
                      if not rows.hidden(line)]
             text = '\n'.join([doc.line(line) for line in lines])
         else:
             lines = range(self.shown[0][1], self.shown[-1][1] + self.shown[-1][0].count)
-            text = ''.join([block.text for block, *_ in self.shown])
-            text = text[:-1] if text.endswith('\n') and lines[-1] + 1 < doc.lines else text
+            text = '\n'.join(doc.rows(lines[0], len(lines)))
         return self.shown[0][2], rows.count, text, [numbers.number(line) for line in lines]
 
     def settle(self):
@@ -516,10 +667,7 @@ class Editor:
     # text goes through them (or, per painted line, through its `insets`).
     def insets(self, line):
         """The cells inline widgets add to `line` (`Syntax.insets`), or None."""
-        doc = self.doc
-        at = doc.at_line(line)
-        states = doc.blocks[at].open
-        return self.syntax.insets(doc.line(line), states[line - doc.line0[at]] if states else None)
+        return self.syntax.insets(self.doc.line(line), self.syntax.state(line))
 
     def x(self, line, column):
         """Content x of `column` on `line`, before horizontal scroll."""
@@ -549,7 +697,7 @@ class Editor:
         doc, cw = self.doc, self.cw
         text = doc.line(line)
         inset = self.insets(line)
-        for start, piece, kind in self.syntax.runs(text, self.syntax.state(doc, line)):
+        for start, piece, kind in self.syntax.runs(text, self.syntax.state(line)):
             entry = inline.for_token(kind)
             if entry is None:
                 continue
@@ -573,9 +721,9 @@ class Editor:
         line, column = doc.place(doc.caret)
         found = None
         if self.focused:
-            for start, piece, kind in self.syntax.runs(doc.line(line), self.syntax.state(doc, line)):
+            for start, piece, kind in self.syntax.runs(doc.line(line), self.syntax.state(line)):
                 entry = inline.for_token(kind)
-                if start <= column <= start + len(piece) and entry is not None and not (entry.lead or entry.trail):
+                if start <= column <= start + len(piece) and entry is not None and not (entry.lead or entry.trail or entry.solid):
                     found = (line, start)
         if found != self.inside:
             for item in (found, self.inside):

@@ -48,6 +48,49 @@ def test_suggestions_stay_closed_in_comments_and_on_complete_symbols():
     assert ('value', 'name') in ed.suggest.rows or any(name == 'value' for name, _ in ed.suggest.rows)
 
 
+def test_helpers_read_a_window_of_a_long_text_and_answer_in_text_offsets(monkeypatch):
+    """Far into a long text the caret helpers are given a window (`Document.near`):
+    anchors, the armed snippet and the signature must still be offsets of the text."""
+    monkeypatch.setattr(Toggles.TextEditor, 'AC_SNIPPETS', {'#[': Snippet('tint', '# [tint=($0)]')})
+    head = ''.join(f'filler_{n} = {n}\n' for n in range(2000))
+    ed = session(head + 'def run(counter, other):\n    return \n')
+    ed.doc.select(ed.doc.size - 1)
+    assert ed.doc.near(ed.doc.caret)[1] > 10000
+    type_in(ed, 'cou')
+    assert ed.suggest.anchor == ed.doc.caret - 3 and ed.suggest.prefix == 'cou' and ed.suggest.rows[0][0] == 'counter'
+    assert ed.suggest.accept(ed) == 'counter' and ed.doc.line(2001) == '    return counter'
+    type_in(ed, ' #[')
+    assert ed.suggest.rows == [('tint', 'snip')] and ed.suggest.bag.site == (ed.doc.caret - 2, '#[')
+    type_in(ed, 't')
+    assert ed.suggest.rows == [('tint', 'snip')] and ed.suggest.prefix == 't', 'the armed trigger holds while its filter is typed'
+    ed.suggest.accept(ed)
+    assert ed.doc.line(2001) == '    return counter # [tint=()]'
+
+
+def test_candidates_are_the_names_the_caret_sees():
+    text = ('import os\nLIMIT = 3\n\nclass Shape:\n    sides = 4\n\n    def area(self, scale):\n        width = 2\n'
+            '        \n        later = 1\n\ndef other(unseen):\n    hidden = 1\n')
+    ed = session(text)
+    names = dict(ed.names(8))
+    assert names['self'] == names['scale'] == 'param' and names['width'] == 'local' and names['os'] == 'module'
+    assert names['LIMIT'] == 'var' and names['Shape'] == 'class' and names['other'] == 'function'
+    assert not {'sides', 'area', 'unseen', 'hidden'} & set(names), 'class attributes and other scopes are out of sight'
+    assert names['later'] == 'name', 'a name bound further down is only a word seen nearby'
+    assert dict(ed.names(4))['sides'] == 'var' and 'area' in dict(ed.names(5)), 'a class body sees its own names'
+    assert [name for name, _ in ed.names(8, 'SC')] == ['scale'] and ed.names(8, 'zzz') == []
+    # A statement being typed below a body, indented into it, is in that body.
+    assert dict(ed.names(13, ''))['LIMIT'] == 'var' and 'hidden' not in dict(ed.names(13))
+    ed.doc.replace(ed.doc.size, ed.doc.size, '    ')
+    ed.sync()
+    assert dict(ed.names(13))['hidden'] == 'local' and dict(ed.names(13))['unseen'] == 'param'
+    # Names typed since the last reading are read once typing rests.
+    ed.doc.replace(0, 0, 'fresh = 1\n')
+    ed.sync()
+    assert 'fresh' not in dict(ed.names(14)) and dict(ed.names(14))['hidden'] == 'local', 'lines are mapped to the reading'
+    ed.source.settle()
+    assert ed.land() and dict(ed.names(14))['fresh'] == 'var'
+
+
 def test_a_custom_source_supplies_the_rows():
     ed = session('x = ')
     type_in(ed, 'al', source=lambda text, anchor, prefix, dot: [('alpha', 'var'), ('beta', 'var'), ('alto', 'var')])
@@ -61,8 +104,9 @@ def test_members_of_a_loaded_imported_module():
     ed = session('import os.path as paths\nfrom os import path\nx = ')
     type_in(ed, 'paths.jo')
     assert ed.suggest.rows[0][0] == 'join'
-    assert suggest.loaded_members('from os import path\npath.', 25)
-    assert suggest.loaded_members('import nothing_loaded\nnothing_loaded.', 37) == []
+    assert suggest.loaded_members(session('from os import path\npath.'), 25)
+    assert suggest.loaded_members(session('import nothing_loaded\nnothing_loaded.'), 37) == []
+    assert suggest.loaded_members(session('def f():\n    import os\n    os.'), 30), 'an import inside the function'
 
 
 def test_snippet_rows_insert_their_template_with_the_caret_at_the_stop(monkeypatch):
@@ -112,15 +156,13 @@ def test_marks_from_parameters():
     assert [(mark.data.name, mark.data.text) for _, mark in found.on(1)] == [('total', '3'), ('mean', '1.5')]
     assert found.on(8)[0][1].data.text is None
     assert marks.values(Store, Numbers(2)).on(0)[0][1].data.name == 'total' and marks.values(None, numbers) is None
-    assert marks.breaks({4, 2}, numbers).on(0, 9) == [(1, marks.Mark('dot')), (3, marks.Mark('dot'))]
+    assert marks.breaks([3, 1, 3]).on(0, 9) == [(1, marks.Mark('dot')), (3, marks.Mark('dot'))]
     assert [mark.shape for _, mark in marks.pause(3, numbers).on(2)] == ['band', 'arrow'] and marks.pause(None, numbers) is None
     diff = Numbers(table=[10, 11, None, 12, 40])
     assert [diff.number(line) for line in range(6)] == [10, 11, None, 12, 40, None] and diff.line(12) == 3 and diff.line(13) is None
-    assert marks.breaks({12, 99, 40}, diff).on(0, 9) == [(3, marks.Mark('dot')), (4, marks.Mark('dot'))]
     assert Numbers(120).number(0) == 120 and Numbers(120).line(125) == 5 and Numbers(120).line(7) is None
     assert Numbers(120).digits(900) == 4 and diff.digits(3) == 5
-    text = '@x(tint=(1, 0, 0))\ndef a():\n    pass\n'
-    found = marks.tints((((0, 0, 2, (1, 0, 0)),), ((23, 24, (1, 0, 0), 1.),)), text, version=4)
+    found = marks.tints([(1, 0, 0, 1, 0, 0), (1, 4, 1, 1, 0, 0)], version=4)
     assert found.version == 4 and found.on(0, 9) == [(1, marks.Mark('tint', 0, None, (1, 0, 0))),
                                                      (1, marks.Mark('wash', 4, 5, (1, 0, 0)))]
 

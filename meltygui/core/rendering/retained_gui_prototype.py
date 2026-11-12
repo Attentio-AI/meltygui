@@ -114,6 +114,9 @@ class RetainedGui:
         self.cursors = {}
         # Views a worker thread asked to run again (`wake`), drained by flush().
         self.woken = deque()
+        # For threads without the interpreter (`waker`): what hands out their handles, and what
+        # turns the tokens they queued into `wake` calls. None until a view asks for a waker.
+        self.wakers = self.drain = None
         self.renderers = []
         self.captures = {}
         self.states = {}
@@ -204,6 +207,15 @@ class RetainedGui:
         self.woken.append(node)
         if self.request_frame:
             self.request_frame()
+
+    def waker(self, node):
+        """`wake(node)` for a thread that never takes the interpreter lock:
+        a (handle, token) pair it calls by C ABI (`glfw_utils.waker`). What
+        it queues joins `woken` at the next flush, of any cache."""
+        if self.wakers is None:
+            from meltygui.core.windowing import glfw_utils
+            self.wakers, self.drain = glfw_utils.waker, glfw_utils.drain_wakes
+        return self.wakers(self, node)
 
     @contextmanager
     def frame(self):
@@ -748,6 +760,8 @@ class RetainedGui:
 
     def flush(self):
         """Run only dirty functions, then replay retained packets bottom-up."""
+        if self.drain is not None:
+            self.drain()
         while self.woken:
             node = self.woken.popleft()
             if node in self.records:

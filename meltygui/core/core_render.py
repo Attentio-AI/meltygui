@@ -5988,11 +5988,22 @@ def render_func_kwarg_names():
         targets = {"kwargs", "o_kwargs", "header_defaults"}
         # Consumed by the shared overlay epilogue rather than this wrapper.
         names = {"draw_background", "draw_overlay", "draw_overlay_background", "scroll_bar_brightness"}
+        from meltygui.core.windowing.glfw_utils import park
         try:
-            tree = ast.parse(textwrap.dedent(inspect.getsource(render_func)))
+            # The wrapper's lines by its indentation: inspect.getsource tokenizes all of it in Python
+            # (30 ms of interpreter time that every frame started meanwhile waits on, see `park`).
+            lines, first = inspect.findsource(render_func)
+            last = next((at for at in range(first + 1, len(lines)) if lines[at][:1] not in (' ', '\t', '\n', '#', '')), len(lines))
+            park()
+            try:
+                tree = ast.parse(''.join(lines[first:last]))
+            except SyntaxError:
+                tree = ast.parse(textwrap.dedent(inspect.getsource(render_func)))
         except (OSError, TypeError, SyntaxError):
             return []
-        for node in ast.walk(tree):
+        for at, node in enumerate(ast.walk(tree)):
+            if at % 512 == 511:
+                park()      # (on the warm-up timer's thread: a frame is left alone; nothing on the render thread)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                 if (isinstance(node.func.value, ast.Name) and node.func.value.id in targets
                         and node.func.attr in ("get", "pop", "setdefault")

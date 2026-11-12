@@ -3,10 +3,12 @@
 `COMMANDS` maps `(key, modifiers)` to a function of the `Editor` session and
 the view's `Desk` (clipboard, flags, submit). Add a shortcut with `@bind`;
 `moves=True` also binds the Shift variant, which extends the selection.
+The fold chords and their rules are the last section.
 """
 import meltygui.core.windowing.window_constants as glfw
 
 from meltygui.editor import edit
+from meltygui.editor.syntax import tools
 
 CTRL, SHIFT, ALT = glfw.MOD_CONTROL, glfw.MOD_SHIFT, glfw.MOD_ALT
 MODS = CTRL | SHIFT | ALT
@@ -64,11 +66,13 @@ def _left(ed, desk, select): edit.left(ed.doc, select)
 @bind(glfw.KEY_RIGHT, moves=True)
 def _right(ed, desk, select): edit.right(ed.doc, select)
 
-@bind(glfw.KEY_LEFT, CTRL, moves=True)
-def _word_left(ed, desk, select): edit.left(ed.doc, select, word=True)
+# Ctrl+Shift+Left and Right are not bound: they are the framework's navigation
+# undo and redo (`Melty.fire_global_hotkeys`), which fire while text has focus.
+@bind(glfw.KEY_LEFT, CTRL)
+def _word_left(ed, desk): edit.left(ed.doc, word=True)
 
-@bind(glfw.KEY_RIGHT, CTRL, moves=True)
-def _word_right(ed, desk, select): edit.right(ed.doc, select, word=True)
+@bind(glfw.KEY_RIGHT, CTRL)
+def _word_right(ed, desk): edit.right(ed.doc, word=True)
 
 @bind(glfw.KEY_UP, moves=True)
 def _up(ed, desk, select): edit.vertical(ed.doc, ed.rows, -1, select)
@@ -142,9 +146,17 @@ def _untab(ed, desk):
 @bind(glfw.KEY_SLASH, CTRL, edits=True)
 def _comment(ed, desk): edit.comment(ed.doc)
 
+@bind(glfw.KEY_I, CTRL, edits=True)
+def _icon(ed, desk): edit.icon(ed.doc)
+
 # Undo and redo are not bound here: Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y are the
 # framework's hotkeys (`Melty.fire_global_hotkeys`) over its one undo stack,
 # where the editor's steps live (history.py).
+# Ctrl+B (go to definition, usages) is not bound here either: it is asked of
+# the project's roster and answered on a later run, so the view sequences it
+# (`typed` in view/editor_view.py, editor/lookup.py), as it does Ctrl+Space.
+# Ctrl+Shift+B (the external editor) and Ctrl+F (the find bar, editor/find.py)
+# are handled there too.
 
 # --- clipboard -----------------------------------------------------------
 @bind(glfw.KEY_C, CTRL)
@@ -164,23 +176,117 @@ def _paste(ed, desk):
 
 
 # --- folds ---------------------------------------------------------------
-@bind(glfw.KEY_LEFT_BRACKET, CTRL | SHIFT)
-def _fold(ed, desk):
-    """Collapse the innermost open range around the caret."""
-    folds = ed.folds
-    for at in folds.around(ed.doc.line_of(ed.doc.caret)):
-        if not folds.is_closed(at):
-            return ed.toggle(folds.range(at)[0])
+# Ctrl+Minus / Ctrl+Equal collapse and expand the scope at the caret and walk
+# outward on repeated presses; with Shift they act on every root scope and
+# one level below. With a selection all four act only on the folds whose
+# header line it covers. The rules are the legacy editor's (`draw_text`,
+# "Keyboard folding"; its helpers `fold_root_scopes`, `fold_child_scopes`).
+# Every root scope and its children are found where the folds are kept
+# (`Rows.levels`), and a chord's targets change in one call (`Rows.set`):
+# both cost the same however many folds there are. Only the scope layer is touched:
+# the caller's ranges (diff context) answer to their own badges. What a chord
+# targets is decided in `chosen`.
 
-@bind(glfw.KEY_RIGHT_BRACKET, CTRL | SHIFT)
-def _unfold(ed, desk):
-    line = ed.doc.line_of(ed.doc.caret)
-    found = ed.fold(line)
-    if found is not None and found[0].is_closed(found[1]):
-        ed.toggle(line)
+# Fold kinds that start collapsed (the first part of a fold's name): expand-all leaves them alone.
+DEFAULTS = ('str', 'comment', 'imports')
+
+
+def level(ranges):
+    """The outermost of sorted nested `ranges`: those inside no other one of them."""
+    found, end = [], -1
+    for item in ranges:
+        if item[0] > end:
+            found.append(item)
+            end = item[1]
+    return found
+
+
+def covered(doc, ranges):
+    """The folds whose header line the selection covers. A selection that
+    ends at column 0 does not cover that line."""
+    low, high = doc.selection
+    if low == high:
+        return []
+    first, last = doc.line_of(low), doc.line_of(high)
+    if last > first and high == doc.start(last):
+        last -= 1
+    return [item for item in ranges if first <= item[0] <= last]
+
+
+def near(rows, line, close):
+    """The caret rule where it names one fold without reading the fold
+    table: the innermost open scope collapses, the collapsed one the caret is
+    on expands (a caret is never inside a collapsed fold). None: no such fold."""
+    if close:
+        head = rows.enclosing(line)
+        return [] if head is None else [(head, head)]
+    return [(line, line)] if rows.fold(line) == (0, True) else None
+
+
+def chosen(ed, close, every):
+    """(ranges to collapse or expand, the view stays on the caret): what a fold chord acts on."""
+    rows, doc = ed.rows, ed.doc
+    line = doc.line_of(doc.caret)
+    found = None if every or doc.caret != doc.anchor else near(rows, line, close)
+    if found is not None:
+        return found, False
+    if every and doc.caret == doc.anchor:
+        # Every root scope and one level below: chosen where the folds are kept (`Rows.levels`), whatever their number.
+        return [(head, head) for head in rows.levels(close)], True
+    ranges = rows.ranges()
+    shut = set(rows.closed())
+    skip = {item for item, name in zip(ranges, rows.names()) if name[0] in DEFAULTS}
+    inside = covered(doc, ranges)
+    if inside:
+        outer = level(inside)
+        if close:
+            return (outer + tools().fold_child_scopes(inside, outer) + [item for item in inside if item in skip]
+                    if every else outer), True
+        if every:
+            return [item for item in inside if item not in skip], True
+        # One level out: the collapsed ones in sight.
+        return level([item for item in inside if item in shut]), True
+    if every:
+        return [(head, head) for head in rows.levels(close)], True
+    found = near(rows, line, close)
+    if found is not None:
+        return found, False
+    # Everything at the caret is open: expand what is collapsed inside the innermost scope around it,
+    # on the next press inside the one around that, at last in the whole text.
+    around = [item for item in ranges if item[0] <= line <= item[1]]
+    for first, last in [*reversed(around), (-1, doc.lines)]:
+        nested = [item for item in shut if first <= item[0] and item[1] <= last and item != (first, last) and item not in skip]
+        if nested:
+            return nested, True
+    return [], False
+
+
+def fold(ed, close, every=False):
+    """Run a fold chord. Returns whether a fold changed."""
+    rows, doc = ed.rows, ed.doc
+    targets, anchored = chosen(ed, close, every)
+    row = rows.row(doc.line_of(doc.caret))
+    # (All of them in one call: the rows are laid out once.)
+    if not rows.set([head for head, _ in targets], close):
+        return False
+    # A selection end left inside hidden lines moves to its fold header's end; the selection stays.
+    doc.select(*(doc.end(rows.line(rows.row(doc.line_of(at)))) if rows.hidden(doc.line_of(at)) else at
+                 for at in (doc.caret, doc.anchor)))
+    if anchored and ed.pane is not None:
+        # Many rows moved: the caret's row stays where it is on screen.
+        ed.scroll_to = ed.pane.scroll_offset[1] + (rows.row(doc.line_of(doc.caret)) - row) * ed.lh
+    ed.touch()
+    return True
+
+
+@bind(glfw.KEY_MINUS, CTRL)
+def _fold(ed, desk): fold(ed, True)
+
+@bind(glfw.KEY_EQUAL, CTRL)
+def _unfold(ed, desk): fold(ed, False)
 
 @bind(glfw.KEY_MINUS, CTRL | SHIFT)
-def _fold_all(ed, desk): ed.fold_all(True)
+def _fold_all(ed, desk): fold(ed, True, every=True)
 
 @bind(glfw.KEY_EQUAL, CTRL | SHIFT)
-def _unfold_all(ed, desk): ed.fold_all(False)
+def _unfold_all(ed, desk): fold(ed, False, every=True)

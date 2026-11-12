@@ -7,6 +7,8 @@ NVIDIA GPU, originally in hdr-viewer's warm_start.py. MELTY_COLD=1 skips them.
     cache_hinted_atlas(fm)     wrap a meltygui FontManager before the renderer builds
     code_stack_hint(cache)     did the last first frame need the code-editing stack?
     remember_code_stack(...)   record that after the first frame
+    font_hint(cache)           the fonts the last first frame asked for
+    remember_fonts(...)        record them after the first frame
 """
 import hashlib
 import os
@@ -179,3 +181,31 @@ def remember_code_stack(cache, needed):
     except OSError:
         pass
 
+
+
+# --- first-frame fonts -----------------------------------------------------------
+# A font outside the eager set is baked between frames once something asks for
+# it: the atlas is built a second time in frame 2 and everything repaints (a
+# code editor's mono face: 45 to 60 ms). The fonts the last first frame asked
+# for are baked with the eager ones instead (FontManager.expect).
+
+def _fonts_file(cache):
+    return cache / 'first-frame-fonts'
+
+
+def font_hint(cache):
+    """Names of the `Font` members this app's last first frame asked for."""
+    if os.environ.get('MELTY_COLD'):
+        return ()
+    try:
+        return tuple(_fonts_file(cache).read_text().split())
+    except OSError:
+        return ()
+
+
+def remember_fonts(cache, names):
+    if tuple(names) != font_hint(cache):
+        try:
+            _write_atomic(_fonts_file(cache), ' '.join(names).encode())
+        except OSError:
+            pass

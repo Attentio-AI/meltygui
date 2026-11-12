@@ -10,7 +10,8 @@ The editor declares the view on every token of that kind (`number`, `bool`,
 `input_value`; a returned edit replaces the token. Where the view sits:
 
 - by default it *is* the token: same cells, drawn over the text. It steps
-  aside while the caret is inside the token, so the text edits like any other.
+  aside while the caret is inside the token, so the text edits like any other
+  (`solid=True`: it stays, for a token with nothing to edit inside, an icon).
 - `lead=N`: it gets N cells of its own left of the token; the token draws and
   edits as text and the rest of the line moves right.
 - `trail=N`: the same, right after the token.
@@ -26,19 +27,20 @@ from meltygui.core.rendering.gui_prototype import gui
 
 # view: the @gui view. caret: a plain click also places the caret (a drag is
 # the widget's). cells: width in characters for a live value view. lead and
-# trail: cells the view adds before and after its token.
-Inline = namedtuple('Inline', 'view caret cells lead trail')
+# trail: cells the view adds before and after its token. solid: it stays
+# while the caret is at its token.
+Inline = namedtuple('Inline', 'view caret cells lead trail solid', defaults=(False,))
 WIDGETS = {}
 # Counts registrations: cached line layouts are dropped when it moves.
 EPOCH = 0
 
 
-def inline(key, *, caret=False, cells=12, lead=0, trail=0):
+def inline(key, *, caret=False, cells=12, lead=0, trail=0, solid=False):
     """Register the decorated function (made an `@gui` view if it is not one)."""
     def register(function):
         global EPOCH
         view = function if getattr(function, '__gui__', False) else gui(function)
-        WIDGETS[key] = Inline(view, caret, cells, lead, trail)
+        WIDGETS[key] = Inline(view, caret, cells, lead, trail, solid)
         EPOCH += 1
         return view
     return register

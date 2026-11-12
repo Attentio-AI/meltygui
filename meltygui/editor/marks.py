@@ -202,12 +202,9 @@ def values(store, numbers):
     return Marks(marks)
 
 
-def breaks(found, numbers):
-    """Breakpoint dots in the gutter from a set of file lines."""
-    if found is None:
-        return None
-    lines = (numbers.line(number) for number in found)
-    return Marks([(line, Mark('dot')) for line in sorted(line for line in lines if line is not None)])
+def breaks(lines, version=None):
+    """Breakpoint dots in the gutter on buffer `lines`, as of `version`."""
+    return Marks([(line, Mark('dot')) for line in sorted(set(lines))], version)
 
 
 def pause(number, numbers):
@@ -216,40 +213,42 @@ def pause(number, numbers):
     return Marks([(line, Mark('band')), (line, Mark('arrow'))]) if line is not None else None
 
 
-def tints(found, text, version=None):
-    """Definition tints as a `Marks` set: a 'tint' mark on each tinted
-    definition's first line and a 'wash' over each use of its name. `found`
-    is the (blocks, spans, ...) result of `roster_tints.collect_def_tints` or
-    the legacy `_collect_def_tints` for `text`. Reads the whole text: call it
-    where the tints are computed, off the render thread."""
-    if not found:
-        return Marks((), version)
-    starts, at = [0], text.find('\n')
-    while at != -1:
-        starts.append(at + 1)
-        at = text.find('\n', at + 1)
-    lines, marks = text.split('\n'), []
-    for head, _, last, rgb in found[0]:
-        # A tinted block starts at its decorators: the mark goes on the line that heads the scope.
-        while head < last and not lines[head].lstrip().startswith(('def ', 'class ', 'async ')):
-            head += 1
-        marks.append((head, 0, Mark('tint', 0, None, tuple(rgb[:3]))))
-    for start, stop, rgb, *_ in found[1]:
-        line = bisect_left(starts, start + 1) - 1
-        column = start - starts[line]
-        marks.append((line, column, Mark('wash', column, column + stop - start, tuple(rgb[:3]))))
-    marks.sort(key=lambda item: item[:2])
-    return Marks([(line, mark) for line, _, mark in marks], version)
+def tints(rows, version=None):
+    """Definition tints as a `Marks` set, from the rows of `Source.native.tints()`
+    (line, column, characters, red, green, blue): a 'tint' mark on each
+    tinted definition's first line (0 characters) and a 'wash' over each use
+    of a tinted name. Costs the tinted places, not the text."""
+    return Marks([(line, Mark('wash', column, column + chars, (red, green, blue)) if chars else Mark('tint', 0, None, (red, green, blue)))
+                  for line, column, chars, red, green, blue in rows], version)
 
 
-def hits(text, term, version=None):
-    """Every occurrence of `term` in `text` (case blind) as 'hit' marks."""
-    marks = []
-    if term:
-        needle = term.lower()
-        for line, row in enumerate(text.lower().split('\n')):
-            at = row.find(needle)
-            while at >= 0:
-                marks.append((line, Mark('hit', at, at + len(needle))))
-                at = row.find(needle, at + len(needle))
-    return Marks(marks, version)
+class Hits:
+    """A search's hits (`Source.hits`): a mark set kept in Rust that hands
+    out only the lines asked for, so a term found all over a large file
+    costs a frame nothing. It follows edits like any `Marks`."""
+    __slots__ = ('found', 'version')
+
+    def __init__(self, found, version=None):
+        self.found, self.version = found, version
+
+    def __len__(self):
+        return len(self.found)
+
+    def on(self, first, last=None):
+        return [(line, Mark('hit', low, high)) for line, low, high in self.found.on(first, first if last is None else last)]
+
+    def seek(self, line, column):
+        """Index of the first hit at or after (line, column); `len` when none is: a bisection, whatever their number."""
+        return self.found.seek(line, column)
+
+    def at(self, index):
+        """Hit `index` as (line, column, end column)."""
+        return self.found.at(index)
+
+    def follow(self, change):
+        self.found.follow(*change)
+
+    def follow_all(self, changes):
+        for change in changes:
+            self.follow(change)
+        return self

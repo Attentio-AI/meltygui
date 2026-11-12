@@ -7,6 +7,7 @@ the selected lines, never the whole file, so a command costs the same in a
 long file as in a short one. To add a command, write it here and bind it in
 `keys.py`.
 """
+from meltygui.core.runtime.toggles import Toggles
 from meltygui.editor.syntax import tools
 
 TAB = 4
@@ -82,6 +83,23 @@ def select_line(doc, index):
     doc.select(min(doc.end(line) + 1, doc.size), doc.start(line))
 
 
+def extend(doc, index, unit=None, low=0, high=0):
+    """A drag reached offset `index`: the selection follows it. After a
+    double or triple click (`unit` 'word' or 'line', which selected `low` to
+    `high`) it grows by whole words or lines, and that first one stays selected."""
+    if unit is None or low == high:
+        return move(doc, index, select=True)
+    if unit == 'word':
+        first, last = _near(doc, tools()._select_unit_left, index), _near(doc, tools()._select_unit_right, index)
+    else:
+        line = doc.line_of(index)
+        first, last = doc.start(line), min(doc.end(line) + 1, doc.size)
+    if index < low:
+        doc.select(first, high)
+    else:
+        doc.select(max(high, last), low)
+
+
 def selected(doc):
     return doc.slice(*doc.selection)
 
@@ -96,16 +114,19 @@ def insert(doc, text):
 
 
 def paste(doc, text):
-    """Multi line pastes keep their shape relative to the caret's indent."""
+    """Pasted into a line's indent, a block (several lines, or text that
+    brings its own indent) keeps its shape relative to the caret's indent."""
     text = text.replace('\r\n', '\n').replace('\r', '\n')
     low, _ = doc.selection
     prefix = doc.slice(doc.start(doc.line_of(low)), low)
-    if '\n' in text and not prefix.strip():
+    if ('\n' in text or text[:1].isspace()) and not prefix.strip():
         text = tools()._reindent_paste(text, prefix)
     return insert(doc, text)
 
 
 def backspace(doc, word=False):
+    """`word`: the unit left of the caret (a word, one bracket, a run of
+    operators or of spaces), as a double click selects."""
     low, high = doc.selection
     if low != high:
         return doc.replace(low, high, '')
@@ -113,7 +134,7 @@ def backspace(doc, word=False):
     if not caret:
         return None
     if word:
-        return doc.replace(_near(doc, tools()._word_boundary_left, caret), caret, '')
+        return doc.replace(_near(doc, tools()._unit_left_of, caret), caret, '')
     line, column = doc.place(caret)
     if column and not doc.slice(caret - column, caret).strip(' '):
         # In the indent: back to the previous indent stop.
@@ -129,7 +150,7 @@ def delete(doc, word=False):
     caret = doc.caret
     if caret >= doc.size:
         return None
-    return doc.replace(caret, _near(doc, tools()._word_boundary_right, caret) if word else caret + 1, '', caret=caret)
+    return doc.replace(caret, _near(doc, tools()._select_unit_right, caret) if word else caret + 1, '', caret=caret)
 
 
 def enter(doc, syntax=None, below=False):
@@ -164,8 +185,8 @@ def enter(doc, syntax=None, below=False):
     if syntax is not None and syntax.live and tail < len(part):
         # The string and comment helpers read line starts and string states: the statement's.
         starts = [doc.start(found) - base for found in range(first, line + 1)]
-        states = [syntax.state(doc, found) for found in range(first, line + 1)]
-        split = helper._string_split(part, spot, len(part), starts, states)
+        states = [syntax.legacy(found) for found in range(first, line + 1)]
+        split = helper._string_split(part, spot, len(part), starts, states) if Toggles.TextEditor.enter_splits_strings else None
         if split is not None:
             return rewrite(doc, split[0], base + split[1], base, part)
         comment = helper._comment_continuation(part, spot, len(part), starts, states)
@@ -224,8 +245,32 @@ def _lines(doc, helper, **options):
     return _keep_selection(doc, change, base + new_low, base + (new_high if low != high else new_low))
 
 
+def align(doc, dedent=False):
+    """Tab in the indent of a line that continues an open bracket: an under
+    indented line goes up to the bracket's column (Shift+Tab: an over
+    indented one down to it). Returns whether the line was one to align."""
+    line, column = doc.place(doc.caret)
+    text = doc.line(line)
+    have = len(text) - len(text.lstrip(' '))
+    if doc.caret != doc.anchor or text[:column].strip():
+        return False
+    # The bracket helper scans back from the line's start: give it the statement above, as `enter` does.
+    first = max(line - 1, 0)
+    while first and doc.slice(doc.start(first), doc.start(first) + 1) in (' ', '\n', ')', ']', '}', '#', ''):
+        first -= 1
+    base, start = doc.start(first), doc.start(line)
+    want = tools()._open_bracket_indent(doc.slice(base, start), start - base)
+    if want is None or not (have > want if dedent else have < want):
+        return False
+    doc.replace(start, start + have, ' ' * want)
+    return True
+
+
 def indent(doc, dedent=False):
-    """Tab: indent the selected lines, or pad the caret to the next tab stop."""
+    """Tab: align a bracket continuation (`align`), indent the selected
+    lines, or pad the caret to the next tab stop."""
+    if align(doc, dedent):
+        return None
     low, high = doc.selection
     if low == high and not dedent:
         column = doc.place(low)[1]
@@ -236,6 +281,11 @@ def indent(doc, dedent=False):
 def comment(doc):
     """Toggle `# ` on the selected lines."""
     return _lines(doc, tools()._toggle_comment)
+
+
+def icon(doc):
+    """Insert the placeholder icon glyph: the icon picker dresses it for choosing the real one."""
+    return insert(doc, tools().GENERIC_ICON)
 
 
 def cut(doc):

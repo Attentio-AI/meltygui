@@ -1,17 +1,30 @@
 """CPU cost of the native editor per frame, against file size.
 
-    python tests/benchmark_editor.py [--lines 1000,10000,100000] [--frames 200] [--json out.json] [file.py ...]
+    python tests/benchmark_editor.py [--lines 1000,10000,100000] [--frames 200] [--folded] [--plain] [--json out.json] [file.py ...]
 
 Run on a reserved desktop (hidden GL window). A frame is input processing,
 every dirty body and the composition submit; buffer swap is not included.
 `--lines` writes generated sources to a temp folder. The table ends with each
 row's cost at the largest size over the smallest: the gate is about 1.3.
+The value edited is a `Source`, as a large text should be given; `--plain`
+gives the text as a `str` (joined again for every edit returned). `--folded`
+starts with the default folds collapsed (comment runs, strings, imports),
+which is the view's default.
 
-Rows: `mount` the first frame, `scan` one fold scan (it runs on the editor's
-worker after the text rests, never in a frame), `idle` no input, `type` one character, `caret` an arrow key, `enter`
-Enter and Backspace alternating, `scroll` the wheel over rows already
-painted, `fresh` the wheel into rows never painted. To add a row, add it to
-`ROWS`; to change the generated code, edit `UNIT`.
+Rows: `build` making the `Source` from the text (the caller's to place: a
+loading thread can), `mount` the first frame, `scan` one reading of the
+text's facts (on the source's thread after the text rests, never in a frame),
+`idle` no input,
+`type` one character, `caret` an arrow key, `enter` Enter and Backspace
+alternating, `scroll` the wheel over rows already painted, `fresh` the wheel
+into rows never painted, `busy` Enter and Backspace with a reading asked for
+on every frame: what the thread costs the frames beside it, plus landing
+its facts in each. `find` is `busy` with a search term found all over the
+text (its hits land every frame). `word` starts a new word every frame: the
+suggestions ask the source for the names in sight each time.
+To add a row, add it to `ROWS`; to change the generated code, edit `UNIT`.
+The caret is put on the same line of a unit at every size (`HOME`), so the
+rows do the same work whatever the length.
 """
 import argparse
 import json
@@ -27,6 +40,7 @@ import meltygui.core.windowing.window_constants as glfw
 import meltygui.view.editor_view as view
 from editor_host import Host
 from meltygui.editor import syntax
+from meltygui.model.source_model import Source
 from meltygui.state.editor_state import EditorState
 
 # One generated unit, about 40 lines: every token kind the editor treats
@@ -72,7 +86,9 @@ def describe_{n}(shape):
 
 '''
 NAMES = 24
-ROWS = ('idle', 'type', 'caret', 'enter', 'scroll', 'fresh')
+ROWS = ('idle', 'type', 'caret', 'enter', 'scroll', 'fresh', 'busy', 'find', 'word')
+# The line of a unit the caret is put on (the one nearest the text's middle).
+HOME = '    total = 0'
 
 
 def generate(lines, folder):
@@ -100,16 +116,24 @@ def measure(host, frames, step):
     return statistics.median(times), times[int(len(times) * .95)], (host.cache.executor.runs - runs) / frames
 
 
-def bench(path, frames, profile=''):
-    """{row: (median ms, p95 ms, bodies)} for one file, plus 'lines' and 'mount'."""
+def bench(path, frames, profile='', folded=False, plain=False):
+    """{row: (median ms, p95 ms, bodies)} for one file, plus 'lines' and 'mount'.
+    `folded`: the default folds start collapsed. `plain`: the value is a `str`."""
     text = Path(path).read_text()
     state = EditorState()
     start = time.perf_counter()
-    host = Host(view.draw_editor, input_value=text, name='editor', state=state, left=0., top=0.,
-                width=1000., height=800., fold_defaults=False)
+    value = text if plain else Source(text)
+    build = (time.perf_counter() - start) * 1000
+    start = time.perf_counter()
+    host = Host(view.draw_editor, input_value=value, name='editor', state=state, left=0., top=0.,
+                width=1000., height=800., fold_defaults=folded)
     mount = (time.perf_counter() - start) * 1000
     ed = state.editor
-    line = ed.doc.lines // 2
+    # The first reading lands (and the default folds collapse) before the rows are measured.
+    ed.source.settle()
+    host.frame()
+    middle = ed.doc.lines // 2
+    line = next((line for line in range(middle, min(middle + 200, ed.doc.lines)) if ed.doc.line(line) == HOME), middle)
     y = (ed.rows.row(line) + .5) * ed.lh
     host.frame((300, 400), wheel=-(y - 400) / 40)
     host.frame((300, 400))
@@ -117,8 +141,8 @@ def bench(path, frames, profile=''):
     for _ in range(3):
         host.frame()
     start = time.perf_counter()
-    ed.outline()
-    ed.worker.settle()
+    ed.ask()
+    ed.source.settle()
     scan = (time.perf_counter() - start) * 1000
     steps = {
         'idle': lambda i: host.frame(),
@@ -128,14 +152,17 @@ def bench(path, frames, profile=''):
         'scroll': lambda i: host.frame((300, 400), wheel=-1 if i % 40 < 20 else 1),
         # Half a viewport a frame, downwards, over rows that were never shown.
         'fresh': lambda i: host.frame((300, 400), wheel=-10),
+        'busy': lambda i: (host.frame(keys=[(glfw.KEY_ENTER if i % 2 == 0 else glfw.KEY_BACKSPACE, 0)]), ed.ask()),
+        'find': lambda i: (host.frame(keys=[(glfw.KEY_ENTER if i % 2 == 0 else glfw.KEY_BACKSPACE, 0)], search='shape'), ed.ask()),
+        'word': lambda i: host.frame(keys=[(glfw.KEY_SPACE, 0), (glfw.KEY_A, 0)], text=' a'),
     }
-    found = {'lines': ed.doc.lines, 'mount': mount, 'scan': scan}
+    found = {'lines': ed.doc.lines, 'build': build, 'mount': mount, 'scan': scan}
     for name in ROWS:
         step, count = steps[name], frames
         # Background scans of the row before are not this row's cost.
-        ed.worker.settle()
+        ed.source.settle()
         host.frame()
-        if name == 'type':
+        if name in ('type', 'word'):
             ed.suggest.close()
         if name == 'scroll':
             # Visit the range once so the timed frames replay captured blocks.
@@ -151,6 +178,9 @@ def bench(path, frames, profile=''):
             profiler.disable()
             pstats.Stats(profiler).sort_stats('tottime').print_stats(18)
         found[name] = measure(host, count, step)
+        if name == 'find':
+            found['hits'] = len(ed.marks['hits'] or ())
+            host.frame(search='')
     host.close()
     return found
 
@@ -159,8 +189,10 @@ def report(results):
     """Print the table: one column per file, the last one largest over smallest."""
     names = list(results)
     print(f'{"":8s}' + ''.join(f'{results[name]["lines"]:>22,d} lines' for name in names) + '   largest / smallest')
+    print(f'{"build":8s}' + ''.join(f'{results[name]["build"]:>21.1f} ms    ' for name in names) + '   (the Source, wherever the caller makes it)')
     print(f'{"mount":8s}' + ''.join(f'{results[name]["mount"]:>21.1f} ms    ' for name in names))
-    print(f'{"scan":8s}' + ''.join(f'{results[name]["scan"]:>21.1f} ms    ' for name in names) + '   (worker thread)')
+    print(f'{"scan":8s}' + ''.join(f'{results[name]["scan"]:>21.1f} ms    ' for name in names) + '   (source thread)')
+    print(f'{"hits":8s}' + ''.join(f'{results[name]["hits"]:>24,d}    ' for name in names) + '   (of the term in `find`)')
     for row in ROWS:
         cells = [results[name][row] for name in names]
         ratio = cells[-1][0] / cells[0][0] if cells[0][0] else 0.
@@ -175,6 +207,8 @@ if __name__ == '__main__':
     parser.add_argument('--lines', default='', help='generated sizes, e.g. 1000,10000,100000')
     parser.add_argument('--frames', type=int, default=200)
     parser.add_argument('--profile', default='', help='a row name to run under cProfile')
+    parser.add_argument('--folded', action='store_true', help='start with the default folds collapsed')
+    parser.add_argument('--plain', action='store_true', help='give the text as a str instead of a Source')
     parser.add_argument('--json', default='', help='also write the results to this file')
     options = parser.parse_args()
     syntax.tools()
@@ -187,7 +221,7 @@ if __name__ == '__main__':
         files += [generate(int(count), folder) for count in options.lines.split(',')]
     results = {}
     for file in files:
-        results[file.name] = bench(file, options.frames, options.profile)
+        results[file.name] = bench(file, options.frames, options.profile, options.folded, options.plain)
     report(results)
     if options.json:
         Path(options.json).write_text(json.dumps(results, indent=1))

@@ -7,9 +7,29 @@ from meltygui.editor import edit, marks
 from meltygui.editor.document import Document, Splice, BLOCK
 from meltygui.editor.editor import Editor
 from meltygui.editor.marks import Lines, Marks, Mark
-from meltygui.editor.rows import Rows, Folds
-from meltygui.editor.syntax import Syntax, tools, outline
-import meltygui.editor.syntax as syntax_module
+from meltygui.editor.rows import Rows
+from meltygui.editor.syntax import Syntax, tools
+from meltygui.model.source_model import Source
+
+
+def mapped(lines, folds=()):
+    """Rows over `lines` lines with the `(head, last)` ranges collapsed."""
+    rows = Rows(lines)
+    rows.gaps([(head, last) for head, last in folds if head >= 0 and last >= 0])
+    return rows
+
+
+def rows_of(text, defaults=False, collapsed=()):
+    """(rows, source): a session's rows with the fold ranges of `text` landed."""
+    source, rows = Source(text), Rows(text.count('\n') + 1, list(collapsed), not defaults)
+    read(source, rows)
+    return rows, source
+
+
+def read(source, rows):
+    source.ask(now=True, rows=rows)
+    assert source.land()
+    rows.land(source.native, [], 0, 0)
 
 
 def follow(line, change):
@@ -37,6 +57,16 @@ def test_replace_keeps_the_line_table_and_reports_the_splice():
     assert doc.replace(3, 8, "") == Splice(0, 3, 2, 0, 0, 3)
     assert doc.text == 'oneand\nthree' and table(doc) == starts(doc.text)
     assert doc.replace(0, 0, '') is None
+
+
+def test_a_document_is_a_face_on_its_source_and_holds_no_text():
+    source = Source('one\ntwo\n')
+    doc = Document(source=source)
+    assert doc.source is source and (doc.lines, doc.size, doc.line(1), doc.line(2)) == (3, 8, 'two', '')
+    assert not any(isinstance(getattr(doc, name), str) for name in Document.__slots__), 'no copy of the text'
+    assert doc.replace(4, 7, 'TWO') == Splice(1, 0, 0, 3, 0, 3) and source.text == 'one\nTWO\n' and source.native.version == doc.version
+    assert doc.text is doc.text and doc.text == 'one\nTWO\n', 'joined on demand, once per version'
+    assert Document('é\nx').place(3) == (1, 1) and Document('').lines == 1 and Document('a\n').rows(0, 9) == ['a', '']
 
 
 @pytest.fixture(autouse=True)
@@ -82,20 +112,22 @@ def test_random_edits_match_a_rebuilt_line_table_and_undo_restores_everything(un
 def test_an_edit_rewrites_its_own_block_and_the_blocks_below_only_move():
     text = ''.join(f'line {n}\n' for n in range(BLOCK * 10))
     doc = Document(text)
-    blocks = list(doc.blocks)
-    assert len(blocks) == 11 and all(block.count == BLOCK for block in blocks[:-1]) and blocks[-1].text == ''
+    blocks = doc.blocks(0, doc.lines)
+    assert [found[1:] for found in blocks] == [(BLOCK * n, BLOCK + (n == 9), 0) for n in range(10)], 'the last block holds the empty last line'
     at = doc.start(BLOCK * 3 + 5)
-    doc.dirty.clear()
     doc.replace(at, at, 'new\n')
-    assert doc.blocks == blocks and doc.dirty == [blocks[3]], 'one block rewritten, none replaced'
-    assert blocks[3].count == BLOCK + 1 and doc.first(4) == BLOCK * 4 + 1 and doc.line(BLOCK * 4 + 1) == f'line {BLOCK * 4}'
-    assert len(doc.line0) <= 5, 'bases below the edit are found again only when asked for'
+    after = doc.blocks(0, doc.lines)
+    assert [found[0] for found in after] == [found[0] for found in blocks], 'one block rewritten, none replaced'
+    assert after[3][1:] == (BLOCK * 3, BLOCK + 1, doc.version) and after[4][1:] == (BLOCK * 4 + 1, BLOCK, 0), 'the blocks below only move'
+    assert doc.line(BLOCK * 4 + 1) == f'line {BLOCK * 4}'
     doc.replace(at, at, 'x\n' * (BLOCK * 3))
-    assert doc.blocks[3] is blocks[3] and len(doc.blocks) == 15 and max(block.count for block in doc.blocks) <= BLOCK * 2
-    assert doc.blocks[-4:] == blocks[-4:] and doc.text == text[:at] + 'x\n' * (BLOCK * 3) + 'new\n' + text[at:]
-    assert set(doc.keys) == {block.key for block in doc.blocks}
+    grown = doc.blocks(0, doc.lines)
+    assert grown[3][0] == blocks[3][0] and len(grown) == 14 and max(found[2] for found in grown) <= BLOCK * 2
+    assert [found[0] for found in grown[-6:]] == [found[0] for found in blocks[-6:]] and len({found[0] for found in grown}) == 14
+    assert doc.text == text[:at] + 'x\n' * (BLOCK * 3) + 'new\n' + text[at:]
+    assert doc.blocks(BLOCK * 3, BLOCK * 3) == grown[3:4] and doc.blocks(doc.lines - 1, doc.lines + 5) == grown[-1:]
     doc.replace(0, doc.size, '')
-    assert len(doc.blocks) == 1 and doc.lines == 1 and doc.text == ''
+    assert len(doc.blocks(0, 9)) == 1 and doc.lines == 1 and doc.text == ''
 
 
 def test_random_edits_over_many_blocks_match_a_plain_string():
@@ -116,7 +148,10 @@ def test_random_edits_over_many_blocks_match_a_plain_string():
                 line = ref.count('\n', 0, index)
                 assert doc.place(index) == (line, index - starts(ref)[line])
                 assert doc.slice(index, index + 90) == ref[index:index + 90]
-            assert all(block.count == block.text.count('\n') + (block is doc.blocks[-1]) for block in doc.blocks)
+            found = doc.blocks(0, doc.lines)
+            assert sum(count for _, _, count, _ in found) == doc.lines and [line for _, line, _, _ in found] == [
+                sum(count for _, _, count, _ in found[:at]) for at in range(len(found))]
+            assert all(doc.rows(line, count) == ref.split('\n')[line:line + count] for _, line, count, _ in found[::7])
     text, base = doc.near(len(ref) // 2)
     assert ref[base:base + len(text)] == text and base <= len(ref) // 2 < base + len(text)
 
@@ -178,7 +213,7 @@ def test_a_text_replaced_from_outside_is_a_splice_that_keeps_caret_and_steps(und
     version = doc.version
     ed.load('zero\none\n2two\nthree!\n')
     assert doc.version == version + 1 and doc.place(doc.caret) == (2, 1) and len(stack.history) == 2, 'not a step'
-    assert len(ed.doc.blocks) == 1 and not doc.changes
+    assert len(ed.doc.blocks(0, 99)) == 1 and ed.seen == doc.version
     undo_stack.undo()
     assert doc.text == 'zero\none\ntwo\nthree!\n', 'the step moved with its text'
     undo_stack.undo()
@@ -193,10 +228,10 @@ def test_a_text_replaced_from_outside_is_a_splice_that_keeps_caret_and_steps(und
     assert not stack.can_redo(), 'redo of this editor does not survive an outside change'
     other = Editor('other', language=None)
     command(other, edit.insert, 'y')
-    ed.closed = True
+    ed.close()
     undo_stack.undo()
     undo_stack.undo()
-    assert other.doc.text == 'other' and doc.text == 'zero\none\n2two\nTHR\n', 'a closed session ignores its steps'
+    assert other.doc.text == 'other' and doc.text == 'zero\none\ntwo\nTHR\n', "the steps of a session that closed are still the text's"
 
 
 def test_caret_movement_selection_and_word_units():
@@ -238,9 +273,9 @@ def test_enter_indents_for_blocks_brackets_and_comments():
     edit.insert(doc, 'call(a,')
     edit.enter(doc)
     assert doc.text.endswith('call(a,\n         ')
-    doc = Document('    x = 1  # note here')
-    syntax = Syntax()
     tools()
+    session = Editor('    x = 1  # note here')
+    doc, syntax = session.doc, session.syntax
     doc.select(doc.text.index('here'))
     edit.enter(doc, syntax)
     assert doc.text == '    x = 1  # note \n           # here'
@@ -309,6 +344,7 @@ def naive(lines, folds):
 
 def test_rows_without_folds_are_the_identity():
     rows = Rows(5)
+    assert rows.runs == 0
     assert rows.count == 5 and [rows.line(r) for r in range(5)] == list(range(5))
     assert rows.row(3) == 3 and not rows.hidden(3) and rows.folded(3) == 0
     assert rows.line(99) == 4 and rows.row(-3) == 0 and rows.span(1, 9) == [1, 2, 3, 4]
@@ -323,7 +359,7 @@ def test_rows_match_a_naive_mapping_for_random_nested_and_overlapping_folds():
         for _ in range(random.randint(0, 8)):
             head = random.randint(-1, lines)
             folds.append((head, head + random.randint(-1, 12)))
-        rows = Rows(lines, folds)
+        rows = mapped(lines, folds)
         visible, row_of, hidden = naive(lines, folds)
         assert rows.count == len(visible)
         assert [rows.line(row) for row in range(rows.count)] == visible
@@ -358,74 +394,110 @@ def top():
 '''
 
 
-def folds_of(text, defaults=False):
-    tools()
-    folds = Folds()
-    heads, spans, parents, names, scopes, initial = outline(text)
-    folds.set(heads, spans, parents, names, scopes, initial if defaults else ())
-    return folds
-
-
-def ranges(folds):
-    return [folds.range(at) for at in range(len(folds)) if folds.names[at] is not None]
-
-
-def test_folds_toggle_by_head_line_and_survive_line_shifts_by_key():
-    folds = folds_of(SOURCE)
-    assert folds.range(folds.at(6)) == (6, 11) and folds.range(folds.at(8)) == (8, 11) and folds.at(7) is None
-    folds.flip(folds.at(8))
-    assert folds.ranges() == [(8, 11)] and folds.is_closed(folds.at(8))
-    rows = Rows(SOURCE.count('\n') + 1, folds.ranges())
+def test_folds_toggle_by_head_line_and_survive_line_shifts_by_name():
+    rows, source = rows_of(SOURCE)
+    assert rows.fold(6) == (0, False) and rows.fold(7) is None and {(6, 11), (8, 11)} <= set(rows.ranges())
+    assert rows.toggle(8) and rows.closed() == [(8, 11)] and rows.fold(8) == (0, True) and not rows.toggle(7)
     assert rows.folded(8) == 3 and rows.row(13) == 10 and rows.before(13) == 10 and rows.before(10) == 9
-    heads, spans, parents, names, scopes, _ = outline('# new first line\n' + SOURCE)
-    folds.set(heads, spans, parents, names, scopes)
-    assert folds.ranges() == [(9, 12)], 'the collapsed scope moved with its content'
-    assert folds.reveal(11) and folds.ranges() == []
-    assert [folds.range(at) for at in folds.around(11)] == [(10, 11), (9, 12), (7, 12)]
-    assert [folds.range(at)[0] for at in folds.within(8, 10)] == [7, 9, 10]
+    assert rows.collapsed() == [('scope', 'A', 'f')] and rows.stamp == 1
+    # An edit above moves it; a later session finds it again by its name.
+    rows.follow(0, 0, 0, 1)
+    assert rows.closed() == [(9, 12)] and rows.count == SOURCE.count('\n') + 2 - 3 and rows.hidden(10) and not rows.hidden(9)
+    rows, source = rows_of('# new first line\n' + SOURCE, collapsed=[['scope', 'A', 'f']])
+    assert rows.closed() == [(9, 12)], 'the collapsed scope is where its content is'
+    assert rows.reveal(11) and rows.closed() == [] and rows.collapsed() == []
+    assert rows.enclosing(11) == 10 and rows.enclosing(13) is None
+    assert rows.guides(8, 10) == [(7, 12, 0, True), (9, 12, 4, True), (10, 11, 8, False)]
+    rows.toggle(7)
+    assert rows.guides(8, 10) == [(7, 12, 0, True)], 'scopes whose first line is hidden have no guide'
 
 
 def test_default_folds_seed_once_and_collapse_all_targets_outer_ranges():
-    folds = folds_of(SOURCE, defaults=True)
-    assert folds.ranges() == [(0, 1), (3, 4)]
-    folds.flip(folds.at(3))
-    heads, spans, parents, names, scopes, initial = outline(SOURCE)
-    folds.set(heads, spans, parents, names, scopes, initial)
-    assert folds.ranges() == [(0, 1)], 'an opened default stays open on the next scan'
-    folds.set_all(True)
-    assert folds.ranges() == [(0, 1), (3, 4), (6, 11), (13, 14)]
-    folds.set_all(False)
-    assert folds.ranges() == []
+    rows, source = rows_of(SOURCE, defaults=True)
+    assert rows.closed() == [(0, 1), (3, 4)] and sorted(rows.collapsed()) == [('imports',), ('str', '"""Doc')]
+    rows.toggle(3)
+    read(source, rows)
+    assert rows.closed() == [(0, 1)], 'an opened default stays open on the next scan'
+    rows.fold_all(True)
+    assert rows.closed() == [(0, 1), (3, 4), (6, 11), (13, 14)]
+    rows.fold_all(False)
+    assert rows.closed() == []
+
+
+def test_a_fold_toggled_while_its_text_is_read_keeps_its_state():
+    rows, source = rows_of(SOURCE, defaults=True)
+    source.ask(rest=30, rows=rows)
+    assert rows.toggle(6) and rows.toggle(3)
+    source.settle()
+    read(source, rows)
+    assert rows.closed() == [(0, 1), (6, 11)]
+
+
+def test_rows_tell_whether_the_lines_asked_about_changed():
+    rows, source = rows_of(SOURCE)
+    source.splice(len(SOURCE), len(SOURCE), 'def more():\n    pass\n', 1)
+    rows.follow(15, 0, 0, 2)
+    source.ask(now=True, rows=rows)
+    assert source.land() and not rows.land(source.native, [], 0, 14), 'the new scope is below the lines shown'
+    assert (15, 16) in rows.ranges()
+    source.splice(0, 0, 'if x:\n    pass\n', 2)
+    rows.follow(0, 0, 0, 2)
+    source.ask(now=True, rows=rows)
+    assert source.land() and rows.land(source.native, [], 0, 14)
 
 
 def test_folds_follow_random_edits_like_a_fresh_scan_for_untouched_ranges():
     """Between scans the ranges follow edits: every range the edit left
-    alone must be exactly where a fresh scan finds it."""
+    alone must be exactly where a fresh scan finds it, and the row mapping
+    is the one of the collapsed ranges where they are now."""
     tools()
     random.seed(5)
     base = ''.join(f'class A{n}:\n    x = 1\n    def f(self, a):\n        if a == {n}:\n            return 1\n'
                    f'        return 2\n\ndef top{n}():\n    pass\n\n' for n in range(8))
     for _ in range(120):
         doc = Document(base)
-        folds = folds_of(base)
-        before = {folds.names[at]: folds.range(at) for at in range(len(folds))}
+        rows, _ = rows_of(base)
+        rows.gaps([(3, 5), (40, 44), (70, 78)])
+        before = dict(zip(rows.names(), rows.ranges()))
+        for head, _ in random.sample(rows.ranges(), 6):
+            rows.toggle(head)
+        for _ in range(3):
+            line = random.randint(0, doc.lines - 1)
+            low = doc.start(line) + random.choice([0, 0, len(doc.line(line))])
+            high = low if random.random() < .6 else min(doc.size, doc.start(min(line + random.randint(1, 4), doc.lines - 1)))
+            change = doc.splice(low, high, random.choice(['\n', '\n\n', '', 'pass\n', '    y = 2\n    z = 3\n']))
+            rows.follow(change.line, change.column, change.gone, change.came)
+            visible, row_of, hidden = naive(doc.lines, rows.closed() + rows.closed(1))
+            assert rows.span(0, doc.lines) == visible and rows.count == len(visible), change
+            assert [rows.row(line) for line in range(doc.lines)] == [row_of[line] for line in range(doc.lines)], change
+            assert [rows.hidden(line) for line in range(doc.lines)] == [line in hidden for line in range(doc.lines)]
+            assert [rows.before(line) for line in range(doc.lines)] == [len([v for v in visible if v < line]) for line in range(doc.lines)]
+        fresh, _ = rows_of(doc.text)
+        after = dict(zip(fresh.names(), fresh.ranges()))
+        first, last = change.line, change.line + change.gone
+        heads = [head for head, _ in rows.ranges()]
+        assert heads == sorted(heads)
+    # One edit: the ranges it left alone are where a fresh scan finds them.
+    for _ in range(120):
+        doc = Document(base)
+        rows, _ = rows_of(base)
+        before = dict(zip(rows.names(), rows.ranges()))
         line = random.randint(0, doc.lines - 1)
         low = doc.start(line) + random.choice([0, 0, len(doc.line(line))])
         high = low if random.random() < .6 else min(doc.size, doc.start(min(line + random.randint(1, 4), doc.lines - 1)))
         change = doc.splice(low, high, random.choice(['\n', '\n\n', '', 'pass\n', '    y = 2\n    z = 3\n']))
-        folds.follow(change)
-        fresh = folds_of(doc.text)
-        after = {fresh.names[at]: fresh.range(at) for at in range(len(fresh))}
+        rows.follow(change.line, change.column, change.gone, change.came)
+        fresh, _ = rows_of(doc.text)
+        after = dict(zip(fresh.names(), fresh.ranges()))
         first, last = change.line, change.line + change.gone
         checked = 0
-        for at, name in enumerate(folds.names):
+        for name, found in zip(rows.names(), rows.ranges()):
             old = before.get(name)
             # Compare where the edit did not change what the range holds.
             if name in after and (old[1] < first or old[0] > last) and after[name][1] - after[name][0] == old[1] - old[0]:
-                assert folds.range(at) == after[name], (name, change)
+                assert found == after[name], (name, change)
                 checked += 1
-        assert checked >= len(before) - 8 and [folds.heads.line(at) for at in range(len(folds))] == sorted(
-            folds.heads.line(at) for at in range(len(folds)))
+        assert checked >= len(before) - 8
 
 
 def test_lines_follow_edits_through_a_moving_gap():
@@ -460,7 +532,12 @@ def test_marks_follow_edits_with_their_text():
         text = '\n'.join(' '.join(random.choice(words + ['x', 'yy']) for _ in range(random.randint(0, 6)))
                          for _ in range(random.randint(1, 30)))
         doc = Document(text)
-        found = marks.hits(text, 'alpha', doc.version)
+        source = Source(text)
+        source.ask('alpha', now=True)
+        assert source.land()
+        # The same hits twice: as plain marks, and as the source keeps them (`Hits`); both must follow alike.
+        found = Marks([(line, Mark('hit', low, high)) for line, low, high in source.read('alpha')[3]], doc.version)
+        kept = marks.Hits(source.hits, doc.version)
         notes = Marks([(line, Mark('note', data=line)) for line in range(doc.lines)], doc.version)
         where = {line: line for line in range(doc.lines)}
         for _ in range(6):
@@ -471,7 +548,9 @@ def test_marks_follow_edits_with_their_text():
                 continue        # an edit inside a word changes the word: nothing to check
             change = doc.splice(low, high, new)
             found.follow(change)
+            kept.follow(change)
             notes.follow(change)
+            assert kept.on(0, doc.lines) == found.on(0, doc.lines) and len(kept) == len(found), change
             where = {name: follow(line, change) for name, line in where.items() if follow(line, change) is not None}
         for line, mark in found.on(0, doc.lines):
             assert doc.line(line)[mark.low:mark.high] == 'alpha', (doc.text, line, mark)
@@ -483,43 +562,356 @@ def test_marks_follow_edits_with_their_text():
     assert marks.current(stale, doc) is None, 'computed before the document existed'
     fresh = Marks([(1, Mark('note'))], version=doc.version)
     doc.replace(0, 0, '\n\n')
-    assert marks.current(fresh, doc).on(0, 9)[0][0] == 3 and follow(1, doc.log[-1]) == 3
+    assert marks.current(fresh, doc).on(0, 9)[0][0] == 3 and follow(1, doc.since(doc.version - 1)[-1]) == 3
 
 
-def test_syntax_settles_string_state_block_by_block():
+def test_string_state_and_colour_runs_come_from_the_source():
     tools()
     text = 'a = 1\nb = """x\ny\n"""\nc = 2\n' + 'd = 3\n' * (BLOCK * 6)
-    doc, syntax = Document(text), Syntax()
-    assert syntax.state(doc, 2) is None and syntax.reach(doc, 0)[1]
-    assert syntax.state(doc, 2)[0] == '"""' and syntax.state(doc, 3)[0] == '"""' and syntax.state(doc, 4) is None
-    assert syntax.tokens('y', syntax.state(doc, 2))[0][1].startswith('string')
-    assert [kind for _, kind in syntax.tokens('c = 2')][-1] == 'number'
-    assert syntax.reach(doc, len(doc.blocks)) == ([], True) and syntax.frontier == len(doc.blocks)
+    ed = Editor(text)
+    syntax, doc = ed.syntax, ed.doc
+    assert list(syntax.states(0, 5)) == [0, 0, 1, 1, 0]
+    assert syntax.runs('y', 1) == [(0, 'y', 'string_doc')] and syntax.runs('c = 2')[-1] == (4, '2', 'number')
     at = text.index('"""x')
     doc.replace(at, at + 3, '')
-    syntax.edited(doc.low)
-    changed, done = syntax.reach(doc, len(doc.blocks))
-    assert done and changed == doc.blocks, 'the closer now opens a string through every block below'
-    assert syntax.state(doc, 2) is None and syntax.state(doc, 4)[0] == '"""'
-    doc.replace(doc.start(1), doc.start(1), 'e = 5  ')
-    syntax.edited(doc.low)
-    assert syntax.reach(doc, len(doc.blocks)) == ([doc.blocks[0]], True), 'an edit that keeps the string state leaves the blocks below alone'
-    assert syntax.state(doc, BLOCK * 3)[0] == '"""', 'the open string runs through the blocks below'
-    assert syntax.quiet(doc, doc.start(BLOCK * 3) + 2) is True and syntax.quiet(doc, 2) is False
-    assert Syntax(language=None).tokens('x = 1') == [('x = 1', 'default')]
+    ed.sync()
+    assert list(syntax.states(2, 3)) == [0, 0, 1] and syntax.state(BLOCK * 3) == 1, 'the closer now opens a string through everything below'
+    assert syntax.quiet(BLOCK * 3, 2) and not syntax.quiet(0, 2) and syntax.legacy(BLOCK * 3) == ('"""', 'string_doc')
+    assert syntax.quiet(3, 2) and not syntax.quiet(3, 0) and not syntax.quiet(1, 4), 'inside the string that opens on line 3, not before it'
+    doc.replace(doc.start(1), doc.start(1), "f = rf\'\'\'{a}  # no comment\n")
+    ed.sync()
+    assert list(syntax.states(1, 2)) == [0, 6] and syntax.runs('{a}', 6)[0] == (0, '{', 'fstring_delim'), 'an f-string keeps its fields below'
+    assert Syntax(language=None).runs('x = 1') == [(0, 'x = 1', 'default')]
 
 
-def test_a_long_string_state_change_is_lexed_a_slice_a_frame(monkeypatch):
-    tools()
-    monkeypatch.setattr(syntax_module, 'SLICE', 4)
-    doc, syntax = Document('x = 1\n' * (BLOCK * 20)), Syntax()
-    assert syntax.reach(doc, 2)[1] and syntax.frontier == 3, 'only as far as asked'
-    doc.replace(0, 0, '"""')
-    syntax.edited(doc.low)
-    rounds = 0
-    while not syntax.reach(doc, len(doc.blocks) - 1)[1]:
-        rounds += 1
-    assert rounds == 5 and syntax.state(doc, doc.lines - 2)[0] == '"""'
+def test_typing_inside_a_line_is_read_again_when_the_source_lints():
+    """An edit that keeps its line's structure cannot change the folds, so nothing is read for it; what the
+    lint finds it can change."""
+    source = Source('def area(side): pass\nvalue = area(1)\nother = 2\n')
+    ed = Editor(source=source)
+    ed.land()
+
+    def type(at, text):
+        ed.doc.select(at)
+        ed.rest()
+        ed.doc.replace(at, at, text)
+        assert ed.sync()
+
+    type(source.text.index('1)') + 1, ', 2')
+    source.settle()
+    assert not ed.land() and source.version != ed.doc.version, 'without lint the calm edit asks for nothing'
+    source.lint = True
+    type(source.text.index('= 2') + 3, ' + nowhere')
+    source.settle()
+    assert ed.land() and source.version == ed.doc.version
+    assert source.problems == [(2, 'area() takes 1 positional argument but 2 were given'), (3, "name 'nowhere' is not defined")]
+
+
+def test_the_string_state_far_down_is_known_once_the_text_was_read():
+    source = Source('x = 1\n' * 5000 + 's = """\n' + 'y\n' * 5000)
+    assert list(source.native.states(9000, 1)) == [255], 'the calling thread lexes a few chunks, never the file'
+    source.ask()
+    source.settle()
+    assert list(source.native.states(9000, 2)) == [1, 1] and list(source.native.states(10, 1)) == [0]
+    source.splice(0, 0, '"""', 1)
+    assert list(source.native.states(3, 1)) == [1] and list(source.native.states(5001, 1)) == [255], 'an edit lexes the chunks near it again'
+    source.ask()
+    source.settle()
+    assert list(source.native.states(5000, 2)) == [1, 0], 'and the reading the rest'
+
+
+def test_analysis_takes_undefined_names_from_the_source_and_tells_it_the_live_names(monkeypatch):
+    import time
+    import types
+    from meltygui.code import code_checks
+    from meltygui.model import editor_model
+
+    def wait(done):
+        deadline = time.monotonic() + 20
+        while not done() and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert done()
+
+    source = Source('import os\nprint(os.sep, missing, sys.argv)\nvalue = (\ndef area(side): pass\narea(1, 2)\nlen(1, 2)\n')
+    analysis = editor_model.Analysis(source)
+    try:
+        source.ask(now=True)
+        assert source.land() and source.lint
+        assert (5, 'area() takes 1 positional argument but 2 were given') in analysis.errors, 'a misfitting call is the source\'s too'
+        wait(lambda: analysis.analysed == source.native.version)
+        assert (2, "name 'missing' is not defined") in analysis.errors and analysis.errors is analysis.errors
+        # What a call reaches in the running process: the worker tells the source its signature, which is read again.
+        wait(lambda: 'builtins.len' in analysis.signed and source.stale)
+        source.stale = False
+        source.ask(now=True)
+        assert source.land() and (6, 'len() takes 1 positional argument but 2 were given') in analysis.errors
+        assert any(line == 3 for line, _ in analysis.errors), 'the syntax error is the worker\'s'
+        # Which import would bring a name is asked of the running process by the worker, once per name.
+        assert analysis.imports == {} or analysis.imports == {2: ['import sys']}
+        wait(lambda: 'sys' in analysis.suggested and 'missing' in analysis.suggested)
+        assert analysis.imports == {2: ['import sys']} and analysis.imports is analysis.imports and analysis.suggested['missing'] == []
+        # The running module turns out to have the name: told to the source, which is read again.
+        module = types.ModuleType('running')
+        module.missing = 1
+        monkeypatch.setattr(code_checks, '_module_for', lambda path: module)
+        source.stale = False        # (an editor does this when it asks again)
+        editor_model.hotswapped()
+        wait(lambda: source.stale)
+        source.ask(now=True)
+        assert source.land() and not any('missing' in message for _, message in analysis.errors)
+    finally:
+        analysis.close()
+
+
+def test_the_worker_compiles_only_the_statement_that_changed(monkeypatch):
+    import time
+    from meltygui.model import editor_model
+    compiled = []
+    flaws = editor_model.flaws
+    monkeypatch.setattr(editor_model, 'flaws', lambda text, path=None: compiled.append(text.lstrip('\n')) or flaws(text, path))
+
+    def settled(source, analysis):
+        source.ask(now=True)
+        assert source.land()
+        analysis.feed()
+        deadline = time.monotonic() + 20
+        while analysis.checked != source.version and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert analysis.checked == source.version
+
+    text = ''.join(f'def f{n}(a):\n    return a + {n}\n\n' for n in range(400))
+    source = Source(text, version=1)
+    analysis = editor_model.Analysis(source)
+    try:
+        settled(source, analysis)
+        assert len(compiled) == 400 and analysis.syntax == [] and analysis.errors == []
+        del compiled[:]
+        at = text.index('return a + 250') + len('return a + 250')
+        source.splice(at, at, ' +', 2)
+        settled(source, analysis)
+        assert 1 <= len(compiled) <= 40 and any('def f250' in block for block in compiled), 'the statements in the edited chunk, not the file'
+        assert analysis.syntax == [(752, 'invalid syntax')] and (752, 'invalid syntax') in analysis.errors
+        del compiled[:]
+        source.splice(0, 0, '\n', 3)
+        settled(source, analysis)
+        assert analysis.syntax == [(753, 'invalid syntax')], 'the error is told on the line the statement stands on now'
+        source.splice(at + 1, at + 3, '', 4)
+        settled(source, analysis)
+        assert analysis.syntax == [] and analysis.errors == []
+    finally:
+        analysis.close()
+
+
+SHARED = '''import os
+
+
+class Shape:
+    """A shape with sides."""
+    sides = 4
+
+    def area(self, scale=1):
+        total = self.sides * scale
+        if total > 10:
+            return total
+        return 0
+
+    def name(self):
+        return 'shape'
+
+
+def build(count):
+    found = []
+    for at in range(count):
+        found.append(Shape())
+    return found
+
+
+def main():
+    shapes = build(3)
+    print(len(shapes), os.sep)
+'''
+
+
+def same_as_fresh(ed, text):
+    """The session's rows and search hits are those of a new session on `text` with the same folds collapsed."""
+    fresh = Editor(text, fold_defaults=False, collapsed=sorted(ed.rows.collapsed(), key=repr))
+    fresh.find(ed.term)
+    fresh.source.settle()           # (a large text is read on the source's thread)
+    fresh.land()
+    lines = text.count('\n') + 1
+    assert ed.doc.lines == lines and ed.rows.count == fresh.rows.count
+    assert [(ed.rows.row(line), ed.rows.hidden(line)) for line in range(lines)] == [(fresh.rows.row(line), fresh.rows.hidden(line)) for line in range(lines)]
+    hits = lambda session: [(line, mark.low, mark.high) for line, mark in session.marks['hits'].on(0, lines)] if session.marks['hits'] else []
+    assert hits(ed) == hits(fresh)
+
+
+def test_two_sessions_on_one_source_follow_each_other_through_edits_undos_and_redos(undo_stack, monkeypatch):
+    """Both sessions see one text; each keeps its own folds, search hits and caret. After every step the rows
+    and hits of each are those of a fresh session on that text, and the caret of the session that did not
+    act still stands before the character it stood before."""
+    from meltygui.core.runtime.toggles import Toggles
+    monkeypatch.setattr(Toggles.CodeEditor, 'undo_typing_max_chars', 0)     # every edit its own step
+    random.seed(5)
+    source = Source(SHARED)
+    sessions = [Editor(source=source, fold_defaults=False), Editor(source=source, fold_defaults=False)]
+    sessions[0].find('shape')
+    sessions[1].find('total')
+    assert sessions[0].toggle(7) and sessions[1].toggle(17), 'each session folds for itself'
+    text, ids, fresh = SHARED, list(range(len(SHARED))), len(SHARED)
+    done, undone = [], []           # (text before, text after, who) of the steps on the stack, and of the ones undone
+    anchors = [None, None]          # the ids around each caret: (before, after)
+    kept = 0
+
+    def anchor(which):
+        caret = sessions[which].doc.caret
+        anchors[which] = (ids[caret - 1] if caret else None, ids[caret] if caret < len(ids) else None)
+
+    for which in (0, 1):
+        sessions[which].doc.select(random.randrange(len(text)))
+        anchor(which)
+    from meltygui.core.rendering.core_decoration import Core
+    frame = Core.melty.frame_count
+    for step in range(400):
+        # (Steps a frame apart: within one user action the framework undoes the steps of several views together.)
+        monkeypatch.setattr(Core.melty, 'frame_count', frame + 10 * (step + 1))
+        head, pick, who = source.head, random.random(), random.randrange(2)
+        ed = sessions[who]
+        if pick < .55 or not (done or undone):
+            low = random.randrange(len(text) + 1)
+            high = min(len(text), low + random.choice((0, 0, 0, 1, 3, 12)))
+            new = random.choice(('x', 'value', '\n', '\n    pass\n', '', 'shape', ' total ', '(', '"""'))
+            ed.land()
+            if command(ed, lambda doc: doc.replace(low, high, new)) is None:
+                anchor(who)         # (nothing changed; the caret went where the edit would have put it)
+                continue
+            after = text[:low] + new + text[high:]
+            done.append((text, after, who))
+            undone.clear()
+            text = after
+        elif pick < .75 and done:
+            undo_stack.stack.undo()
+            before, after, who = done.pop()
+            undone.append((before, after, who))
+            text = before
+        elif pick < .9 and undone:
+            undo_stack.stack.redo()
+            before, after, who = undone.pop()
+            done.append((before, after, who))
+            text = after
+        else:
+            ed.land()
+            line = random.randrange(ed.doc.lines)
+            ed.toggle(line)
+        for _, _, low, gone, came, _ in source.since(head):
+            ids[low:low + gone] = range(fresh, fresh + came)
+            fresh += came
+        assert source.text == text and len(ids) == len(text), step
+        for which, session in enumerate(sessions):
+            session.land()
+            session.read()
+        sessions[0].land()
+        for which, session in enumerate(sessions):
+            assert session.doc.text == text and session.seen == source.head, (step, which)
+            same_as_fresh(session, text)
+            caret = session.doc.caret
+            assert 0 <= caret <= len(text) and 0 <= session.doc.anchor <= len(text)
+            if which != who and anchors[which] is not None:
+                before, after = anchors[which]
+                # (A caret whose line a fold now hides moves to the fold's header: `Editor.settle`.)
+                spot = ids.index(after) if after in ids else ids.index(before) + 1 if before in ids else None
+                if spot is not None and not session.rows.hidden(session.doc.line_of(spot)):
+                    assert caret == spot, (step, which, 'the caret left its character')
+                    kept += 1
+            anchor(which)
+    assert len(done) + len(undone) > 50 and kept > 200, (len(done), len(undone), kept)
+
+
+def test_an_edit_from_outside_reaches_every_session_and_moves_their_undo_steps(undo_stack):
+    source = Source(SHARED)
+    one, two = Editor(source=source, fold_defaults=False), Editor(source=source, fold_defaults=False)
+    woken = []
+    one.wake, two.wake = (lambda: woken.append(1)), (lambda: woken.append(2))
+    at = SHARED.index('sides = 4') + len('sides = 4')
+    one.doc.select(at)
+    command(one, edit.insert, '0')
+    two.land()
+    two.doc.select(source.text.index('def main'))
+    assert woken == [2] and two.doc.text == source.text, 'the other session is woken for an edit, not the one that made it'
+    # Someone who is no editor writes the text: a pending save, a `CodeDict`, a reload.
+    del woken[:]
+    source.splice(0, 0, '# header\n\n')
+    assert sorted(woken) == [1, 2]
+    for ed in (one, two):
+        assert ed.land() is not None and ed.doc.text == source.text and ed.seen == source.head
+    assert one.doc.slice(one.doc.caret - 10, one.doc.caret) == 'sides = 40' and two.doc.slice(two.doc.caret, two.doc.caret + 8) == 'def main'
+    one.read()
+    two.land()
+    for ed in (one, two):
+        same_as_fresh(ed, source.text)
+    # The step made before the outside edit still undoes its own characters, where they are now.
+    undo_stack.stack.undo()
+    assert source.text == '# header\n\n' + SHARED and one.land() is not None and two.land() is not None
+    assert one.doc.slice(one.doc.caret - 9, one.doc.caret) == 'sides = 4', 'the caret returns in the session that made the edit'
+    assert two.doc.slice(two.doc.caret, two.doc.caret + 8) == 'def main', 'the other keeps its place'
+    undo_stack.stack.redo()
+    assert source.text == '# header\n\n' + SHARED.replace('sides = 4', 'sides = 40')
+    # An outside edit that reaches into a step drops it: there is nothing exact left to undo.
+    source.splice(source.text.index('sides = 40'), source.text.index('sides = 40') + 10, 'sides = 5')
+    assert not undo_stack.stack.history and not undo_stack.stack.can_redo()
+
+
+def test_a_session_closes_and_the_other_goes_on(undo_stack, monkeypatch):
+    from meltygui.core.rendering.core_decoration import Core
+    from meltygui.core.runtime.toggles import Toggles
+    monkeypatch.setattr(Toggles.CodeEditor, 'undo_typing_max_chars', 0)     # every edit its own step
+    frame = Core.melty.frame_count
+    source = Source(SHARED)
+    one, two = Editor(source=source, fold_defaults=False), Editor(source=source, fold_defaults=False)
+    one.doc.select(0)
+    command(one, edit.insert, 'A')
+    two.land()
+    two.doc.select(two.doc.size)
+    monkeypatch.setattr(Core.melty, 'frame_count', frame + 10)      # (another user action than the one before)
+    command(two, edit.insert, 'B')
+    monkeypatch.setattr(Core.melty, 'frame_count', frame + 20)
+    wakes = pytest.importorskip('meltygui.core.rendering._gui_native').Wakes()
+    one.waker, two.waker = (wakes.handle(), 1), (wakes.handle(), 2)
+    one.close()
+    assert source.each() == [two]
+    command(two, edit.insert, 'C')
+    source.ask()
+    source.settle()
+    assert wakes.take() == [2] and two.land() and source.text == 'A' + SHARED + 'BC'
+    for expected in ('A' + SHARED + 'B', 'A' + SHARED, SHARED):
+        undo_stack.stack.undo()
+        assert source.text == expected and two.land() is not None and two.doc.text == expected
+    assert two.doc.caret == len(SHARED), 'the step of the session that closed undid the text; the caret of the other followed'
+    two.read()
+    same_as_fresh(two, SHARED)
+    del one
+    import gc
+    gc.collect()
+    assert source.each() == [two]
+
+
+def test_a_reading_serves_every_session_with_its_own_folds_and_hits():
+    text = SHARED * 300
+    source = Source(text)
+    one, two = Editor(source=source, fold_defaults=False), Editor(source=source, fold_defaults=False)
+    source.settle()
+    assert one.land() and two.land() and one.toggle(7) and two.toggle(17) and two.toggle(24)
+    wakes = pytest.importorskip('meltygui.core.rendering._gui_native').Wakes()
+    one.waker, two.waker = (wakes.handle(), 1), (wakes.handle(), 2)
+    one.term, two.term = 'shape', 'total'
+    one.ask()
+    source.settle()
+    assert sorted(wakes.take()) == [1, 2], 'one reading, every session woken'
+    assert one.land() and two.land() and not one.land() and not two.land()
+    assert len(one.marks['hits']) == 300 * SHARED.lower().count('shape') and len(two.marks['hits']) == 300 * SHARED.count('total')
+    lines = text.count('\n') + 1
+    assert two.rows.count < one.rows.count < lines, 'each session keeps its own folds'
+    for ed in (one, two):
+        same_as_fresh(ed, text)
 
 
 def test_the_column_map_round_trips_over_added_cells(monkeypatch):
@@ -546,26 +938,116 @@ def test_the_column_map_round_trips_over_added_cells(monkeypatch):
     assert syntax.insets('x = 12 + 3') == ([4, 6, 9, 10], [2, 5, 7, 10]), 'lead before each number, trail after it'
 
 
-def test_editor_follows_edits_at_once_and_takes_fresh_folds_from_the_worker():
+def test_editor_follows_edits_at_once_and_takes_fresh_folds_from_the_source():
     tools()
     ed = Editor(SOURCE, fold_defaults=False)
-    assert [ed.folds.range(at) for at in range(len(ed.folds))][-1] == (13, 14)
+    assert ed.rows.ranges()[-1] == (13, 14)
     ed.toggle(13)
     assert ed.rows.count == ed.doc.lines - 1
     edit.move(ed.doc, ed.doc.start(6))
     edit.enter(ed.doc)
-    assert ed.sync() and ed.folds.ranges() == [(14, 15)] and ed.rows.hidden(15), 'followed without a scan'
-    assert ed.worker.jobs, 'the rescan waits for the worker'
+    assert ed.sync() and ed.rows.closed() == [(14, 15)] and ed.rows.hidden(15), 'followed without a scan'
+    assert not ed.land(), 'the fresh folds wait for the text to rest'
     ed.doc.replace(ed.doc.start(14), ed.doc.start(14) + 7, 'def low')
     ed.sync()
-    ed.worker.settle()
-    assert ed.land() and ed.folds.ranges() == [] and ('scope', 'low') in ed.folds.names
+    ed.source.settle()
+    assert ed.land() and ed.rows.closed() == [] and ('scope', 'low') in ed.rows.names()
     ed.find('return')
     assert [line for line, _ in ed.marks['hits'].on(0, 99)] == [11, 12]
     ed.doc.replace(0, 0, '\n')
     ed.sync()
     assert [line for line, _ in ed.marks['hits'].on(0, 99)] == [12, 13], 'hits follow until the search runs again'
     ed.load(ed.doc.text.replace('return 2', 'return 22'))
-    ed.worker.settle()
+    ed.source.settle()
     ed.land()
     assert ed.doc.line(13) == '        return 22' and [mark.low for _, mark in ed.marks['hits'].on(13)] == [8]
+
+
+def test_the_worker_tells_findings_on_the_lines_a_statement_stands_on_now(monkeypatch):
+    """A statement is compiled on its own, and read for the attributes live modules lack, once: its findings
+    are kept by its own lines and told where it stands, message included."""
+    import time
+    import types
+    from meltygui.code import code_checks
+    from meltygui.model import editor_model
+    module = types.ModuleType('running')
+    module.os = __import__('os')
+    monkeypatch.setattr(code_checks, '_module_for', lambda path: module)
+
+    def settled(source, analysis):
+        source.ask(now=True)
+        assert source.land()
+        analysis.feed()
+        deadline = time.monotonic() + 20
+        while analysis.checked != source.version and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert analysis.checked == source.version
+
+    text = 'import os\n\ndef f():\n    return os.nothing_here\n\nvalue = (1,\n         2]\n'
+    source = Source(text, 'running.py', version=1)
+    analysis = editor_model.Analysis(source)
+    try:
+        settled(source, analysis)
+        assert analysis.found == [(4, "module 'os' has no attribute 'nothing_here'")]
+        assert analysis.syntax == [(7, "closing parenthesis ']' does not match opening parenthesis '(' on line 6")]
+        assert set(analysis.found + analysis.syntax) <= set(analysis.errors)
+        read = dict(analysis.compiled)
+        source.splice(0, 0, '# a line above\n\n', 2)
+        settled(source, analysis)
+        assert analysis.found == [(6, "module 'os' has no attribute 'nothing_here'")]
+        assert analysis.syntax == [(9, "closing parenthesis ']' does not match opening parenthesis '(' on line 8")]
+        assert all(analysis.compiled[key] is read[key] for key in read if key in analysis.compiled), 'nothing that stayed was read again'
+    finally:
+        analysis.close()
+
+
+def test_a_mark_set_that_shows_the_same_repaints_nothing():
+    """Results arrive after every edit (errors, tints, spelling, breakpoints): the blocks are painted again
+    only when the set shows something else on them."""
+    ed = Editor('\n'.join(f'value_{n} = {n}' for n in range(400)))
+    ed.window(0., 400.)
+    error = lambda line: marks.Marks([(line, marks.Mark('error', data=('wrong', [])))])
+    ed.put('errors', error(3))
+    painted = ed.base
+    ed.put('errors', error(3))
+    assert ed.base == painted and ed.marks['errors'].on(3)[0][1].data == ('wrong', [])
+    ed.put('errors', error(4))
+    assert ed.base > painted
+    painted = ed.base
+    # Out of sight: the blocks there are painted when they are declared again.
+    ed.put('notes', error(350))
+    ed.put('notes', error(351))
+    ed.put('notes', None)
+    assert ed.base == painted and ed.marks['notes'] is None
+    ed.put('notes', error(5))
+    ed.put('notes', None)
+    assert ed.base == painted + 2, 'a set that comes or goes in sight'
+
+
+def test_a_worker_parks_while_a_frame_draws_and_the_render_thread_never(monkeypatch):
+    """`glfw_utils.park`: what the native editor's Python workers call between pieces of their work."""
+    import threading
+    import time
+    from meltygui.core.melty import Melty
+    from meltygui.core.windowing import glfw_utils
+    monkeypatch.setattr(glfw_utils, '_render_thread_id', threading.get_ident())
+    monkeypatch.setattr(Melty, '_frame_draw_start', 0.0)
+    assert glfw_utils.park() == 0, 'no frame: nothing to wait for'
+    slept, results = [], []
+    def sleep(seconds):
+        slept.append(seconds)
+        if len(slept) == 3:
+            Melty._frame_draw_start = 0.0       # the frame ends
+    monkeypatch.setattr(glfw_utils.time, 'sleep', sleep)
+    monkeypatch.setattr(Melty, '_frame_draw_start', time.monotonic())
+    assert glfw_utils.park() == 0 and not slept, 'never the render thread'
+    thread = threading.Thread(target=lambda: results.append(glfw_utils.park()))
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive() and slept == [glfw_utils.PARK_SLICE] * 3 and Melty._frame_draw_start == 0
+    # A frame stamp that never ended (an aborted frame) parks nobody.
+    monkeypatch.setattr(Melty, '_frame_draw_start', time.monotonic() - glfw_utils.PARK_STALE - 1)
+    thread = threading.Thread(target=lambda: results.append(glfw_utils.park()))
+    thread.start()
+    thread.join(timeout=5)
+    assert len(results) == 2 and len(slept) == 3

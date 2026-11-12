@@ -1,0 +1,173 @@
+"""The icon picker: an inline widget on the editor's icon glyphs.
+
+A Font Awesome glyph in the text (token kind `icon`; Ctrl+I inserts the
+placeholder) is a chip: a click opens the picker under it, a grid of the
+glyphs of `model/icon_model.py`. The picker takes the keyboard while it is
+open: typing filters by name, the arrows and the pointer move the selection,
+Enter or a click replaces the glyph, Escape or a click elsewhere closes.
+It opens on the glyph the text has, which is offered even when the font
+table does not list it.
+
+`icon` is the chip (registered with `@inline('icon')`; it is one token for a
+run of glyphs and picks for the one clicked), `icons` the picker popover.
+The grid's size is the levers below; what is offered is `catalog`.
+"""
+import meltygui_imgui as imgui
+
+import meltygui.core.windowing.window_constants as glfw
+from meltygui.core.rendering.gui_prototype import gui
+from meltygui.editor.inline import inline
+from meltygui.editor.keys import printable
+from meltygui.hdr_color import pack_color
+from meltygui.view.editor_view import LINE, font, look
+
+# Levers: the grid's columns and rows, a cell's size in pixels, the space around the grid.
+COLUMNS = 12
+ROWS = 9
+CELL = 26.
+PAD = 4.
+CATALOG = []
+
+
+def catalog():
+    """[(glyph, name)] of every glyph the picker offers, in the font table's order."""
+    if not CATALOG:
+        from meltygui.model.icon_model import FA_ICONS
+        CATALOG.extend((glyph, label.split(None, 1)[-1]) for group in FA_ICONS.values() for label, glyph in group.items())
+    return CATALOG
+
+
+def offered(current, query):
+    """The glyphs whose name holds `query`; `current` leads them when the table does not have it."""
+    found = catalog()
+    if current and all(glyph != current for glyph, _ in found):
+        found = [(current, 'in the text')] + found
+    wanted = query.lower()
+    # The name itself first, then the names that start with what was typed.
+    return sorted([item for item in found if wanted in item[1]],
+                  key=lambda item: (item[1] != wanted, not item[1].startswith(wanted))) if wanted else found
+
+
+def size(lh):
+    """(width, height) of the picker under a line `lh` pixels high."""
+    return COLUMNS * CELL + 2 * PAD, lh + 6 + ROWS * CELL + 2 * PAD
+
+
+@gui(listen=('keys', 'text', 'pointer', 'hover', 'wheel', 'focus'), no_save=('seen', 'query', 'index', 'first', 'back'))
+def icons(input_value: str = '', turn=0, seen=None, query='', index=0, first=0, back=None, width=0., height=0.,
+          draw_state=None, cache=None, view_events=None):
+    """The picker popover for the glyph `input_value`. Returns `(True,
+    glyph)` when one was picked and `(True, '')` when it was closed without.
+    `turn` counts the chip's openings (another one starts the picker afresh:
+    `seen`), `index` is the selected glyph among the offered ones, `first`
+    the first row shown, `back` the view the keyboard returns to."""
+    node, events = cache.current, view_events
+    pushed, cw, lh = font()
+    head = lh + 6
+    fresh = seen != turn
+    if fresh:
+        # Just opened: the keyboard comes here, the selection starts on the glyph the text has.
+        draw_state.seen, query, first = turn, '', 0
+        back = draw_state.back = cache.imgui_input.keyboard
+        cache.imgui_input.take_keyboard(node)
+    found = offered(input_value, query)
+    if fresh:
+        index = next((at for at, (glyph, _) in enumerate(found) if glyph == input_value), 0)
+    picked = closed = False
+    typed, was = ''.join(events.get('text', ())), query
+    for key, mods in events.get('keys', ()):
+        if printable(key, mods):
+            continue
+        step = {glfw.KEY_LEFT: -1, glfw.KEY_RIGHT: 1, glfw.KEY_UP: -COLUMNS, glfw.KEY_DOWN: COLUMNS,
+                glfw.KEY_PAGE_UP: -COLUMNS * ROWS, glfw.KEY_PAGE_DOWN: COLUMNS * ROWS,
+                glfw.KEY_HOME: -len(found), glfw.KEY_END: len(found)}.get(key)
+        if step is not None:
+            index += step
+        elif key == glfw.KEY_BACKSPACE:
+            query, typed = query[:-1], ''
+        elif key in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER):
+            picked = True
+        elif key == glfw.KEY_ESCAPE:
+            closed = True
+    query += typed
+    if query != was:
+        found, index = offered(input_value, query), 0
+    for across, down in events.get('wheel', ()):
+        first -= int(down)
+    for event in (*events.get('hover', ()), *events.get('pointer', ())):
+        # The pointer over the grid selects; a press picks.
+        column, row = int((event.x - PAD) // CELL), int((event.y - head - PAD) // CELL)
+        at = (first + row) * COLUMNS + column
+        if event.kind in ('hover', 'press') and 0 <= column < COLUMNS and 0 <= row < ROWS and at < len(found):
+            index = at
+            picked |= event.kind == 'press' and not event.button
+    closed |= any(not gained for gained in events.get('focus', ()))
+    # Keep the selection among the offered glyphs and, when the keyboard moved it, in sight.
+    index = min(max(index, 0), max(len(found) - 1, 0))
+    if fresh or 'keys' in events or 'text' in events:
+        first = min(max(first, index // COLUMNS - ROWS + 1), index // COLUMNS)
+    first = min(max(first, 0), max((len(found) - 1) // COLUMNS - ROWS + 1, 0))
+    draw_state.query, draw_state.index, draw_state.first = query, index, first
+    table = look()
+    dl = imgui.get_window_draw_list()
+    dl.add_rect_filled(0, 0, width, height, table.pop, 4.)
+    dl.add_text(PAD + 2, 3 + (lh - lh / LINE) * .5, table.caret if query else table.dim, query or 'type to search')
+    if found:
+        name = found[index][1]
+        dl.add_text(width - PAD - 2 - len(name) * cw, 3 + (lh - lh / LINE) * .5, table.dim, name)
+    dl.add_line(PAD, head, width - PAD, head, table.thumb, 1.)
+    for at in range(first * COLUMNS, min((first + ROWS) * COLUMNS, len(found))):
+        glyph = found[at][0]
+        x, y = PAD + at % COLUMNS * CELL, head + PAD + (at // COLUMNS - first) * CELL
+        if at == index:
+            dl.add_rect_filled(x, y, x + CELL, y + CELL, table.pick, 4.)
+        elif glyph == input_value:
+            dl.add_rect(x + 1, y + 1, x + CELL - 1, y + CELL - 1, table.dim, 4.)
+        dl.add_text(x + (CELL - imgui.calc_text_size(glyph).x) * .5, y + (CELL - lh / LINE) * .5, table.caret, glyph)
+    rows = (len(found) + COLUMNS - 1) // COLUMNS
+    if rows > ROWS:
+        # Where the shown rows are among all of them.
+        tall = ROWS * CELL
+        dl.add_rect_filled(width - 3, head + PAD + tall * first / rows, width - 1, head + PAD + tall * (first + ROWS) / rows,
+                           table.thumb, 1.)
+    if pushed:
+        imgui.pop_font()
+    picked &= bool(found)
+    if picked or closed:
+        if back is not None and back in cache.records and cache.imgui_input.keyboard == node:
+            cache.imgui_input.take_keyboard(back)       # the editor types again
+        return True, found[index][0] if picked else ''
+    return False, input_value
+
+
+@inline('icon', solid=True)
+@gui(no_save=('shown', 'turn', 'held'))
+def icon(input_value: str, width=0., height=0., shown=None, turn=0, held=None, draw_state=None):
+    """The chip over a run of icon glyphs: a press on one opens the picker
+    for it (`shown` is its place in the run, `turn` counts the openings), a
+    press on the open one closes it. `held` is the glyph the button is down
+    on: the view runs more than once while it is, and toggles once."""
+    dl = imgui.get_window_draw_list()
+    count = max(len(input_value), 1)
+    cell = width / count
+    for at in range(count):
+        imgui.set_cursor_pos((at * cell, 0.))
+        imgui.invisible_button(f'##icon{at}', cell, height)
+        if imgui.is_item_active() and held is None:
+            # A state write does not run the view again: carry on with the new values.
+            draw_state.held = held = at
+            draw_state.shown = shown = None if shown == at else at
+            draw_state.turn = turn = turn + 1
+        elif held == at and not imgui.is_item_active():
+            draw_state.held = held = None
+        if imgui.is_item_hovered() or shown == at:
+            dl.add_rect(at * cell - 1, 1, (at + 1) * cell + 1, height - 1, pack_color(1., 1., 1., .5 if shown == at else .25), 4.)
+    if shown is None or shown >= len(input_value):
+        return False, input_value
+    wide, tall = size(height)
+    edited, picked = icons(input_value[shown], name='icons', melty_window=True, content_offset=(0., 0.), turn=turn,
+                           left=shown * cell, top=height + 2, width=wide, height=tall)
+    if not edited:
+        return False, input_value
+    draw_state.shown = None
+    return bool(picked), input_value[:shown] + picked + input_value[shown + 1:] if picked else input_value

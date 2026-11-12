@@ -1,176 +1,84 @@
-"""The edited text as blocks of lines, with the caret.
+"""The edited text, seen through its `Source`, with the caret.
 
-A `Block` holds about `BLOCK` lines: their text, their local line starts and
-whatever is derived from exactly those lines (lexer state, repaint stamp).
-Every change goes through `Document.splice`, which rewrites the blocks the
-edit touches and nothing else: blocks below keep their content and only their
-base line and offset move, which are prefix sums rebuilt on demand. So no
-edit costs more than its own blocks, whatever the file size.
+The text lives in the `Source` (model/source_model.py: Rust) and nowhere
+else, with its version and the log of its splices; several documents may be
+on one source. `Document` is one session's face on it: lines, columns and
+offsets, this session's caret and selection, and `splice`, its way to edit.
+Nothing here holds or walks the text: every answer is asked of the source
+for the lines or offsets it concerns, so an edit or a jump costs its own
+lines whatever the file size.
 
-Offsets index the whole text; lines and columns are 0 based. `Document.text`
-joins the blocks, once per version, for callers that need one string.
+A block is a run of about `BLOCK` lines that the view paints as one
+(`blocks`): its key stays with it through edits, the blocks below an edit
+only move. Offsets index the whole text; lines and columns are 0 based.
+`Document.text` is the whole text as one string: a copy, so nothing on the
+path of a keystroke should ask for it.
 """
-from bisect import bisect_right
-from collections import namedtuple
+from meltygui.model.source_model import Source, Splice, LINES, LOG   # noqa: F401  (`Splice`, `LOG`: what edits are told as)
 
-# Lever: lines in a fresh block. One block is one `block` view: smaller
-# blocks repaint less per keystroke, larger ones declare fewer views.
-BLOCK = 32
-# What one edit did, in lines and columns: the text from (line, column) over
-# `gone` line breaks to column `old` became text over `came` line breaks
-# ending at column `new`. Everything that follows edits reads only this.
-Splice = namedtuple('Splice', 'line column gone old came new')
-# Lever: splices kept for results that were computed for an older version.
-LOG = 512
+# Lines in a fresh block. One block is one `block` view: smaller blocks
+# repaint less per keystroke, larger ones declare fewer views. The lever is
+# `LINES` in native/source/src/store.rs.
+BLOCK = LINES
 # Lever: characters before the caret that context helpers may read (bracket
 # matching for indents looks back this far in the legacy editor too).
 NEAR = 4000
 
 
-class Block:
-    """`count` lines of text. Every line ends with its newline except the
-    last line of the document."""
-    __slots__ = ('key', 'text', 'count', 'cut', 'stamp', 'open', 'exit', 'wide')
-
-    def __init__(self, key, text, count):
-        self.key, self.stamp = key, 0
-        # Lexer state (syntax.py): `open` at each line, None until first
-        # lexed and () after a rewrite; `exit` after the last line.
-        self.open = self.exit = None
-        self.set(text, count)
-
-    def set(self, text, count):
-        self.text, self.count = text, count
-        self.cut = None                    # local line starts, found on first use
-        self.wide = 0                      # longest line in cells, known once painted
-        if self.open is not None:
-            self.open = ()                 # lexed again; `exit` stays, to tell whether the lines below changed
-
-    @property
-    def starts(self):
-        """Local offset of each line's first character."""
-        found = self.cut
-        if found is None:
-            text, found = self.text, [0]
-            find, at = text.find, text.find('\n')
-            while at != -1:
-                found.append(at + 1)
-                at = find('\n', at + 1)
-            del found[self.count:]
-            self.cut = found
-        return found
-
-    def lines(self):
-        """The text of each line, without newlines."""
-        return self.text.split('\n')[:self.count]
-
-
-def chunks(text, final):
-    """[(text, lines)] blocks of `BLOCK` lines from `text`; `final` when it
-    holds the document's last line (which has no newline)."""
-    lines = text.split('\n')
-    if not final:
-        lines.pop()
-    if len(lines) <= BLOCK * 2:
-        return [(text, len(lines))]
-    found, last = [], len(lines) - BLOCK
-    for at in range(0, len(lines), BLOCK):
-        part = lines[at:at + BLOCK]
-        found.append(('\n'.join(part) + ('\n' if at < last or not final else ''), len(part)))
-    return found
-
-
 class Document:
-    __slots__ = ('blocks', 'keys', 'line0', 'char0', 'lines', 'size', 'serial', 'caret', 'anchor', 'goal',
-                 'version', 'changes', 'log', 'dirty', 'low', 'joined', 'whole', 'record')
+    __slots__ = ('source', 'store', 'caret', 'anchor', 'goal', 'joined', 'whole', 'record', 'by')
 
-    def __init__(self, text=''):
-        self.version, self.serial = 0, 0
+    def __init__(self, text='', source=None):
+        """`source`: the `Source` holding the text, which this document
+        edits along with whoever else does; without one, one is made for `text`."""
+        self.source = source if source is not None else Source(text, version=1)
+        self.store = self.source.native
         # Undo hook: `record(low, old, new, before, after)` for every `replace` (the session's, see history.py).
         self.record = None
-        # For `Editor.sync`: the splices since it last ran, the blocks they
-        # rewrote and the lowest index among those.
-        self.changes, self.log, self.dirty, self.low = [], [], [], 0
+        # Who the source is told made this document's edits: its session.
+        self.by = self
         self.caret = self.anchor = 0
-        self.load(text)
-
-    def load(self, text):
-        """Start over from `text` (the first text; later ones are edits)."""
-        self.keys = {}
-        self.blocks = [self.block(part, count) for part, count in chunks(text, True)]
-        self.line0, self.char0 = [0], [0]
-        self.lines, self.size = text.count('\n') + 1, len(text)
-        self.whole, self.joined = text, self.version + 1
-        self.caret = self.anchor = min(self.caret, self.size)
         self.goal = None
-        self.version += 1
-        self.log.clear()
+        self.whole, self.joined = None, -1
 
-    def block(self, text, count):
-        self.serial += 1
-        found = self.keys[self.serial] = Block(self.serial, text, count)
-        return found
+    # The version of the text: the source's, which rises with every splice, whoever makes it.
+    version = property(lambda self: self.store.version)
+    lines = property(lambda self: self.store.lines)
+    size = property(lambda self: self.store.size)
 
     @property
     def text(self):
         """The whole text as one string."""
         if self.joined != self.version:
-            self.whole, self.joined = ''.join([block.text for block in self.blocks]), self.version
+            self.whole, self.joined = self.store.text(), self.version
         return self.whole
 
-    # --- blocks ----------------------------------------------------------
-    def grow(self):
-        """Extend the base tables by one block."""
-        block = self.blocks[len(self.line0) - 1]
-        self.line0.append(self.line0[-1] + block.count)
-        self.char0.append(self.char0[-1] + len(block.text))
-
-    def at_line(self, line):
-        """Index of the block holding `line`."""
-        line0, blocks = self.line0, self.blocks
-        while len(line0) < len(blocks) and line0[-1] + blocks[len(line0) - 1].count <= line:
-            self.grow()
-        return bisect_right(line0, line) - 1
-
-    def at_char(self, index):
-        """Index of the block holding offset `index`."""
-        char0, blocks = self.char0, self.blocks
-        while len(char0) < len(blocks) and char0[-1] + len(blocks[len(char0) - 1].text) <= index:
-            self.grow()
-        return bisect_right(char0, index) - 1
-
-    def first(self, at):
-        """The document line of block `at`'s first line."""
-        while len(self.line0) <= at:
-            self.grow()
-        return self.line0[at]
-
     # --- lines -----------------------------------------------------------
+    def blocks(self, first, last):
+        """[(key, first line, lines, stamp)] of the blocks holding lines
+        `first .. last`; `stamp` is the version of the edit that last rewrote the block."""
+        return self.store.blocks(first, last)
+
+    def rows(self, first, count):
+        """The text of `count` lines from `first`, without newlines."""
+        return self.store.texts(first, count)
+
+    def line(self, line):
+        return self.store.texts(line, 1)[0]
+
     def line_of(self, index):
-        return self.place(index)[0]
+        return self.store.place(index)[0]
 
     def start(self, line):
-        at = self.at_line(line)
-        return self.char0[at] + self.blocks[at].starts[line - self.line0[at]]
+        return self.store.start(line)
 
     def end(self, line):
         """Offset of the line's newline (or the text end)."""
-        return self.start(line + 1) - 1 if line + 1 < self.lines else self.size
-
-    def line(self, line):
-        at = self.at_line(line)
-        block, local = self.blocks[at], line - self.line0[at]
-        starts = block.starts
-        if local + 1 < len(starts):
-            return block.text[starts[local]:starts[local + 1] - 1]
-        return block.text[starts[local]:].rstrip('\n')
+        return self.store.start(line + 1) - 1 if line + 1 < self.lines else self.size
 
     def place(self, index):
         """(line, column) of an offset."""
-        at = self.at_char(index)
-        starts, local = self.blocks[at].starts, index - self.char0[at]
-        line = bisect_right(starts, local) - 1
-        return self.line0[at] + line, local - starts[line]
+        return self.store.place(index)
 
     def index(self, line, column):
         line = min(max(line, 0), self.lines - 1)
@@ -178,23 +86,13 @@ class Document:
 
     def slice(self, low, high):
         """The text between two offsets."""
-        if high <= low:
-            return ''
-        a, b = self.at_char(low), self.at_char(high)
-        low -= self.char0[a]
-        high -= self.char0[a]
-        if a == b:
-            return self.blocks[a].text[low:high]
-        return ''.join([block.text for block in self.blocks[a:b + 1]])[low:high]
+        return self.store.slice(low, high)
 
     def near(self, index):
         """(text, base): the text around offset `index`, from at least
         `NEAR` characters before it to the end of the next block, and the
         offset it starts at. What a helper that scans around the caret gets."""
-        at = low = self.at_char(index)
-        while low and index - self.char0[low] < NEAR:
-            low -= 1
-        return ''.join([block.text for block in self.blocks[low:at + 2]]), self.char0[low]
+        return self.store.near(index, NEAR)
 
     # --- selection -------------------------------------------------------
     @property
@@ -226,40 +124,11 @@ class Document:
         return change
 
     def splice(self, low, high, new):
-        """The raw edit, without an undo step: rewrite the blocks from `low` to
-        `high`. Their first block keeps its identity, so its view repaints and
-        the blocks below only move."""
-        blocks = self.blocks
-        a = self.at_char(low)
-        b = a if high == low else self.at_char(high)
-        base, line = self.char0[a], self.line0[a]
-        text = blocks[a].text if a == b else ''.join([block.text for block in blocks[a:b + 1]])
-        low -= base
-        high -= base
-        head = text.rfind('\n', 0, low) + 1
-        gone, came = text.count('\n', low, high), new.count('\n')
-        change = Splice(line + text.count('\n', 0, head), low - head, gone,
-                        high - (text.rfind('\n', 0, high) + 1), came,
-                        len(new) - new.rfind('\n') - 1 if came else low - head + len(new))
-        parts = chunks(text[:low] + new + text[high:], b == len(blocks) - 1)
-        first = blocks[a]
-        first.set(*parts[0])
-        for block in blocks[a + 1:b + 1]:
-            del self.keys[block.key]
-        blocks[a + 1:b + 1] = [self.block(part, count) for part, count in parts[1:]]
-        del self.line0[a + 1:], self.char0[a + 1:]
-        self.dirty.append(first)
-        self.low = min(self.low, a)
-        self.lines += came - gone
-        self.size += len(new) - (high - low)
-        self.version += 1
-        self.changes.append(change)
-        self.log.append(change)
-        if len(self.log) > LOG * 2:
-            del self.log[:LOG]
-        return change
+        """The raw edit, without an undo step: the source rewrites the block
+        the edit is in, which keeps its key; the blocks below only move."""
+        return self.source.splice(low, high, new, by=self.by)
 
     def since(self, version):
-        """The splices made after `version`, or None when they are no longer kept."""
-        count = self.version - version
-        return self.log[len(self.log) - count:] if 0 <= count <= len(self.log) else None
+        """The splices made after `version` by anyone, or None when they are no longer kept."""
+        found = self.source.since(version)
+        return None if found is None else [entry[1] for entry in found]

@@ -542,6 +542,11 @@ class Backend:
                 pass
         self.repeat()
 
+    def poke(self):
+        """`post_empty_event` for a thread without the interpreter: a byte
+        written to this descriptor (`window_api.poke`)."""
+        return 'fd', self.wake_writer.fileno()
+
     def post_empty_event(self):
         try:
             self.wake_writer.send(b'1')

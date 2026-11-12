@@ -16,6 +16,7 @@ mod identity;
 mod retained;
 mod texture;
 mod edges;
+mod wake;
 
 struct Shape {
     slots: HashMap<String, usize>,
@@ -1187,6 +1188,7 @@ fn _gui_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Renderer>()?;
     m.add_class::<declare::Declarations>()?;
     m.add_class::<executor::Executor>()?;
+    m.add_class::<wake::Wakes>()?;
     m.add_function(wrap_pyfunction!(same_arguments, m)?)?;
     Ok(())
 }

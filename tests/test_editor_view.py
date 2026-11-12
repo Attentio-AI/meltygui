@@ -8,7 +8,8 @@ from meltygui.editor import inline, syntax
 from meltygui.editor.marks import Marks, Mark
 from meltygui.editor.editor import BLOCK
 from meltygui.state.core_undo import UndoManager
-from meltygui.state.editor_state import EditorState, Breakpoints
+from meltygui.model.source_model import Source
+from meltygui.state.editor_state import EditorState
 
 SOURCE = '''import os
 
@@ -88,7 +89,7 @@ def test_click_places_the_caret_and_typing_edits_one_block(editor):
     editor.painted.clear()
     changed, text = typed(editor, 'xy')
     assert changed and text.split('\n')[2] == 'LIMITxy = 10'
-    assert set(editor.painted) == {editor.ed.doc.blocks[0].key}, 'only the block holding the line repaints'
+    assert set(editor.painted) == {editor.ed.doc.blocks(2, 2)[0][0]}, 'only the block holding the line repaints'
     changed, text = keys(editor, glfw.KEY_BACKSPACE)
     assert text.split('\n')[2] == 'LIMITx = 10'
     undo(editor)
@@ -214,7 +215,7 @@ def test_fold_toggle_from_the_gutter_hides_rows_and_keeps_editing_exact(editor):
     assert ed.doc.line_of(ed.doc.caret) == 7, 'the caret steps over hidden lines'
     undo(editor)
     editor.click(x, at(editor, 7, 0)[1])
-    assert ed.rows.count == rows and ed.folds.ranges() == []
+    assert ed.rows.count == rows and ed.rows.closed() == []
     keys(editor, (glfw.KEY_MINUS, CTRL | SHIFT))
     assert ed.rows.count == rows - 47 and not ed.rows.hidden(ed.doc.line_of(ed.doc.caret))
     keys(editor, (glfw.KEY_EQUAL, CTRL | SHIFT))
@@ -450,15 +451,16 @@ def test_a_click_beside_a_line_hits_only_what_is_painted_there(editor):
 
 
 def test_file_lines_map_through_the_numbering_for_everything_a_caller_names(editor):
-    ed, marks = editor.ed, Breakpoints({131})
+    ed, marks = editor.ed, {site(10): {'enabled': True}}
     editor.frame(first_line=121, errors=[(131, 'broken')], breakpoints=marks, paused=124)
     assert ed.numbers.number(0) == 121 and ed.mark('errors', 10, 'error') and ed.mark('breaks', 10, 'dot')
     assert ed.mark('paused', 3, 'arrow') and ed.gutter == view.PAD + 3 * ed.cw + view.FOLD + 12
     editor.click(8, at(editor, 4, 0)[1])
-    assert marks == {125, 131}, 'a gutter click toggles the file line'
+    assert set(marks) == {site(4), site(10)}, 'a gutter click toggles the statement on the line, by its key'
     editor.click(*at(editor, 2, 0))
     keys(editor, glfw.KEY_ENTER)
-    assert marks == {126, 132} and ed.mark('errors', 11, 'error')
+    assert set(marks) == {site(4), site(10)}, 'an edit moves no key'
+    assert ed.mark('breaks', 5, 'dot') and ed.mark('breaks', 11, 'dot') and ed.mark('errors', 11, 'error')
     table = [7, 8, None, 9] + [None] * 200
     editor.frame(line_numbers=table, first_line=1, errors=[(9, 'here')], breakpoints=None, paused=None)
     assert ed.numbers.number(2) is None and ed.mark('errors', 3, 'error') and ed.gutter == view.PAD + 5 * ed.cw + view.FOLD
@@ -504,18 +506,37 @@ def test_the_pane_handle_takes_commands_and_gives_geometry(editor):
     assert ed.doc.line(0) == 'imqt os'
 
 
-def test_breakpoints_toggle_in_the_gutter_and_follow_edits(editor):
-    marks = Breakpoints()
+def site(line):
+    """The key of the first source site on `line` of SOURCE: what a breakpoint there is kept by."""
+    source = Source(SOURCE)
+    source.keys = ()
+    source.ask(now=True)
+    source.land()
+    return source.site(line)[0][1]
+
+
+def test_breakpoints_are_kept_by_their_statement_and_their_dots_follow_edits(editor):
+    ed, marks = editor.ed, {}
     editor.frame(breakpoints=marks, paused=10)
     editor.click(8, at(editor, 9, 0)[1])
-    assert marks == {10}
+    assert marks == {site(9): {'enabled': True}} and ed.mark('breaks', 9, 'dot')
+    editor.click(8, at(editor, 5, 0)[1])
+    assert len(marks) == 1, 'a blank line takes no breakpoint'
     editor.click(*at(editor, 2, 0))
     keys(editor, glfw.KEY_ENTER)
-    assert marks == {11}
+    assert set(marks) == {site(9)} and ed.mark('breaks', 10, 'dot') and not ed.mark('breaks', 9, 'dot')
     keys(editor, glfw.KEY_BACKSPACE)
-    assert marks == {10}
+    assert ed.mark('breaks', 9, 'dot')
+    # A change from outside arrives as another mapping (as file metadata replaces its value):
+    # one switched off, one added, then both removed by clicks.
+    marks = {site(9): {'enabled': False}, site(14): {'enabled': True}}
+    editor.frame(breakpoints=marks)
+    assert ed.mark('breaks', 14, 'dot') and not ed.mark('breaks', 9, 'dot')
+    editor.click(8, at(editor, 14, 0)[1])
     editor.click(8, at(editor, 9, 0)[1])
-    assert marks == set()
+    assert marks == {} and not ed.marks['breaks']
+    editor.frame(breakpoints=None)
+    assert ed.marks['breaks'] is None
 
 
 def test_read_only_keeps_navigation_and_copy_but_not_edits(editor):
@@ -573,25 +594,25 @@ def test_only_blocks_near_the_viewport_are_declared_and_a_new_line_only_moves_th
                 line_numbers=False)
     try:
         ed = host.ed = state.editor
-        assert len(ed.doc.blocks) == 61 and len(declared(host)) == len(ed.shown) <= 6
+        assert len(ed.doc.blocks(0, ed.doc.lines)) == 60 and len(declared(host)) == len(ed.shown) <= 6
         host.frame((300, 200), wheel=-BLOCK * 30 * ed.lh / 40)
         host.frame((300, 200))
         assert ed.pane.scroll_offset[1] == BLOCK * 30 * ed.lh and len(declared(host)) == len(ed.shown) <= 9
-        assert ed.shown[0][1] >= BLOCK * 26 and len(ed.doc.line0) <= 36, 'nothing below the viewport was visited'
+        assert ed.shown[0][1] >= BLOCK * 26 and len(ed.blocks) <= 12, 'only the blocks near the viewport were ever asked for'
         host.click(*at(host, BLOCK * 30 + 3, 4))
         host.frame()
         painted.clear()
         tops = [found[2] for found in ed.shown]
         host.frame(keys=[(glfw.KEY_ENTER, 0)])
         host.frame()
-        assert painted == [ed.doc.blocks[30].key], 'the edited block repaints'
+        assert painted == [ed.doc.blocks(BLOCK * 30 + 3, BLOCK * 30 + 3)[0][0]], 'the edited block repaints'
         assert [found[2] for found in ed.shown[-2:]] == [top + 1 for top in tops[-2:]], 'the blocks below move down a row'
-        assert ed.rows.count == BLOCK * 60 + 2 and ed.doc.blocks[30].count == BLOCK + 1
+        assert ed.rows.count == BLOCK * 60 + 2 and ed.doc.blocks(BLOCK * 30, BLOCK * 30)[0][2] == BLOCK + 1
     finally:
         host.close()
 
 
-def test_a_large_text_gets_its_folds_from_the_worker(monkeypatch):
+def test_a_large_text_gets_its_folds_from_the_source_thread(monkeypatch):
     import meltygui.editor.editor as session
     syntax.tools()
     monkeypatch.setattr(session, 'INLINE', 0)
@@ -600,15 +621,14 @@ def test_a_large_text_gets_its_folds_from_the_worker(monkeypatch):
                 fold_defaults=False)
     try:
         ed = state.editor
-        assert len(ed.folds) == 0 and ed.rows.count == ed.doc.lines, 'the first frame does not wait for the scan'
-        ed.worker.settle()
+        ed.source.settle()
         host.frame()
-        assert ed.fold(7) is not None
+        assert ed.rows.fold(7) == (0, False)
         host.click(ed.gutter - view.FOLD / 2, (7 + .5) * ed.lh)
         assert ed.rows.folded(7) == 3
         host.frame(search='total')
-        assert ed.marks['hits'] is None
-        ed.worker.settle()
+        # (The hits may be there already: the source's thread wakes the view without waiting for the interpreter.)
+        ed.source.settle()
         host.frame()
         assert len(ed.marks['hits']) == 3
     finally:
@@ -746,7 +766,7 @@ def test_fold_layers_keep_their_own_collapsed_state_over_one_row_mapping(editor)
     rows = ed.rows.count
     editor.frame(folds=[(22, 30), (42, 60)])
     assert ed.rows.count == rows - 26 and state.gaps == [(22, 30), (42, 60)] and state.collapsed == []
-    assert ed.fold(22)[0] is ed.extra and ed.fold(7)[0] is ed.folds and ed.layers == (ed.folds, ed.extra)
+    assert ed.rows.fold(22) == (1, True) and ed.rows.fold(7) == (0, False), 'the caller\'s layer and the scope layer'
     editor.click(ed.gutter - view.FOLD / 2, at(editor, 7, 0)[1])
     editor.click(ed.gutter - view.FOLD / 2, at(editor, 22, 0)[1])
     assert state.collapsed == [('scope', 'first')] and state.gaps == [(42, 60)], 'each layer toggles on its own'
@@ -760,6 +780,36 @@ def test_fold_layers_keep_their_own_collapsed_state_over_one_row_mapping(editor)
     try:
         again = fresh.editor
         assert again.rows.hidden(9) and again.rows.hidden(50) and not again.rows.hidden(25) and again.rows.count == ed.rows.count
+    finally:
+        host.close()
+
+
+def test_a_source_as_the_value_is_edited_in_place_and_never_joined(monkeypatch):
+    from meltygui.editor.document import Document
+    from meltygui.model.source_model import Source
+    syntax.tools()
+    source, state = Source(SOURCE), EditorState()
+    host = Host(view.draw_editor, input_value=source, name='held', state=state, left=0., top=0., width=700., height=400.,
+                fold_defaults=False)
+    try:
+        ed = host.ed = state.editor
+        assert ed.source is source and host.result == (False, source) and ed.rows.fold(7) == (0, False)
+        host.click(*at(host, 15, 9))
+        keys(host, glfw.KEY_END, glfw.KEY_ENTER)
+        joins = []
+        text = Document.text
+        monkeypatch.setattr(Document, 'text', property(lambda doc: joins.append(1) or text.fget(doc)))
+        for char in 'tot':
+            changed, value = host.frame(keys=[(ord(char.upper()), 0)], text=char)
+            assert changed and value is source
+        assert ed.suggest.open and ed.suggest.rows[0][0] == 'total' and not joins, 'the candidates come from the source: no join'
+        changed, value = host.frame(keys=[(glfw.KEY_ENTER, 0)])
+        assert source.text.split('\n')[16] == '        total' and source.text == ed.doc.text, 'the pick went into the source'
+        assert source.native.version == ed.doc.version
+        # Another source as the value is another document.
+        other = Source('fresh = 1\n')
+        changed, value = host.frame(input_value=other)
+        assert value is other and state.editor is not ed and state.editor.source is other and not changed
     finally:
         host.close()
 

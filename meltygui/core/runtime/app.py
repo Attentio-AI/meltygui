@@ -289,6 +289,10 @@ def _initialize_fonts(io, *, pixel_scale=1.0):
     from meltygui.core.melty import Melty
     from meltygui.core.styling.fonts import FontManager
     Melty.font_mgr = FontManager(io, Melty.resolve_ui_scale(), pixel_scale=pixel_scale)
+    import meltygui.core.styling.warm_start as warm_start
+    hint = warm_start.font_hint(_state['cache']) if _state.get('cache') is not None else ()
+    if hint:
+        Melty.font_mgr.expect(hint)
     Melty.font_mgr.prewarm()
 
 
@@ -356,6 +360,9 @@ def _first_frame_presented(surfaces):
     _write_startup_log(_state['app_id'], ' '.join(s.name for s in surfaces))
     import meltygui.core.styling.warm_start as warm_start
     warm_start.remember_code_stack(_state['cache'], 'meltygui.code.libcst_conversion' in sys.modules)
+    from meltygui.core.melty import Melty
+    if Melty.font_mgr is not None and _state['cache'] is not None:
+        warm_start.remember_fonts(_state['cache'], Melty.font_mgr.asked())
     callbacks, _AFTER_FIRST_FRAME[:] = list(_AFTER_FIRST_FRAME), []
     for fn in callbacks:
         try:
@@ -784,6 +791,8 @@ def run():
     try:
         while Surface.all:
             _process_events()
+            # What threads without the interpreter queued: each becomes its cache's wake, which asks for the frame.
+            glfw_utils.drain_wakes()
             _open_requested_children()
             # A frame only on a request (request_render: the input layer's
             # callbacks, Surface's focus/resize/close hooks, animations via
@@ -841,6 +850,8 @@ def run():
             _process_events(1 / 60 if any(s.children for s in Surface.all) else 1.0)
     finally:
         _debug(f'{frames} frames rendered')
+        # The window system goes below: threads without the interpreter stop rousing its event wait.
+        glfw_utils.close_wakes()
         input_recording_core.stop_on_exit()
         # Standalone apps do not run Melty.cleanup. Cocoa's file watcher
         # must stop before interpreter teardown, even after a failed frame.

@@ -7,7 +7,10 @@ remaining migration work and deliberate deferrals.
 
 The opt-in Rust `@gui` work is documented in the
 [prototype overview and usage guide](GUI_PROTOTYPE.md), with
-[scrolling design and measurements](GUI_SCROLL_PROTOTYPE.md).
+[scrolling design and measurements](GUI_SCROLL_PROTOTYPE.md). The editor being
+built on it, and the Rust `Source` model behind it, are in
+[Native editor](NATIVE_EDITOR.md): what works, what is not ported from
+`draw_text`, measurements and platform status.
 
 ## Setup
 
@@ -24,6 +27,22 @@ when no matching wheel is available, using Xcode Command Line Tools:
 uv venv --python 3.12
 uv pip install --python .venv/bin/python -e . --group dev
 ```
+
+The install also compiles the Rust `Source` extension the native editor
+reads its text through (`native/source`); it needs cargo, on `PATH` or in
+`~/.cargo/bin`. The library lands as `meltygui/model/_source_native.abi3.so`
+(`.pyd` on Windows): it uses Python's stable ABI, so one build serves every
+CPython from 3.11 on. After changing the Rust code, build in place and restart
+running apps, which keep the library they loaded:
+
+```sh
+.venv/bin/python tools/build_source.py            # --offline when the crates are cached
+.venv/bin/python tools/build_gui_prototype.py     # the `@gui` host; not built by the install
+```
+
+The native editor needs both: the host crate holds the wake queue the `Source`
+thread calls. See [Native editor](NATIVE_EDITOR.md) and the
+[crate's README](../native/source/README.md).
 
 On macOS, install `uv` with `brew install uv` if needed. Install Xcode Command
 Line Tools with `xcode-select --install` if they are not already available.
@@ -130,6 +149,24 @@ MELTY_README_SMOKE=1 .venv/bin/pytest tests/test_readme_examples.py
 For UI verification, follow the desktop reservation instructions in
 `/home/lukas/AGENTS.md` when working on Lukas's machine.
 
+### Native editor checks
+
+Run the editor's test modules one at a time (the list is in
+[Native editor](NATIVE_EDITOR.md#tests)); the view tests need a desktop. Two
+benchmarks guard its frame time, both on a reserved desktop:
+
+```sh
+.venv/bin/python tests/benchmark_editor.py --folded --lines 1000,10000,100000
+.venv/bin/python tests/benchmark_editor_session.py --lines 1000,10000,100000
+```
+
+The first measures what a frame's own work costs against file size (gate: the
+largest size within about 1.3 of the smallest, far under 8.33 ms). The second
+runs a scripted session in a real window with every background model on and
+counts frames over 8.33 ms: it is the one that shows a worker holding the
+interpreter lock. From a worktree whose environment installs another checkout,
+set `PYTHONPATH` to the worktree for scripts run directly.
+
 ## Packaging and release
 
 Build and test a noneditable wheel outside the checkout before release:
@@ -141,6 +178,17 @@ Build and test a noneditable wheel outside the checkout before release:
 See [Native dependency wheels](SUPPORT_WHEELS.md#local-release-candidate-install) for
 installing the resulting wheel into a separate environment. Run validation
 from outside the repository to ensure imports resolve to the installed package.
+
+With the Rust `Source` extension the wheel is no longer pure Python:
+`hatch_build.py` compiles the crate and tags the wheel
+`cp311-abi3-<platform>`, one per platform for every CPython from 3.11 on. Only
+Linux has been built, with the tag `linux_x86_64` (not manylinux). The `@gui`
+host extension (`_gui_native`) is not built by the hook and is not in the wheel,
+so the native editor runs from a checkout only. `tools/release.py`, the release
+checks and CI still assume
+one `py3-none-any` wheel; they have not been changed, and whether the release
+takes per-platform wheels (Linux, Windows, macOS, an iOS pipeline entry) is an
+open decision.
 
 MeltyGUI is licensed under Apache 2.0 and is not yet published to PyPI.
 The public distribution excludes the separate proprietary IDE package.
@@ -155,6 +203,9 @@ See [Publishing](PUBLISHING.md) for account setup and release verification.
 - `meltygui/state/<feature>_state.py`: explicit feature/view state and helpers.
 - `meltygui/examples` and top-level `examples`: sample data, composition and apps.
 - `meltygui/core/runtime/extensions.py`: optional application service callbacks.
+- `native/source`: the Rust crate behind `model/source_model.py` and
+  `model/roster_model.py` (text, code facts, project roster).
+- `native/gui_prototype`: the Rust `@gui` host.
 
 `views`, `widgets`, `rendering` and `windows` have been removed. All imports use
 current paths; update `meltygui_pro` and `melty_code_editor` together with moves.
@@ -163,7 +214,10 @@ Remaining `tensor`, `graphics`, `files`, `models`, `chat`, `completion`, `code`,
 `editor` and helper modules are a mixture of feature implementations and adapters
 still being classified. Their existing locations are not the template for new
 contributions. The text-editor refactor is deferred; see the architecture inventory
-before including adjacent work.
+before including adjacent work. Its replacement is built beside it: the session
+code of the [native editor](NATIVE_EDITOR.md) lives in `meltygui/editor/`
+(`editor.py`, `document.py`, `keys.py`, `edit.py`, `marks.py`, ...) next to the
+legacy `text_editor.py`, whose pure helpers it still calls.
 
 Project management, venvs, dependency tools, Git, open-file tabs and the full
 code-editor window are maintained in the separate private package. They are

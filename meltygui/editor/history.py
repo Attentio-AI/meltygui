@@ -102,18 +102,23 @@ def record(ed, low, old, new, before, after):
     stack.history.append(ed.step)
 
 
-def rebase(ed, low, high, size):
-    """The text of `ed` changed without a step (its caller replaced
-    `text[low:high]` by `size` characters): move the offsets of the steps
-    that are still exact, newest first, and drop the ones the change reaches
-    into, with every older one. Redone steps of this editor go as well."""
+def rebase(source, low, high, size):
+    """The text of `source` changed without a step (someone who is no
+    editor replaced `text[low:high]` by `size` characters): move the offsets
+    of the steps on that text that are still exact, newest first, and drop
+    the ones the change reaches into, with every older one. Redone steps on
+    the text go as well. The steps of every session on the source are meant."""
     stack = UndoManager.stack
+    on = lambda change: isinstance(change, Step) and change.draw_state.source is source
     for group in list(stack.redo_stack):
-        group[:] = [change for change in group if change.draw_state is not ed]
+        group[:] = [change for change in group if not on(change)]
         if not group:
             stack.redo_stack.remove(group)
     delta, lost = size - (high - low), False
-    for change in [change for change in reversed(stack.history) if change.draw_state is ed]:
+    # A caret kept with a step stays on its character, like a session's own.
+    moved = lambda carets: tuple(at + delta if at >= high else min(at, low + size) for at in carets)
+    for change in [change for change in reversed(stack.history) if on(change)]:
+        change.after = moved(change.after)
         for at in range(len(change.parts) - 1, -1, -1):
             start, old, new = change.parts[at]
             if lost:
@@ -125,5 +130,6 @@ def rebase(ed, low, high, size):
                 change.parts[at] = (start + delta, old, new)
             else:
                 lost = True
+        change.before = moved(change.before)
         if lost:
             stack.history.remove(change)

@@ -105,6 +105,23 @@ def terminate():
         _state.update(backend=None, selected=False)
 
 
+def poke():
+    """How a thread that holds no interpreter rouses the event wait (the
+    frame loop then finds what it queued: `glfw_utils.drain_wakes`):
+    ('fd', descriptor) to write a byte to, ('call', address) of a C function
+    that takes nothing, or (None, 0) when the host has neither: the loop
+    notices at its next turn. `post_empty_event` is the same wake for a
+    thread that does hold the interpreter."""
+    backend = _state['backend']
+    if backend is not None:
+        return backend.poke() if hasattr(backend, 'poke') else (None, 0)
+    if sys.platform == 'ios':
+        return None, 0
+    import ctypes
+    library = importlib.import_module('glfw')._glfw
+    return 'call', ctypes.cast(library.glfwPostEmptyEvent, ctypes.c_void_p).value
+
+
 def presentation_latency_ms():
     """Optional host presentation timing; None means this backend has no measurement."""
     backend = _state['backend']

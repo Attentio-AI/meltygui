@@ -323,8 +323,16 @@ class FontManager:
         cost is linear in it (3x, not 9x)."""
         return spec.oversample
 
+    def expect(self, names):
+        """Before `prewarm`: bake the `Font` members named too. They are what
+        this app's last first frame asked for besides the eager ones
+        (warm_start.font_hint; a code editor's mono face), which would
+        otherwise cost a second bake and a repaint of everything in frame 2."""
+        self._loaded |= {font for font in Font if font.name in names}
+
     def prewarm(self):
-        """Bake the eager (first-frame) fonts only. Everything else loads
+        """Bake the eager (first-frame) fonts only (and the ones `expect`
+        was told). Everything else loads
         lazily: get() on an unbaked font queues its group and returns None —
         exactly what callers already handle for a failed load (render with
         the current font this frame) — and Melty.apply_ui_scale bakes the
@@ -335,6 +343,10 @@ class FontManager:
         for font in list(self._loaded):
             self._loaded.update(self._variant_groups.get(font, _GROUP_OF.get(font, (font,))))
         self._bake(self._loaded)
+
+    def asked(self):
+        """Names of the enum fonts baked or queued so far: after the first frame, what it needed."""
+        return sorted(font.name for font in self._loaded | self._pending if isinstance(font, Font))
 
     def _bake(self, include):
         """Clear the atlas and re-add every font in `include`, in enum order
