@@ -76,11 +76,25 @@ def test_starting_late_hands_the_frame_over_just_before_the_next_refresh(monkeyp
     window.shown = clock(backend) - 1.
     backend.pace()
     assert not backend.late
-    # Too slow for the next refresh: drawn at once, as without a late start.
-    window.costs = [.009] * 8
+    # Guard and drawing together longer than a period: the refresh after next, started before the next.
+    window.costs = [.008] * 8
+    window.shown = clock(backend)
+    waits.clear()
+    backend.pace()
+    assert backend.late and abs(backend.aim - (window.shown + .020)) < 1e-6
+    assert abs(sum(waits) - (.020 - native_wayland.GUARD - .008)) < .002
+    # Slower to draw than a period: drawn at once, as without a late start.
+    window.costs = [.011] * 8
     window.shown = clock(backend)
     backend.pace()
     assert not backend.late and backend.aim is None
+    # Asked for a frame just before a refresh (the compositor draws for it now): the one after it.
+    window.costs = [.002] * 8
+    window.shown = clock(backend) - .008
+    waits.clear()
+    backend.pace()
+    assert backend.late and abs(backend.aim - (window.shown + .020)) < 1e-6
+    assert abs(sum(waits) - (.012 - native_wayland.GUARD - .002)) < .002
     # One slow frame among many is left to the guard.
     window.costs = [.002] * 23 + [.006]
     window.shown = clock(backend)
@@ -89,11 +103,12 @@ def test_starting_late_hands_the_frame_over_just_before_the_next_refresh(monkeyp
     assert abs(sum(waits) - (.010 - native_wayland.GUARD - .002)) < .002
 
 
-def test_only_frequent_misses_of_late_frames_lengthen_the_guard():
+def test_the_guard_finds_its_length_both_ways():
     backend, window = backend_with_window()
     backend.outputs[5] = SimpleNamespace(refresh=100000)       # a refresh every 10 ms
     window.outputs.add(5)
     at = [100.]
+    GUARD, MISS, STEP = native_wayland.GUARD, native_wayland.MISS, native_wayland.STEP
 
     def present(late, milliseconds):
         """The next frame is on screen `milliseconds` after the one before it."""
@@ -101,23 +116,45 @@ def test_only_frequent_misses_of_late_frames_lengthen_the_guard():
         whole = int(at[0])
         backend.feedbacks[1] = window, at[0] - .005, at[0] if late else None
         backend.presented(1, 0, whole, round((at[0] - whole) * 1e9), 0, 0, 0, 0)
-    present(True, 10)
-    present(True, 20)                       # a skipped refresh on its own: nothing
-    assert backend.slack == 0 and abs(window.latency_ms - 5.) < 1e-3
+
+    def run(seconds):
+        for _ in range(int(seconds * 100)):
+            present(True, 10)
+    for _ in range(native_wayland.MISSES + 2):
+        present(True, 20)                   # a window opening: its first frames are not counted
+    assert backend.guard == GUARD and abs(window.latency_ms - 5.) < 1e-3
+    run(native_wayland.CALM)
+    base = backend.guard                    # (calm so far: it may have got a step shorter)
     present(True, 13)                       # a compositor a little late is no miss
     present(True, 300)                      # nor is a pause in drawing
-    for _ in range(native_wayland.MISSES - 2):
-        present(True, 20)                   # a few more: still the compositor's own skips
-    assert backend.slack == 0
-    present(True, 20)                       # this many so close together: the hand-over is too late
-    assert backend.slack == native_wayland.MISS
-    present(True, 10)
-    assert native_wayland.MISS * .99 < backend.slack < native_wayland.MISS
-    held = backend.slack
-    present(False, 20)                      # a frame that did not start late is not judged
-    assert backend.slack == held
     for _ in range(native_wayland.MISSES - 1):
-        for _ in range(native_wayland.RECENT // 2):
-            present(True, 10)
-        present(True, 20)                   # skips spread far apart never add up
-    assert backend.slack < held
+        present(True, 20)                   # some skipped refreshes: it stays
+    run(1)
+    assert backend.guard == base
+    present(True, 20)                       # this many within a few seconds: the hand-over is too late
+    assert abs(backend.guard - (base + MISS)) < 1e-9
+    present(False, 20)                      # a frame that did not start late is not judged
+    run(native_wayland.REST - 1)            # resting: it stays
+    assert abs(backend.guard - (base + MISS)) < 1e-9
+    run(2 + native_wayland.CALM * 3)        # rested and calm: shorter, a step at a time
+    assert base + MISS - 5 * STEP < backend.guard < base + MISS - 2 * STEP
+    for _ in range(native_wayland.MISSES):
+        present(True, 20)                   # missing again at about that length: a longer rest
+    assert backend.rest == 2 * native_wayland.REST
+    run(native_wayland.REST + 5)
+    held = backend.guard
+    run(native_wayland.REST + native_wayland.CALM)
+    assert backend.guard < held
+    run(900)                                # nothing misses: down to the shortest, and no further
+    assert backend.guard == native_wayland.LOW
+    # More than a few skips, fewer than many: it stays where it is.
+    for _ in range(2):
+        run(native_wayland.RECENT / 3)
+        present(True, 20)
+    held = backend.guard = .004
+    for _ in range(20):
+        run(native_wayland.RECENT / 3)
+        present(True, 20)
+    assert backend.guard == held
+    # Another refresh rate starts over, at most half a period.
+    assert backend.tune(.004, at[0]) == .002
