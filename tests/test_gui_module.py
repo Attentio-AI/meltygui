@@ -328,3 +328,146 @@ def test_view_overrides_returns_and_terminates(monkeypatch, tmp_path):
     assert logs[-1] == ['passed', 'edit']
     window.close()
     assert logs[-1][2:] == [('cleanup', 2), 'joined', 'atexit']
+
+
+def test_foreground_drawing_is_the_views_top_layer(monkeypatch, tmp_path):
+    """An app's foreground draw list is drawn in its view, after its child windows, not on the host's."""
+    import meltygui_imgui as imgui
+    from types import SimpleNamespace
+    from meltygui.core.runtime.app import _root_body
+    path = tmp_path / 'foreground.py'
+    path.write_text('''
+import glfw, imgui
+same = []
+while True:
+    glfw.poll_events()
+    imgui.new_frame()
+    imgui.begin_child("list", 50, 50)
+    imgui.end_child()
+    top = imgui.get_foreground_draw_list()
+    top.add_rect_filled(10, 20, 30, 40, 0xffffffff)
+    same.append(top is imgui.get_overlay_draw_list())
+''')
+    log = []
+
+    class Draw:
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: log.append((name, *args))
+
+    fakes = {'begin_child': lambda label, *rest: log.append(('begin', label, *rest[:2])),
+             'end_child': lambda: log.append(('end',)), 'get_window_draw_list': Draw,
+             'get_window_position': lambda: (0, 0), 'get_window_size': lambda: (1, 1),
+             'get_io': lambda: SimpleNamespace(fonts=SimpleNamespace(texture_id=0)),
+             'get_cursor_pos': lambda: (7, 9), 'set_cursor_pos': lambda at: log.append(('cursor', *at)),
+             'get_foreground_draw_list': lambda: pytest.fail('the host window\'s foreground list')}
+    for name, fake in fakes.items():
+        monkeypatch.setattr(imgui, name, fake)
+    window, surface = host(monkeypatch)
+    view = gui_module(path, background=False)
+    _root_body(view, 'foreground root')(surface)
+    app = next(iter(window.cache.bindings.values())).state.app
+    assert app.error is None and app.namespace['same'] == [True] and not app.top.calls
+    drawn = [entry for entry in log if entry[0] not in ('push_clip_rect', 'push_texture_id')]
+    width, height = app.extent()
+    assert drawn == [('begin', 'list', 50, 50), ('end',), ('cursor', 0, 0), ('begin', '##foreground', width, height),
+                     ('add_rect_filled', 10, 20, 30, 40, 0xffffffff), ('end',), ('cursor', 7, 9)]
+    window.close()
+
+
+def test_an_idle_wake_of_the_app_runs_its_loop_and_not_the_view(monkeypatch, tmp_path):
+    """The app's timed wait running out is probed outside the view: only a frame it begins runs the view."""
+    from meltygui.core.runtime.app import _root_body
+    path = tmp_path / 'idle.py'
+    path.write_text('''
+import glfw, imgui
+wake, work, ticks, drawn = 0, [], [], []
+glfw.set_window_refresh_callback(None, lambda *_: globals().update(wake=1))
+while not glfw.window_should_close(None):
+    if wake > 0:
+        glfw.poll_events()
+    else:
+        glfw.wait_events_timeout(60)
+    ticks.append(len(drawn))
+    if work:
+        wake = work.pop()
+    if wake <= 0:
+        continue
+    wake -= 1
+    imgui.new_frame()
+    drawn.append(len(ticks))
+ticks.append('left')
+''')
+    assert split(path.read_text()).probes
+    assert not split('import glfw, imgui\ndef frame():\n    imgui.new_frame()\nwhile True:\n    glfw.poll_events()\n    frame()\n').probes
+    window, surface = host(monkeypatch)
+    view = gui_module(path, background=False)
+    body = _root_body(view, 'idle root')
+    body(surface)
+    cache = window.cache
+    app = next(iter(cache.bindings.values())).state.app
+    names = app.namespace
+    assert names['drawn'] == [1] and app.timer is not None      # the host asked for a frame: refreshed, drawn, waiting
+    runs = cache.executor.runs
+
+    app.wake()                              # its wait ran out, nothing to do
+    body(surface)
+    assert names['ticks'] == [0, 1] and names['drawn'] == [1] and cache.executor.runs == runs
+    assert not app.held and app.timer is not None
+
+    names['work'].append(1)                 # it ran out again, and now the app draws
+    app.wake()
+    body(surface)
+    assert names['drawn'] == [1, 3] and cache.executor.runs == runs + 1 and not app.held
+
+    names['work'].append(1)                 # held where it begins a frame when the view closes: it leaves its loop
+    ticks = names['ticks']
+    assert app.probe() and app.held
+    window.close()
+    assert ticks[-1] == 'left'
+
+
+def test_popups_and_tooltips_open_where_the_host_has_the_pointer(monkeypatch, tmp_path):
+    """A popup is the host's window: opened and filled with the pointer in host coordinates, and the view runs on."""
+    import meltygui_imgui as imgui
+    from types import SimpleNamespace
+    from meltygui.core.runtime.app import _root_body
+    path = tmp_path / 'menu.py'
+    path.write_text('''
+import glfw, imgui
+seen = []
+while True:
+    glfw.wait_events()
+    imgui.new_frame()
+    seen.append(('item', tuple(imgui.get_io().mouse_pos)))
+    if imgui.begin_popup_context_item('menu'):
+        seen.append(('menu', tuple(imgui.get_io().mouse_pos)))
+        imgui.end_popup()
+    seen.append(('after', tuple(imgui.get_io().mouse_pos)))
+    imgui.set_tooltip('tip')
+''')
+    io, log = SimpleNamespace(mouse_pos=(5., 7.)), []
+    fakes = {'get_io': lambda: io, 'is_mouse_released': lambda button: True, 'is_item_hovered': lambda flags=0: True,
+             'open_popup': lambda label: log.append(('open', label, io.mouse_pos)),
+             'begin_popup': lambda label: log.append(('begin', label, io.mouse_pos)) or True,
+             'end_popup': lambda: log.append(('end', io.mouse_pos)),
+             'set_tooltip': lambda text: log.append(('tip', text, io.mouse_pos))}
+    for name, fake in fakes.items():
+        monkeypatch.setattr(imgui, name, fake)
+    window, surface = host(monkeypatch)
+    view = gui_module(path, background=False)
+    body = _root_body(view, 'menu root')
+    body(surface)
+    cache = window.cache
+    app = next(iter(cache.bindings.values())).state.app
+    runs, seen = cache.executor.runs, app.namespace['seen']
+    app.origin = lambda: (60., 100.)
+    del log[:], seen[:]
+    (node,) = cache.later                   # a popup showed: the view asked to run in the next frame
+    cache.wake(node)                        # (this host has no input pass to hand `later` over)
+    body(surface)
+    assert app.error is None and cache.executor.runs == runs + 1
+    assert seen == [('item', (5., 7.)), ('menu', (65., 107.)), ('after', (5., 7.))]
+    assert log == [('open', 'menu', (65., 107.)), ('begin', 'menu', (65., 107.)), ('end', (65., 107.)),
+                   ('tip', 'tip', (65., 107.))]
+    assert io.mouse_pos == (5., 7.) and not app.outside
+    window.close()

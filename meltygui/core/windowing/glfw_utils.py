@@ -5,6 +5,7 @@ import io
 import shutil
 import pprint
 import inspect
+from collections import deque
 import threading
 import traceback
 import json
@@ -1419,9 +1420,36 @@ def waker(cache, node):
     return _wake_handle, token
 
 
+# --- questions for the render thread ----------------------------------------------
+# A view that may have nothing new to draw (`RetainedGui.wake_if`) does not ask for a
+# frame: it queues a check, which the frame loops call at their next turn, where they
+# drain the wakes. Only a check that finds a reason asks for the frame.
+_asked = deque()
+
+
+def ask(check):
+    """Thread safe: call `check()` on the render thread at the frame loop's
+    next turn. Rouses the event wait and requests no frame."""
+    _asked.append(check)
+    native_host = sys.modules.get('_melty_ios')
+    if native_host is not None:     # its loop turns with its frames only
+        native_host.request_frame()
+        return
+    from meltygui.core.melty import Melty
+    if not _open_surfaces and Melty.glfw_window is None:
+        return  # no window system yet: the host's next flush asks (RetainedGui.drain)
+    try:
+        glfw.post_empty_event()
+    except Exception:
+        pass  # torn down mid-call
+
+
 def drain_wakes():
-    """Render thread: hand the wakes queued by threads without the
-    interpreter to their caches. Each asks for its window's frame."""
+    """Render thread: call what was asked of it (`ask`), and hand the wakes
+    queued by threads without the interpreter to their caches. Each asks for
+    its window's frame."""
+    for _ in range(len(_asked)):        # this turn only: a check may ask again
+        _asked.popleft()()
     if _wakes is None:
         return
     for token in _wakes.take():

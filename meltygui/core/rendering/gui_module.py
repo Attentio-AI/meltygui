@@ -37,12 +37,24 @@ How the module becomes lifecycle code (`split`):
   new_frame, glClear...), it is compiled away (`Quiet`) and costs nothing.
 - What belongs to the host stays the host's: writes to io are dropped, fonts
   are stand-ins (text uses the host's font), style colors are recorded and
-  pushed around each draw, a backend's frame methods do nothing.
+  pushed around each draw, a backend's frame methods do nothing. The foreground
+  draw list is the view's top layer (`Top`), not the host window's.
+- A popup or a tooltip is a window of the host's, over every view and not held
+  to this one's rectangle. The app opens and fills it with the pointer in the
+  host window's coordinates (`Imgui.outside`), and while one shows the view
+  runs every frame, as ImGui needs it submitted (`App.shows`).
 
-When the view runs: on the host's invalidation (input, arguments); when the
-app's own timed wait runs out; and, for an app that also blocks in a wait, on
-the frame after one it polled in (`live`). A run in which the app's loop drew
-nothing (it was idle) gives it a window refresh and runs it once more.
+When the view runs: on the host's invalidation (input, arguments); and, for an
+app that also blocks in a wait, on the frame after one it polled in (`live`).
+A run in which the app's loop drew nothing (it was idle) gives it a window
+refresh and runs it once more: the view was asked for a frame.
+
+When the app's own timed wait runs out, or one of its threads posts it an
+event, its loop runs outside the view (`App.probe`) up to where it begins a
+frame (`imgui.new_frame()` in the frame loop, a suspension like the waits).
+Only then does the view run; an iteration that goes back to waiting costs the
+app's own code and no view run. An app whose new_frame is somewhere else
+(`Program.probes` false) runs its view on every such wake, as a host event would.
 
 The module's statements before the loop starts run on one shared loader thread
 the first time a file is hosted, and for as long as they take longer than
@@ -96,6 +108,7 @@ VIEW_VALUES = frozenset(('depth', 'height', 'left', 'max_height', 'min_height', 
 
 MAIN, DRIVE, WAIT, ARGS, APP = '__gui_main__', '__gui_drive__', '__gui_wait__', '__gui_args__', '__gui_app__'
 DRAWN = '__gui_drawn__'     # set true in the app's namespace where it began a frame (imgui.new_frame)
+BEGIN = '__gui_begin__'     # the name of BEGINS in a hosted namespace
 # Lever: GLFW calls that do something for a hosted app. Any other one, called for nothing but its
 # effect, is dropped when the module is compiled (`Quiet`); so are the IMGUI / GL host calls above.
 GLFW_LIVE = frozenset((*WAIT_CALLS, 'window_should_close', 'set_window_should_close', 'post_empty_event'))
@@ -105,6 +118,8 @@ SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda,
           ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 # What a shimmed event wait returns: the rewritten call site suspends on it.
 WAITING = object()
+# What a frame loop suspends with where it begins a frame: `App.probe` stops there, a view run goes on.
+BEGINS = object()
 UNSET = object()
 
 class Program:
@@ -112,14 +127,15 @@ class Program:
 
     code: the rewritten module; parameters: the names it assigns at top level, in order
     (first: the one the call's value goes to); blocks: it also waits without polling, so
-    its polls ask for the next frame; beside: {import name: path of the file next to the
+    its polls ask for the next frame; probes: every frame it begins is a suspension, so its
+    idle iterations can run outside the view (`App.probe`); beside: {import name: path of the file next to the
     app, or None}, filled as instances import; seconds: how long its last load took (None:
     never loaded), which decides where the next one runs (INLINE).
     """
-    __slots__ = ('code', 'parameters', 'first', 'blocks', 'beside', 'seconds')
+    __slots__ = ('code', 'parameters', 'first', 'blocks', 'probes', 'beside', 'seconds')
 
-    def __init__(self, code, parameters, blocks):
-        self.code, self.parameters, self.blocks = code, tuple(parameters), blocks
+    def __init__(self, code, parameters, blocks, probes=False):
+        self.code, self.parameters, self.blocks, self.probes = code, tuple(parameters), blocks, probes
         self.first, self.beside, self.seconds = (parameters[0] if parameters else None), {}, None
 
 
@@ -228,6 +244,7 @@ class Quiet(ast.NodeTransformer):
 
     def __init__(self, host):
         self.host, self.marks = host, []     # marks: per enclosing function, whether it sets DRAWN
+        self.frames = 0                      # the new_frame calls it made DRAWN stores
 
     def visit_Expr(self, node):
         found = self.host(node.value)
@@ -238,6 +255,7 @@ class Quiet(ast.NodeTransformer):
         if kind == 'imgui' and name == 'new_frame':
             if self.marks:
                 self.marks[-1] = True
+            self.frames += 1
             return ast.copy_location(ast.Assign([ast.Name(DRAWN, ast.Store())], ast.Constant(True)), node)
         if (kind == 'imgui' and name in IMGUI_STATEMENTS or kind == 'gl' and name in GL_HOST_CALLS
                 or kind == 'glfw' and name not in GLFW_LIVE and not name.endswith('_callback')):
@@ -269,11 +287,22 @@ class Drive(ast.NodeTransformer):
     A wait suspends with what it asks of the host: `yield 0.0` for a poll, the
     timeout for a timed wait, infinity for a plain one. A wait `host` is not
     sure of goes through its shim, which answers WAITING and leaves the time on the app.
+    Where the frame loop begins a frame (Quiet's DRAWN store) it suspends with BEGINS.
     """
 
     def __init__(self, names, direct, host):
         # names: calls that may wait; direct: those that are this module's own generator functions.
         self.names, self.direct, self.host, self.loops = names, direct, host, 0
+        self.frames = 0     # the frame beginnings it made suspensions
+
+    def visit_Assign(self, node):
+        target = node.targets[0]
+        if self.loops == 1 and isinstance(target, ast.Name) and target.id == DRAWN:
+            # `if (yield <begins>): break` before the store: the view's close leaves the loop here too.
+            self.frames += 1
+            begin = ast.If(ast.Yield(ast.Name(BEGIN, ast.Load())), [ast.Break()], [])
+            return [ast.copy_location(begin, node), node]
+        return self.generic_visit(node)
 
     def asked(self, call):
         """The `yield <seconds>` of a certain wait call, or None."""
@@ -335,7 +364,8 @@ def split(source, filename='<gui_module>'):
     """Module source -> Program: suspended at its event waits, its top level names made parameters."""
     tree = ast.parse(source, filename)
     host = hosts(tree)
-    tree = Quiet(host).visit(tree)
+    quiet = Quiet(host)
+    tree = quiet.visit(tree)
     functions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
     parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     found = waits(tree)
@@ -354,10 +384,12 @@ def split(source, filename='<gui_module>'):
     names = colored | {'join'}
     # Called by its bare name, a module level one is known to be a generator: no check at run time.
     direct = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)} & colored - set(WAIT_CALLS)
+    begun = 0       # frame beginnings that suspend
     for function in functions:
         if function.name in colored:
             drive = Drive(names, direct, host)
             function.body = [drive.visit(statement) for statement in function.body]
+            begun += drive.frames
 
     def starts(statement):
         return not isinstance(statement, SCOPES) and any(called(node) in names for node in own(statement))
@@ -382,12 +414,13 @@ def split(source, filename='<gui_module>'):
         declared = sorted(bound(tail))
         drive = Drive(names, direct, host)
         body = ([ast.Global(declared)] if declared else []) + [drive.visit(statement) for statement in tail]
+        begun += drive.frames
         main = ast.FunctionDef(name=MAIN, args=ast.parse('lambda: 0', mode='eval').body.args, body=body,
                                decorator_list=[], type_params=[])
         tree.body = head + [ast.copy_location(main, tail[0])]
     blocks = any(called(node) != WAIT_CALLS[0] for node in found)
     code = compile(ast.fix_missing_locations(tree), filename, 'exec')
-    return Program(code, parameters, blocks)
+    return Program(code, parameters, blocks, probes=0 < begun == quiet.frames)
 
 
 # path: (mtime, value). One compile per file, shared by every instance; a later instance sees an edit.
@@ -545,6 +578,22 @@ class Colors(dict):
         return self.real().colors[index]
 
 
+class Top:
+    """The app's foreground draw list: its calls are kept and drawn last, in the view's own
+    coordinates and over its child windows (`App.overlay`)."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __getattr__(self, name):
+        calls = self.calls
+
+        def keep(*args, **kwargs):
+            calls.append((name, args, kwargs))
+        self.__dict__[name] = keep
+        return keep
+
+
 class Frame:
     """Draw data of a hosted app: the host draws its frame."""
     commands_lists, valid = (), False
@@ -632,6 +681,102 @@ class Imgui(Shared):
 
     def new_frame(self):
         self._app.namespace[DRAWN] = True
+
+    def get_foreground_draw_list(self):
+        # The host's own foreground list is not part of the view: it is painted in the host
+        # window's coordinates and is gone on a frame the view does not run.
+        app = self._app
+        top = app.top
+        if top is None:
+            top = app.top = Top()
+        return top
+
+    get_overlay_draw_list = get_foreground_draw_list
+
+    # Popups and tooltips. ImGui places them at the pointer and tests their items against it, and
+    # they are drawn by the host, not with the view: between `outside` and `inside` the pointer is
+    # where the host window has it. Lever: a window ImGui places at the pointer belongs here.
+    def outside(self):
+        app = self._app
+        if not app.outside:
+            io, (left, top) = self._real.get_io(), app.origin()
+            x, y = app.pointer = tuple(io.mouse_pos)
+            io.mouse_pos = x + left, y + top
+        app.outside += 1
+
+    def inside(self):
+        app = self._app
+        app.outside -= 1
+        if not app.outside:
+            self._real.get_io().mouse_pos = app.pointer
+
+    def open_popup(self, *args, **kwargs):
+        self.outside()
+        try:
+            self._real.open_popup(*args, **kwargs)
+        finally:
+            self.inside()
+
+    def begin_popup(self, *args, **kwargs):
+        self.outside()
+        shown = self._real.begin_popup(*args, **kwargs)
+        if shown:       # the pointer stays the host's until end_popup
+            self._app.shows = True
+        else:
+            self.inside()
+        return shown
+
+    def begin_popup_modal(self, *args, **kwargs):
+        self.outside()
+        shown = self._real.begin_popup_modal(*args, **kwargs)
+        if shown[0]:
+            self._app.shows = True
+        else:
+            self.inside()
+        return shown
+
+    def end_popup(self):
+        self._real.end_popup()
+        self.inside()
+
+    def begin_popup_context_item(self, label=None, mouse_button=1):
+        real = self._real
+        if label is None:
+            # ImGui names this popup after the item, an id this binding does not give: left to
+            # ImGui, it opens where the pointer is in the view's own coordinates.
+            shown = real.begin_popup_context_item(None, mouse_button)
+            self._app.shows |= shown
+            return shown
+        # The item is the view's: asked where the pointer is the view's, opened where it is the host's.
+        if real.is_mouse_released(mouse_button & 3) and real.is_item_hovered(real.HOVERED_ALLOW_WHEN_BLOCKED_BY_POPUP):
+            self.open_popup(label)
+        return self.begin_popup(label)
+
+    def begin_popup_context_window(self, label=None, popup_flags=1, also_over_items=True):
+        real = self._real
+        label = 'window_context' if label is None else label
+        if real.is_mouse_released(popup_flags & 3) and (also_over_items or not real.is_any_item_hovered()):
+            (x, y), (width, height) = real.get_mouse_pos(), self._app.extent()
+            if 0 <= x < width and 0 <= y < height:      # the app's window is its view
+                self.open_popup(label)
+        return self.begin_popup(label)
+
+    def set_tooltip(self, text):
+        self.outside()
+        try:
+            self._real.set_tooltip(text)
+        finally:
+            self.inside()
+        self._app.shows = True
+
+    def begin_tooltip(self):
+        self.outside()
+        self._app.shows = True
+        return self._real.begin_tooltip()
+
+    def end_tooltip(self):
+        self._real.end_tooltip()
+        self.inside()
 
     def begin_child(self, *args, **kwargs):
         # Workaround: the capture resets a child window's draw list without its base clip rect and
@@ -906,7 +1051,7 @@ def load(name, globals=None, locals=None, fromlist=(), level=0):
 
 
 # The builtins of every hosted namespace: one table for all apps (a copy each was most of an instance).
-SCOPE = {**vars(builtins), '__import__': load, DRIVE: drive, WAIT: WAITING}
+SCOPE = {**vars(builtins), '__import__': load, DRIVE: drive, WAIT: WAITING, BEGIN: BEGINS}
 
 
 # Lever: a file whose last load took no longer than this (seconds) loads on the render thread, in
@@ -927,6 +1072,11 @@ def load_later(run):
     _loads.put(run)
 
 
+def nowhere():
+    """The corner of a view that draws straight into the host window: its coordinates are the host's."""
+    return 0., 0.
+
+
 class App:
     """One running instance of a module: its namespaces and what draws its frame."""
 
@@ -938,13 +1088,19 @@ class App:
         # frames: its own frame loops (generators); roots: a meltygui app's window functions (window_frame).
         self.frames, self.roots, self.exits, self.refresh, self.modules = [], [], [], [], {}
         self.colors, self.made = {}, {}     # made: its own shims, by maker (SHIMS)
-        # wake: thread safe, from the app's threads and timers; again: the next frame, from its own draw.
+        # wake: thread safe, from the app's threads and timers: `probe` then decides whether the view runs.
+        # show: thread safe, the view runs (a background load ended); again: the next frame, from its own draw.
         # wait: seconds asked by an event wait that went through its shim, until `step` takes it.
         # state: the hosting view's draw_state, where the app's window size is read (extent).
-        self.namespace = self.error = self.wake = self.again = self.wait = self.timer = self.state = None
+        self.namespace = self.error = self.wake = self.show = self.again = self.wait = self.timer = self.state = None
         # ready: loaded without error and with something to draw. follow: its polls ask for the next frame.
-        self.loaded = self.ready = self.closing = self.follow = False
+        # held: `probe` left a loop where it begins a frame, for the view run it asked for.
+        self.loaded = self.ready = self.closing = self.follow = self.held = False
         self.children = 0       # child windows the app has open
+        self.top = None         # its foreground draw list (Top), once it asked for one
+        # Popups and tooltips (Imgui.outside). origin: the view's corner in the host window; outside: how
+        # many the app is inside of; pointer: the view's own, kept meanwhile; shows: one showed in this run.
+        self.origin, self.outside, self.pointer, self.shows = nowhere, 0, None, False
 
     def extent(self):
         """The view's size, as the app's window size."""
@@ -954,20 +1110,20 @@ class App:
     def fail(self):
         self.error, self.ready = traceback.format_exc(), False
 
-    def start(self, args, wake=None, again=None, background=False):
+    def start(self, args, wake=None, again=None, background=False, show=None):
         """Run the module up to where its frame loop starts. With `background`, on the loader
-        thread unless the file is known to load fast (INLINE); `wake` then reports the end."""
+        thread unless the file is known to load fast (INLINE); `show` then reports the end."""
         program = self.program
         self.namespace = {'__name__': '__main__', '__file__': program.code.co_filename,
                           ARGS: args, APP: self, DRAWN: False, '__builtins__': SCOPE}
-        self.wake, self.again = wake, again
+        self.wake, self.again, self.show = wake, again, show
         if background and (program.seconds is None or program.seconds > INLINE):
             load_later(self.load_module)
         else:
             self.load_module(None)
 
     def load_module(self, wake=UNSET):
-        """The module's own code, timed; `wake` defaults to the app's (a background load reports its end)."""
+        """The module's own code, timed; `wake` defaults to the app's `show` (a background load reports its end)."""
         program, namespace, started = self.program, self.namespace, time.perf_counter()
         try:
             exec(program.code, namespace)
@@ -984,12 +1140,13 @@ class App:
         program.seconds = time.perf_counter() - started
         self.loaded = True
         if wake is UNSET:
-            wake = self.wake
+            wake = self.show
         if wake is not None:
             wake()
 
-    def step(self, stop=False):
+    def step(self, stop=False, probe=False):
         """Each frame loop runs to its next event wait; `stop` makes that wait end its loop.
+        With `probe`, a loop stops where it begins a frame instead (`held`).
         Returns the shortest wait they asked for, in seconds (None: none of them said)."""
         frames, wait = self.frames, None
         for loop in tuple(frames):
@@ -1002,6 +1159,11 @@ class App:
                     continue
                 else:
                     asked = next(loop)
+                if asked is BEGINS:
+                    if probe:
+                        self.held = True
+                        continue
+                    asked = loop.send(stop)
             except (StopIteration, SystemExit, KeyboardInterrupt):
                 frames.remove(loop)
             except Exception:
@@ -1016,6 +1178,24 @@ class App:
             self.ready = False          # the app ended its own loop: nothing more to draw
         return wait
 
+    def probe(self):
+        """Render thread, outside the view (`cache.wake_if`): the app's wait ran out, or it was posted
+        an event. Its loops run on from their wait. True when the view has to run: a loop began a
+        frame and is held there, or the app ended, failed or cannot be probed. An iteration that
+        only went back to waiting is over here, with its next wait asked for."""
+        if not self.ready:
+            return False
+        program, namespace = self.program, self.namespace
+        if self.held or self.state is None or not program.probes:
+            return True
+        wait = self.step(probe=True)
+        if namespace[DRAWN]:        # it began a frame where nothing suspends it: not an app to probe
+            program.probes = False
+        if self.held or not self.ready or self.error is not None or namespace[DRAWN]:
+            return True
+        self.sleep(wait, self.wake)
+        return False
+
     def draw(self, draw_state, cache, values=None):
         """One view execution: window functions run; a frame loop runs to its next event wait."""
         for frame in self.roots:
@@ -1029,6 +1209,7 @@ class App:
                     imgui.push_style_color(index, *style_color(*value))
                 pushed = len(colors)    # counted now: the app's setup may set colours during this run
             try:
+                self.held = False
                 wait = self.step()
                 # Setup, or an idle iteration, drew nothing and the view needs a frame: the app
                 # is told its window wants a redraw, as GLFW would, and runs once more.
@@ -1037,6 +1218,9 @@ class App:
                         refresh(None)
                     wait = self.step()
                 namespace[DRAWN] = False
+                top = self.top
+                if top is not None and top.calls and not self.children:
+                    self.overlay(top.calls)
             finally:
                 if self.children:
                     # The app raised inside a child window: close it, so the error shows instead of the host asserting.
@@ -1046,12 +1230,38 @@ class App:
                         imgui.end_child()
                 if pushed:
                     imgui.pop_style_color(pushed)
+                self.outside = 0        # an app that raised inside a popup: the capture puts the pointer back
+            if self.shows:
+                # A popup or tooltip is shown for the frames it is submitted in: the view runs in the next one.
+                self.shows = False
+                if self.again is not None:
+                    self.again()
             if wait is not None and (wait > 0 or self.follow) or self.timer is not None:
                 self.sleep(wait)
             return wait
 
-    def sleep(self, wait):
-        """Ask the host for the frame the app's wait of `wait` seconds wants. Lever: `live` (gui_module)."""
+    def overlay(self, calls):
+        """Draw what the app put on its foreground list: in a child window the size of the view,
+        begun after the app's own, so it is the last of the view's draw lists. Lever: `flags`, the child shows and nothing else."""
+        import meltygui_imgui as imgui
+        shim = self.made[Imgui]
+        flags = (imgui.WINDOW_NO_INPUTS | imgui.WINDOW_NO_BACKGROUND | imgui.WINDOW_NO_SCROLLBAR
+                 | imgui.WINDOW_NO_SCROLL_WITH_MOUSE | imgui.WINDOW_NO_NAV | imgui.WINDOW_NO_FOCUS_ON_APPEARING)
+        x, y = imgui.get_cursor_pos()
+        imgui.set_cursor_pos((0, 0))
+        try:
+            shim.begin_child('##foreground', *self.extent(), False, flags)
+            draw = imgui.get_window_draw_list()
+            for name, args, kwargs in calls:
+                getattr(draw, name)(*args, **kwargs)
+            shim.end_child()
+        finally:
+            calls.clear()
+            imgui.set_cursor_pos((x, y))
+
+    def sleep(self, wait, again=None):
+        """Ask the host for what the app's wait of `wait` seconds wants: a `wake` when it runs out,
+        `again` (the app's own: a view run on the next frame) after a poll. Lever: `live` (gui_module)."""
         if self.timer is not None:
             self.timer.cancel()
             self.timer = None
@@ -1059,7 +1269,7 @@ class App:
             return
         if wait <= 0:
             if self.follow:
-                self.again()
+                (again or self.again)()
         elif wait != float('inf'):
             self.timer = threading.Timer(wait, self.wake)
             self.timer.daemon = True
@@ -1131,13 +1341,19 @@ def gui_module(path, *, background=True, live=None, **decoration):
         args = {name: values[name] for name in chosen.parameters if name in values}
         if input_value is not None and chosen.first is not None:
             args[chosen.first] = input_value
-        wake = again = None
+        wake = again = show = None
         if cache is not None and cache.stack:     # an immediate view (use_cache=False) has no node
             node = cache.current
             cache.on_retire(node, app.close)
-            wake, again = functools.partial(cache.wake, node), functools.partial(cache.wake_next, node)
+            show, again = functools.partial(cache.wake, node), functools.partial(cache.wake_next, node)
+            wake = functools.partial(cache.wake_if, node, app.probe)
+
+            def origin():
+                (left, top), (x, y) = cache.origin, cache.position(node)
+                return left + x, top + y
+            app.origin = origin
         app.follow = chosen.blocks if live is None else bool(live)
-        app.start(args, wake, again, background and wake is not None)
+        app.start(args, wake, again, background and wake is not None, show)
 
     # The per run path: keep it to dictionary stores and one call into the app.
     @gui(inject=inject, no_save=no_save, **decoration)

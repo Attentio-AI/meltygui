@@ -217,6 +217,19 @@ class RetainedGui:
         if self.request_frame:
             self.request_frame()
 
+    def wake_if(self, node, check):
+        """Thread safe, like `wake`, for a view that may have nothing new to
+        draw: `check()` is called on the render thread at the frame loop's
+        next turn (`glfw_utils.ask`), outside any view and without a frame.
+        Only if it returns true is this `wake(node)`, which asks for one."""
+        from meltygui.core.windowing import glfw_utils
+        self.drain = glfw_utils.drain_wakes     # a host without a frame loop asks at its next flush
+
+        def asked():
+            if node in self.records and check():
+                self.wake(node)
+        glfw_utils.ask(asked)
+
     def wake_next(self, node):
         """Run `node` again on the next host frame: for a view that animates
         itself. Render thread only. Unlike `wake`, a call made while the view
