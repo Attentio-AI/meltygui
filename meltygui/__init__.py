@@ -35,6 +35,7 @@ from meltygui.core.runtime.app import checkpoint
 if TYPE_CHECKING:   # IDE / type checkers only; never executed
     import meltygui_imgui as imgui
     from meltygui.core.rendering.gui_prototype import gui, os_window
+    from meltygui.core.rendering.gui_module import gui_module
     from meltygui.state.new_core_model import DrawState
     from meltygui.model.tile_model import multi_instance
     from meltygui.view.chat_view import draw_claude_chat
@@ -48,6 +49,7 @@ _LAZY_EXPORTS = {
     'rows': ('meltygui.core.rendering.gui_layout_prototype', 'rows'),
     'gui': ('meltygui.core.rendering.gui_prototype', 'gui'),
     'os_window': ('meltygui.core.rendering.gui_prototype', 'os_window'),
+    'gui_module': ('meltygui.core.rendering.gui_module', 'gui_module'),
     'DrawState': ('meltygui.state.new_core_model', 'DrawState'),
     'render_func': ('meltygui.core.core_render', 'render_func'),
     'multi_instance': ('meltygui.model.tile_model', 'multi_instance'),

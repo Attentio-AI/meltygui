@@ -136,6 +136,8 @@ class RetainedGui:
         # raises. Without one the error leaves flush(), as before.
         self.on_failure = None
         self.request_frame = None
+        # Node to the callback its view registered with on_retire().
+        self.retiring = {}
         self.root_ids = set()
         self.origin = (0, 0)
         self.hover = None
@@ -212,6 +214,12 @@ class RetainedGui:
         self.woken.append(node)
         if self.request_frame:
             self.request_frame()
+
+    def on_retire(self, node, callback):
+        """Run `callback` once, on this thread, when `node`'s view is retired
+        or the cache closes: where a view ends what its injected state runs.
+        (The state itself can outlive the window in the session's registry.)"""
+        self.retiring[node] = callback
 
     def waker(self, node):
         """`wake(node)` for a thread that never takes the interpreter lock:
@@ -894,6 +902,9 @@ class RetainedGui:
                 self.declared.forget(binding.handle)
             self._drop_capture(node)
             self.executor.forget(node)
+            leave = self.retiring.pop(node, None)
+            if leave is not None:
+                leave()
             for mapping in (self.invocations, self.events, self.regions, self.states, self.uniques, self.caller_keys,
                             self.backgrounds, self.texture_refs, self.listeners, self.cursors):
                 mapping.pop(node, None)
