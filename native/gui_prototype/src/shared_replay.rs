@@ -9,11 +9,14 @@ fn visible(c:Clip)->bool {c.2>c.0 && c.3>c.1}
 
 impl Packet {
     fn empty()->Self {Self {vertices:vec![],indices:vec![],commands:vec![],spans:vec![]}}
-    fn quad(&mut self,texture:u32,origin:(f32,f32),size:(f32,f32),clip:Clip,color:(f32,f32,f32,f32)) {
+    // `packed`: the colour is written in Melty's vertex packing (hdr_color.py,
+    // SDR form: sRGB bytes, 7-bit alpha under the SDR bit) for the decoding shader.
+    fn quad(&mut self,texture:u32,origin:(f32,f32),size:(f32,f32),clip:Clip,color:(f32,f32,f32,f32),packed:bool) {
         if !visible(clip) {return;}
         let base=(self.vertices.len()/20) as i32;
         let offset=self.indices.len()/4;
-        let rgba=[color.0,color.1,color.2,color.3].map(|v|(v*255.).round().clamp(0.,255.) as u8);
+        let mut rgba=[color.0,color.1,color.2,color.3].map(|v|(v*255.).round().clamp(0.,255.) as u8);
+        if packed {rgba[3]=0x80|(color.3*127.).round().clamp(0.,127.) as u8;}
         for (x,y,u,v) in [(origin.0,origin.1,0_f32,1_f32),
             (origin.0+size.0,origin.1,1.,1.),
             (origin.0+size.0,origin.1+size.1,1.,0.),
@@ -39,12 +42,12 @@ impl TextureCache {
         let start=output.commands.len();
         if background {
             if target.fbo!=0 {
-                output.quad(target.tex,origin,size,clip,(1.,1.,1.,1.));
+                output.quad(target.tex,origin,size,clip,(1.,1.,1.,1.),self.packed);
                 output.spans.push((id,start,output.commands.len()));
                 return Ok(());
             }
             let color=self.backgrounds.get(&id).copied().unwrap_or((0.,0.,0.,0.));
-            if color.3>0. {output.quad(0,origin,size,clip,color);}
+            if color.3>0. {output.quad(0,origin,size,clip,color,self.packed);}
         }
         for packet in self.packets.get(&id).ok_or_else(||PyRuntimeError::new_err("missing command packet"))? {
             let vertex_base=(output.vertices.len()/20) as i32;

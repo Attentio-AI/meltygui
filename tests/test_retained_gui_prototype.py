@@ -244,6 +244,7 @@ def test_body_hot_replacement_invalidates_without_changing_identity():
 
 
 def test_stale_caller_echo_does_not_undo_independent_edit():
+    """Within the frames a caller has to answer in. After them its value shows: test_gui_immediate.py."""
     cache = RetainedGui(graphics=False)
 
     @cache.gui
@@ -384,3 +385,40 @@ def test_native_hit_query_matches_clipping_and_z_order_after_mutations():
         check()
     finally:
         cache.close()
+
+
+def test_a_thread_without_the_interpreter_wakes_a_view_through_the_frame_loops_queue():
+    """`RetainedCache.wake` is Python. A thread that never takes the interpreter lock (the Rust `Source`'s
+    reading thread) gets a (handle, token) instead; what it queues becomes `cache.wake(node)` where a frame
+    loop drains it."""
+    import gc
+    from meltygui.core.windowing import glfw_utils
+    from meltygui.model.source_model import Source
+
+    class Cache:
+        def __init__(self):
+            self.woken = []
+
+        def wake(self, node):
+            self.woken.append(node)
+
+    cache, other = Cache(), Cache()
+    handle, token = glfw_utils.waker(cache, 41)
+    assert glfw_utils.waker(cache, 41) == (handle, token) and glfw_utils.waker(cache, 42)[1] != token != glfw_utils.waker(other, 41)[1]
+    source = Source('x = 1\n')
+    source.waker = (handle, token)
+    source.ask()
+    source.settle()
+    assert cache.woken == [], 'nothing ran Python on the way'
+    glfw_utils.drain_wakes()
+    glfw_utils.drain_wakes()
+    assert cache.woken == [41] and other.woken == []
+    # A cache that is gone is woken no more; the thread may still call the handle.
+    del cache
+    gc.collect()
+    source.splice(0, 0, 'y')
+    source.ask()
+    source.settle()
+    glfw_utils.drain_wakes()
+    glfw_utils.close_wakes()
+    assert other.woken == []

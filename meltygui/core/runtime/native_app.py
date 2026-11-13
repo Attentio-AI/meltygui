@@ -188,6 +188,8 @@ class NativeApplication:
             self.fps_counter.record_presentation(info['presentation'])
         imgui.set_current_context(self.ctx)
         previous_scope, glfw_utils.render_scope = glfw_utils.render_scope, self
+        # What threads without the interpreter queued becomes their caches' wakes: run in this frame.
+        glfw_utils.drain_wakes()
         glfw_utils._needs_render.clear()
         _, generation = glfw_utils.take_surface_request(self, -1)
         Melty.app_tick += 1

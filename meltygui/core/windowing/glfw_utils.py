@@ -5,6 +5,7 @@ import io
 import shutil
 import pprint
 import inspect
+from collections import deque
 import threading
 import traceback
 import json
@@ -1381,6 +1382,114 @@ def take_surface_request(surface, drawn_generation):
     _requested_surfaces.discard(surface)
     generation = _all_surfaces_generation
     return requested or generation != drawn_generation, generation
+
+
+# --- wakes from threads without the interpreter ---------------------------------
+# A thread that never takes the interpreter lock (a Rust reading thread: the
+# `Source` of model/source_model.py) cannot call `cache.wake(node)`. It gets a
+# handle and a token instead (`waker`), and by C ABI queues the token in
+# `_gui_native.Wakes` and rouses the event wait (`window_api.poke`). The frame
+# loops drain the queue where they wake up (`drain_wakes`: app.run,
+# NativeApp.frame), and from there a wake is `cache.wake(node)` as ever.
+_wakes = None               # the process's `Wakes`, made with the first waker
+_wake_handle = None         # its capsule: what the other extension calls
+_wake_tokens = {}           # (id of the cache, node) -> token
+_wake_targets = {}          # token -> (weak cache, node)
+
+
+def waker(cache, node):
+    """(handle, token): how a thread without the interpreter has `cache` run
+    `node` again. Render thread; the pair is the same for the same view."""
+    global _wakes, _wake_handle
+    if _wakes is None:
+        import atexit
+        from meltygui.core.rendering._gui_native import Wakes
+        _wakes = Wakes()
+        _wake_handle = _wakes.handle()
+        # Before the window system goes: a wake after this only queues its token.
+        atexit.register(close_wakes)
+    key = (id(cache), node)
+    token = _wake_tokens.get(key)
+    if token is None:
+        import weakref
+        from meltygui.core.melty import Melty
+        token = _wake_tokens[key] = len(_wake_tokens) + 1
+        _wake_targets[token] = (weakref.ref(cache), node)
+        # A new view: rouse the event wait of the window system that is up now (none: a host that runs its own frames).
+        _wakes.poke(*(glfw.poke() if _open_surfaces or Melty.glfw_window is not None else (None, 0)))
+    return _wake_handle, token
+
+
+# --- questions for the render thread ----------------------------------------------
+# A view that may have nothing new to draw (`RetainedGui.wake_if`) does not ask for a
+# frame: it queues a check, which the frame loops call at their next turn, where they
+# drain the wakes. Only a check that finds a reason asks for the frame.
+_asked = deque()
+
+
+def ask(check):
+    """Thread safe: call `check()` on the render thread at the frame loop's
+    next turn. Rouses the event wait and requests no frame."""
+    _asked.append(check)
+    native_host = sys.modules.get('_melty_ios')
+    if native_host is not None:     # its loop turns with its frames only
+        native_host.request_frame()
+        return
+    from meltygui.core.melty import Melty
+    if not _open_surfaces and Melty.glfw_window is None:
+        return  # no window system yet: the host's next flush asks (RetainedGui.drain)
+    try:
+        glfw.post_empty_event()
+    except Exception:
+        pass  # torn down mid-call
+
+
+def drain_wakes():
+    """Render thread: call what was asked of it (`ask`), and hand the wakes
+    queued by threads without the interpreter to their caches. Each asks for
+    its window's frame."""
+    for _ in range(len(_asked)):        # this turn only: a check may ask again
+        _asked.popleft()()
+    if _wakes is None:
+        return
+    for token in _wakes.take():
+        cache, node = _wake_targets.get(token, (None, None))
+        cache = cache() if cache is not None else None
+        if cache is not None:
+            cache.wake(node)
+
+
+def close_wakes():
+    """The window system is about to go: wakes stop rousing its event wait."""
+    if _wakes is not None:
+        _wakes.poke()
+
+
+# Levers: seconds a parked worker sleeps between looks, the longest it parks in one call (frames back
+# to back must not stop it for good), and the age at which a frame stamp is one that never ended.
+PARK_SLICE, PARK_LIMIT, PARK_STALE = 0.002, 0.5, 2.
+
+
+def park():
+    """For a Python worker thread, between two short pieces of its work:
+    sleep while the render thread is inside a frame (`Melty._frame_draw_start`).
+    A frame lets the interpreter go at every GL call and waits a whole switch
+    interval to get it back from a thread that is computing, so one busy
+    worker turns a 3 ms frame into hundreds. Parked, the worker leaves the
+    frame alone and works between frames. Keep the pieces well under a
+    millisecond: a frame that starts inside one still waits for its end.
+    Returns the seconds slept; nothing on the render thread or without a
+    frame loop (`code/libcst_conversion._park_while_frame` is the same rule
+    for the conversion stack)."""
+    melty = sys.modules.get('meltygui.core.melty')
+    started = melty.Melty._frame_draw_start if melty is not None else 0.
+    if not started or threading.get_ident() == _render_thread_id:
+        return 0.
+    begin = now = time.monotonic()
+    while started and now - started < PARK_STALE and now - begin < PARK_LIMIT:
+        time.sleep(PARK_SLICE)
+        started, now = melty.Melty._frame_draw_start, time.monotonic()
+    return now - begin
 
 
 def _wake_render_loop():

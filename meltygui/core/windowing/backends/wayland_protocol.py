@@ -48,12 +48,12 @@ class Native:
         self.marshal = function(self.lib, 'wl_proxy_marshal_flags', P, P, U, C.POINTER(Interface), U, U)
         self.interfaces = {name: Interface.in_dll(self.lib, name + '_interface') for name in
                            ('wl_registry', 'wl_compositor', 'wl_surface', 'wl_seat',
-                            'wl_pointer', 'wl_keyboard', 'wl_output', 'wl_shm', 'wl_shm_pool', 'wl_buffer',
+                            'wl_pointer', 'wl_keyboard', 'wl_output', 'wl_shm', 'wl_shm_pool', 'wl_buffer', 'wl_callback',
                             'wl_data_device_manager', 'wl_data_device', 'wl_data_offer',
                             'wl_data_source')}
         self.keepalive = []
         directory = Path(__file__).with_name('protocols')
-        nodes = [node for filename in ('xdg-shell.xml', 'xdg-decoration-unstable-v1.xml')
+        nodes = [node for filename in ('xdg-shell.xml', 'xdg-decoration-unstable-v1.xml', 'presentation-time.xml')
                  for node in ET.parse(directory / filename).getroot().findall('interface')]
         for node in nodes:
             self.interfaces[node.get('name')] = Interface()
@@ -99,3 +99,20 @@ class Native:
         self.keepalive.extend([functions, table])
         if self.listen(proxy, table, None) != 0:
             raise RuntimeError('wl_proxy_add_listener failed')
+
+    def shared(self, callbacks, error_handler):
+        """One listener table for many short-lived proxies (a frame callback,
+        a presentation feedback per frame): each callback gets the proxy
+        first. Attach it with `listen(proxy, table, None)`; nothing is kept
+        per proxy."""
+        functions = []
+        for types, callback in callbacks:
+            def invoke(data, obj, *args, _callback=callback):
+                try:
+                    _callback(obj, *args)
+                except BaseException as error:
+                    error_handler(error)
+            functions.append(C.CFUNCTYPE(None, P, P, *types)(invoke))
+        table = (P * len(functions))(*[C.cast(fn, P) for fn in functions])
+        self.keepalive.extend([functions, table])
+        return table

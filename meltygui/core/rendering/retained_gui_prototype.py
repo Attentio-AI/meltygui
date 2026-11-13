@@ -24,8 +24,14 @@ def _same(a, b):
     return a is b or (type(a) is type(b) and type(a) in (str, int, float, bool, type(None)) and a == b)
 
 
+# Lever: the longest string still treated as a path. A longer one is a value
+# (a whole file's text): aliasing it by content would copy and hash it on
+# every declaration, so it aliases by identity like any other object.
+PATH_ALIAS = 4096
+
+
 def _alias(value):
-    if isinstance(value, (str, Path)):
+    if isinstance(value, Path) or (isinstance(value, str) and len(value) <= PATH_ALIAS):
         return 'path:' + str(value)
     return f'object:{id(value)}'
 
@@ -50,7 +56,10 @@ class _Binding:
 
 
 class RetainedGui:
-    def __init__(self, *, graphics=True, state_registry=None, calibration=True):
+    def __init__(self, *, graphics=True, state_registry=None, calibration=True, input=ImGuiInput,
+                 texture_bytes=None):
+        # Lever: bytes of node textures the GPU cache may hold (None: the native default).
+        self.texture_bytes = texture_bytes
         self.imgui = None
         # The binding's texture keepalive list, resolved on first capture.
         self._keepalive = None
@@ -98,13 +107,39 @@ class RetainedGui:
         self.regions = {}
         self.staged_regions = {}
         self.events = {}
+        # Views declared with `listen=`: node to the event names it takes
+        # (gui_imgui_input.py). Empty until an app declares one.
+        self.listeners = {}
+        # Views declared with `cursor=`: node to the pointer shape over it.
+        self.cursors = {}
+        # Views a worker thread asked to run again (`wake`), drained by flush().
+        self.woken = deque()
+        # Views that asked, while running, to run on the next frame (`wake_next`); process_host_input hands them to `woken`.
+        self.later = []
+        # For threads without the interpreter (`waker`): what hands out their handles, and what
+        # turns the tokens they queued into `wake` calls. None until a view asks for a waker.
+        self.wakers = self.drain = None
         self.renderers = []
         self.captures = {}
         self.states = {}
         self.backgrounds = {}
         self.texture_refs = {}
+        # Set by melty_colors(): the raster follows the host's glyph settings each frame.
+        self.melty = False
         self.auto_layout = False
+        # Hosts that declare retained views from inside an immediate tree (the
+        # legacy bridge, gui_compat.py): a root's image is drawn where it is
+        # declared, in the caller's draw list, instead of by present().
+        self.inline_roots = False
+        # Host hook, called with (node, parent) by every declaration that
+        # reaches the bridge (the first one of an identity always does).
+        self.on_declare = None
+        # Host hook, called with (node, error) when a view Rust ran on its own
+        # raises. Without one the error leaves flush(), as before.
+        self.on_failure = None
         self.request_frame = None
+        # Node to the callback its view registered with on_retire().
+        self.retiring = {}
         self.root_ids = set()
         self.origin = (0, 0)
         self.hover = None
@@ -114,7 +149,11 @@ class RetainedGui:
         self._last_pointer = None
         self._frame_started = None
         self.layout_log = deque(maxlen=64)
-        self.imgui_input = ImGuiInput(self)
+        # `input` decides which views execute for pointer and keyboard input.
+        self.imgui_input = input(self)
+        # Who has the keyboard, and the open temporary popups (`popup=` on a call).
+        from meltygui.core.input.focus import Focus
+        self.focus = Focus(self)
         from meltygui.core.rendering.gui_layout_prototype import GuiGeometry
         self.geometry = GuiGeometry(self)
         # Runs one view execution natively over these same dictionaries and
@@ -171,6 +210,51 @@ class RetainedGui:
         if self.request_frame:
             self.request_frame()
 
+    def wake(self, node):
+        """Thread safe: run `node` again on the next frame, for a view whose
+        background result arrived. The only cache method a worker may call."""
+        self.woken.append(node)
+        if self.request_frame:
+            self.request_frame()
+
+    def wake_if(self, node, check):
+        """Thread safe, like `wake`, for a view that may have nothing new to
+        draw: `check()` is called on the render thread at the frame loop's
+        next turn (`glfw_utils.ask`), outside any view and without a frame.
+        Only if it returns true is this `wake(node)`, which asks for one."""
+        from meltygui.core.windowing import glfw_utils
+        self.drain = glfw_utils.drain_wakes     # a host without a frame loop asks at its next flush
+
+        def asked():
+            if node in self.records and check():
+                self.wake(node)
+        glfw_utils.ask(asked)
+
+    def wake_next(self, node):
+        """Run `node` again on the next host frame: for a view that animates
+        itself. Render thread only. Unlike `wake`, a call made while the view
+        runs is not served by this frame's later flush: it joins the next
+        frame's input pass, so the view runs once a frame (a second run in
+        one frame appends to its child windows)."""
+        self.later.append(node)
+        if self.request_frame:
+            self.request_frame()
+
+    def on_retire(self, node, callback):
+        """Run `callback` once, on this thread, when `node`'s view is retired
+        or the cache closes: where a view ends what its injected state runs.
+        (The state itself can outlive the window in the session's registry.)"""
+        self.retiring[node] = callback
+
+    def waker(self, node):
+        """`wake(node)` for a thread that never takes the interpreter lock:
+        a (handle, token) pair it calls by C ABI (`glfw_utils.waker`). What
+        it queues joins `woken` at the next flush, of any cache."""
+        if self.wakers is None:
+            from meltygui.core.windowing import glfw_utils
+            self.wakers, self.drain = glfw_utils.waker, glfw_utils.drain_wakes
+        return self.wakers(self, node)
+
     @contextmanager
     def frame(self):
         """Reconcile declarations made by the external, uncached host."""
@@ -179,6 +263,9 @@ class RetainedGui:
         if self._frame_started is None:
             self._frame_started = time.monotonic()
         self.identities.begin_frame()
+        # A view follows its caller within a few frames of an edit the caller did not take (retained.rs, `SETTLE`).
+        if self.graph.settle() and self.request_frame:
+            self.request_frame()
         previous = self.root_ids.copy()
         self.frame_roots = set()
         try:
@@ -197,12 +284,14 @@ class RetainedGui:
             self._retire()
 
     def gui(self, func=None, *, left=None, top=None, width=300, height=100, min_height=0, max_height=8192,
-            inject=None, events=(), state_id=None, no_save=(), scroll=False, **decoration):
+            inject=None, events=(), state_id=None, no_save=(), scroll=False, place=None, listen=None,
+            cursor=None, **decoration):
         _check_position_arguments(decoration, no_save)
         if func is None:
             return lambda fn: self.gui(fn, left=left, top=top, width=width, height=height, min_height=min_height,
                                        max_height=max_height, inject=inject, events=events,
-                                       state_id=state_id, no_save=no_save, scroll=scroll, **decoration)
+                                       state_id=state_id, no_save=no_save, scroll=scroll, place=place,
+                                       listen=listen, cursor=cursor, **decoration)
         decorated_left, decorated_top = left, top
         parameters = inspect.signature(func).parameters
         def position_default(name, decorated):
@@ -272,12 +361,13 @@ class RetainedGui:
             # (a tuple).
             declared = self.declared
             outcome = declared.declare(parent, renderer_id, keyed, key, kwargs.get('name', decoration_name),
-                                       generation[0], geometry.cell_scope is None, not geometry.bindings,
+                                       generation[0], geometry.cell_scope is None,
+                                       not geometry.bindings and place is None,
                                        not geometry.frozen, self.auto_layout, input_value, kwargs)
             kind = type(outcome)
             if kind is tuple:
                 return outcome
-            portal = False
+            portal = popup = False
             if kind is list:
                 # Declared from the remembered resolution; continue below with
                 # change detection, execution and placement.
@@ -287,6 +377,13 @@ class RetainedGui:
                 arguments, x, y, w, h, auto_height, scrollable, extras, caller_keys = resolved
             else:
                 identity_handle = outcome
+                if 'popup' in kwargs:
+                    # A temporary popup (core/input/focus.py): its value is the open event, and it is
+                    # declared only while it is open. Closed, this lookup is all the call costs.
+                    popup = True
+                    if not self.focus.shown(identity_handle, kwargs.pop('popup')):
+                        closed = self.focus.result(identity_handle, input_value)
+                        return (*closed, None) if kwargs.get('return_extras') else closed
                 binding = bindings.get(identity_handle)
                 if binding is None:
                     if not shared:
@@ -302,7 +399,13 @@ class RetainedGui:
                     raise TypeError('@gui uses relative left and top, not window_pos')
                 raw = kwargs.copy()
                 kwargs.pop('key', None)
-                portal = kwargs.pop('melty_window', False)
+                portal = kwargs.pop('melty_window', False) or popup
+                if popup and identity_handle not in self.focus.open:
+                    # Each opening starts afresh: what is not saved returns to its default.
+                    for name in no_save:
+                        parameter = parameters.get(name)
+                        if parameter is not None and parameter.default is not inspect.Parameter.empty:
+                            setattr(state, name, parameter.default)
                 scrollable = kwargs.pop('scroll', scroll)
                 caller = dict(kwargs)
                 if kwargs.pop('glfw_window', False):
@@ -342,12 +445,14 @@ class RetainedGui:
                         or not math.isfinite(h) or h < 0):
                     raise ValueError('cached boundaries require positive width and nonnegative height')
                 caller = {k: v for k, v in caller.items() if not (k in ('left', 'top', 'width', 'height') and v is None)}
+                if popup and 'left' in caller and 'top' in caller:
+                    caller['left'], caller['top'] = self._fit(parent, caller['left'], caller['top'], w, h)
                 if allocation is not None:
                     caller.update(width=w, height=h, left=x, top=y)
                 state.configure({'width': w, 'height': h,
                                  'left': float(x) if left is None else left,
                                  'top': float(y) if top is None else top,
-                                 'scroll_offset': (0., 0.), 'content_offset': (0., 28. if portal else 0.)},
+                                 'scroll_offset': (0., 0.), 'content_offset': (0., 28. if portal and not popup else 0.)},
                                 caller, initial)
                 x, y = state.left, state.top
                 w, h = state.width, state.height
@@ -357,6 +462,10 @@ class RetainedGui:
                 w, h = float(w), min(maximum, max(minimum, float(h)))
                 arguments = {**decoration, **kwargs, 'width': w, 'height': None if auto_height else h,
                              'min_height': minimum, 'max_height': maximum}
+                if popup:
+                    # No window gestures (gui_layout_prototype.py reads these): a popup stays where it opened.
+                    arguments.setdefault('movable', False)
+                    arguments.setdefault('resizable', False)
                 caller_keys = tuple(caller)
                 # The cursor only matters to an axis that neither the caller nor
                 # a position default fixes, and to an automatic width.
@@ -405,9 +514,15 @@ class RetainedGui:
                 self.records[node] = binding.native, binding.renderer, func
                 self.states[node] = state
                 self.executor.attach(node, binding.call, func, binding.unique, state, caller_keys)
+                if listen is not None:
+                    self.listeners[node] = frozenset(listen)
+                if cursor is not None:
+                    self.cursors[node] = cursor
                 self.associate(func, node)
                 self.associate(wrapper, node)
                 graph.associate(node, f'renderer:{renderer_id}', func)
+            if popup:
+                self.focus.push(identity_handle, node, parent)
             # Identity aliases remain registered until replacement or retirement.
             # Path-like values can supply changing text, so resolve those again.
             if previous is None or previous[0] is not input_value or isinstance(input_value, (str, Path)):
@@ -436,8 +551,17 @@ class RetainedGui:
             if not parent:
                 self.flush()
             changed, value, w, h = graph.conclude(node)
+            if self.on_declare is not None:
+                self.on_declare(node, parent)
+            if place is not None:
+                # `place`: this definition's host draws the image and owns the
+                # layout advance (a legacy view in window coordinates).
+                place(node)
+                if extras:
+                    return changed, value, self.states[node]
+                return changed, value
             if graphics:
-                if parent and not portal:
+                if (parent or self.inline_roots) and not portal:
                     imgui.set_cursor_screen_pos((x, y))
                     if not flags & 4:
                         self._draw_image(imgui.get_window_draw_list(),node,x,y,w,h)
@@ -475,6 +599,29 @@ class RetainedGui:
             imgui.end()
             imgui.render()
 
+    def _fit(self, parent, left, top, width, height):
+        """Where a popup asked for at (left, top) of its declaring view goes to stay on the surface: one
+        hanging below (right of) that view with no room there goes above (left of) it, by the same gap;
+        then it is moved inside, never resized."""
+        if not self.graphics:
+            return left, top
+        wide, tall = self.imgui.get_io().display_size
+        wide, tall, height = wide - self.origin[0], tall - self.origin[1], height or 0.
+        if parent:
+            # The declaring view's corner on the surface, as its content sees it, and its own size.
+            x, y = self.graph.convert_point((0., 0.), source=parent, source_content=True)
+            scroll_x, scroll_y = self.graph.state(parent).scroll_offset
+            _, _, across, down = self.graph.rect(parent)
+            above, before = 2 * scroll_y + down - top - height, 2 * scroll_x + across - left - width
+            if top - scroll_y >= down and y + top + height > tall and y + above >= 0:
+                top = above
+            if left - scroll_x >= across and x + left + width > wide and x + before >= 0:
+                left = before
+        else:
+            x = y = 0.
+        return (min(max(left, -x), max(wide - width - x, -x)),
+                min(max(top, -y), max(tall - height - y, -y)))
+
     def _capture(self, node):
         if node not in self.captures:
             self.captures[node] = self.imgui.DrawCapture(f'gui-capture-{id(self)}-{node}')
@@ -496,9 +643,34 @@ class RetainedGui:
     def _ensure_gpu(self):
         if self.gpu is None:
             from meltygui.core.rendering._gui_native import TextureCache
-            self.gpu = TextureCache()
+            self.gpu = TextureCache() if self.texture_bytes is None else TextureCache(self.texture_bytes)
             self.declared.set_gpu(self.gpu)
         return self.gpu
+
+    def melty_colors(self):
+        """Give the Rust raster the host's colour pipeline (hdr_color.py):
+        packed vertex colours, linear half-float targets and, per frame, the
+        host's glyph treatment (_glyphs). Call before the first capture."""
+        import meltygui_imgui as imgui
+        from meltygui import hdr_color
+        hdr_range, octaves = hdr_color._curve_params()
+        matrix = hdr_color.P3_TO_SRGB
+        self._ensure_gpu().melty_colors(
+            float(hdr_range), float(octaves), [float(matrix[row][column]) for column in range(3) for row in range(3)],
+            1., int(imgui.get_io().fonts.texture_id))
+        self.melty = True
+
+    def _glyphs(self):
+        # The atlas is shared and replaced by any surface's font load; the
+        # toggles and the window's output are live. A change repaints every raster.
+        import meltygui_imgui as imgui
+        import meltygui.core.windowing.window_api as window_api
+        fonts = imgui.get_io().fonts
+        gamma = float(self._toggles.Fonts.text_gamma)
+        tap = window_api.text_subpixel() / max(1, fonts.texture_width)
+        if self.gpu.glyphs(int(fonts.texture_id), gamma if gamma > 0 else 1., tap):
+            for node in self.backgrounds:
+                self.graph.request_composition(node)
 
     def _keepalive_list(self):
         # One list for the binding's lifetime; new frames clear it in place.
@@ -632,6 +804,8 @@ class RetainedGui:
 
     def _compose(self):
         if self.graphics and self.gpu:
+            if self.melty:
+                self._glyphs()
             self._select_rasters()
             # The complete bottom-up replay, including one save/restore of host
             # GL state for the batch, runs natively. Views still executing are
@@ -698,6 +872,13 @@ class RetainedGui:
 
     def flush(self):
         """Run only dirty functions, then replay retained packets bottom-up."""
+        if self.drain is not None:
+            self.drain()
+        while self.woken:
+            node = self.woken.popleft()
+            if node in self.records:
+                self.geometry.frozen.discard(node)
+                self.graph.invalidate_node(node)
         for definition in self.renderers:
             func, old_code, refresh_positions = definition
             if func.__code__ is not old_code:
@@ -718,7 +899,12 @@ class RetainedGui:
                 break
             for node in dirty:
                 if self.graph.dirty(node):
-                    self._execute(node, independent=True)
+                    try:
+                        self._execute(node, independent=True)
+                    except Exception as error:
+                        if self.on_failure is None:
+                            raise
+                        self.on_failure(node, error)
             self._retire()
         else:
             pending = [(self.records[node][2].__name__, node, self.graph.rect(node))
@@ -741,8 +927,11 @@ class RetainedGui:
                 self.declared.forget(binding.handle)
             self._drop_capture(node)
             self.executor.forget(node)
+            leave = self.retiring.pop(node, None)
+            if leave is not None:
+                leave()
             for mapping in (self.invocations, self.events, self.regions, self.states, self.uniques, self.caller_keys,
-                            self.backgrounds, self.texture_refs):
+                            self.backgrounds, self.texture_refs, self.listeners, self.cursors):
                 mapping.pop(node, None)
             self.root_ids.discard(node)
 
@@ -770,10 +959,15 @@ class RetainedGui:
             if self.request_frame: self.request_frame()
         return changed
 
+    def title_height(self, node):
+        """A floating window's title strip: its content offset. A popover
+        declared with `content_offset=(0, 0)` has no title, shadow or drag."""
+        return self.graph.state(node).content_offset[1]
+
     def window_rect(self, node):
         x,y=self._position(node)
         _,_,w,h=self.graph.rect(node)
-        return x,y-28,w,h
+        return x,y-self.title_height(node),w,h
 
     def _inside_clip(self, node, x, y):
         """Inline descendants respect cached ancestor boundaries; portals escape."""
@@ -838,13 +1032,17 @@ class RetainedGui:
         """
         import meltygui_imgui as imgui
         self._frame_started = time.monotonic()
+        if self.later:
+            # With this frame's input, so a view that input also runs still runs once.
+            self.woken.extend(self.later)
+            self.later.clear()
         self.imgui_input.process(imgui.get_io())
         # Resolve actual widget ownership before allowing background gestures.
         self.flush()
         if self.geometry.gesture is None:
             self.pointer(imgui.get_mouse_pos())
         claims=self.imgui_input.pointer_claims.get(self.imgui_input.mouse_owner,(False,False))
-        claims=(claims[0] or self.hover is not None or self.drag is not None,claims[1])
+        claims=(claims[0] or self.imgui_input.left or self.hover is not None or self.drag is not None,claims[1])
         self.geometry.pointer(imgui.get_mouse_pos(),pressed=imgui.is_mouse_clicked(0),
                               down=imgui.is_mouse_down(0),released=imgui.is_mouse_released(0),
                               right_pressed=imgui.is_mouse_clicked(1),right_down=imgui.is_mouse_down(1),
@@ -858,18 +1056,21 @@ class RetainedGui:
             self.geometry.native.release()
 
     def register_host_pointer(self, handler, position):
+        """Keep from the host's OS window gestures what is not theirs here. Over a Melty window
+        both buttons are the layout's (it moves and resizes that window). Elsewhere a left drag
+        is kept when a view takes it (a hit region, a view listening for the pointer, an ImGui
+        item) and a right drag only when an ImGui item was activated by it: over everything
+        else the right drag resizes the OS window."""
         x, y = position[0] - self.origin[0], position[1] - self.origin[1]
-        occupied = self.hover is not None or self.drag is not None
-        if not occupied:
-            occupied = any(wx <= x < wx + w and wy <= y < wy + h + 28
-                           for wx, wy, w, h in
-                           (self.window_rect(node) for node in self.graph.windows()))
+        window = self.drag is not None or any(wx <= x < wx + w and wy <= y < wy + h + self.title_height(node)
+                                              for node in self.graph.windows()
+                                              for wx, wy, w, h in (self.window_rect(node),))
         left, right = self.imgui_input.pointer_claims.get(self.imgui_input.mouse_owner, (False, False))
         subscriptions = []
-        if occupied or left or self.geometry.claim[0]:
+        if window or left or self.imgui_input.left or self.hover is not None or self.geometry.claim[0]:
             subscriptions.extend(['left_mouse_dragged', 'left_mouse_double_dragged',
                                   'left_mouse_double_clicked'])
-        if occupied or right or self.geometry.claim[1]:
+        if window or right or self.geometry.claim[1]:
             subscriptions.extend(['right_mouse_dragged', 'right_mouse_double_dragged'])
         if subscriptions:
             handler.register_hovered(
@@ -880,18 +1081,20 @@ class RetainedGui:
         self.origin = origin
         dl = imgui.get_window_draw_list()
         for node in sorted(self.root_ids):
-            if not self.graph.is_portal(node):
+            if not self.graph.is_portal(node) and not self.inline_roots:
                 self._image(dl, node, origin)
         self.geometry.paint(dl,origin)
         for node in self.graph.windows():
             x, y, w, h = self.window_rect(node)
             x += origin[0]
             y += origin[1]
-            left,top,right,bottom=(math.floor(v+.5) for v in (x,y,x+w,y+28+h))
-            dl.add_rect_filled(left+5,top+5,right+5,bottom+5,0x66000000,5)
-            dl.add_rect_filled(left,top,right,top+28,0xFF65513B,5)
-            dl.add_text(left+9,top+5,0xFFFFFFFF,'Owned @gui window (drag title)')
-            self._draw_image(dl,node,x,y+28,w,h)
+            title=self.title_height(node)
+            if title:
+                left,top,right,bottom=(math.floor(v+.5) for v in (x,y,x+w,y+title+h))
+                dl.add_rect_filled(left+5,top+5,right+5,bottom+5,0x66000000,5)
+                dl.add_rect_filled(left,top,right,top+title,0xFF65513B,5)
+                dl.add_text(left+9,top+5,0xFFFFFFFF,'Owned @gui window (drag title)')
+            self._draw_image(dl,node,x,y+title,w,h)
             self.geometry.paint(dl,origin,portal=node)
 
         if self.gpu and self._frame_started is not None:
@@ -934,6 +1137,10 @@ class RetainedGui:
             self.imgui_input.characters.clear()
             self.imgui_input.text = ()
             self.imgui_input.cache = None
+            # (No cycle may outlive close(): a collector thread would drop the native objects.)
+            self.focus.stack.clear()
+            self.focus.open.clear()
+            self.focus.cache = None
             self.geometry.axes = ()
             self.geometry.transactions.clear()
             # The shared snapshot owns solver forks; release them on this thread.

@@ -154,6 +154,9 @@ def native(monkeypatch, app_environment):
             calls.append('fonts-prewarmed')
             self.io.fonts.add_font_default()
 
+        def asked(self):
+            return []
+
     session = SimpleNamespace(draw_state_registry={}, registered_windows={})
     root_config = dict(name='Editor', settings=object(), view_kwargs={})
     monkeypatch.setattr(fonts, 'FontManager', DefaultFonts)

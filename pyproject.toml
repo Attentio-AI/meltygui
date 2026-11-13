@@ -34,8 +34,11 @@ dev = ["pytest>=8", "build>=1.2", "PyGLM>=2.8"]
 [tool.hatch.build.targets.wheel]
 packages = ["meltygui"]
 
+# Compiles the Rust `Source` extension into the package (hatch_build.py).
+[tool.hatch.build.targets.wheel.hooks.custom]
+
 [tool.hatch.build.targets.sdist]
-include = ["/meltygui", "/tests", "/examples", "/tools/native_wheels", "/tools/release.py", "/README.md", "/LICENSE", "/docs/APPS.md", "/docs/INPUT_RECORDING.md", "/docs/DEVELOPMENT.md", "/docs/SUPPORT_WHEELS.md", "/docs/PUBLISHING.md", "/pyproject.toml"]
+include = ["/meltygui", "/tests", "/examples", "/tools/native_wheels", "/tools/release.py", "/tools/build_source.py", "/hatch_build.py", "/native/source/src", "/native/source/Cargo.toml", "/native/source/Cargo.lock", "/README.md", "/LICENSE", "/docs/APPS.md", "/docs/INPUT_RECORDING.md", "/docs/DEVELOPMENT.md", "/docs/SUPPORT_WHEELS.md", "/docs/PUBLISHING.md", "/pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

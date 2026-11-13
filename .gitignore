@@ -9,4 +9,5 @@ build/
 .DS_Store
 .idea/
 meltygui/core/rendering/_gui_native*.so
+meltygui/model/_source_native*
 meltygui/core/rendering/_gui_native*.pyd

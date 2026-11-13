@@ -1,0 +1,23 @@
+[package]
+name = "melty-source"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[lib]
+name = "_source_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# abi3: one build loads in every CPython from 3.11 on, so a platform needs one
+# wheel. Lever: raise the floor with another `abi3-pyXY` feature.
+pyo3 = { version = "=0.23.5", features = ["abi3-py311"] }
+
+[features]
+# The Python extension build. `cargo test` runs without it (no libpython to link).
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

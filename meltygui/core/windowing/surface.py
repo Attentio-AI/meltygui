@@ -255,7 +255,9 @@ class Surface:
         from meltygui.core.cache.tile_cache import TileCacheMasked
         self.impl = SplitOverlayRenderer(self.window)
         Melty.init_input_backend(self.window)
-        Melty.cache = TileCacheMasked()
+        from meltygui.core.rendering import gui_compat
+        # Path-finding: the Rust bridge listens to this cache's invalidations.
+        Melty.cache = gui_compat.tile_cache() if gui_compat.enabled() else TileCacheMasked()
         # Invalidations by object / function made while another window draws
         # reach this cache, and this window then draws (request_frame).
         TileCacheMasked.window_caches[Melty.cache] = self.request_frame
@@ -522,6 +524,9 @@ class Surface:
         if getattr(self, '_gui_prototype', None) is not None:
             self._gui_prototype.close()
             self._gui_prototype = None
+        if getattr(self, '_rust_compat', None) is not None:
+            self._rust_compat.close()
+            self._rust_compat = None
         from meltygui.core.cache.tile_cache import TileCacheMasked
         TileCacheMasked.window_caches.pop(Melty.cache, None)
         from meltygui.core.graphics.gl_state import GLState

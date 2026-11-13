@@ -45,6 +45,9 @@ class _GuiWindow:
         self.cache.origin = (0, 0)
         if self.cache.graphics and self.input_backend is None:
             self.input_backend = surface.impl
+            # The host's colour pipeline (hdr_color.py): without it a packed
+            # colour's 7 bit alpha reads as more than half opaque.
+            self.cache.melty_colors()
             self.input_backend.gui_character_callback = self.cache.imgui_input.character
         token = _window.set(self)
         from meltygui.core.runtime.app import _state
@@ -52,6 +55,9 @@ class _GuiWindow:
         scope = (_state['app_id'], _renderer_name(func, options.get('state_id')))
         self.native.begin_frame(scope=scope, width=width, cache=self.cache)
         try:
+            if self.cache.listeners or self.cache.focus.stack:
+                # The frame's ordered key presses and repeats, for listening views and open popups (Escape).
+                self.cache.imgui_input.keys.extend(Melty.frame_key_events)
             self.cache.process_host_input(
                 drag_position=(self.input_backend.drag_mouse_pos
                                if self.input_backend is not None else None))

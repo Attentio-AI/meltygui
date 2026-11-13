@@ -1433,21 +1433,24 @@ class Toggles:
 
     @defaults(tint=(0.545, 0.451, 0.248))
     class Fonts:
-        # Subpixel (LCD & "ClearType"-style) text anti-aliasing. The at
-        # atlas is baked 3x oversampled horizontally, and each glyph quad
-        # covers 3 atlas texels per screen pixel; the imgui renderer
-        # (split_overlay_renderer.py) samples those as per-channel R/G/B
-        # coverage and blends them with dual-source blending - tripling the
-        # horizontal resolution of lines and curves the way IntelliJ and the
-        # desktop do. Off = classic grayscale AA (same atlas, one tap).
-        # Turn off on a ROTATED monitor (stripes run vertically there) or
-        # when text must be fringe-free. Read live per frame.
-        lcd_subpixel = True
-
-        # Subpixel stripe order of the panel. Nearly every desktop panel is
-        # RGB left-to-right; a BGR panel shows orange/blue fringes on the
-        # wrong sides of every glyph - flip this. Read live per frame.
-        lcd_bgr = False
+        # Subpixel ("ClearType"-style) text anti-aliasing. The atlas is baked
+        # 3x oversampled horizontally and each glyph quad covers 3 atlas texels
+        # per screen pixel; the text shaders (overlay_renderer.py, the Rust
+        # raster in native/gui_prototype/src/texture.rs) read them as
+        # per-channel coverage. It only looks right on a panel whose pixels
+        # are three vertical stripes:
+        #   'auto'  the stripe order the compositor reports for the window's
+        #           output (Wayland wl_output), grayscale on a rotated panel,
+        #           RGB where it reports nothing usable: GLFW, macOS, Windows
+        #           and Hyprland, which calls every output stripeless.
+        #   'rgb'   stripes red, green, blue from the left: nearly every LCD.
+        #   'bgr'   the mirrored order (orange / blue fringes on the wrong
+        #           sides of every glyph under 'rgb').
+        #   'off'   grayscale: OLED (PenTile, QD-OLED triangles), rotated or
+        #           scaled outputs, or whenever fringes show. No platform
+        #           tells an OLED from an LCD reliably, so this is the lever.
+        # Resolved by window_api.text_subpixel. Read live per frame.
+        subpixel = 'auto'
 
         # Contrast curve on glyph coverage: coverage ** (1 / text_gamma).
         # > 1 darkens the anti-aliased mid-tones so strokes read thicker

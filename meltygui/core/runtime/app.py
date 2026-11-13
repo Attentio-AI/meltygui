@@ -289,6 +289,10 @@ def _initialize_fonts(io, *, pixel_scale=1.0):
     from meltygui.core.melty import Melty
     from meltygui.core.styling.fonts import FontManager
     Melty.font_mgr = FontManager(io, Melty.resolve_ui_scale(), pixel_scale=pixel_scale)
+    import meltygui.core.styling.warm_start as warm_start
+    hint = warm_start.font_hint(_state['cache']) if _state.get('cache') is not None else ()
+    if hint:
+        Melty.font_mgr.expect(hint)
     Melty.font_mgr.prewarm()
 
 
@@ -356,6 +360,9 @@ def _first_frame_presented(surfaces):
     _write_startup_log(_state['app_id'], ' '.join(s.name for s in surfaces))
     import meltygui.core.styling.warm_start as warm_start
     warm_start.remember_code_stack(_state['cache'], 'meltygui.code.libcst_conversion' in sys.modules)
+    from meltygui.core.melty import Melty
+    if Melty.font_mgr is not None and _state['cache'] is not None:
+        warm_start.remember_fonts(_state['cache'], Melty.font_mgr.asked())
     callbacks, _AFTER_FIRST_FRAME[:] = list(_AFTER_FIRST_FRAME), []
     for fn in callbacks:
         try:
@@ -549,9 +556,18 @@ def _root_body(fn, name, view_kwargs=None, config=None):
         source = config.get('view_kwargs') if config is not None else view_kwargs
         return dict(source or {})
     if hasattr(fn, '__gui_definition__'):
+        from meltygui.core.rendering import gui_compat
+        if gui_compat.enabled():
+            # Path-finding: a native root under the bridge can call legacy views.
+            return lambda surface: gui_compat.draw_native_root(surface, fn, current_kwargs())
         from meltygui.core.rendering.gui_window_prototype import draw_gui_surface
         return lambda surface: draw_gui_surface(surface, fn, current_kwargs())
     if hasattr(fn, '__render_func__'):
+        from meltygui.core.rendering import gui_compat
+        if gui_compat.enabled():
+            # Path-finding: the legacy root runs under the Rust retained host.
+            return lambda surface: gui_compat.draw_root(
+                surface, lambda: _draw_root(fn, name, **current_kwargs()))
         return lambda surface: _draw_root(fn, name, **current_kwargs())
     if current_kwargs().get('tint') is None and config is None:
         return lambda surface: fn()
@@ -774,7 +790,11 @@ def run():
     glfw_utils.request_render()
     try:
         while Surface.all:
+            # Read input as late as the compositor's schedule allows, so the frame shows what the pointer does now.
+            glfw.pace(glfw_utils._needs_render.is_set)
             _process_events()
+            # What threads without the interpreter queued: each becomes its cache's wake, which asks for the frame.
+            glfw_utils.drain_wakes()
             _open_requested_children()
             # A frame only on a request (request_render: the input layer's
             # callbacks, Surface's focus/resize/close hooks, animations via
@@ -832,6 +852,8 @@ def run():
             _process_events(1 / 60 if any(s.children for s in Surface.all) else 1.0)
     finally:
         _debug(f'{frames} frames rendered')
+        # The window system goes below: threads without the interpreter stop rousing its event wait.
+        glfw_utils.close_wakes()
         input_recording_core.stop_on_exit()
         # Standalone apps do not run Melty.cleanup. Cocoa's file watcher
         # must stop before interpreter teardown, even after a failed frame.

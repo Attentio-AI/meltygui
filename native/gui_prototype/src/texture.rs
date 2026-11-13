@@ -69,6 +69,8 @@ extern "C" {
     fn glUseProgram(p: u32);
     fn glGetUniformLocation(p: u32, n: *const i8) -> i32;
     fn glUniform2f(l: i32, x: f32, y: f32);
+    fn glUniform1f(l: i32, x: f32);
+    fn glUniformMatrix3fv(l: i32, count: i32, transpose: u8, value: *const f32);
     fn glUniform1i(l: i32, x: i32);
     fn glViewport(x: i32, y: i32, w: i32, h: i32);
     fn glScissor(x: i32, y: i32, w: i32, h: i32);
@@ -184,7 +186,7 @@ struct Target {
     h: i32,
 }
 impl Target {
-    unsafe fn new(w: i32, h: i32) -> PyResult<Self> {
+    unsafe fn new(w: i32, h: i32, format: u32) -> PyResult<Self> {
         let mut t = Self {
             tex: 0,
             fbo: 0,
@@ -193,7 +195,7 @@ impl Target {
         };
         glGenTextures(1, &mut t.tex);
         glBindTexture(TEX, t.tex);
-        glTexImage2D(TEX, 0, 0x8058, w, h, 0, 0x1908, 0x1401, ptr::null());
+        glTexImage2D(TEX, 0, format as i32, w, h, 0, 0x1908, 0x1401, ptr::null());
         for p in [0x2801, 0x2800] {
             glTexParameteri(TEX, p, 0x2601);
         }
@@ -272,7 +274,58 @@ pub struct TextureCache {
     uploads: u64,
     budget: usize,
     sampler: Sampler,
+    // Melty colour pipeline (melty_colors): packed HDR vertex colours decoded
+    // to linear light, glyph coverage gamma, and the target pixel format.
+    format: u32,
+    packed: bool,
+    hdr: (f32, f32),
+    p3: [f32; 9],
+    gamma: f32,
+    atlas: u32,
+    tap: f32,
+    packed_loc: i32,
+    hdr_loc: i32,
+    p3_loc: i32,
+    gamma_loc: i32,
+    atlas_loc: i32,
+    tap_loc: i32,
 }
+
+// Lever: the colour decode mirrors hdr_color.GLSL_DECODE and the host
+// renderer's fragment stage (overlay_renderer.py), subpixel text included:
+// `tap` is one atlas texel (3 per screen pixel), so the texels at -1 / 0 / +1
+// are the coverage of the left / middle / right stripe; negative mirrors them
+// (BGR), 0 is grayscale. Dual-source blending applies `Cov` per channel:
+//   dst.rgb = Out.rgb * Cov.rgb + dst.rgb * (1 - Cov.rgb)
+// which is plain alpha blending for everything that is not a glyph. A
+// raster's alpha is the mean stripe coverage: exact over what the raster
+// itself painted under the text, an approximation (stripes on the text
+// colour, mean coverage on the backdrop) where it is transparent there.
+const VERTEX: &str = "#version 330 core
+layout(location=0) in vec2 pos;layout(location=1) in vec2 uv;layout(location=2) in vec4 col;
+uniform vec2 size;uniform int melty;uniform vec2 hdr;uniform mat3 p3;
+out vec2 UV;out vec4 Color;
+vec3 lin(vec3 c){return mix(c/12.92,pow((c+0.055)/1.055,vec3(2.4)),step(0.04045,c));}
+vec4 decode(vec4 c){
+  float abyte=c.a*255.0;bool sdr=abyte>=127.5;float alpha=(sdr?abyte-128.0:abyte)/127.0;vec3 rgb;
+  if(sdr){rgb=lin(c.rgb);}else{vec3 code=c.rgb*255.0;
+    vec3 v=hdr.x*exp2(hdr.y*((code-1.0)/254.0-1.0));v*=step(0.5,code);rgb=p3*v;}
+  return vec4(rgb*alpha,alpha);}
+void main(){UV=uv;Color=melty==1?decode(col):col;
+  gl_Position=vec4(pos.x/size.x*2.-1.,1.-pos.y/size.y*2.,0.,1.);}";
+const FRAGMENT: &str = "#version 330 core
+in vec2 UV;in vec4 Color;uniform sampler2D image;uniform int resolve;uniform int melty;
+uniform int atlas;uniform float gamma;uniform float tap;
+layout(location=0,index=0) out vec4 Out;layout(location=0,index=1) out vec4 Cov;
+void main(){vec4 c;vec3 cov=vec3(1.);float mean=1.;
+  if(melty==1){c=vec4(Color.rgb/max(Color.a,1e-6),Color.a);
+    if(resolve!=2){vec4 t=texture(image,UV);c.rgb*=t.rgb;cov=vec3(t.a);mean=t.a;
+      if(atlas==1){vec2 fw=fwidth(UV);if(fw.x>0.0&&fw.y>0.0){
+        if(tap!=0.)cov=vec3(texture(image,UV-vec2(tap,0.)).a,t.a,texture(image,UV+vec2(tap,0.)).a);
+        cov=pow(cov,vec3(1.0/gamma));mean=tap!=0.?(cov.r+cov.g+cov.b)/3.:cov.g;}}}}
+  else{c=resolve==2?Color:texture(image,UV)*Color;}
+  Cov=vec4(cov*c.a,c.a*mean);c.a*=mean;
+  if(resolve==1&&c.a>0.)c.rgb/=c.a;Out=c;}";
 
 unsafe fn shader(kind: u32, src: &str) -> PyResult<u32> {
     let s = glCreateShader(kind);
@@ -301,8 +354,8 @@ impl TextureCache {
     fn new(budget: usize) -> PyResult<Self> {
         unsafe {
             let _guard = Guard::new();
-            let vs=shader(0x8B31,"#version 330 core\nlayout(location=0) in vec2 pos;layout(location=1) in vec2 uv;layout(location=2) in vec4 col;uniform vec2 size;out vec2 UV;out vec4 Color;void main(){UV=uv;Color=col;gl_Position=vec4(pos.x/size.x*2.-1.,1.-pos.y/size.y*2.,0.,1.);}")?;
-            let fs=shader(0x8B30,"#version 330 core\nin vec2 UV;in vec4 Color;uniform sampler2D image;uniform int resolve;out vec4 Out;void main(){vec4 c=resolve==2?Color:texture(image,UV)*Color;if(resolve==1&&c.a>0.)c.rgb/=c.a;Out=c;}")?;
+            let vs=shader(0x8B31,VERTEX)?;
+            let fs=shader(0x8B30,FRAGMENT)?;
             let p = glCreateProgram();
             glAttachShader(p, vs);
             glAttachShader(p, fs);
@@ -344,6 +397,19 @@ impl TextureCache {
                 sampler: Sampler::default(),
                 uploads: 0,
                 budget,
+                format: 0x8058,
+                packed: false,
+                hdr: (1., 1.),
+                p3: [1., 0., 0., 0., 1., 0., 0., 0., 1.],
+                gamma: 1.,
+                atlas: 0,
+                tap: 0.,
+                packed_loc: glGetUniformLocation(p, b"melty\0".as_ptr().cast()),
+                hdr_loc: glGetUniformLocation(p, b"hdr\0".as_ptr().cast()),
+                p3_loc: glGetUniformLocation(p, b"p3\0".as_ptr().cast()),
+                gamma_loc: glGetUniformLocation(p, b"gamma\0".as_ptr().cast()),
+                atlas_loc: glGetUniformLocation(p, b"atlas\0".as_ptr().cast()),
+                tap_loc: glGetUniformLocation(p, b"tap\0".as_ptr().cast()),
             };
             glGenVertexArrays(1, &mut s.vao);
             glGenBuffers(1, &mut s.vbo);
@@ -363,6 +429,26 @@ impl TextureCache {
             glUniform1i(glGetUniformLocation(p, b"image\0".as_ptr().cast()), 0);
             Ok(s)
         }
+    }
+    /// Render Melty's packed vertex colours (hdr_color.py) in linear light
+    /// into half-float targets. Call before the first capture: existing
+    /// targets keep their format. `p3` is the column-major P3 to sRGB matrix,
+    /// `atlas` the font atlas texture whose glyph coverage takes `gamma`.
+    fn melty_colors(&mut self, range: f32, octaves: f32, p3: [f32; 9], gamma: f32, atlas: u32) {
+        self.packed = true;
+        self.format = 0x881A;
+        self.hdr = (range, octaves);
+        self.p3 = p3;
+        self.gamma = gamma;
+        self.atlas = atlas;
+    }
+    /// The frame's glyph treatment: the live font atlas texture, the coverage
+    /// `gamma` and `tap`, one atlas texel in UV (negative for BGR stripes, 0
+    /// for grayscale). True when it changed: rasters holding text are stale.
+    fn glyphs(&mut self, atlas: u32, gamma: f32, tap: f32) -> bool {
+        let changed = (self.atlas, self.gamma, self.tap) != (atlas, gamma, tap);
+        (self.atlas, self.gamma, self.tap) = (atlas, gamma, tap);
+        changed
     }
     fn target(&mut self, id: u64, w: i32, h: i32) -> PyResult<u32> {
         unsafe {
@@ -400,7 +486,7 @@ impl TextureCache {
             if let Some(t) = self.targets.get_mut(&id) {
                 // Keep the texture name stable: parent command packets reference it.
                 glBindTexture(TEX, t.tex);
-                glTexImage2D(TEX, 0, 0x8058, w, h, 0, 0x1908, 0x1401, ptr::null());
+                glTexImage2D(TEX, 0, self.format as i32, w, h, 0, 0x1908, 0x1401, ptr::null());
                 for parameter in [0x2801,0x2800] { glTexParameteri(TEX,parameter,0x2601); }
                 for parameter in [0x2802,0x2803] { glTexParameteri(TEX,parameter,0x812F); }
                 if t.fbo == 0 {
@@ -416,7 +502,7 @@ impl TextureCache {
                 t.h = h;
                 return Ok(t.tex);
             }
-            let t = Target::new(w, h)?;
+            let t = Target::new(w, h, self.format)?;
             let tex = t.tex;
             self.references.insert(tex, id);
             self.targets.insert(id, t);
@@ -803,7 +889,7 @@ impl TextureCache {
                 while self.scratch.len() >= 8 || used + self.scratch_bytes() + bytes > self.budget {
                     self.scratch.remove(0).delete();
                 }
-                self.scratch.push(Target::new(w, h)?);
+                self.scratch.push(Target::new(w, h, self.format)?);
                 self.scratch_allocations += 1;
                 self.scratch.len() - 1
             };
@@ -817,15 +903,27 @@ impl TextureCache {
             for p in [0x0B71, 0x0B44, 0x0B90, 0x8DB9, 0x0C11] {
                 glDisable(p);
             }
-            let (r, g, b, a) = background;
+            let (mut r, mut g, mut b, a) = background;
+            if self.packed {
+                // A tint is an sRGB colour; the target holds linear light.
+                let linear = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+                (r, g, b) = (linear(r), linear(g), linear(b));
+            }
             glClearColor(r * a, g * a, b * a, a);
             glClear(0x4000);
             glEnable(0x0BE2);
             glBlendEquationSeparate(0x8006, 0x8006);
-            glBlendFuncSeparate(0x0302, 0x0303, 1, 0x0303);
+            // Lever: SRC1_COLOR / ONE_MINUS_SRC1_COLOR, the per-channel coverage blend.
+            glBlendFuncSeparate(0x88F9, 0x88FA, 1, 0x0303);
             glUseProgram(self.program);
             glUniform2f(self.size_loc, w as f32, h as f32);
             glUniform1i(self.resolve_loc, 0);
+            glUniform1i(self.packed_loc, self.packed as i32);
+            glUniform2f(self.hdr_loc, self.hdr.0, self.hdr.1);
+            glUniformMatrix3fv(self.p3_loc, 1, 0, self.p3.as_ptr());
+            glUniform1f(self.gamma_loc, self.gamma);
+            glUniform1f(self.tap_loc, self.tap);
+            glUniform1i(self.atlas_loc, 0);
             glBindVertexArray(self.vao);
             glBindBuffer(ARRAY, self.vbo);
             glBindBuffer(ELEMENT, self.ebo);
@@ -861,6 +959,7 @@ impl TextureCache {
                     if right>x && bottom>y && *count!=0 {
                     glScissor(x,h-bottom,right-x,bottom-y);
                     glUniform1i(self.resolve_loc, if *tex==0 {2} else {0});
+                    glUniform1i(self.atlas_loc, (self.atlas != 0 && *tex == self.atlas) as i32);
                     glBindTexture(TEX,*tex);
                     glDrawElementsBaseVertex(4,*count,0x1405,(offset*4) as *const c_void,*base);
                     }
@@ -895,6 +994,7 @@ impl TextureCache {
                         continue;
                     }
                     glScissor(x, h - bottom, right - x, bottom - y);
+                    glUniform1i(self.atlas_loc, (self.atlas != 0 && *tex == self.atlas) as i32);
                     glBindTexture(TEX, *tex);
                     glDrawElementsBaseVertex(
                         4,
@@ -937,6 +1037,7 @@ impl TextureCache {
             glDisable(0x0BE2);
             glDisable(0x0C11);
             glUniform1i(self.resolve_loc, 1);
+            glUniform1i(self.atlas_loc, 0);
             glBindTexture(TEX, scratch_tex);
             let mut vertices = Vec::<u8>::new();
             for (x, y, u, v) in [

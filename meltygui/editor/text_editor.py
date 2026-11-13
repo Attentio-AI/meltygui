@@ -65,6 +65,7 @@ COLORS = {
     # `:` opening the format spec (IntelliJ paints these keyword orange). The
     # expression between them gets ordinary code kinds, the spec stays 'string'.
     'fstring_delim': _hex('#cc7832'),
+    'kwarg': _hex('#aa4926'),  # the name of a keyword argument in a call (native editor: colour.rs); Darcula's red
     'comment': _hex('#5e6265'),  # Comment - muted & darker so comments recede
     'line_no': _hex('#808080'),  # Gutter numbers keep the old comment color
     'number': _hex('#6897bb'),  # Number

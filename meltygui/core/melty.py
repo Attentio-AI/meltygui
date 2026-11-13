@@ -1146,6 +1146,7 @@ class Melty:
     # in its own thread every frame; see view/core_conversion/render_host.py.
     render_hosts = {}
     luts = None  # shared editable palette values, created lazily
+    rosters = {}  # project root -> its symbol roster (model/roster_model.py `project`), created on first use
     cuda_interop = None  # shared CUDA context leases and driver runtime
     render_hosts_tick = -1   # app_tick Surface.frame last pumped the hosts in (meltygui main)
     scroll_stack = []

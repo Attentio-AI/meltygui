@@ -969,7 +969,9 @@ def fast_draw_collection(input_value=None, **kwargs):
     # A direct call is a caller asking for the fast host: only a wrapper-only
     # feature sends it to the wrapper. Toggles.Collection.fast_draw_collection
     # and the outermost-tile rule apply to draw_any's routing (collection_view_for).
-    if any(kwargs.get(wrapper_kwarg) for wrapper_kwarg in FAST_COLLECTION_WRAPPER_KWARGS):
+    from meltygui.core.rendering import fast_view
+    if (any(kwargs.get(wrapper_kwarg) for wrapper_kwarg in FAST_COLLECTION_WRAPPER_KWARGS)
+            or (fast_view.needs_wrapper is not None and fast_view.needs_wrapper())):
         return draw_collection(input_value, **kwargs)
 
     body = draw_collection.__wrapped__

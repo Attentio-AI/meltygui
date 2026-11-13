@@ -9,7 +9,9 @@ they do not imply that every listed feature is visibly broken.
 Tensor data operations and camera math now live in models. Shared presentation,
 dimension pickers and axis drawing live with tensor views, with runtime scale,
 styling and fonts injected. CUDA contexts and compilation caches now have core owners; feature CUDA
-presentation and demos have separate homes. The text-editor refactor remains explicitly deferred.
+presentation and demos have separate homes. The text-editor refactor remains explicitly deferred;
+its replacement is being built beside it (2026-11-11: [Native editor](NATIVE_EDITOR.md), with
+[its own debts](#native-editor-and-source-debts-from-the-port)).
 
 ## What the migrations have established
 
@@ -212,6 +214,46 @@ Core is now grouped into responsibility folders, with input and event handling
 together in `core/input/`. The obsolete `rendering/`, `views/`, `widgets/` and
 `windows/` namespace shells and the import-alias loader have been removed.
 Folder organization does not resolve the mixed ownership above.
+
+## Native editor and `Source`: debts from the port
+
+Added 2026-11-11. The port itself is described in
+[Native editor](NATIVE_EDITOR.md); these are the couplings it left.
+
+- **Two listeners, one slot.** `model/editor_model.py` and
+  `model/code_dict_model.py` both call
+  `extensions.register('definition_hotswapped', ...)`, and the registry keeps
+  one callback per name: whichever module is imported last silences the other.
+  With both loaded, either `CodeDict` readers or `Analysis` stop following
+  hotswaps. The fix is an event with several subscribers, not a second name.
+- **The pure helpers still live in `editor/text_editor.py`.** Indentation,
+  comment toggling, word rules, ranking and snippets are called through
+  `syntax.tools()`, which imports the whole legacy module (and libcst with it).
+  It loads on a thread and the editor paints plain text until it has. `suggest`
+  hands those helpers a stand-in object (`Bag`) for the caches they keep on
+  their caller. Move the pure helpers out before `text_editor.py` can go.
+- **`Analysis` reaches into `code_checks` privates** (`_module_for`,
+  `_object_spec`, `_suggest_import_for_path`, `_Collector`,
+  `_parse_for_analysis`).
+- **Two rules for the same thing.** `glfw_utils.park()` and
+  `code/libcst_conversion._park_while_frame` (reached through `sys.modules` by
+  `text_index.py` and imported by `symbol_roster.py`) are the same
+  worker-gives-way rule. Keep `park`.
+- **Two classes named `Rows`**: the editor's (Rust, through `editor/rows.py`)
+  and `model/layout_model.Rows`.
+- **`window_api.poke`** asks the backend with `hasattr`; the GLFW path is a
+  branch in the function, the native Wayland one a method. Give every backend
+  the method.
+- **The roster's thread wakes through Python**; the `Source` thread through the
+  C handle. iOS has neither.
+- **Hosts and `Source` coexist.** `draw_text`, `CodeDict` and the code editor
+  still read code hosts; the native editor reads `Source`. A file open in both
+  has two models of its text until the legacy editor is retired.
+- **Release flow.** `hatch_build.py` makes the wheel per platform;
+  `tools/release.py` and CI still assume a pure Python wheel. The wheel holds
+  the `Source` extension but not the `@gui` host (`_gui_native`: its own build
+  script, one interpreter version, not named by the hook), so `draw_editor`
+  cannot run from an installed wheel.
 
 ## Order and evidence for the next contributions
 

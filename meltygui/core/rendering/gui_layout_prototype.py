@@ -218,8 +218,10 @@ class GuiGeometry:
             graph.replace_cells(serial,[(near,far,float(lo),float(hi))])
         if node not in self.windows:
             graph=self.axes[1]
-            top=graph.edge(serial,'title',graph.position(pairs[1][0])-28)
-            graph.replace_cells(serial+10**9,[(top,pairs[1][0],28.,28.)])
+            # The title strip is the window's content offset (0 for a popover).
+            title=float(self.cache.title_height(node))
+            top=graph.edge(serial,'title',graph.position(pairs[1][0])-title)
+            graph.replace_cells(serial+10**9,[(top,pairs[1][0],title,title)])
             self.windows[node]=(pairs[0],(top,pairs[1][1]))
         if self.native is not None:self.native.connect(node)
         return self.windows[node]
