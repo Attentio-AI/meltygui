@@ -114,6 +114,8 @@ class RetainedGui:
         self.cursors = {}
         # Views a worker thread asked to run again (`wake`), drained by flush().
         self.woken = deque()
+        # Views that asked, while running, to run on the next frame (`wake_next`); process_host_input hands them to `woken`.
+        self.later = []
         # For threads without the interpreter (`waker`): what hands out their handles, and what
         # turns the tokens they queued into `wake` calls. None until a view asks for a waker.
         self.wakers = self.drain = None
@@ -212,6 +214,16 @@ class RetainedGui:
         """Thread safe: run `node` again on the next frame, for a view whose
         background result arrived. The only cache method a worker may call."""
         self.woken.append(node)
+        if self.request_frame:
+            self.request_frame()
+
+    def wake_next(self, node):
+        """Run `node` again on the next host frame: for a view that animates
+        itself. Render thread only. Unlike `wake`, a call made while the view
+        runs is not served by this frame's later flush: it joins the next
+        frame's input pass, so the view runs once a frame (a second run in
+        one frame appends to its child windows)."""
+        self.later.append(node)
         if self.request_frame:
             self.request_frame()
 
@@ -1007,6 +1019,10 @@ class RetainedGui:
         """
         import meltygui_imgui as imgui
         self._frame_started = time.monotonic()
+        if self.later:
+            # With this frame's input, so a view that input also runs still runs once.
+            self.woken.extend(self.later)
+            self.later.clear()
         self.imgui_input.process(imgui.get_io())
         # Resolve actual widget ownership before allowing background gestures.
         self.flush()
