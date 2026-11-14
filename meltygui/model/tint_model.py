@@ -141,7 +141,8 @@ def _save():
             _loaded.pop(os.path.dirname(path), None)
             if _pending.get(key) is value:
                 del _pending[key]
-                _tints.pop(key, None)       # the next read takes what disk holds        if error is not None:
+                _tints.pop(key, None)       # the next read takes what disk holds
+        if error is not None:
             _failed(key, error)
 
 

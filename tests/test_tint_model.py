@@ -94,6 +94,18 @@ def test_write_shows_at_once_and_a_drag_saves_once(tints, folder, repaints, monk
     assert len(saved) == 1
 
 
+def test_a_save_that_worked_reports_nothing(tints, folder, monkeypatch):
+    import meltygui.core.diagnostics.notifications as notifications
+    shown = []
+    monkeypatch.setattr(notifications, 'notify', lambda text, **kwargs: shown.append(text))
+    tints.set_tint(folder / 'main.py', (0.9, 0.1, 0.1))
+    tints.set_tint('sftp://host/project/main.py', (0.1, 0.2, 0.3))      # a remote path: kept in the global store
+    tints.flush()
+    assert shown == []
+    assert melty_meta.tint(folder / 'main.py') == (0.9, 0.1, 0.1)
+    assert melty_meta.tint('sftp://host/project/main.py') == (0.1, 0.2, 0.3)
+
+
 def test_unpaint_removes_the_file(tints, folder):
     tints.set_tint(folder, (0.2, 0.5, 0.3))
     tints.flush()
