@@ -29,6 +29,13 @@ probe that finds the right list out of step with the left one (a hyprbars
 button or the Settings app edited only the left) runs `--gestures --sync`
 once to align it (`resize_synced`).
 
+On first use of an app class, initialize both gestures OFF through that
+same helper. A per-user, per-class marker remembers initialization across
+processes and installs, so subsequent choices in hyprbars remain authoritative.
+This applies to arbitrary app IDs, including scripts and pip-installed apps.
+Previously enabled classes have no explicit-choice record; they initialize
+off once too. No compositor state changes outside patched Hyprland.
+
 Both reads are `getoption` requests on Hyprland's socket
 (geometry_feed.hypr_request, ~0.05 ms) made on a daemon thread, the same
 shape as titlebar_buttons: `state()` answers "unknown" until the first
@@ -40,6 +47,7 @@ the studio never forks, CLAUDE.md) and a re-probe follows it.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -195,9 +203,60 @@ def detect_gestures(request=None):
 # Probe thread
 # ---------------------------------------------------------------------------
 
+def _initialize_default(wm_class, run=None):
+    """Initialize a confirmed Melty app once; never reapply over later choices.
+
+    Serialize launches of the same app across processes. Only mark success
+    after rereading both compositor lists; failed helpers can retry later.
+    The marker is user state, independent of the package installation path.
+    """
+    import fcntl
+    from pathlib import Path
+
+    if not wm_class or not os.path.isfile(TOGGLE_SCRIPT):
+        return
+    state_home = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    directory = Path(state_home) / "meltygui" / "window-gesture-defaults"
+    directory.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha256(wm_class.encode("utf-8")).hexdigest()
+    marker = directory / (key + ".json")
+    with (directory / (key + ".lock")).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if marker.exists():
+            return
+        available, enabled, current_class, synced = detect_gestures()
+        if not available or current_class != wm_class:
+            return
+        # Global disable is not a per-app exclusion: wait until the feature
+        # is enabled so a future global enable cannot undo this default.
+        kind, global_enabled = _getoption(OPTION)
+        if kind is None or not global_enabled:
+            return
+        # Sync even when resize is globally disabled: its per-app list
+        # must still be ready if the global setting is enabled later.
+        command = [TOGGLE_SCRIPT, "--gestures"]
+        if not enabled:
+            command.append("--sync")
+        result = (run or subprocess.run)(command + [wm_class], close_fds=False,
+                                        capture_output=True, timeout=10.0)
+        if result.returncode:
+            return
+        available, enabled, current_class, synced = detect_gestures()
+        if available and not enabled and synced and current_class == wm_class:
+            temporary = marker.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"class": wm_class}) + "\n")
+            temporary.replace(marker)
+
+
 def _probe(run=None):
     try:
         available, enabled, wm_class, resize_synced = detect_gestures()
+        if available and class_is_certain():
+            try:
+                _initialize_default(wm_class, run)
+            except Exception as ex:
+                print(f"[hypr_left_drag] initialize {wm_class!r}: {ex}", flush=True)
+            available, enabled, wm_class, resize_synced = detect_gestures()
     except Exception:
         available, enabled, wm_class, resize_synced = False, False, "", True
     changed = (available, enabled) != (_state["available"], _state["enabled"])
