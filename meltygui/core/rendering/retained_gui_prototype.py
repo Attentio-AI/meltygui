@@ -17,6 +17,7 @@ import time
 
 from meltygui.core.rendering.gui_prototype import _bind_native, _new_native, _renderer_name, _check_position_arguments
 from meltygui.core.rendering.gui_imgui_input import ImGuiInput
+from meltygui.core.input.event import Event, QUIET
 
 
 def _same(a, b):
@@ -106,10 +107,14 @@ class RetainedGui:
         self.shared_natives = []
         self.regions = {}
         self.staged_regions = {}
+        # Node to what `send` and the hit regions left for its next run: its `view_events`.
         self.events = {}
-        # Views declared with `listen=`: node to the event names it takes
-        # (gui_imgui_input.py). Empty until an app declares one.
-        self.listeners = {}
+        # Node to its Event (core/input/event.py): the views whose body takes `event`, made as each
+        # first runs (`_input`), and the ones declared `listen=()`, which share QUIET. A view in here
+        # runs for what its Event was told, never for raw samples. Empty until an app has one.
+        self.inputs = {}
+        # The views whose Event was told something they have not run for yet (`ImGuiInput.wake`).
+        self.fresh = set()
         # Views declared with `cursor=`: node to the pointer shape over it.
         self.cursors = {}
         # Views a worker thread asked to run again (`wake`), drained by flush().
@@ -161,6 +166,7 @@ class RetainedGui:
         from meltygui.core.rendering._gui_native import Executor
         from meltygui.core.rendering.gui_imgui_input import _NO_CLAIM
         self.executor = Executor(self, self.graph, graphics, self.imgui_input, self.stack, self.events,
+                                 self.inputs, self.fresh,
                                  self.backgrounds, self.texture_refs, self.staged_regions, self.regions,
                                  self.capture_info, self.geometry.changes, self.imgui_input.right_active,
                                  self.imgui_input.pointer_claims, self.imgui_input.active, _NO_CLAIM, _CLEAR)
@@ -287,6 +293,10 @@ class RetainedGui:
             inject=None, events=(), state_id=None, no_save=(), scroll=False, place=None, listen=None,
             cursor=None, **decoration):
         _check_position_arguments(decoration, no_save)
+        if listen is not None and tuple(listen):
+            raise TypeError(f'@gui(listen={listen!r}): events are no longer listed. Give the view an `event` parameter '
+                            'and ask it (event.left_mouse_down(), event.is_hovered(): core/input/event.py); '
+                            '`listen=()` remains, for a view that only paints.')
         if func is None:
             return lambda fn: self.gui(fn, left=left, top=top, width=width, height=height, min_height=min_height,
                                        max_height=max_height, inject=inject, events=events,
@@ -426,6 +436,9 @@ class RetainedGui:
                 else:
                     x, y = (0, 0)
                 flow_x, flow_y = x, y
+                if reads_cursor and not parent:
+                    # The host's cursor is in surface coordinates, a root level view's in the root's space.
+                    x, y = x - self.origin[0], y - self.origin[1]
                 if allocation is not None:
                     ax, ay, w, h = allocation
                     px, py = self._position(parent)
@@ -514,8 +527,9 @@ class RetainedGui:
                 self.records[node] = binding.native, binding.renderer, func
                 self.states[node] = state
                 self.executor.attach(node, binding.call, func, binding.unique, state, caller_keys)
-                if listen is not None:
-                    self.listeners[node] = frozenset(listen)
+                if listen is not None and 'event' not in parameters:
+                    # It only paints: nothing but its arguments runs it.
+                    self.inputs[node] = QUIET
                 if cursor is not None:
                     self.cursors[node] = cursor
                 self.associate(func, node)
@@ -551,6 +565,8 @@ class RetainedGui:
             if not parent:
                 self.flush()
             changed, value, w, h = graph.conclude(node)
+            if popup:
+                self.focus.ran(identity_handle)
             if self.on_declare is not None:
                 self.on_declare(node, parent)
             if place is not None:
@@ -561,6 +577,8 @@ class RetainedGui:
                     return changed, value, self.states[node]
                 return changed, value
             if graphics:
+                if not parent:
+                    x, y = x + self.origin[0], y + self.origin[1]     # back to the host's cursor space
                 if (parent or self.inline_roots) and not portal:
                     imgui.set_cursor_screen_pos((x, y))
                     if not flags & 4:
@@ -636,6 +654,19 @@ class RetainedGui:
     def _refresh(self, node):
         # A source edit: recompile the parameter plan before the body runs.
         self.declarations[node].renderer.__gui_refresh__()
+        # What the old body asked its Event about is forgotten: the new one asks again as it runs.
+        event = self.inputs.get(node)
+        if event is QUIET:
+            if 'event' in inspect.signature(self.declarations[node].func).parameters:
+                del self.inputs[node]
+        elif event is not None:
+            event.asked = 0
+
+    def _input(self, node):
+        """The Event of a view whose body takes `event`, made on its first run (lib.rs asks for it)."""
+        event = self.inputs[node] = Event()
+        event.keyboard = self.focus.keyboard == node
+        return event
 
     def _layout_begin(self, node):
         return self.geometry.begin(node)
@@ -931,8 +962,9 @@ class RetainedGui:
             if leave is not None:
                 leave()
             for mapping in (self.invocations, self.events, self.regions, self.states, self.uniques, self.caller_keys,
-                            self.backgrounds, self.texture_refs, self.listeners, self.cursors):
+                            self.backgrounds, self.texture_refs, self.inputs, self.cursors):
                 mapping.pop(node, None)
+            self.fresh.discard(node)
             self.root_ids.discard(node)
 
     def region(self, key, rect):
@@ -1058,7 +1090,7 @@ class RetainedGui:
     def register_host_pointer(self, handler, position):
         """Keep from the host's OS window gestures what is not theirs here. Over a Melty window
         both buttons are the layout's (it moves and resizes that window). Elsewhere a left drag
-        is kept when a view takes it (a hit region, a view listening for the pointer, an ImGui
+        is kept when a view takes it (a hit region, a view that asked about the left button, an ImGui
         item) and a right drag only when an ImGui item was activated by it: over everything
         else the right drag resizes the OS window."""
         x, y = position[0] - self.origin[0], position[1] - self.origin[1]

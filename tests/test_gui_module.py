@@ -471,3 +471,26 @@ while True:
                    ('tip', 'tip', (65., 107.))]
     assert io.mouse_pos == (5., 7.) and not app.outside
     window.close()
+
+
+def test_a_release_that_ended_a_host_drag_opens_no_context_menu(monkeypatch):
+    """A Melty window resizes on a right drag: the release that ends it is not the app's right click."""
+    import meltygui_imgui as imgui
+    from meltygui.core.melty import Melty
+    from meltygui.core.rendering.gui_module import Imgui
+    opened = []
+    monkeypatch.setattr(imgui, 'is_mouse_released', lambda button: True)
+    monkeypatch.setattr(imgui, 'is_item_hovered', lambda flags=0: True)
+    monkeypatch.setitem(Melty.event_handler._drag_ended, 'right_mouse', True)     # as its release path records
+    shim = Imgui(App(split('import glfw\nglfw.poll_events()\n')))
+    monkeypatch.setattr(shim, 'open_popup', opened.append, raising=False)
+    monkeypatch.setattr(shim, 'begin_popup', lambda label: False, raising=False)
+    app = shim._app
+    shim.begin_popup_context_item('menu')
+    assert not opened and not app.released
+    Melty.event_handler._drag_ended['right_mouse'] = False
+    shim.begin_popup_context_item('menu')
+    assert not opened and app.released == 2     # a click: asked about in the next run, when hover is known
+    app.clicks, app.released = app.released, 0  # as App.draw hands it on
+    shim.begin_popup_context_item('menu')
+    assert opened == ['menu']

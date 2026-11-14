@@ -54,14 +54,13 @@ def size(lh):
     return COLUMNS * CELL + 2 * PAD, lh + 6 + ROWS * CELL + 2 * PAD
 
 
-@gui(listen=('keys', 'text', 'pointer', 'hover', 'wheel'), no_save=('query', 'index', 'first'))
-def icons(input_value: str = '', query='', index=None, first=0, width=0., height=0.,
-          draw_state=None, cache=None, view_events=None):
+@gui(no_save=('query', 'index', 'first'))
+def icons(input_value: str = '', query='', index=None, first=0, width=0.0, height=0.0,
+          draw_state=None, cache=None, event=None):
     """The picker popup for the glyph `input_value`. Returns `(True, glyph)`
     when one was picked. `query` is what was typed, `index` the selected
     glyph among the offered ones (None: just opened), `first` the first row
     shown; none is saved, so every opening starts afresh."""
-    events = view_events
     pushed, cw, lh = font()
     head = lh + 6
     found = offered(input_value, query)
@@ -70,8 +69,12 @@ def icons(input_value: str = '', query='', index=None, first=0, width=0., height
         # Just opened: the selection starts on the glyph the text has.
         index = next((at for at, (glyph, _) in enumerate(found) if glyph == input_value), 0)
     picked = False
-    typed, was = ''.join(events.get('text', ())), query
-    for key, mods in events.get('keys', ()):
+    # The keyboard: typing filters, the arrows move the selection, Enter picks. Asking for the
+    # keys is what gives the open picker the keyboard.
+    pressed = event.keys()
+    typed = event.text()
+    was = query
+    for key, mods in pressed:
         if printable(key, mods):
             continue
         step = {glfw.KEY_LEFT: -1, glfw.KEY_RIGHT: 1, glfw.KEY_UP: -COLUMNS, glfw.KEY_DOWN: COLUMNS,
@@ -80,24 +83,28 @@ def icons(input_value: str = '', query='', index=None, first=0, width=0., height
         if step is not None:
             index += step
         elif key == glfw.KEY_BACKSPACE:
-            query, typed = query[:-1], ''
+            query = query[:-1]
+            typed = ''
         elif key in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER):
             picked = True
     query += typed
     if query != was:
-        found, index = offered(input_value, query), 0
-    for across, down in events.get('wheel', ()):
-        first -= int(down)
-    for event in (*events.get('hover', ()), *events.get('pointer', ())):
-        # The pointer over the grid selects; a press picks.
-        column, row = int((event.x - PAD) // CELL), int((event.y - head - PAD) // CELL)
+        found = offered(input_value, query)
+        index = 0
+    first -= int(event.mouse_wheel())
+    # The pointer over the grid selects; a press picks.
+    clicked = event.left_mouse_down()
+    if clicked or event.mouse_moved():
+        column = int((event.x - PAD) // CELL)
+        row = int((event.y - head - PAD) // CELL)
         at = (first + row) * COLUMNS + column
-        if event.kind in ('hover', 'press') and 0 <= column < COLUMNS and 0 <= row < ROWS and at < len(found):
+        if 0 <= column < COLUMNS and 0 <= row < ROWS and at < len(found):
             index = at
-            picked |= event.kind == 'press' and not event.button
+            if clicked:
+                picked = True
     # Keep the selection among the offered glyphs and, when the keyboard moved it, in sight.
     index = min(max(index, 0), max(len(found) - 1, 0))
-    if fresh or 'keys' in events or 'text' in events:
+    if fresh or pressed or typed:
         first = min(max(first, index // COLUMNS - ROWS + 1), index // COLUMNS)
     first = min(max(first, 0), max((len(found) - 1) // COLUMNS - ROWS + 1, 0))
     draw_state.query, draw_state.index, draw_state.first = query, index, first

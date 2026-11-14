@@ -356,7 +356,8 @@ def test_gui_window_host_owns_capture_position_and_cleanup(gl_context, monkeypat
         owner = surface._gui_prototype
         assert backend.gui_character_callback == owner.cache.imgui_input.character
         node = owner.cache.graph.nodes()[0]
-        assert owner.cache.graph.info(node)['rect'] == (45., 70., 30., 30.)
+        # In the root's space, which starts under the 30 px title bar: the cursor was at (45, 70) on the surface.
+        assert owner.cache.graph.info(node)['rect'] == (45., 40., 30., 30.)
         texture = owner.cache.gpu.texture(node)
         assert pixels(texture, 30, 30)[15, 15, 1] > 250
         owner.close()

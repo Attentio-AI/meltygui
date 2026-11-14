@@ -10,61 +10,70 @@ import meltygui.core.windowing.window_constants as glfw
 from editor_host import Host
 from meltygui.core.rendering.gui_prototype import gui
 
-LOG = []            # (view, event name, item) as the views received them
+LOG = []            # (view, name, item) of what each view's event said: keys, text, focus gained / lost, a left press
 RUNS = []           # (view, count, kept) of each popup body run
 FIELD, ANCHOR, POPUP, SUB, OTHER, NOWHERE = (20., 12.), (220., 12.), (230., 50.), (330., 50.), (20., 210.), (500., 400.)
 
 
-def note(view, events, names=('keys', 'text', 'focus')):
-    LOG.extend((view, name, item) for name in names for item in events.get(name, ()))
+def note(view, event, names=('keys', 'text', 'focus')):
+    """Ask `event` about each of `names` and log what it says."""
+    if 'keys' in names:
+        LOG.extend((view, 'keys', item) for item in event.keys())
+    if 'text' in names and event.text():
+        LOG.append((view, 'text', event.text()))
+    if 'focus' in names:
+        if event.focus_gained():
+            LOG.append((view, 'focus', True))
+        if event.focus_lost():
+            LOG.append((view, 'focus', False))
+    if 'pointer' in names and event.left_mouse_down():
+        LOG.append((view, 'pointer', 'press'))
 
 
-def pressed(events):
-    return any(event.kind == 'press' for event in events.get('pointer', ()))
-
-
-@gui(listen=('pointer',), width=80, height=40)
-def sub(input_value, view_events=None):
+@gui(width=80, height=40)
+def sub(input_value, event=None):
+    event.left_mouse_down()         # asked: a press inside is this popup's
     return False, input_value
 
 
-@gui(listen=('keys', 'pointer'), no_save=('count',))
-def menu(input_value, count=0, kept=0, width=0., height=0., draw_state=None, cache=None, view_events=None):
-    """A list that takes the keyboard: Enter picks, a press opens its own popup beside it."""
-    note('menu', view_events)
+@gui(no_save=('count',))
+def menu(input_value, count=0, kept=0, width=0., height=0., draw_state=None, cache=None, event=None):
+    """A list that takes the keyboard (it asks for keys): Enter picks, a press opens its own popup beside it."""
+    note('menu', event)
     draw_state.count, draw_state.kept = count + 1, kept + 1
     RUNS.append(('menu', count, kept))
-    sub(None, name='sub', popup=pressed(view_events), left=width, top=0.)
-    if any(key == glfw.KEY_ENTER for key, _ in view_events.get('keys', ())):
+    sub(None, name='sub', popup=event.left_mouse_down(), left=width, top=0.)
+    if event.key_down(glfw.KEY_ENTER):
         cache.focus.close()
         return True, 'picked'
     return False, input_value
 
 
-@gui(listen=('pointer',))
-def panel(input_value, width=0., height=0., view_events=None):
-    """A popup that leaves the keyboard where it is."""
+@gui()
+def panel(input_value, width=0., height=0., event=None):
+    """A popup that leaves the keyboard where it is: it asks for no keys."""
+    event.left_mouse_down()         # asked: a press inside is this popup's
     return False, input_value
 
 
-@gui(listen=('pointer',), width=80, height=24)
-def anchor(input_value, kind='menu', view_events=None):
+@gui(width=80, height=24)
+def anchor(input_value, kind='menu', event=None):
     shown = menu if kind == 'menu' else panel
-    changed, value, state = shown(input_value, name='popup', popup=pressed(view_events), return_extras=True,
+    changed, value, state = shown(input_value, name='popup', popup=event.left_mouse_down(), return_extras=True,
                                   left=0., top=26., width=100., height=60.)
     LOG.append(('anchor', 'open', state is not None))
     return changed, value
 
 
-@gui(listen=('keys', 'text', 'focus', 'pointer'), width=320, height=24)
-def field(input_value, kind='menu', view_events=None):
-    note('field', view_events)
+@gui(width=320, height=24)
+def field(input_value, kind='menu', event=None):
+    note('field', event, ('keys', 'text', 'focus', 'pointer'))
     return anchor(input_value, name='anchor', kind=kind, left=200., top=0.)
 
 
-@gui(listen=('keys', 'focus', 'pointer'), width=120, height=24)
-def other(input_value, view_events=None):
-    note('other', view_events, ('keys', 'focus', 'pointer'))
+@gui(width=120, height=24)
+def other(input_value, event=None):
+    note('other', event, ('keys', 'focus', 'pointer'))
     return False, input_value
 
 
@@ -129,7 +138,7 @@ def test_a_press_outside_closes_it_and_still_reaches_what_is_under_it(host):
     host.frame()
     assert not declared(host, 'menu') and not host.cache.focus.stack
     assert host.cache.focus.keyboard == node(host, 'other') and got('other', 'focus') == [True], 'the press was the other view\'s too'
-    assert any(event.kind == 'press' for event in got('other', 'pointer'))
+    assert got('other', 'pointer') == ['press']
 
 
 def test_a_press_on_the_anchor_toggles(host):
@@ -139,7 +148,7 @@ def test_a_press_on_the_anchor_toggles(host):
         assert bool(declared(host, 'menu')) is expected
 
 
-def test_a_popup_that_listens_for_keys_takes_the_keyboard_and_gives_it_back(host):
+def test_a_popup_that_asks_for_keys_takes_the_keyboard_and_gives_it_back(host):
     focus = host.cache.focus
     open_from_field(host)
     assert focus.keyboard == node(host, 'menu') and got('field', 'focus') == [True, False]
@@ -162,7 +171,7 @@ def test_what_a_popup_returns_as_it_closes_reaches_its_caller(host):
     assert results[-1] == (False, 'value'), 'once'
 
 
-def test_a_popup_that_does_not_listen_for_keys_leaves_the_keyboard(host):
+def test_a_popup_that_does_not_ask_for_keys_leaves_the_keyboard(host):
     focus = host.cache.focus
     host.frame(kind='panel')
     open_from_field(host)

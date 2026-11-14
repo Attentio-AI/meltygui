@@ -81,7 +81,6 @@ class Model:
 
 
 model = Model()
-BAR = 34
 
 
 @inline(bool)
@@ -95,8 +94,8 @@ def lamp(input_value, width=0., height=0.):
 
 @os_window(name='Native code editor', app_id='meltygui-gui-editor', width=1100, height=820, use_cache=False)
 def app(width=None, height=None):
-    # Lever: the window's title strip covers the first rows of the content.
-    imgui.set_cursor_pos((8, BAR + 6))
+    # The toolbar is ImGui's own flow, which starts under the title bar. Lever: its inset.
+    imgui.set_cursor_pos((8., imgui.get_cursor_pos_y() + 10.))
     if imgui.button('Run demo()'):
         model.run()
     imgui.same_line()
@@ -128,13 +127,13 @@ def app(width=None, height=None):
     # Lever: the first pane's share of the width when split.
     first = width * .5 if model.split else width
     draw_editor(
-        model.source, name='source', state=model.state, left=0., top=BAR + 36., width=first, height=height - BAR - 40, path=str(PATH),
+        model.source, name='source', state=model.state, left=0., top=40., width=first, height=height - 40., path=str(PATH),
         editable=not model.read_only, search=model.search, errors=analysis.errors, imports=analysis.imports,
         tints=analysis.tints, live=model.live, breakpoints=model.breakpoints,
         paused=model.paused, ghost='  # Tab accepts this ghost text' if model.ghost else '')
     if model.split:
         # The same source in another session: nothing is copied, each edit reaches both.
         draw_editor(
-            model.source, name='second', state=model.second, left=first + 4., top=BAR + 36., width=width - first - 4.,
-            height=height - BAR - 40, path=str(PATH), editable=not model.read_only, errors=analysis.errors,
+            model.source, name='second', state=model.second, left=first + 4., top=40., width=width - first - 4.,
+            height=height - 40., path=str(PATH), editable=not model.read_only, errors=analysis.errors,
             imports=analysis.imports, tints=analysis.tints, breakpoints=model.breakpoints)

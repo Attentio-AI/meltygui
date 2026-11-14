@@ -118,6 +118,8 @@ SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda,
           ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 # What a shimmed event wait returns: the rewritten call site suspends on it.
 WAITING = object()
+# ImGui's mouse buttons, as the host's input handler names them (Imgui.clicked).
+BUTTONS = ('left_mouse', 'right_mouse', 'middle_mouse', 'mouse_4')
 # What a frame loop suspends with where it begins a frame: `App.probe` stops there, a view run goes on.
 BEGINS = object()
 UNSET = object()
@@ -739,6 +741,22 @@ class Imgui(Shared):
         self._real.end_popup()
         self.inside()
 
+    def clicked(self, button):
+        """The button was released in the view's previous run, and not at the end of a drag the host
+        took for itself (a Melty window resizes on a right drag, which a standalone app's compositor
+        never shows it). A run late, because what the pointer is over is only known then: ImGui
+        hovers the items of a child window that was submitted in the frame before, and the release
+        may be this view's first run in a while (the button was held still)."""
+        app = self._app
+        if app.clicks >> button & 1:
+            return True
+        if self._real.is_mouse_released(button):
+            from meltygui.core.melty import Melty
+            handler = Melty.event_handler
+            if handler is None or not handler.drag_ended(BUTTONS[button]):
+                app.released |= 1 << button     # `App.draw` runs the view in the next frame, with this in `clicks`
+        return False
+
     def begin_popup_context_item(self, label=None, mouse_button=1):
         real = self._real
         if label is None:
@@ -748,14 +766,14 @@ class Imgui(Shared):
             self._app.shows |= shown
             return shown
         # The item is the view's: asked where the pointer is the view's, opened where it is the host's.
-        if real.is_mouse_released(mouse_button & 3) and real.is_item_hovered(real.HOVERED_ALLOW_WHEN_BLOCKED_BY_POPUP):
+        if self.clicked(mouse_button & 3) and real.is_item_hovered(real.HOVERED_ALLOW_WHEN_BLOCKED_BY_POPUP):
             self.open_popup(label)
         return self.begin_popup(label)
 
     def begin_popup_context_window(self, label=None, popup_flags=1, also_over_items=True):
         real = self._real
         label = 'window_context' if label is None else label
-        if real.is_mouse_released(popup_flags & 3) and (also_over_items or not real.is_any_item_hovered()):
+        if self.clicked(popup_flags & 3) and (also_over_items or not real.is_any_item_hovered()):
             (x, y), (width, height) = real.get_mouse_pos(), self._app.extent()
             if 0 <= x < width and 0 <= y < height:      # the app's window is its view
                 self.open_popup(label)
@@ -1101,6 +1119,8 @@ class App:
         # Popups and tooltips (Imgui.outside). origin: the view's corner in the host window; outside: how
         # many the app is inside of; pointer: the view's own, kept meanwhile; shows: one showed in this run.
         self.origin, self.outside, self.pointer, self.shows = nowhere, 0, None, False
+        # Mouse buttons, a bit each (Imgui.clicked): released in this run, and in the one before.
+        self.released = self.clicks = 0
 
     def extent(self):
         """The view's size, as the app's window size."""
@@ -1231,9 +1251,11 @@ class App:
                 if pushed:
                     imgui.pop_style_color(pushed)
                 self.outside = 0        # an app that raised inside a popup: the capture puts the pointer back
-            if self.shows:
-                # A popup or tooltip is shown for the frames it is submitted in: the view runs in the next one.
-                self.shows = False
+            clicks = self.clicks = self.released
+            if self.shows or clicks:
+                # A popup or tooltip is shown for the frames it is submitted in, and a click is asked
+                # about a frame after its release: the view runs in the next one.
+                self.shows, self.released = False, 0
                 if self.again is not None:
                     self.again()
             if wait is not None and (wait > 0 or self.follow) or self.timer is not None:

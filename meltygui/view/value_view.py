@@ -8,12 +8,14 @@
 - `draw_str`: click to type; every keystroke is returned, Escape brings back the text it started with.
 - `draw_none` and `draw_value` (whatever has no view of its own): read only.
 
-Each view fills the box it is given (`width`, `height`) and listens for its own events, so a value
-nobody touches is drawn once and never runs again. An edit returns a value of the input's own type.
+Each view fills the box it is given (`width`, `height`) and asks its `event` for its own input
+(core/input/event.py), so a value nobody touches is drawn once and never runs again. An edit
+returns a value of the input's own type.
 
-The pointer is a view's only where it has a gesture of its own (`claim`): the chip of a boolean,
-the field of a number or a text that can be edited. Everywhere else, and over every value that is
-read only, a left drag moves the window the value is in (docs/WINDOW_COLLISION_COLUMNS.md, "Gestures").
+The pointer is a view's only where it has a gesture of its own (`event.reach`): the chip of a
+boolean, the field of a number or a text that can be edited. Everywhere else, and over every value
+that is read only, a left drag moves the window the value is in (docs/WINDOW_COLLISION_COLUMNS.md,
+"Gestures").
 
 To add a view for another type, write it and put `@is_default_for(type)` above `@gui`. A view's
 colours are `look(tint)`: the `Tint` palette of the legacy value views, made from the view's own
@@ -38,7 +40,6 @@ ROW = 22.                        # height of a value view, unless its caller giv
 PAD = 6.                         # space left and right of the text in a field
 ROUND = 4.                       # corner radius of a field
 RING = 1.5                       # width of a field's outline
-SLOP = 3.                        # pixels the pointer may travel in a click
 NOTCH = 4.                       # pixels of a sideways drag per step of a number
 FINE = .01                       # a float's step, as a share of the value the drag started at (at least of 1)
 DIGITS = '.6g'                   # how a float is shown while it is not being typed
@@ -86,12 +87,6 @@ def box(draw_list, table, width, height, fill=None):
     draw_list.add_rect_filled(0., 0., width, height, fill or table.field, ROUND)
     draw_list.add_rect(.5, .5, width - .5, height - .5, table.outline, ROUND, 0, RING)
     return (height - imgui.get_text_line_height()) * .5
-
-
-def claim(cache, width, height):
-    """The running view takes the pointer over its first `width` by `height` pixels, and nowhere when
-    `width` is 0: the rest of its box stays the window's, which a left drag there moves."""
-    cache.imgui_input.reach(cache.current, (0., 0., width, height))
 
 
 # --- typing ------------------------------------------------------------------
@@ -151,21 +146,25 @@ class Field:
         word, three everything), a drag selects."""
         from meltygui.editor import edit
         doc = self.session.doc
-        index = self.index(event.x - PAD + self.shift)
-        if event.kind == 'drag':
+        if event.left_mouse_down():
+            index = self.index(event.x - PAD + self.shift)
+            if event.clicks == 2:
+                edit.select_word(doc, index)
+            elif event.clicks == 3:
+                edit.select_all(doc)
+            else:
+                edit.move(doc, index, select=event.shift)
+        if event.left_mouse_drag():
+            index = self.index(event.x - PAD + self.shift)
             doc.select(index, doc.anchor)
-        elif event.kind == 'press' and event.clicks == 2:
-            edit.select_word(doc, index)
-        elif event.kind == 'press' and event.clicks == 3:
-            edit.select_all(doc)
-        elif event.kind == 'press':
-            edit.move(doc, index, select=event.shift)
 
-    def typed(self, events):
-        """Run the frame's key presses and typed text. Returns 'take' for Enter, 'drop' for Escape, else None."""
+    def typed(self, pressed, text):
+        """Run the key presses (`event.keys()`) and the typed text (`event.text()`) of one run.
+        Returns 'take' for Enter, 'drop' for Escape, else None."""
         from meltygui.editor import keys
-        doc, pending = self.session.doc, ''.join(events.get('text', ()))
-        for key, mods in events.get('keys', ()):
+        doc = self.session.doc
+        pending = text
+        for key, mods in pressed:
             if keys.printable(key, mods):
                 # The character itself arrives as text; keep both in press order.
                 if pending:
@@ -215,28 +214,34 @@ def draw_value(input_value: object = None, width=0., height=0.):
 
 
 @is_default_for(bool)
-@gui(listen=('pointer',), cursor=mouse_cursor.HAND, height=ROW)
-def draw_bool(input_value: bool, editable=True, width=0., height=0., cache=None, view_events=None):
+@gui(cursor=mouse_cursor.HAND, height=ROW)
+def draw_bool(input_value: bool, editable=True, width=0.0, height=0.0, event=None):
     """A chip as wide as its label; a press on it flips the value."""
-    table, draw_list = look(BOOL), imgui.get_window_draw_list()
-    on, off = f" True", f" False"
+    table = look(BOOL)
+    draw_list = imgui.get_window_draw_list()
+    on = f" True"
+    off = f" False"
     # Lever: the chip's width. Both labels are measured so that a flip does not move its edge.
-    wide = min(max(imgui.calc_text_size(on).x, imgui.calc_text_size(off).x) + 2 * PAD, width)
-    claim(cache, wide * editable, height)
-    flipped = editable and any(event.kind == 'press' and not event.button for event in view_events.get('pointer', ()))
-    value = input_value != flipped
+    wide = min(max(imgui.calc_text_size(on).x, imgui.calc_text_size(off).x) + 2.0 * PAD, width)
+    # The chip is the view's, the rest of the box the window's; a chip that cannot be edited takes nothing.
+    event.reach(0.0, 0.0, wide if editable else 0.0, height)
+    flipped = editable and event.left_mouse_down()
+    value = input_value
+    if flipped:
+        value = not value
     y = box(draw_list, table, wide, height, table.on if value else table.field)
     draw_list.add_text(PAD, y, table.text if value else table.dim, on if value else off)
     return flipped, value
 
 
-def number(value, tint, shown, step, editable, width, height, cache, draw_state, field, grab, events):
-    """The body `draw_int` and `draw_float` share: returns the value after this frame's input, of the
+def number(value, tint, shown, step, editable, width, height, cache, draw_state, field, start, event):
+    """The body `draw_int` and `draw_float` share: returns the value after this run's input, of the
     type it came in. `shown(value)` is its text, `step(start)` what one notch of a drag adds to a
-    value that started at `start`. `field` is the typing session, `grab` the press that may become a
-    drag: (x, the value there, dragged)."""
-    kind, was, held = type(value), field, grab
-    claim(cache, width * editable, height)
+    value that started at `start`. `field` is the typing session, `start` the value a held press
+    began at."""
+    kind = type(value)
+    was = field
+    began = start
     node = cache.current
     if field is not None and field.node != node:
         field = None
@@ -248,89 +253,97 @@ def number(value, tint, shown, step, editable, width, height, cache, draw_state,
         except ValueError:
             return value
 
-    for gained in events.get('focus', ()):
-        if not gained and field is not None:
-            value, field = take(), None
-    for event in events.get('pointer', ()) if editable else ():
-        if event.button:
-            continue
-        if field is not None:
-            field.pointer(event)
-        elif event.kind == 'press':
-            grab = (event.x, value, False)
-        elif event.kind == 'drag' and grab is not None and (grab[2] or abs(event.x - grab[0]) >= SLOP):
-            grab = (grab[0], grab[1], True)
-            value = kind(grab[1] + int((event.x - grab[0]) / NOTCH) * step(grab[1]))
-        elif event.kind == 'release' and grab is not None:
-            if not grab[2]:
-                field = Field(repr(value), node)    # a click: type the number
-            grab = None
-    if field is not None and ('keys' in events or 'text' in events):
-        done = field.typed(events)
+    # Input. The keys are asked for on every run: the press that opens the field gives this view
+    # the keyboard only if it had asked before.
+    pressed = event.keys()
+    text = event.text()
+    event.reach(0.0, 0.0, width if editable else 0.0, height)
+    if event.focus_lost() and field is not None:
+        value = take()
+        field = None
+    if editable and field is not None:
+        field.pointer(event)
+    elif editable:
+        if event.left_mouse_down():
+            start = value
+        if event.left_mouse_drag() and start is not None:
+            value = kind(start + int(event.total_dx / NOTCH) * step(start))
+        if event.left_mouse_clicked():
+            field = Field(repr(value), node)    # a click: type the number
+        if event.left_mouse_up():
+            start = None
+    if field is not None and (pressed or text):
+        done = field.typed(pressed, text)
+        if done == 'take':
+            value = take()
         if done is not None:
-            value, field = take() if done == 'take' else value, None
+            field = None
     if field is not was:
         draw_state.field = field
-    if grab is not held:
-        draw_state.grab = grab
-    table, draw_list = look(tint), imgui.get_window_draw_list()
+    if start is not began:
+        draw_state.start = start
+    table = look(tint)
+    draw_list = imgui.get_window_draw_list()
     y = box(draw_list, table, width, height)
     if field is not None:
         field.paint(draw_list, table, width, height, y)
     else:
-        draw_list.push_clip_rect(0., 0., width - PAD, height, True)
+        draw_list.push_clip_rect(0.0, 0.0, width - PAD, height, True)
         draw_list.add_text(PAD, y, table.text, shown(value))
         draw_list.pop_clip_rect()
     return value
 
 
 @is_default_for(int)
-@gui(listen=('pointer', 'keys', 'text', 'focus'), cursor=mouse_cursor.RESIZE_EW, no_save=('field', 'grab'), height=ROW)
-def draw_int(input_value: int, editable=True, field=None, grab=None, width=0., height=0., draw_state=None, cache=None,
-             view_events=None):
+@gui(cursor=mouse_cursor.RESIZE_EW, no_save=('field', 'start'), height=ROW)
+def draw_int(input_value: int, editable=True, field=None, start=None, width=0.0, height=0.0, draw_state=None,
+             cache=None, event=None):
     """A whole number: drag sideways to change it, click to type it."""
     warm()
-    value = number(input_value, INT, str, lambda start: 1, editable, width, height, cache, draw_state, field, grab,
-                   view_events)
+    value = number(input_value, INT, str, lambda start: 1, editable, width, height, cache, draw_state, field, start,
+                   event)
     return value != input_value, value
 
 
 @is_default_for(float)
-@gui(listen=('pointer', 'keys', 'text', 'focus'), cursor=mouse_cursor.RESIZE_EW, no_save=('field', 'grab'), height=ROW)
-def draw_float(input_value: float, editable=True, field=None, grab=None, width=0., height=0., draw_state=None, cache=None,
-               view_events=None):
+@gui(cursor=mouse_cursor.RESIZE_EW, no_save=('field', 'start'), height=ROW)
+def draw_float(input_value: float, editable=True, field=None, start=None, width=0.0, height=0.0, draw_state=None,
+               cache=None, event=None):
     """A number: drag sideways to change it by hundredths of what it was, click to type it."""
     warm()
-    value = number(input_value, FLOAT, lambda value: format(value, DIGITS), lambda start: max(abs(start), 1.) * FINE,
-                   editable, width, height, cache, draw_state, field, grab, view_events)
+    value = number(input_value, FLOAT, lambda value: format(value, DIGITS), lambda start: max(abs(start), 1.0) * FINE,
+                   editable, width, height, cache, draw_state, field, start, event)
     return value != input_value, value
 
 
 @is_default_for(str)
-@gui(listen=('pointer', 'keys', 'text', 'focus'), cursor=mouse_cursor.TEXT, no_save=('field',), height=ROW)
-def draw_str(input_value: str, editable=True, field=None, width=0., height=0., draw_state=None, cache=None,
-             view_events=None):
+@gui(cursor=mouse_cursor.TEXT, no_save=('field',), height=ROW)
+def draw_str(input_value: str, editable=True, field=None, width=0.0, height=0.0, draw_state=None, cache=None,
+             event=None):
     """A line of text: click to type. A text of several lines, or a very long one, is shown read only."""
     warm()
-    value, was = input_value, field
+    value = input_value
+    was = field
     lines = value.count('\n') + 1 if len(value) <= LONG else 0
-    claim(cache, width * (editable and lines == 1), height)
+    typing = editable and lines == 1
     if field is not None and field.node != cache.current:
         field = None
     elif field is not None and value != field.gave:
         field.load(value)
-    for gained in view_events.get('focus', ()):
-        if not gained:
-            field = None
-    for event in view_events.get('pointer', ()) if editable and lines == 1 else ():
-        if event.button:
-            continue
-        if field is None and event.kind == 'press':
+    # Input. The keys are asked for on every run: the press that opens the field gives this view
+    # the keyboard only if it had asked before.
+    pressed = event.keys()
+    text = event.text()
+    event.reach(0.0, 0.0, width if typing else 0.0, height)
+    if event.focus_lost():
+        field = None
+    if typing:
+        if field is None and event.left_mouse_down():
             field = Field(value, cache.current, whole=False)
         if field is not None:
             field.pointer(event)
-    if field is not None and ('keys' in view_events or 'text' in view_events):
-        done = field.typed(view_events)
+    if field is not None and (pressed or text):
+        done = field.typed(pressed, text)
         # (Escape brings the text back that the field started with.)
         value = type(input_value)(field.first if done == 'drop' else field.text)
         field.gave = value
@@ -338,14 +351,20 @@ def draw_str(input_value: str, editable=True, field=None, width=0., height=0., d
             field = None
     if field is not was:
         draw_state.field = field
-    table, draw_list = look(SLATE), imgui.get_window_draw_list()
+    table = look(SLATE)
+    draw_list = imgui.get_window_draw_list()
     y = box(draw_list, table, width, height)
     if field is not None:
         field.paint(draw_list, table, width, height, y)
     else:
-        shown = value[:SHOWN] if lines == 1 else f'{value[:SHOWN].split(chr(10))[0]}   ({lines} lines)' if lines \
-            else f'{value[:SHOWN].split(chr(10))[0]}   ({len(value)} characters)'
-        draw_list.push_clip_rect(0., 0., width - PAD, height, True)
+        first = value[:SHOWN].split(chr(10))[0]
+        if lines == 1:
+            shown = value[:SHOWN]
+        elif lines:
+            shown = f'{first}   ({lines} lines)'
+        else:
+            shown = f'{first}   ({len(value)} characters)'
+        draw_list.push_clip_rect(0.0, 0.0, width - PAD, height, True)
         draw_list.add_text(PAD, y, table.text if lines == 1 else table.dim, shown)
         draw_list.pop_clip_rect()
     return value != input_value, value

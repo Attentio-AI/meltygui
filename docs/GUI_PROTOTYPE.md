@@ -142,6 +142,15 @@ Cached bodies draw in their own local coordinate space. The framework places
 their output using `left`/`top`; do not add the placement again to every drawing
 primitive inside the body.
 
+The root's space starts under the window's title bar: `top=0` is the first
+pixel below it and the root's `height` is what is left, so no app adds the
+bar's height (`title_bar` in
+[gui_window_prototype.py](../meltygui/core/rendering/gui_window_prototype.py);
+a Melty window does the same for its own title through `content_offset`).
+ImGui's flow in the root starts there as well; an absolute
+`imgui.set_cursor_pos` in an immediate root, and `left` / `top` on a
+`use_cache=False` view, are still window coordinates.
+
 `window_pos` is no longer a live prototype API. Old saved tuples translate into
 the scalar fields on load. This did not rename the legacy `@render_func` API or
 OS-backend geometry structures.
@@ -200,52 +209,106 @@ owning render thread.
 
 ### Input events and pointer shape
 
-A view that names events with `listen=` is event driven: raw pointer and key
-samples never rerun it, and what it listed arrives as lists in `view_events`.
+A view that takes input has an `event` parameter: one `Event`
+([event.py](../meltygui/core/input/event.py)), the same object on every run,
+which the body asks what happened. Such a view is event driven: raw pointer
+and key samples never rerun it.
 
 ```python
-@gui(listen=('keys', 'text', 'pointer', 'wheel'), cursor=mouse_cursor.TEXT)
-def field(input_value: str, view_events=None):
-    for key, mods in view_events.get('keys', ()):
+@gui(cursor=mouse_cursor.TEXT)
+def field(input_value: str, event=None):
+    for key, mods in event.keys():
         ...
-    for event in view_events.get('pointer', ()):   # Pointer(kind, x, y, clicks, ctrl, shift, alt, button)
+    typed = event.text()
+    if event.left_mouse_down():             # event.x, event.y, event.clicks, event.shift
+        ...
+    if event.left_mouse_drag():             # event.dx, event.dy, event.total_dx, event.total_dy
         ...
 ```
 
-| Name | Arrives as |
+A name that starts with `is_` is a state and holds until it changes. Every
+other method says what happened since the view last ran: true in the run that
+follows, false in the next.
+
+| Ask | It says |
 | --- | --- |
-| `keys` | `(key, mods)` presses and repeats, for the keyboard owner |
-| `text` | typed strings, for the keyboard owner |
-| `focus` | True / False when the view gains / loses the keyboard |
-| `pointer` | `Pointer` press, drag and release of any button (`button`: 0 left, 1 right, 2 middle), in the view's coordinates |
-| `hold` | a `Pointer` of kind `hold` once a frame while a button is held and the pointer rests outside the view: what a drag past an edge needs to keep scrolling |
-| `hover` | a `Pointer` of kind `hover` as the pointer moves over the view with no button held, and one of kind `leave` |
-| `touch` | `Touch(kind, contact, x, y)` contacts, from hosts that report them through `ImGuiInput.touch` |
-| `wheel` | `(horizontal, vertical)` steps no viewport consumed |
-| `scroll` | True after a viewport under the pointer scrolled |
+| `left_mouse_down()`, `left_mouse_up()` | the button went down over the view; it was released, wherever the pointer is by then |
+| `left_mouse_clicked()` | it was released within `CLICK_PIXELS` of its press: a click, told on the release |
+| `left_mouse_double_clicked()` | it went down for the second time within `CLICK_SECONDS` and `CLICK_PIXELS`, told on that press; `clicks` counts 1, 2, 3 |
+| `left_mouse_drag()` | the pointer moved with the button held: `x`, `y` (also outside the view), `dx`, `dy` since the last run, `total_dx`, `total_dy` since the press |
+| `left_mouse_held_outside()` | once a frame while the button is held and the pointer rests outside the view: what a drag past an edge needs to keep scrolling |
+| `is_left_mouse_held()` | the button is down since a press over the view |
+| `right_mouse_...`, `middle_mouse_...` | the same seven for the other buttons |
+| `is_hovered()` | the pointer is over the view; it runs when that begins and ends |
+| `mouse_moved()` | the pointer moved over the view with no button held (`x`, `y`); it runs for every such move |
+| `mouse_wheel()`, `mouse_wheel_horizontal()` | wheel steps no viewport consumed |
+| `scrolled()` | a viewport under the pointer, this view or one inside it, was scrolled by the wheel |
+| `touches()` | `Touch(kind, contact, x, y)` contacts, from hosts that report them through `ImGuiInput.touch` |
+| `keys()`, `key_down(key)` | `(key, mods)` presses and repeats in order, for the keyboard owner; whether one key is among them |
+| `text()` | what was typed, as one string, for the keyboard owner |
+| `is_focused()`, `focus_gained()`, `focus_lost()` | the view has the keyboard; it was given it; it went elsewhere |
+| `x`, `y`, `ctrl`, `shift`, `alt` | the pointer in the view's coordinates and the modifiers, as of the last button, drag or hover the view was told |
+
+**Asking is subscribing.** Each method notes what was asked in
+`Event.asked`, and the router
+([gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py),
+`deliver`) tells a view only what its body has asked about, on any run so
+far; a source edit of the body starts that over. The view runs when it is
+told something and reads it; the executor clears what happened after a run
+that succeeded (`Event.clear`), a failed run keeps it. So a body asks at its
+top, on every run: what is asked only behind a condition is routed only once
+that condition has held. Keys most of all, because the press that should
+bring the keyboard must find the view already asking.
+
+Three kinds of view, by what they pay:
+
+| | Runs for input | A frame costs |
+| --- | --- | --- |
+| A body with `event` | when something it asked about happens | nothing while nothing happens |
+| `@gui(listen=())`: it only paints | never | nothing |
+| Neither: for ImGui widgets | on raw pointer and key samples over it (`process`, `finish`) | a run per sample that concerns it |
+
+With no view of the first two kinds in the app a frame pays one dictionary
+truth test (`cache.inputs`). `listen=` takes nothing but `()`: naming events
+there raises, with the way to write it now.
+
+Who is told:
+
+- **A press** of a button goes to the innermost view around the hit one that
+  asked about that button, inside its own rectangle (a Melty window's title
+  strip is the window's) and inside what it takes of that:
+  `event.reach(left, top, right, bottom)`, in the view's coordinates, said on
+  every run. `draw_editor` takes the pointer over its rows, and the empty
+  space below the last one moves the window. That view holds the pointer
+  until every button is up: drags and releases are its own.
+- **The keyboard** goes, on a left press, to the innermost view around the
+  hit one that asked for keys, so a popover or an inline widget leaves the
+  keyboard with its editor. Who has it is `cache.focus.keyboard`
+  ([focus.py](../meltygui/core/input/focus.py)); `cache.focus.take(node)`
+  moves it.
+- **Hover** goes to the innermost view around the pointer that asked about
+  it. It follows the pointer's moves and a press, and stays where it is while
+  a button is held.
 
 Window gestures are the host's by default over every view: a left drag moves
 the Melty or OS window, a right drag resizes it
-([rules](WINDOW_COLLISION_COLUMNS.md#gestures)). Listening for `pointer` is
-what overrides the left one (`ImGuiInput.left`: text selection, a list's
-rows), inside the view's own rectangle, so a Melty window's title strip still
-moves it. A view that uses only part of its rectangle says so each run with
-`cache.imgui_input.reach(node, (x0, y0, x1, y1))`: `draw_editor` takes the
-pointer over its rows, and the empty space below the last one moves the
-window. Nothing a view listens for overrides the right one; right-button
-`Pointer` events still arrive (a click is the view's to use), the drag also
+([rules](WINDOW_COLLISION_COLUMNS.md#gestures)). Asking about the left button
+is what overrides the left one (`ImGuiInput.left`: text selection, a list's
+rows), where the view takes that button. A view that asks only about the
+right button leaves the left drag to the window. Nothing a view asks
+overrides the right one; the right button's events still arrive (a click is
+the view's to use, `right_mouse_clicked()` on the release), the drag also
 resizes. An ImGui item keeps the button that activated it.
 
-A left press gives the keyboard, any press the pointer, to the innermost
-listening view around the hit one, so a popover or an inline widget leaves the
-keyboard with its editor. Who has the keyboard is `cache.focus.keyboard`
-([focus.py](../meltygui/core/input/focus.py)); `cache.focus.take(node)` moves
-it. A view that lists nothing (`listen=()`) costs one
-dictionary truth test a frame. `cursor=shape` (a `core/input/mouse_cursor.py`
-shape) declares the pointer's shape over the view without running a body: the
-innermost declaring view around the hovered one wins, and the shape a press
-began with is kept until every button is up. The contract is the module text of
-[gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py).
+`cursor=shape` (a `core/input/mouse_cursor.py` shape) declares the pointer's
+shape over the view without running a body: the innermost declaring view
+around the hovered one wins, and the shape a press began with is kept until
+every button is up.
+
+`view_events` is not input any more. It is what `cache.send(node, key,
+value)` and the hit regions of `cache.region` leave for a view's next run:
+the mailbox the first retained prototype had, still used by its tests and by
+`meltygui/examples/retained_gui_demo.py` and `retained_layout_demo.py`.
 
 ### Temporary popups
 
@@ -278,7 +341,7 @@ What the framework does, so that no view has to:
 | Press outside | Closes it, and the press still reaches what is under it (a caret is placed). A press inside keeps it. |
 | Press on the anchor | Toggles: the press that closed a popup cannot open it again. |
 | Escape | Closes the innermost open popup and is not delivered as a key. |
-| Keyboard | A popup that listens for `keys` takes the keyboard when it opens. One that does not (sliders, a list the pointer picks from) leaves it where it is. |
+| Keyboard | A popup whose body asks for keys (`event.keys()`, `event.key_down(...)`) takes the keyboard when it opens: after its first run, which is where it asks. One that does not (sliders, a list the pointer picks from) leaves it where it is. |
 | Close | The keyboard returns to the view that had it at the opening, if it is still inside the popup. The caller runs once more; its call no longer declares the popup. |
 | Nesting | A popup opened from a popup is below it: a press in the child keeps the parent, a press in the parent closes the child, closing the parent closes both. |
 | Each opening | Starts afresh: the popup's `no_save` parameters are their defaults again. Saved parameters persist. |
@@ -288,11 +351,11 @@ A popup closes itself after a pick with `cache.focus.close()`; what it
 returns from that run still reaches its caller:
 
 ```python
-@gui(listen=('keys', 'pointer', 'hover'), no_save=('index',))
-def options(input_value, choices=(), index=None, width=0., height=0., draw_state=None, cache=None, view_events=None):
+@gui(no_save=('index',))
+def options(input_value, choices=(), index=None, width=0.0, height=0.0, draw_state=None, cache=None, event=None):
     if index is None:               # just opened: `index` is not saved
         index = choices.index(input_value) if input_value in choices else 0
-    ...                             # arrows and hover move `index`, Enter or a press sets `picked`
+    ...                             # event.keys() and event.mouse_moved() move `index`, Enter or a press sets `picked`
     if picked:
         cache.focus.close()         # the keyboard returns to whoever had it
         return True, choices[index]
@@ -630,8 +693,8 @@ resolved in full.
   shows in `tests/test_icon_picker.py tests/test_editor_view.py` in up to 7
   of 10 runs depending on the collector's thresholds (`gc.set_threshold`).
 - A popup's anchor that is not inside a text view takes the keyboard from
-  that text view when it is pressed, as any press outside a listening view
-  does; the popup then gives the keyboard back to nobody.
+  that text view when it is pressed, as any press outside a view that asks
+  for keys does; the popup then gives the keyboard back to nobody.
 - Found on 2026-11-11 while testing nested Melty windows, present before and
   after the caller-following change: with an editor (`draw_editor`) in a Melty
   window and another in a Melty window declared inside it, the text of the
@@ -703,6 +766,7 @@ resolved in full.
 | Automatic raster policy and shared replay | [gui_cache_policy.py](../meltygui/core/rendering/gui_cache_policy.py), [shared_replay.rs](../native/gui_prototype/src/shared_replay.rs), [global toggle](../meltygui/core/runtime/toggles.py) |
 | Runtime cost calibration | [gui_calibration.py](../meltygui/core/rendering/gui_calibration.py), [native probes](../native/gui_prototype/src/calibration.rs) |
 | Window/input/layout integration | [gui_window_prototype.py](../meltygui/core/rendering/gui_window_prototype.py), [gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py), [gui_layout_prototype.py](../meltygui/core/rendering/gui_layout_prototype.py) |
+| Input events (`event`) | [event.py](../meltygui/core/input/event.py) (the vocabulary), `deliver` in [gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py) (the routing), `run_node` in [executor.rs](../native/gui_prototype/src/executor.rs) (injection and clearing); [tests](../tests/test_gui_event.py) |
 | Keyboard focus and temporary popups | [focus.py](../meltygui/core/input/focus.py); the `popup` branch and `_fit` in [retained_gui_prototype.py](../meltygui/core/rendering/retained_gui_prototype.py); [example](../examples/gui_popups.py), [tests](../tests/test_gui_focus.py) |
 | Wake from native threads | [wake.rs](../native/gui_prototype/src/wake.rs), `waker` / `drain_wakes` / `close_wakes` / `park` in [glfw_utils.py](../meltygui/core/windowing/glfw_utils.py), `poke` in [window_api.py](../meltygui/core/windowing/window_api.py) |
 | Largest user so far | the [native editor](NATIVE_EDITOR.md): [editor_view.py](../meltygui/view/editor_view.py) |

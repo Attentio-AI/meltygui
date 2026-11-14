@@ -51,28 +51,33 @@ def swatch(input_value, width=0., height=0.):
     return picker(input_value, name='picker', popup=pressed, left=0., top=height + 2)
 
 
-@gui(listen=('keys', 'pointer', 'hover'), no_save=('index',))
-def options(input_value, choices=(), index=None, width=0., height=0., draw_state=None, cache=None, view_events=None):
+@gui(no_save=('index',))
+def options(input_value, choices=(), index=None, width=0.0, height=0.0, draw_state=None, cache=None, event=None):
     """The list under a dropdown. Returns (True, choice) when one is picked."""
     if index is None:       # just opened (`index` is not saved): start on the current choice
         index = choices.index(input_value) if input_value in choices else 0
     picked = False
-    for key, mods in view_events.get('keys', ()):
-        if key in (glfw.KEY_UP, glfw.KEY_DOWN):
-            index = (index + (1 if key == glfw.KEY_DOWN else -1)) % len(choices)
+    # The arrows move the selection and Enter picks it: asking for the keys is what gives the open list the keyboard.
+    for key, mods in event.keys():
+        if key == glfw.KEY_DOWN:
+            index = (index + 1) % len(choices)
+        elif key == glfw.KEY_UP:
+            index = (index - 1) % len(choices)
         elif key in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER):
             picked = True
-    for event in (*view_events.get('hover', ()), *view_events.get('pointer', ())):
-        if event.kind in ('hover', 'press'):
-            index = min(max(int(event.y // ROW), 0), len(choices) - 1)
-            picked |= event.kind == 'press' and not event.button
+    # The pointer selects the row it moves over; a press picks it.
+    pressed = event.left_mouse_down()
+    if pressed or event.mouse_moved():
+        index = min(max(int(event.y // ROW), 0), len(choices) - 1)
+    if pressed:
+        picked = True
     draw_state.index = index
     dl = imgui.get_window_draw_list()
-    dl.add_rect_filled(0, 0, width, height, BACK, 4.)
+    dl.add_rect_filled(0.0, 0.0, width, height, BACK, 4.0)
     for at, choice in enumerate(choices):
         if at == index:
-            dl.add_rect_filled(0, at * ROW, width, (at + 1) * ROW, PICK, 3.)
-        dl.add_text(8, at * ROW + 4, TEXT, str(choice))
+            dl.add_rect_filled(0.0, at * ROW, width, (at + 1) * ROW, PICK, 3.0)
+        dl.add_text(8.0, at * ROW + 4.0, TEXT, str(choice))
     if picked:
         cache.focus.close()     # the keyboard returns to whoever had it
         return True, choices[index]
@@ -87,14 +92,17 @@ def dropdown(input_value, choices=(), width=0., height=0.):
                    left=0., top=height + 2, width=width, height=len(choices) * ROW)
 
 
+@gui(listen=(), width=70, height=22)
+def caption(input_value: str):
+    imgui.text(input_value)
+
+
 @os_window(name='Temporary popups', app_id='meltygui-popups', width=560, height=300, use_cache=False)
 def app(state: Settings = None):
     for at, label in enumerate(('Colour', 'Mode', 'Note')):
-        imgui.set_cursor_pos((16, 44 + at * 40))
-        imgui.text(label)
-    changed, state.color = swatch(state.color, name='color', left=90, top=40)
-    changed, state.mode = dropdown(state.mode, name='mode', choices=MODES, left=90, top=80)
+        caption(label, key=label, left=16, top=14 + at * 40)
+    changed, state.color = swatch(state.color, name='color', left=90, top=10)
+    changed, state.mode = dropdown(state.mode, name='mode', choices=MODES, left=90, top=50)
     changed, state.note = draw_editor(state.note, name='note', single_line=True, language=None,
-                                      left=90, top=120, width=380, height=26)
-    imgui.set_cursor_pos((16, 170))
-    imgui.text(f'{state.mode}  ({", ".join(f"{part:.2f}" for part in state.color)})')
+                                      left=90, top=90, width=380, height=26)
+    caption(f'{state.mode}  ({", ".join(f"{part:.2f}" for part in state.color)})', name='status', left=16, top=140, width=400)

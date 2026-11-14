@@ -18,7 +18,7 @@ pub fn effect(name: &str) -> u8 {
         "width" | "height" => SIZE,
         "scroll_offset" => SCROLL,
         "unique" | "dlt_count" | "content_width" | "content_height" | "measured_width"
-        | "abs_left" | "abs_top" | "cache" | "view_events" | "depth" => 0,
+        | "abs_left" | "abs_top" | "cache" | "view_events" | "event" | "depth" => 0,
         _ => CONTENT,
     }
 }

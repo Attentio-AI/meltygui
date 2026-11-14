@@ -155,12 +155,14 @@ def test_a_right_drag_that_starts_on_an_inline_widget_is_the_windows_too(editor)
     editor.frame((x, y - 40.))
 
 
-def test_listening_for_the_pointer_keeps_left_drags_and_nothing_keeps_right_ones():
+def test_asking_about_the_left_button_keeps_left_drags_and_nothing_keeps_right_ones():
     import meltygui_imgui as imgui
     from meltygui.core.rendering.gui_prototype import gui
 
-    @gui(listen=('pointer',), width=200, height=100)
-    def taking(input_value, view_events=None):
+    @gui(width=200, height=100)
+    def taking(input_value, event=None):
+        event.left_mouse_down()
+        event.right_mouse_clicked()
         imgui.text('takes the pointer')
 
     @gui(width=200, height=100)

@@ -133,11 +133,13 @@ class Find:
             self.field.doc.select(clicked)
         return clicked is not None and self.focused
 
-    def typed(self, ed, events, desk):
-        """The frame's key presses and typed text while the field has the keyboard."""
-        field, pending = self.field, ''.join(events.get('text', ()))
+    def typed(self, ed, pressed, text, desk):
+        """The key presses (`event.keys()`) and the typed text (`event.text()`) of one run, while the
+        field has the keyboard."""
+        field = self.field
+        pending = text
         own = keys.Desk(True, True, None, desk.copy, desk.clipboard)
-        for key, mods in events.get('keys', ()):
+        for key, mods in pressed:
             chord = mods & keys.MODS
             if keys.printable(key, mods):
                 if pending:

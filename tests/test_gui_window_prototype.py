@@ -120,3 +120,26 @@ def test_returned_edits_reach_uncached_window_caller(monkeypatch):
     assert window.draw(surface, app, {}) == (True, 11)
     assert window.draw(surface, app, {}) == (False, 11)
     window.close()
+
+
+def test_root_space_starts_under_the_title_bar(monkeypatch):
+    """A view at top=0 of the root sits below the window's 30 px title bar and one that takes the
+    root's height ends at the surface's bottom, so no app adds the bar's height."""
+    from meltygui.core.runtime.app import _root_body
+    window, surface = host(monkeypatch)
+    shown = []
+    monkeypatch.setattr(window.cache, 'present', shown.append)
+
+    @gui(listen=())
+    def child(input_value: object):
+        return None
+
+    @gui(use_cache=False)
+    def root(input_value: object, width=None, height=None):
+        child(None, name='child', left=0., top=0., width=width, height=height)
+
+    _root_body(root, 'native root', config={'view_kwargs': {}})(surface)
+    (node,) = window.cache.root_ids
+    assert shown == [(0., 30.)] and window.cache.geometry.inset == 30.
+    assert tuple(window.cache.graph.rect(node)) == (0., 0., 400., 250.)
+    window.close()

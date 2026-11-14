@@ -30,6 +30,18 @@ class _GuiWindow:
                                    else _bind_native(self.native, func, **options))
         return self.bindings[view](input_value, **kwargs)
 
+    def title_bar(self):
+        """The window's title bar is the window's, not the app's: the root view and everything it
+        declares live in the space under it. There (0, 0) is the first pixel below the bar and the
+        root's `height` is what is left, so no view adds the bar's height to a position or takes it
+        off a size. Without a bar (the OS draws the frame) the space starts at the window's top.
+        A Melty window does the same for its own title through `content_offset`.
+        Lever: the bar's height, `titlebar.top_inset`, which the surface publishes in `Melty.root_fill`."""
+        from meltygui.core.melty import Melty
+        top = Melty.root_fill[2] if Melty.root_fill is not None else 0.
+        self.cache.origin = (0., top)
+        self.cache.geometry.inset = top
+
     def draw(self, surface, view, view_kwargs):
         import meltygui_imgui as imgui
         from meltygui.core.melty import Melty
@@ -42,7 +54,7 @@ class _GuiWindow:
         arguments.setdefault('width', width)
         arguments.setdefault('height', height)
         self.cache.request_frame = surface.request_frame
-        self.cache.origin = (0, 0)
+        self.title_bar()
         if self.cache.graphics and self.input_backend is None:
             self.input_backend = surface.impl
             # The host's colour pipeline (hdr_color.py): without it a packed
@@ -55,8 +67,8 @@ class _GuiWindow:
         scope = (_state['app_id'], _renderer_name(func, options.get('state_id')))
         self.native.begin_frame(scope=scope, width=width, cache=self.cache)
         try:
-            if self.cache.listeners or self.cache.focus.stack:
-                # The frame's ordered key presses and repeats, for listening views and open popups (Escape).
+            if self.cache.inputs or self.cache.focus.stack:
+                # The frame's ordered key presses and repeats, for the views with an Event and open popups (Escape).
                 self.cache.imgui_input.keys.extend(Melty.frame_key_events)
             self.cache.process_host_input(
                 drag_position=(self.input_backend.drag_mouse_pos
@@ -76,7 +88,7 @@ class _GuiWindow:
                 # Resolve ownership from this frame's actual ImGui items,
                 # after all dirty views ran, rather than from cache bounds.
                 self.cache.register_host_pointer(Melty.event_handler, imgui.get_mouse_pos())
-            self.cache.present((0, 0))
+            self.cache.present(self.cache.origin)
             if view.__gui_definition__[1].get('live', False):
                 surface.request_frame()
             return result

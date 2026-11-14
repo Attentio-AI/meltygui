@@ -329,7 +329,7 @@ class InputHandler:
         '_states', '_hovered', '_prev_hovered', '_pending', '_cursor_x', '_cursor_y',
         '_modifiers', '_last_dx', '_last_dy', '_drag_capture', '_drag_activated',
         '_down_origins', '_blocker_views', '_pending_clicks',
-        '_view_cursor', '_drag_cursor', 'cursor_shape'
+        '_view_cursor', '_drag_cursor', 'cursor_shape', '_drag_ended'
     )
 
     def __init__(self):
@@ -344,6 +344,7 @@ class InputHandler:
         self._last_dy = 0.0
         self._drag_capture: dict[str, Any] = {}  # input_id -> (view_id, drag_action) captured on down
         self._drag_activated: dict[str, bool] = {}  # input_id -> whether drag threshold exceeded
+        self._drag_ended: dict[str, bool] = {}  # input_id -> whether its latest release ended a captured drag
         self._down_origins: dict[str, set] = {}  # input_id -> set of view_ids hovered at down time
         self._blocker_views: set = set()
         # CLICKED events held back to disambiguate single vs double, but ONLY for
@@ -992,6 +993,7 @@ class InputHandler:
             elif action == EventAction.UP:
                 cap = drag_capture.pop(event.input_id, None)
                 was_activated = drag_activated.pop(event.input_id, False)
+                self._drag_ended[event.input_id] = cap is not None and was_activated
                 down_origins.pop(event.input_id, None)
                 self._drag_cursor.pop(event.input_id, None)
                 if cap is not None and was_activated:
@@ -1207,6 +1209,12 @@ class InputHandler:
         """Whether this view owns the press, including before drag activation."""
         capture = self._drag_capture.get(input_id)
         return capture is not None and capture[0] == view_id
+
+    def drag_ended(self, input_id: str) -> bool:
+        """Whether this input's latest release ended a drag a view had captured
+        (a window resize, an orbit): that release is not a click. For code that
+        reads the button from ImGui, which reports every release alike."""
+        return self._drag_ended.get(input_id, False)
 
     def is_down(self, input_id: str) -> bool:
         s = self._states.get(input_id)
