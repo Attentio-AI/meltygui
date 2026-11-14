@@ -595,3 +595,33 @@ def test_nested_cells_converge_across_native_size_changes(graphics):
             assert {node: cache.graph.info(node)['executions'] for node in cache.records} == executions
     finally:
         cache.close()
+
+
+def test_rebuilt_layout_retires_the_cross_layouts_in_its_cells():
+    """New keys rebuild the columns. The rows declared in a later cell spanned between the old
+    dividers: a child running in an earlier cell must not find them still bound to those."""
+    cache=RetainedGui(graphics=False); model={'keys':('a','b','c')}; ids={}
+
+    @cache.gui()
+    def child(input_value):
+        return False,input_value
+
+    @cache.gui(width=600,height=300)
+    def root(input_value):
+        keys=model['keys']; ids['root']=cache.current
+        with cache.geometry.declare(keys,axis=0,key='outer') as outer:
+            for key in keys[:-1]:
+                with outer.cell(key):child(key,key=key)
+            with outer.cell(keys[-1]):
+                with cache.geometry.declare(('top','bottom'),axis=1,key='inner') as inner:
+                    for key in ('top','bottom'):
+                        with inner.cell(key):child(key,key=key)
+        return False,input_value
+    try:
+        root(None);cache.flush()
+        model['keys']=('a','new','b','c')
+        cache.invalidate_id(ids['root']);root(None);cache.flush()
+        inner=cache.geometry.layouts[(ids['root'],1,'inner')]
+        outer=cache.geometry.layouts[(ids['root'],0,'outer')]
+        assert inner.cross==(outer.edges[3],outer.edges[4])
+    finally:cache.close()

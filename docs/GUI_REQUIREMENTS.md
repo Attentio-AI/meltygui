@@ -232,6 +232,12 @@ rust is finally fast enough"). Current numbers:
   (11-12, approved)
 - **Pointer shapes**: the text cursor stays through a selection drag; the
   editor's gutter shows the pointing hand. (11-11, 11-12)
+- **Tiles are `meltygui.rust.draw_tiles`**, a reusable view that works like
+  the `@render_func` tile manager, modeled on Blender's. A join can be turned
+  round: once it is started, dragging back over the tile the drag began in
+  joins in the opposite direction, "that's how it works in blender". Joining
+  only a neighbouring tile of the same split, and a new tile being a copy,
+  are Blender's behaviour too, not defects. (11-14)
 
 ## 10. `draw_any` and `draw_collection`
 

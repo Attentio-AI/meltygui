@@ -439,6 +439,7 @@ What is there already:
 | Code or long text | `draw_editor`, from `meltygui.view.editor_view` for now ([NATIVE_EDITOR.md](NATIVE_EDITOR.md#using-draw_editor)) |
 | A button | `draw_button` from `meltygui.rust`: `pressed, _ = draw_button('Run', name='run')` |
 | One of a few choices | `draw_dropdown(value, choices=CHOICES)` from `meltygui.rust` |
+| Tiles the user splits and joins from their corners, as in Blender | `draw_tiles(tree, name='tiles', tile=view)` from `meltygui.rust`; the tree is plain dicts ([tiles_view.py](../meltygui/view/tiles_view.py)) |
 | A popup of your own, a picker | Section 7; [examples/gui_popups.py](../examples/gui_popups.py) |
 | A whole standalone ImGui app as one view | `gui_module('app.py')` ([gui_module.py](../meltygui/core/rendering/gui_module.py)) |
 

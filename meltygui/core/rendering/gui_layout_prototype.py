@@ -771,6 +771,13 @@ class GuiGeometry:
         dependents=self.axes[layout.axis].remove(layout.serial)
         for key,other in tuple(self.layouts.items()):
             if other.serial in dependents:self.remove_layout(key)
+        # A layout of the other axis declared in one of this layout's cells spans
+        # between its dividers. They are retired now: it is declared anew with its owner.
+        retired=set(layout.edges[1:-1])
+        for key,other in tuple(self.layouts.items()):
+            if (key in self.layouts and other.owner==layout.owner and other.axis!=layout.axis
+                    and not retired.isdisjoint(other.cross)):
+                self.remove_layout(key)
         for node,frame in tuple(self.frames.items()):
             if frame[0] in dependents:
                 self.drop_frame(node)

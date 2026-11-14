@@ -180,7 +180,8 @@ def begin(tree, parent, index, hand, spans):
     at = min(max(along, low), high)
     holder, edge = split(tree, parent, index, axis, at, span, before)
     # `lag`: how far the pointer is from a divider the minimum held back. The divider waits for it.
-    hand.update(mode='split', axis=axis, holder=holder['id'], edge=edge, before=before, lag=along - at)
+    # The sample is spent: its tile corner is from before the cut.
+    hand.update(mode='split', axis=axis, holder=holder['id'], edge=edge, before=before, lag=along - at, fresh=False)
     return True
 
 
@@ -302,10 +303,16 @@ def grip(input_value: dict, tile=0, on_left=True, on_top=True, left=0.0, top=0.0
     return pressed or dragged or released, input_value
 
 
-@gui(listen=())
-def pane(input_value: dict, tile=None, hand=None, going=False, width=0.0, height=0.0):
-    """A tile: the caller's view, a grip in three corners, and the join preview over them."""
+@gui(listen=(), no_save=('seen_width', 'seen_height'))
+def pane(input_value: dict, tile=None, hand=None, going=False, seen_width=0.0, seen_height=0.0, width=0.0, height=0.0,
+         draw_state=None):
+    """A tile: the caller's view, a grip in three corners, and the join preview over them. A new
+    size counts as a change, so that `draw_tiles` runs and writes the dragged sizes into the tree."""
     changed, _ = tile(input_value, name='tile', left=0.0, top=0.0, width=width, height=height)
+    if width != seen_width or height != seen_height:
+        draw_state.seen_width = width
+        draw_state.seen_height = height
+        changed = True
     for name, on_left, on_top in CORNERS:
         left = width - GRIP
         if on_left:
