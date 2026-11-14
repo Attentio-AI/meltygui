@@ -25,6 +25,7 @@ EXPORTS = {
     'draw_value': 'meltygui.view.value_view',
     'draw_button': 'meltygui.view.button_view',
     'draw_dropdown': 'meltygui.view.choice_view',
+    'draw_tiles': 'meltygui.view.tiles_view',
 }
 
 
