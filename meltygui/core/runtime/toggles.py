@@ -2308,7 +2308,7 @@ class Toggles:
         # lines) - for pinning down a boot that shows the wrong fold
         # state. Read live; off = silent.
         trace_compare_boot = False
-        # Tab tint for a file whose FileMeta carries none — the tab bar, the
+        # Tab tint for a file with no painted tint — the tab bar, the
         # compare files column, and the editor toolbar buttons all key off it.
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
         tab_tint_fallback = (0.485, 0.61, 0.76)

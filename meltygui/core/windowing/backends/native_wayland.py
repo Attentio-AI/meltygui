@@ -21,6 +21,7 @@ import mmap
 import os
 import select
 import socket
+import tempfile
 import threading
 import time
 from types import SimpleNamespace
@@ -954,8 +955,12 @@ class Backend:
             pixels[:, :, :3] = ((pixels[:, :, :3].astype(numpy.uint16) *
                                 pixels[:, :, 3:4].astype(numpy.uint16) + 127) // 255).astype(numpy.uint8)
             payload = pixels.tobytes()
-            descriptor = os.memfd_create('meltygui-cursor', os.MFD_CLOEXEC)
-            try:
+            # Some Linux Python builds omit memfd_create. Wayland only needs
+            # an mmap-able fd; TemporaryFile also cleans up its backing file.
+            backing = (os.fdopen(os.memfd_create('meltygui-cursor', os.MFD_CLOEXEC), 'w+b')
+                       if hasattr(os, 'memfd_create') else tempfile.TemporaryFile())
+            with backing:
+                descriptor = backing.fileno()
                 os.ftruncate(descriptor, len(payload))
                 with mmap.mmap(descriptor, len(payload)) as memory:
                     memory[:] = payload
@@ -966,8 +971,6 @@ class Backend:
                 self.listen(cursor.buffer, [([], lambda: None)])
                 self.native.request(pool, 1, destroy=True)
                 self.custom_cursor_buffers.append(cursor.buffer)
-            finally:
-                os.close(descriptor)
         width, height = cursor.image.size
         self.native.request(self.pointer, 0, U(self.enter_serial), P(self.cursor_surface), I(cursor.xhot), I(cursor.yhot))
         self.native.request(self.cursor_surface, 1, P(cursor.buffer), I(0), I(0))

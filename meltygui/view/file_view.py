@@ -326,10 +326,10 @@ def draw_pending_saves(draw_state=None):
 
 
 def paint_breadcrumbs(draw_state, path, click=None, crumb_height=24.0, left_pad=6.0,
-                      folder_bg_boost=-0.12, text_mix=0.5, width=None, file_metadata=None):
+                      folder_bg_boost=-0.12, text_mix=0.5, width=None):
     """The path strip: every segment of `path` a crumb on the window draw
     list at the cursor, the last one bright (the current directory / the
-    file), the rest dim, a painted folder wearing its file-meta tint, the
+    file), the rest dim, a painted folder wearing its tint (tint_model), the
     hovered one a faint wash. Advances the cursor by the strip's height.
     `click` is the caller's injected left-click position (screen space, or
     None): returns the clicked segment's Path when it is not the last one,
@@ -337,7 +337,7 @@ def paint_breadcrumbs(draw_state, path, click=None, crumb_height=24.0, left_pad=
     over the rows) and `draw_breadcrumbs` (the strip on its own)."""
     from meltygui.files.fast_file_explorer import row_tint_bg
     from meltygui.files.fast_file_explorer import tinted_text
-    from meltygui.models.file_meta import FileMeta
+    from meltygui.model.tint_model import tint
 
     # [tint=(0.55, 0.72, 0.95)]
     crumb_separator = "  /  "
@@ -349,7 +349,6 @@ def paint_breadcrumbs(draw_state, path, click=None, crumb_height=24.0, left_pad=
     px = Melty.px
     pad, crumb_h = px(left_pad), px(crumb_height)
     parts = Path(path).parts
-    meta = file_metadata
     row_bg = row_tint_bg()
     draw_list = imgui.get_window_draw_list()
     content_w = width if width is not None else (draw_state.content_width or draw_state.width or 240)
@@ -365,7 +364,7 @@ def paint_breadcrumbs(draw_state, path, click=None, crumb_height=24.0, left_pad=
         target = Path(*parts[:i + 1])
         crumbs.append((cx - px(3), cx + label_w + px(3), target))
         hovered = hover_ok and cx - px(3) <= mouse_x < cx + label_w + px(3) and y0 <= mouse_y < y0 + crumb_h
-        crumb_tint = FileMeta.painted_tint(meta.get(str(target))) if meta is not None else None
+        crumb_tint = tint(target)
         if crumb_tint:
             draw_list.add_rect_filled(cx - px(3), y0 + px(2), cx + label_w + px(3), y0 + crumb_h - px(2),
                                       row_bg(crumb_tint, folder_bg_boost or 0.0), rounding=px(3))
@@ -392,18 +391,12 @@ def paint_breadcrumbs(draw_state, path, click=None, crumb_height=24.0, left_pad=
 
 class _CrumbTints:
     """draw_dropdown's `row_tints` for a crumb menu, looked up live: a row's
-    value is its path, its tint the one painted on it in the file-meta store
-    (no dict built over a listing that may never open)."""
-
-    def __init__(self, file_metadata):
-        self.file_metadata = file_metadata
-
-    def __bool__(self):
-        return self.file_metadata is not None
+    value is its path, its tint the one painted on it (tint_model; no dict
+    built over a listing that may never open)."""
 
     def get(self, path):
-        from meltygui.models.file_meta import FileMeta
-        return FileMeta.painted_tint(self.file_metadata.get(path))
+        from meltygui.model.tint_model import tint
+        return tint(path)
 
 
 def _crumb_menu(directory, on_path, file_metadata, memo):
@@ -447,8 +440,8 @@ def draw_breadcrumbs(input_value: str, draw_state, width=None, crumb_height=24.0
     along the top of the selected file's column (``show_breadcrumbs=True``),
     the mirror of the tab bar along its bottom. `input_value` is the path (a
     directory or a file; the last crumb is the bright one). Rows and crumbs
-    wear their painted file-meta tint (`file_metadata`, default the shared
-    store). Listings are lazy (read while a menu shows). A strip wider than
+    wear their painted tint (tint_model); their icons come from
+    `file_metadata` (default the shared store). Listings are lazy (read while a menu shows). A strip wider than
     the view drops its leading crumbs. A picked row returns ``(True, path)``
     once — a file or a directory, the host deciding what each means;
     otherwise ``(False, input_value)``.
@@ -462,7 +455,7 @@ def draw_breadcrumbs(input_value: str, draw_state, width=None, crumb_height=24.0
     from meltygui.files.fast_file_explorer import row_tint_bg
     from meltygui.files.fast_file_explorer import tinted_text
     from meltygui.hdr_color import unpack_color
-    from meltygui.models.file_meta import FileMeta
+    from meltygui.model.tint_model import tint
     from meltygui.models.file_meta import file_meta_store
     from meltygui.view.dropdown_view import TRIGGER_TEXT_INSET
     from meltygui.view.dropdown_view import fast_draw_dropdown
@@ -531,7 +524,7 @@ def draw_breadcrumbs(input_value: str, draw_state, width=None, crumb_height=24.0
     picked = None
     for i in range(first, len(parts)):
         target, last = targets[i], i == len(parts) - 1
-        crumb_tint = FileMeta.painted_tint(meta.get(str(target)))
+        crumb_tint = tint(target)
         if crumb_tint:
             draw_list.add_rect_filled(cx, y0 + px(2), cx + widths[i], y0 + crumb_h - px(2),
                                       row_bg(crumb_tint, folder_bg_boost or 0.0), rounding=px(3))
@@ -546,7 +539,7 @@ def draw_breadcrumbs(input_value: str, draw_state, width=None, crumb_height=24.0
             display_label=parts[i], name=f"{name}_crumb_{i}", width=widths[i], height=crumb_h,
             trigger_height=crumb_h, show_header=False, shadow=False, show_button_bg=False,
             text_pad=inner, trigger_text_color=text_color, trigger_caret=("", ""),
-            row_tints=_CrumbTints(meta), row_paths=memos.setdefault(i, {}).setdefault("icons", {}), menu_min_width=px(menu_min_width), return_extras=True)
+            row_tints=_CrumbTints(), row_paths=memos.setdefault(i, {}).setdefault("icons", {}), menu_min_width=px(menu_min_width), return_extras=True)
         crumb_ds = result[2] if len(result) > 2 else None
         state = (getattr(crumb_ds, "misc", None) or {}).get("drop_down_state") if crumb_ds is not None else None
         if state is not None:
@@ -652,10 +645,10 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     from meltygui.files.fast_file_explorer import search_typed
     from meltygui.model.file_metadata_model import set_row_order
     from meltygui.files.fast_file_explorer import tint_control
-    from meltygui.model.file_metadata_model import set_row_tint
+    from meltygui.model.tint_model import set_tint
+    from meltygui.model.tint_model import tint as painted
     from meltygui.files.fast_file_explorer import tinted_text
     from meltygui.core.files.file_explorer_core import watch_directory
-    from meltygui.models.file_meta import FileMeta
     from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.core.cache.tile_marks import clear_glows
     from meltygui.core.input.drag_drop_core import DragDrop
@@ -739,7 +732,6 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     if show_crumbs and directory is not None:
         target = paint_breadcrumbs(draw_state, directory, click=click,
                                    crumb_height=crumb_height, left_pad=left_pad,
-                                   file_metadata=file_metadata,
                                    folder_bg_boost=folder_bg_boost, text_mix=text_mix)
         if target is not None:
             return navigate(target)
@@ -747,7 +739,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     # ── content height: rows + the top inset (the fast_dock rule) ──
     rows_x, rows_y = imgui.get_cursor_screen_pos()
     # ── a painted directory: a tint wash below the breadcrumb strip ──
-    dir_tint = FileMeta.painted_tint(meta.get(dir_key)) if meta is not None else None
+    dir_tint = painted(dir_key) if directory is not None else None
     if dir_tint and folder_bg_boost is not None:
         wash = getattr(draw_state, "abs_clip_rect", None)
         if wash is None:
@@ -914,7 +906,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
             continue
         key = str(path)
         entry = meta.get(key) if meta is not None else None
-        tint = FileMeta.painted_tint(entry)
+        tint = painted(key)
         icon = row_icon(path, is_dir, entry, folder_icon, file_icon)
         spans = hit_rows.get(i) if dimmed else None
         name_rgba, glyph_rgba = (folder_rgba if is_dir else text_rgba), text_rgba
@@ -973,7 +965,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
                 swatch = chip_swatch(tint, row_bg.rgb(tint, 0.0), chip_mix)
             tint_control(draw_state, key, tint, chip_x, ry0 + (row_h - chip) * 0.5, chip,
                          ry0 + text_y_pad, row_hovered, default_tint, swatch=swatch,
-                         setter=lambda value, path=key: set_row_tint(meta, path, value),
+                         setter=lambda value, path=key: set_tint(path, value),
                          show_brush=i == selected_index)
 
     # ── the search pill: the query and "n of m", bottom right of the view ──
@@ -1035,7 +1027,7 @@ def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_
     directory the host shows (or None): the deepest shortcut / project
     holding it is the CURRENT row (brighter, lifted by a shadow, its brush
     showing). Every row leads with its folder's tint control (the same
-    file-meta tint the listings wear). Shortcuts drag to reorder, the order
+    tint the listings wear, tint_model's). Shortcuts drag to reorder, the order
     persisting in `shortcut_state`; projects keep the store's path order.
     The explorer draws this in its first cell; the code editor draws it as
     a leading column (`show_shortcuts=True`), a pick selecting the project
@@ -1045,9 +1037,9 @@ def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_
     from meltygui.files.fast_file_explorer import row_tint_bg
     from meltygui.files.fast_file_explorer import shortcut_directories
     from meltygui.files.fast_file_explorer import tint_control
-    from meltygui.model.file_metadata_model import set_row_tint
+    from meltygui.model.tint_model import set_tint
+    from meltygui.model.tint_model import tint as painted
     from meltygui.files.fast_file_explorer import tinted_text
-    from meltygui.models.file_meta import FileMeta
     from meltygui.core.windowing.glfw_utils import request_render
     from meltygui.core.cache.tile_marks import add_shadow
     from meltygui.core.cache.tile_marks import clear_glows
@@ -1116,7 +1108,7 @@ def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_
             ry0 = y + i * row_h
             ry1 = ry0 + row_h
             key = str(path)
-            tint = FileMeta.painted_tint(meta.get(key)) if meta is not None else None
+            tint = painted(key)
             icon = computer_icon if path == Path(os.sep) else folder_icon
             label_col = tinted_text(text_rgba, tint, text_mix) if tint else text_col
             icon_col = tinted_text(text_rgba, tint, icon_mix) if tint else text_col
@@ -1164,7 +1156,7 @@ def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_
                     swatch = chip_swatch(tint, row_bg.rgb(tint, boost))
                 tint_control(draw_state, key, tint, chip_x, ry0 + (row_h - chip) * 0.5, chip,
                              ry0 + text_y_pad, row_hovered, default_tint, swatch=swatch,
-                             setter=lambda value, path=key: set_row_tint(meta, path, value),
+                             setter=lambda value, path=key: set_tint(path, value),
                              show_brush=path == current)
         return picked
 
@@ -1549,7 +1541,7 @@ def render_file_tree(input_value=None, draw_state=None,
     indent_per_level = 2.0
     left_pad = 6.0
     glyph_width = 12.0
-    # Row backgrounds are the files' own tints (FileMeta) run through the
+    # Row backgrounds are the files' own tints (tint_model) run through the
     # SAME colour pipeline as the editor's active tabs (flat_button: the
     # style manager's mix under Toggles.CodeEditor.tab_active_bg_* + the
     # brightness clamp), so every row bg stays dark enough for light text.
@@ -1659,7 +1651,7 @@ def render_file_tree(input_value=None, draw_state=None,
     # fast_dock rule) or the last row can never scroll fully into view.
     top_inset = (y0 + draw_state.scroll_offset[1]) - draw_state.abs_top
     imgui.dummy(cw, max(1.0, len(rows) * row_h + max(0.0, top_inset)))
-    selected_tint = _tint_of(meta, selected_path) if selected_path is not None else None
+    selected_tint = _tint_of(selected_path) if selected_path is not None else None
     imports_tint = selected_tint or highlight_fallback_tint
     hue, saturation, value = colorsys.rgb_to_hsv(*imports_tint)
     importers_tint = colorsys.hsv_to_rgb(hue, saturation * importer_saturation,
@@ -1808,7 +1800,7 @@ def render_file_tree(input_value=None, draw_state=None,
             continue
 
         visible.append((p, depth))
-        tint = _tint_of(meta, p)
+        tint = _tint_of(p)
         # Immediate-mode DragDrop (the editor tab bar's model): the row rect
         # is its own drag handle. While THIS row is the active drag - on_drag
         # has parked the cursor at the drop position on the overlay list -

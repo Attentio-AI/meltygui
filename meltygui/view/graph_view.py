@@ -433,7 +433,6 @@ def render_import_graph(input_value=None, draw_state=None,
     from meltygui.view.header_view import flat_button
     from meltygui.core.layout.header_runtime import _brightness_clamp_fn
     from meltygui.model.import_graph_model import start_build
-    from meltygui.core.files.file_tree_core import _meta
     from meltygui.core.files.file_tree_core import _tint_of
     from meltygui.core.files.file_tree_core import open_file
     import meltygui.model.import_graph_model as file_graph
@@ -569,7 +568,6 @@ def render_import_graph(input_value=None, draw_state=None,
                 origin_y + y * scale + state.pan_y, w * scale, h * scale)
 
     screen = {p: to_screen(box) for p, box in boxes.items()}
-    meta = _meta()
 
     # ── selection / hover ────────────────────────────────────────────────────
     if escape_key_pressed and state.selected is not None:
@@ -627,7 +625,7 @@ def render_import_graph(input_value=None, draw_state=None,
             col = fill_memo[key] = pack_color(mixed[0], mixed[1], mixed[2], alpha)
         return col
 
-    selected_tint = (_tint_of(meta, selected) if selected is not None else None) or highlight_fallback_tint
+    selected_tint = (_tint_of(selected) if selected is not None else None) or highlight_fallback_tint
     hue, saturation, value = colorsys.rgb_to_hsv(*selected_tint)
     importers_tint = colorsys.hsv_to_rgb(hue, saturation * importer_saturation,
                                          min(1.0, value + importer_value_boost))
@@ -679,7 +677,7 @@ def render_import_graph(input_value=None, draw_state=None,
     for p, (sx, sy, sw, sh) in screen.items():
         if not visible((sx, sy, sw, sh)):
             continue
-        tint = _tint_of(meta, p) or unpainted_node
+        tint = _tint_of(p) or unpainted_node
         faded = selected is not None and p not in related
         alpha = faded_alpha if faded else 1.0
         dl.add_rect_filled(sx, sy, sx + sw, sy + sh, node_fill(tint, alpha), rounding=radius)

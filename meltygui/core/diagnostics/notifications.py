@@ -525,8 +525,8 @@ _scroll_state = globals().get("_scroll_state") or {}
 
 
 def _file_tint(path):
-    """The tint the user painted on `path` in the code editor (FileMeta), as
-    RGBA, or None. Same store the editor tabs / folder tree read."""
+    """The tint the user painted on `path` (tint_model), as RGBA, or None.
+    What the editor tabs / folder tree wear."""
     try:
         from meltygui.editor.source_ui import _file_meta_tint
         rgb = _file_meta_tint(path)

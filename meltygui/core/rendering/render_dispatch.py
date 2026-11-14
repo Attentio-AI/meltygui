@@ -926,10 +926,14 @@ class _CodecSource(dict):
         # Per-FILE overlay: attributes previously attached to this element's
         # file (Codec.update_file_meta → AppModel.file_meta_collection) read
         # back over the codec-wide render_kwargs, so the row round-trips
-        # across saves. `order` is folder-tree bookkeeping, not a param.
+        # across saves. `order` is folder-tree bookkeeping, not a param; the
+        # tint is the file's `.melty` one (tint_model), never the entry's.
         entry = codec.file_meta_entry(target_ds)
         if isinstance(entry, dict):
-            self.update({k: v for k, v in entry.items() if k != "order"})
+            self.update({k: v for k, v in entry.items() if k not in ("order", "tint")})
+        painted = codec.file_tint(target_ds)
+        if painted is not None:
+            self.update(tint=painted)
 
     def __setitem__(self, k, v):
         # Per-file first: when the element resolves to a file, the attribute

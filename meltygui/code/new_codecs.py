@@ -27,6 +27,8 @@ from meltygui.code.chain_converters import DiskSpanText
 from meltygui.core.conversion.bubbling import base_of_bubbling
 from meltygui.code.file_converters import _detect_newline
 from meltygui.core.rendering.core_decoration import Core
+from meltygui.model.tint_model import set_tint
+from meltygui.model.tint_model import tint
 
 from meltygui.core.melty import Melty
 from meltygui.core.melty import FileWatch
@@ -419,10 +421,24 @@ class Codec:
         return entry
 
     @classmethod
+    def file_tint(cls, draw_state):
+        """The tint painted on this element's file (tint_model, the `.melty`
+        beside it), or None. Not in file_meta_entry: an entry's `tint` is stale."""
+        path = cls.file_meta_key(draw_state)
+        return tint(path) if path is not None else None
+
+    @classmethod
     def update_file_meta(cls, draw_state, key, value):
-        """Stamp a per-file attribute into the correct file's metadata entry.
-        Returns True when the write landed (a file resolved), False when it
-        couldn't — the caller falls back to codec-wide behavior."""
+        """Stamp a per-file attribute into the correct file's metadata entry
+        (`tint` into its `.melty`, through tint_model). Returns True when the
+        write landed (a file resolved), False when it couldn't — the caller
+        falls back to codec-wide behavior."""
+        if key == "tint":
+            path = cls.file_meta_key(draw_state)
+            if path is None:
+                return False
+            set_tint(path, value)
+            return True
         entry = cls.file_meta_entry(draw_state, create=True)
         if entry is None:
             return False

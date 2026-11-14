@@ -4097,15 +4097,6 @@ def _log_usage_mismatch(vpath, file_line, diffs, old, new, ctx):
         pass
 
 
-def _uj_file_tint(p):
-    """The file's FileMeta tint for a picker row (same source the editor tabs
-    use), or None."""
-    from meltygui.models.file_meta import file_meta_store
-    entry = file_meta_store().get(str(p)) if p is not None else None
-    t = entry.get('tint') if isinstance(entry, dict) else None
-    return tuple(t) if t else None
-
-
 # --- Definition tints: block wash behind tinted class/def bodies + a matching
 # wash behind every occurrence of a symbol whose DEFINITION carries a tint ----
 # A definition's tint can be in three source forms (the same stores the lens

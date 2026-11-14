@@ -662,7 +662,7 @@ def draw_crash_reports(
             trash_left = row_right - px(4) - trash_width - px(6)
 
         # The row wears the colour of the file that RAISED (the trace's last
-        # frame; a painted FileMeta tint - the editor tabs' source), and
+        # frame; its painted tint - the editor tabs' source), and
         # names that file after the error. An unpainted file keeps the
         # window's tint.
         saved_trace = store.trace(path)
@@ -889,13 +889,12 @@ def _draw_file_header(pane, x, y, width, height, text_x=None, draw_state=None, i
     depth / bg-stack / style-tint the pane's wrapper captured), so card and
     pane are the same colour by construction; the pane then draws over it.
     Nothing is painted until the pane has a draw_state (its first frame).
-    Text: the editor tabs' colour — the file's painted FileMeta tint (the
-    tabs' default tint when unpainted) scaled by the active-tab knobs, so
+    Text: the editor tabs' colour — the file's painted tint (the tabs'
+    default tint, `tab_tint_fallback`, when unpainted) scaled by the active-tab knobs, so
     it is tinted toward the card, never grey."""
     from meltygui.code.fileref import _PROJECT_ROOT
 
     from meltygui.core.melty import Melty
-    from meltygui.models.file_meta import FileMeta
     from meltygui.core.runtime.toggles import Toggles
     from meltygui.editor.source_ui import _file_meta_tint
     from meltygui.editor.source_ui import _tab_text_color
@@ -926,7 +925,7 @@ def _draw_file_header(pane, x, y, width, height, text_x=None, draw_state=None, i
                                   pack_color(card[0], card[1], card[2], 1.0))
         if Melty.channels_split:
             draw_list.channels_set_current(Melty.get_channel())
-    tint = _file_meta_tint(pane.path) or FileMeta.tint
+    tint = _file_meta_tint(pane.path) or Toggles.CodeEditor.tab_tint_fallback
     rgb = _tab_text_color(tint, Toggles.CodeEditor.tab_active_text_brightness,
                           Toggles.CodeEditor.tab_active_text_saturation,
                           Toggles.CodeEditor.tab_active_text_min_brightness)

@@ -98,7 +98,7 @@ def draw_chat_queue(proxy, selected, chat, draw_state, state, key, width, tint):
 
 
 def draw_messages(messages, draw_state, state, key, width, height,
-                  conversation_tint=(0.4, 0.8, 0.7), revision=None, file_metadata=None):
+                  conversation_tint=(0.4, 0.8, 0.7), revision=None):
     """Immediate-mode message layout; only visible text leaves use cached views.
 
     Message subclasses describe semantics, leaf types describe rendering.
@@ -417,14 +417,12 @@ def draw_messages(messages, draw_state, state, key, width, height,
                                      underlying, shadow=bash_shadow if isinstance(message, CommandExecution) else None)
             if tags:
                 from meltygui.view.file_view import draw_changed_file_header
-                from meltygui.models.file_meta import FileMeta
-                metadata = file_metadata
-                painted = FileMeta.painted_tint if metadata else None
+                from meltygui.model.tint_model import tint as painted
                 for filename, counts, tag_x, tag_y, tag_width in tags:
                     file_y = y + tag_y
                     if _visible(file_y, header_height, clip):
                         file_path = str(Path(message["details"].get("cwd") or "") / filename)
-                        file_tint = (painted(metadata.get(file_path)) if painted else None) or underlying
+                        file_tint = painted(file_path) or underlying
                         imgui.set_cursor_screen_pos((x + tag_x, file_y))
                         if draw_changed_file_header(filename, file_tint, draw_state,
                                 view_id=row_key + ":file:" + filename, width=tag_width, height=header_height,
@@ -772,7 +770,7 @@ def draw_chat_navigation_overlay(draw_state, draw_list):
              draw_overlay=draw_chat_navigation_overlay,
              disable_scroll=True, imgui_padding=False, show_header=False, show_bg=False)
 def draw_chat_navigation(input_value, draw_state=None, state: ChatInterfaceState = None,
-                         row_edges=None, new_conversation=None, file_metadata=None, project_filter=None, **kwargs):
+                         row_edges=None, new_conversation=None, project_filter=None, **kwargs):
     """Conversation lists and Internet Accounts share a resizable left column."""
     from meltygui.chat.chat_interface import AGE_FILTERS
     from meltygui.view.chat_decoration_view import _button
@@ -875,7 +873,7 @@ def draw_chat_navigation(input_value, draw_state=None, state: ChatInterfaceState
             edited, _ = draw_chat_sidebar(input_value, draw_state, state, width,
                 max(0, height - (y - top)),
                 cutoff=age_cutoff(getattr(state, "age_hours", 0) or 24) if pane == "recent" else None,
-                new_conversation=new_conversation, pane=pane, file_metadata=file_metadata,
+                new_conversation=new_conversation, pane=pane,
                 scrollbar_overlays=overlay_state.scrollbars, project_filter=project_filter)
             changed |= edited
     rows.finish()
@@ -921,7 +919,7 @@ def draw_effort_slider(draw_state, key, value, levels, x, y, width, height, tint
 @render_func(auto_resize=False, min_width=700, min_height=500, show_bg=False, shadow=False, selectable=False,
              on_cleanup=_cleanup_chat, use_cache=True, disable_scroll=True, imgui_padding=False, indent_size=0)
 def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: ChatInterfaceState = None,
-                        column_edges=None, new_project=None, default_project=None, file_metadata=None,
+                        column_edges=None, new_project=None, default_project=None,
                         ctrl_shift_equal_down=False, ctrl_shift_minus_down=False, layout_frame=None,
                         project_filter=None, **kwargs):
     """The chat window. A new conversation runs in `new_project` when given
@@ -1111,7 +1109,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
             state=state, new_conversation=start_conversation,
             context_menu=chat_context_menu_items(state, shown_sources),
             width=width, height=max(0, body_height - (y - top) - Melty.px(35)),
-            tint=Toggles.Chat.navigation_tint, file_metadata=file_metadata, project_filter=project_filter)
+            tint=Toggles.Chat.navigation_tint, project_filter=project_filter)
         changed |= edited
         y = top + body_height - Melty.px(30)
         # The New conversation button follows the list directly (a list taller
@@ -1133,7 +1131,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
         if proxy is not None and selected in proxy:
             chat = proxy[selected]
             meta = chat.metadata
-            chat_tint = tuple(project_tint(chat["project"], file_metadata=file_metadata) or kind.tint)
+            chat_tint = tuple(project_tint(chat["project"]) or kind.tint)
             x, y = imgui.get_cursor_screen_pos()
             header_width = max(1, width - Melty.px(100))
             badge_width = draw_token_badge(chat, x, y, header_width, Melty.px(28))
@@ -1150,7 +1148,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
             x, y = imgui.get_cursor_screen_pos()
             project_label, project_height = _text_layout(state, "directory:" + selected,
                 "\uf07b  " + (chat["project"] or "No working directory"), wrap_width=max(1, width))
-            folder_tint = tuple(conversation_folder_tint(chat["project"], file_metadata=file_metadata) or chat_tint)
+            folder_tint = tuple(conversation_folder_tint(chat["project"]) or chat_tint)
             _title(project_label, x, y, width, project_height, folder_tint,
                    text_color=folder_tint)
             imgui.set_cursor_screen_pos((x, y))
@@ -1182,7 +1180,7 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
                                  - requests_height - status_height - queue_height - controls_extra_height - Melty.px(120 + (26 if active else 0)))
             banner_height = min(Melty.px(34), history_height)
             changed |= draw_messages(chat["messages"], draw_state, state, transcript_key,
-                                 width, max(1, history_height - banner_height), conversation_tint=chat_tint, revision=proxy.revision, file_metadata=file_metadata)
+                                 width, max(1, history_height - banner_height), conversation_tint=chat_tint, revision=proxy.revision)
             draw_turn_banner(chat, width, banner_height)
             if active:
                 x, y = imgui.get_cursor_screen_pos()
@@ -1327,10 +1325,10 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
                 project_choices = chat_project_choices(state, proxies, project, new_project, default_project)
                 edited, value = draw_dropdown(project,
                     collection={"\uf07b  " + label: value for label, value in project_choices.items()},
-                    row_tints={path: project_tint(path, file_metadata=file_metadata) for path in project_choices},
+                    row_tints={path: project_tint(path) for path in project_choices},
                     display_label=label, name="project:" + draft_key,
                     width=max(1, x + width - control_x), height=Melty.px(30), trigger_height=Melty.px(30),
-                    show_header=False, shadow=False, tint=tuple(project_tint(project, file_metadata=file_metadata) or kind.tint), text_pad=8)
+                    show_header=False, shadow=False, tint=tuple(project_tint(project) or kind.tint), text_pad=8)
                 if edited:
                     changed |= switch_new_chat_project(state, proxies, value)
             if has_effort:
@@ -1582,12 +1580,11 @@ def draw_claude_chat(input_value=None, new_project=None, default_project=None, *
     editor inherits its open files), else the cwd."""
     from meltygui.chat.metadata import persistent_metadata
     from meltygui.model.chat_model import chat_project
-    from meltygui.models.file_meta import file_meta_store
 
     persistent_metadata(CLAUDE_CHAT_METADATA)   # before the first proxy is created
     project = default_project or chat_project(input_value) or str(Path.cwd())
     draw_chat_interface(name="claude-code", new_project=new_project, default_project=project,
-                        show_bg=False, file_metadata=file_meta_store(), **kwargs)
+                        show_bg=False, **kwargs)
     return False, input_value
 
 

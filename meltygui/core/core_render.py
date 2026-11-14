@@ -1881,23 +1881,25 @@ def render_func(*args, **o_kwargs):
             # Per-FILE codec attributes: any file this element resolves to
             # (its own Address, or the parent ds's memo - O(1), no walk)
             # carries its own persisted params - AppModel.file_meta_collection, the
-            # dict mirroring the file tree; Codec.update_file_meta writes it.
+            # dict mirroring the file tree, and its tint (tint_model);
+            # Codec.update_file_meta writes both.
             # Merged BEFORE the codec's class render_kwargs so a file-attached
             # value overrides the codec-wide default, and beneath everything
             # explicit above - so tinting a file "just works" on every view
             # rendered under it, draw_text included, with no per-view wiring.
             if _active_codec is not None:
                 _fm = _active_codec.file_meta_entry(draw_state)
+                # The entry's own `tint` is stale: the file's tint is
+                # tint_model's (None when unpainted, so it never shadows the
+                # draw_state fallback).
+                _fm = ({k: v for k, v in _fm.items()
+                        if k not in ("order", "tint") and not (isinstance(k, str) and k.startswith("__"))}
+                       if _fm else {})
+                _ft = _active_codec.file_tint(draw_state)
+                if _ft is not None:
+                    _fm["tint"] = _ft
                 if _fm:
-                    # An alpha-0 tint (FileMeta's unpainted default) is
-                    # dropped here for the same reason as below: it must not
-                    # shadow the draw_state fallback.
-                    _fm = {k: v for k, v in _fm.items()
-                           if k != "order" and not (isinstance(k, str) and k.startswith("__"))
-                           and not (k == "tint" and isinstance(v, (tuple, list))
-                                    and len(v) >= 4 and not v[3])}
-                    if _fm:
-                        kwargs = _fm | kwargs
+                    kwargs = _fm | kwargs
             if _codec is not None:
                 _ck = getattr(_codec, "render_kwargs", None)
                 if _ck:

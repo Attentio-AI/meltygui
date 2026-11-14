@@ -89,6 +89,7 @@ rust is finally fast enough"). Current numbers:
 | A view's file imports through the package, never a neighbour by its bare file name, so the view can be imported from anywhere. The first guide test produced views that could not: "import issue is concerning". | 11-13 |
 | A floating window is `melty_window=True`; a temporary one is `popup=` (section 9). | 11-11, 11-12 |
 | A root window is given a smallest size (`min_width`, `min_height`), not a static one: "static width and height is wrong." | 11-13 |
+| View sizing is "more robust and resistant to crashes": a width of zero or less, or a negative height, computed by a caller does not raise (task-runner's `status` crashed the app in a narrow window). Built by Claude, **Lukas has not reviewed how**: the view is drawn 1 px wide or with no height (`_fit_size`); non-finite sizes and widths over 8192 still raise. | 11-13 |
 | The title bar's height is never in app code. "I don't like sprinkling strip everywhere": a title bar wrapper "that leaves the inner view clean". The host puts the root's space under the bar (`title_bar` in `gui_window_prototype.py`): `top=0` is below it, `height` is what is left. | 11-13 |
 
 ## 4. How every view behaves

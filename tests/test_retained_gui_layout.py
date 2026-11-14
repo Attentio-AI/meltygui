@@ -390,7 +390,32 @@ def test_multiple_root_layout_is_settled_before_next_host_item(graphics):
         cache.close()
 
 
-@pytest.mark.parametrize('bad', [-1, float('nan'), float('inf')])
+def test_view_without_room_is_drawn_smallest_instead_of_raising(graphics):
+    """`width - left - PAD` in a narrow window: MIN_WIDTH wide or no height, and back when room returns."""
+    cache, seen = RetainedGui(), []
+
+    @cache.gui(height=20)
+    def leaf(input_value, width=0.0, height=0.0, draw_state=None):
+        seen.append((width, height, draw_state.width, draw_state.height))
+        return False, input_value
+
+    @cache.gui(width=130, height=180)
+    def root(input_value: object, room=0.0):
+        leaf('a', name='a', left=0.0, top=0.0, width=room - 120.0)
+        leaf('b', name='b', left=0.0, top=30.0, width=40.0, height=room - 120.0)
+        return False, input_value
+
+    try:
+        for room, sizes in ((100.0, [(1.0, 20.0), (40.0, 0.0)]), (200.0, [(80.0, 20.0), (40.0, 80.0)]),
+                            (120.0, [(1.0, 20.0), (40.0, 0.0)])):
+            seen.clear()
+            root(None, room=room)
+            assert seen == [size * 2 for size in sizes]
+    finally:
+        cache.close()
+
+
+@pytest.mark.parametrize('bad', [float('nan'), float('inf')])
 def test_invalid_constraints_fail_without_declaring_nodes(bad):
     cache = RetainedGui(graphics=False)
 

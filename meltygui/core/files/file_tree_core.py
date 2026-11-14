@@ -68,13 +68,11 @@ def _meta():
     return _file_meta()
 
 
-def _tint_of(meta, path):
-    """The row's background tint (rgb), or None for an unpainted file — no
-    stored tint, or FileMeta's black-transparent default."""
-    from meltygui.models.file_meta import FileMeta
-    entry = meta.get(str(path)) if meta is not None else None
-    tint = FileMeta.painted_tint(entry)
-    return tuple(tint[:3]) if tint else None
+def _tint_of(path):
+    """The row's background tint (rgb), or None for an unpainted file."""
+    from meltygui.model.tint_model import tint
+    painted = tint(path)
+    return painted[:3] if painted else None
 
 
 def _ordered_children(folder, meta, position):

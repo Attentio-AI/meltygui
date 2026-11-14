@@ -43,6 +43,19 @@ _MISSING = object()
 _CLEAR = (0., 0., 0., 0.)
 
 
+MIN_WIDTH = 1.0     # px a view with no room left is drawn at: the narrowest cache texture
+
+
+def _fit_size(func, width, height):
+    """The size a view is declared with. A caller that has run out of room (`width - left - PAD` in a
+    narrow window) gets the smallest view, not an exception: MIN_WIDTH wide, or no height. Only a
+    size that is no number at all, or wider than a cache texture, is the caller's bug."""
+    if not (math.isfinite(width) and math.isfinite(height)) or width > 8192:
+        raise ValueError(f'{func.__qualname__}: width must be finite and at most 8192, height finite '
+                         f'(got width={width}, height={height})')
+    return max(width, MIN_WIDTH), max(height, 0.)
+
+
 class _Binding:
     """One view identity: the definition's shared native engine, this
     identity's handle and state. The native declaration table remembers the
@@ -454,10 +467,11 @@ class RetainedGui:
                     automatic_width = w
                 auto_height = h is None
                 if auto_height: h = state.get('height', 0.) or 0.
-                if (not math.isfinite(w) or not 0 < w <= 8192
-                        or not math.isfinite(h) or h < 0):
-                    raise ValueError('cached boundaries require positive width and nonnegative height')
+                w, h = _fit_size(func, w, h)
                 caller = {k: v for k, v in caller.items() if not (k in ('left', 'top', 'width', 'height') and v is None)}
+                # The state holds the size the view is drawn at, not an unusable one the caller computed.
+                if 'width' in caller: caller['width'] = w
+                if 'height' in caller: caller['height'] = h
                 if popup and 'left' in caller and 'top' in caller:
                     caller['left'], caller['top'] = self._fit(parent, caller['left'], caller['top'], w, h)
                 if allocation is not None:
@@ -468,9 +482,7 @@ class RetainedGui:
                                  'scroll_offset': (0., 0.), 'content_offset': (0., 28. if portal and not popup else 0.)},
                                 caller, initial)
                 x, y = state.left, state.top
-                w, h = state.width, state.height
-                if not math.isfinite(w) or not 0 < w <= 8192 or not math.isfinite(h) or h < 0:
-                    raise ValueError('cached boundaries require positive width and nonnegative height')
+                w, h = _fit_size(func, state.width, state.height)
                 x, y = float(x), float(y)
                 w, h = float(w), min(maximum, max(minimum, float(h)))
                 arguments = {**decoration, **kwargs, 'width': w, 'height': None if auto_height else h,

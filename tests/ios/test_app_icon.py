@@ -361,11 +361,10 @@ def test_margin_toggle_changes_geometry_and_invalidates_cache(tmp_path, icon_pro
 
 
 def test_fallback_name_tint_and_cache(tmp_path, monkeypatch):
-    import pickle
-    metadata = tmp_path / 'metadata.pkl'
-    monkeypatch.setenv('MELTY_FILE_META', str(metadata))
+    import melty_meta
+    monkeypatch.setenv('MELTY_GLOBAL', str(tmp_path / 'global.json'))
     (tmp_path / 'pyproject.toml').write_text('[tool.melty.app]\nname = "My Great App"\n')
-    metadata.write_bytes(pickle.dumps({'entries': {str(tmp_path): {'tint': (.8, .2, .1, 1)}}}))
+    melty_meta.set_tint(tmp_path, (.8, .2, .1, 1))
     build = tmp_path / 'build'
     destination, icons = app_icon.prepare_icon(tmp_path, build)
     assert len(icons) == 14
@@ -374,7 +373,7 @@ def test_fallback_name_tint_and_cache(tmp_path, monkeypatch):
     before = icon.stat().st_mtime_ns
     app_icon.prepare_icon(tmp_path, build)
     assert icon.stat().st_mtime_ns == before
-    metadata.write_bytes(pickle.dumps({'entries': {str(tmp_path): {'tint': (.1, .2, .8, 1)}}}))
+    melty_meta.set_tint(tmp_path, (.1, .2, .8, 1))
     app_icon.prepare_icon(tmp_path, build)
     assert Image.open(icon).getpixel((0, 0)) == (26, 51, 204, 255)
 
@@ -390,13 +389,14 @@ def test_fallback_wrap_and_repository_initial():
 
 
 def test_generated_host_uses_original_repository(tmp_path, monkeypatch):
-    import pickle
+    import melty_meta
+    monkeypatch.setenv('MELTY_GLOBAL', str(tmp_path / 'global.json'))
     repository = tmp_path / 'original-repo'
     repository.mkdir()
     host = tmp_path / 'host'
     host.mkdir()
     (host / 'pyproject.toml').write_text('[tool.melty.app]\nname = "Original App"\nicon_root = ' + json.dumps(str(repository)))
-    metadata = tmp_path / 'metadata.pkl'
-    metadata.write_bytes(pickle.dumps({'entries': {str(repository): {'tint': (.2, .3, .4, 1)}}}))
-    monkeypatch.setenv('MELTY_FILE_META', str(metadata))
-    assert app_icon.fallback_identity(host) == ('Original App', 'original-repo', [.2, .3, .4])
+    melty_meta.set_tint(repository, (.2, .3, 1.4, 1))           # HDR clamps to 1
+    assert app_icon.fallback_identity(host) == ('Original App', 'original-repo', [.2, .3, 1])
+    melty_meta.set_tint(repository, None)
+    assert app_icon.fallback_identity(host)[2] is None

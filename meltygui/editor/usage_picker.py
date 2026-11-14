@@ -1,7 +1,7 @@
 """The Ctrl+B usage-jump picker — GlobalSearch's Code tab, as a popover.
 
 Rows are a TREE, exactly the Code tab's: the file (depth 0, icon + name,
-FileMeta tint), then every enclosing class / def of a hit as its own row
+painted tint), then every enclosing class / def of a hit as its own row
 (the def line, painted like the editor paints it), then the usage line
 itself. EVERY row is selectable — a scope row jumps to that definition, the
 file row opens the file — and the keyboard cursor lands on the BEST match
@@ -46,7 +46,7 @@ class UsageRow:
     UsageRef a pick jumps to (None for the file row — it opens the file),
     `token` the symbol spelling the caret lands on; `text` is the display
     line (stripped), `block_tint` / `spans` its washes in display columns;
-    `tint` the ROW's own tint (file: FileMeta, scope: the definition's)."""
+    `tint` the ROW's own tint (file: its painted one, scope: the definition's)."""
     __slots__ = ("kind", "depth", "path", "line", "text", "tint", "ref", "token",
                  "block_tint", "spans", "label", "emphasis", "indent")
 
@@ -116,7 +116,7 @@ def build_usage_rows(targets, names, tints=None, *, texts=None):
     keyed by path, so other code lists can share this tree and painter."""
     import meltygui.code.symbol_roster as roster
     from meltygui.editor.pending_save import PendingSave
-    from meltygui.editor.text_editor import _uj_file_tint
+    from meltygui.editor.source_ui import _file_meta_tint
     tints = tints if tints is not None else CodeLineTints()
     files = {}   # normalized path -> (path_str, text, lines, table, root _Node)
     for ref in targets:
@@ -201,7 +201,7 @@ def build_usage_rows(targets, names, tints=None, *, texts=None):
 
     for _key, (path, text, lines, _table, root) in files.items():
         rows.append(UsageRow("file", 0, path, 1, _display_name(path),
-                             tint=_uj_file_tint(path), label=path))
+                             tint=_file_meta_tint(path), label=path))
         emit(root, 1, path, text, lines)
     return rows, best
 

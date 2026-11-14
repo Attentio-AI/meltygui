@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from meltygui.model.file_metadata_model import set_row_tint, set_row_order
+from meltygui.model.file_metadata_model import set_row_order
 from meltygui.models.file_meta import FileMetaProxy
 
 
@@ -40,15 +40,12 @@ def test_external_reload_preserves_held_entry_and_local_deletion(stores):
 def test_plain_values_and_persistence_share_edit_contract(stores):
     store, reread = stores
     values = {}
-    set_row_tint(values, '/first', (0.2, 0.4, 0.6, 1.0))
     set_row_order(values, ['/second', '/first'])
     store.update(values)
     store.flush()
     reread.load()
-    assert reread['/first']['tint'] == (0.2, 0.4, 0.6, 1.0)
+    assert reread['/first']['order'] == 1
     assert reread['/second']['order'] == 0
-    set_row_tint(store, '/first', None)
-    assert not dict.__contains__(store['/first'], 'tint')
 
 
 def test_directory_listing_uses_model_io(tmp_path):

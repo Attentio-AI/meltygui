@@ -93,6 +93,10 @@ own file only to show every pattern in one place.
 - **`left`, `top`, `width`, `height`** on the call place a view in its parent's
   content, in logical pixels. A body draws in its own space, from (0, 0) to
   (`width`, `height`); never add the view's position inside it.
+- A size with no room left (`width=width - left - PAD` in a narrow window) is
+  safe: the view is drawn 1 px wide, or with no height, and returns to its size
+  when room does (`_fit_size` in `retained_gui_prototype.py`). Only NaN,
+  infinity or a width over 8192 raises, naming the view.
 - A value passed on the call applies on every run it is passed. A size the
   view always has goes on the decorator (`@gui(height=30)`); without either a
   view is 300 by 100.
@@ -433,7 +437,9 @@ What is there already:
 | A bool, number or line of text to edit | `draw_bool`, `draw_int`, `draw_float`, `draw_str` from `meltygui.rust` |
 | Any value, nested dicts and lists, dataclasses | `meltygui.rust.draw_any(value, name=...)`; a view of your own for a type, a key name or a shape is `@is_default_for(...)` above `@gui` |
 | Code or long text | `draw_editor`, from `meltygui.view.editor_view` for now ([NATIVE_EDITOR.md](NATIVE_EDITOR.md#using-draw_editor)) |
-| A dropdown, a picker | Section 7; [examples/gui_popups.py](../examples/gui_popups.py) |
+| A button | `draw_button` from `meltygui.rust`: `pressed, _ = draw_button('Run', name='run')` |
+| One of a few choices | `draw_dropdown(value, choices=CHOICES)` from `meltygui.rust` |
+| A popup of your own, a picker | Section 7; [examples/gui_popups.py](../examples/gui_popups.py) |
 | A whole standalone ImGui app as one view | `gui_module('app.py')` ([gui_module.py](../meltygui/core/rendering/gui_module.py)) |
 
 ## 13. Style and finishing

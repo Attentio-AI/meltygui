@@ -1423,7 +1423,7 @@ def draw_text(input_value: str, height=None,
     from meltygui.editor.text_editor import _toggle_comment
     from meltygui.editor.text_editor import _tree_usages_on_line
     from meltygui.editor.text_editor import _typing_hot
-    from meltygui.editor.text_editor import _uj_file_tint
+    from meltygui.editor.source_ui import _file_meta_tint
     from meltygui.editor.text_editor import _uj_log
     from meltygui.editor.text_editor import _unclosed_opener
     from meltygui.editor.text_editor import _unit_left_of
@@ -5778,7 +5778,7 @@ def draw_text(input_value: str, height=None,
             _sg_tinted = _sg_cmemo[2]
             _sg_path = (getattr(jump_to, 'path', None) if jump_to is not None
                         else getattr(ds, '_file_meta', None))
-            _sg_file_rgb = (_uj_file_tint(_sg_path) if _sg_path is not None
+            _sg_file_rgb = (_file_meta_tint(_sg_path) if _sg_path is not None
                             else None)
             _sg_base = tuple((_sg_file_rgb or Tint.scope_guide())[:3])
             _sg_base_col = None
@@ -6231,13 +6231,13 @@ def draw_text(input_value: str, height=None,
     # row; the gap's chevron centers on it (gutter pass + badge pass).
     # [tint=(0.36, 0.62, 0.85)]
     _diff_band_h = 1.5
-    # Diff-gap styling color: the file's tint (the same FileMeta color the
+    # Diff-gap styling color: the file's tint (the same painted color the
     # editor tab wears) for the band under the chevrons and the "N lines"
     # labels. Toggles.TextEditor.diff_fold_tint only in a buffer with no
     # file. Resolved once per body run - two dict reads.
     _dsep_path = (getattr(jump_to, 'path', None) if jump_to is not None
                   else getattr(ds, '_file_meta', None))
-    _dsep_rgb = (_uj_file_tint(_dsep_path) if _dsep_path is not None
+    _dsep_rgb = (_file_meta_tint(_dsep_path) if _dsep_path is not None
                  else None) or Toggles.TextEditor.diff_fold_tint
     _preview_alpha = Toggles.TextEditor.diff_preview_alpha
     _preview_n = (Toggles.TextEditor.diff_preview_lines_below,

@@ -263,3 +263,50 @@ def test_destroyed_child_in_shutdown_snapshot_is_not_destroyed_again(monkeypatch
     monkeypatch.setattr(Surface, 'all', [])
     monkeypatch.setattr(child, 'activate', lambda: pytest.fail('destroyed context reactivated'))
     child.destroy()
+
+
+@pytest.mark.parametrize('memfd_available', [True, False])
+@pytest.mark.parametrize('pool_fails', [False, True])
+def test_image_cursor_shared_memory(monkeypatch, memfd_available, pool_fails):
+    import os
+    from PIL import Image
+
+    if memfd_available and not hasattr(os, 'memfd_create'):
+        pytest.skip('Python has no memfd_create')
+    if not memfd_available:
+        monkeypatch.delattr(os, 'memfd_create', raising=False)
+        monkeypatch.delattr(os, 'MFD_CLOEXEC', raising=False)
+    descriptors = []
+    requests = []
+
+    def request(proxy, opcode, *args, interface=None, **kwargs):
+        requests.append((proxy, opcode, interface))
+        if interface == 'wl_shm_pool':
+            descriptor = args[1].value
+            descriptors.append(descriptor)
+            assert not os.get_inheritable(descriptor)
+            assert os.pread(descriptor, args[2].value, 0) == bytes([25, 50, 100, 128])
+            if pool_fails:
+                raise RuntimeError('pool creation failed')
+            return 20
+        if interface == 'wl_buffer':
+            return 30
+
+    # Exercise real mmap/file ownership without requiring a compositor.
+    backend = SimpleNamespace(cursor_surface=10, shm=11, pointer=12,
+                              enter_serial=1, native=SimpleNamespace(request=request),
+                              listen=lambda *args: None, custom_cursor_buffers=[])
+    cursor = SimpleNamespace(image=Image.new('RGBA', (1, 1), (200, 100, 50, 128)),
+                             xhot=0, yhot=0, buffer=None)
+    if pool_fails:
+        with pytest.raises(RuntimeError, match='pool creation failed'):
+            Backend.install_image_cursor(backend, cursor)
+    else:
+        Backend.install_image_cursor(backend, cursor)
+        assert cursor.buffer == 30
+        assert backend.custom_cursor_buffers == [30]
+        assert (20, 1, None) in requests  # The pool is released after creating its buffer.
+        Backend.install_image_cursor(backend, cursor)
+    assert len(descriptors) == 1  # Reusing a cursor does not allocate another file.
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])

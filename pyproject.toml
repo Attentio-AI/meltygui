@@ -19,6 +19,7 @@ dependencies = [
     "watchdog>=4", "pillow>=10", "rtree>=1.2", "packaging>=24", "tomlkit>=0.13",
     "httpx>=0.27", "anthropic>=0.40", "pyte>=0.8", "psutil>=6; sys_platform != 'ios'", "rich>=13",
     "symspellpy>=6.7", "mcp>=2.0", "uvicorn>=0.30", "paramiko>=3.5",
+    "melty-meta>=0.1",
 ]
 
 [project.optional-dependencies]
@@ -31,14 +32,17 @@ profile = ["line-profiler>=4"]
 [dependency-groups]
 dev = ["pytest>=8", "build>=1.2", "PyGLM>=2.8"]
 
+# `.melty` files are this checkout's own folder tints, not package data.
 [tool.hatch.build.targets.wheel]
 packages = ["meltygui"]
+exclude = ["**/.melty"]
 
 # Compiles the Rust `Source` extension into the package (hatch_build.py).
 [tool.hatch.build.targets.wheel.hooks.custom]
 
 [tool.hatch.build.targets.sdist]
 include = ["/meltygui", "/tests", "/examples", "/tools/native_wheels", "/tools/release.py", "/tools/build_source.py", "/hatch_build.py", "/native/source/src", "/native/source/Cargo.toml", "/native/source/Cargo.lock", "/README.md", "/LICENSE", "/docs/APPS.md", "/docs/INPUT_RECORDING.md", "/docs/DEVELOPMENT.md", "/docs/SUPPORT_WHEELS.md", "/docs/PUBLISHING.md", "/pyproject.toml"]
+exclude = ["**/.melty"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

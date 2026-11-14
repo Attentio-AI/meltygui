@@ -16,7 +16,7 @@ from meltygui.model.chat_folder_model import (
     folder_settings, recent_runs, save_folder_settings)
 from meltygui.model.chat_model import (
     conversation_folder_tint, is_active, project_tint, recent_chat_time, sidebar_visible, turn_status)
-from meltygui.model.file_metadata_model import set_row_tint
+from meltygui.model.tint_model import set_tint
 from meltygui.view.chat_decoration_view import (
     _button, _card, _caret, _color, _hovering, _running_dot, _text_tint, _tint_style)
 from meltygui.view.chat_source_icon_view import draw_source_icon
@@ -94,7 +94,7 @@ def draw_size_label(size, right, y, height, tint):
 
 
 def draw_chat_sidebar(sources, draw_state, state, width, height, cutoff=None, new_conversation=None, pane="all",
-                        file_metadata=None, scrollbar_overlays=None, project_filter=None):
+                        scrollbar_overlays=None, project_filter=None):
     """Render the shared recursive chat tree with the shared chat row interactions."""
     from meltygui.chat.chat_proxy import ChatProxy
     if isinstance(sources, ChatProxy):
@@ -161,12 +161,12 @@ def draw_chat_sidebar(sources, draw_state, state, width, height, cutoff=None, ne
             if smart_collapse and pane != 'all':
                 state.folder_expanded[folder_key] = len(rows) <= 3
             expanded = pane == 'recent' or state.folder_expanded.get(folder_key, folder_default(state, pane))
-            # The folder's tint is its directory's in the file-meta store; an
+            # The folder's tint is its directory's (tint_model); an
             # unpainted folder (and its unpainted rows) wears the source's.
-            painted = project_tint(project, file_metadata)
+            painted = project_tint(project)
             heading_tint = painted or (rows[0][6] if rows else (0.6, 0.6, 0.6))
             if pane == 'recent':
-                heading_tint = conversation_folder_tint(project, file_metadata)
+                heading_tint = conversation_folder_tint(project)
             folder_label = (Path(project).name or project) if project else "No project"
             label, heading_height = _text_layout(state, "project:" + project, folder_label)
             heading_height += Melty.px(2)
@@ -237,11 +237,11 @@ def draw_chat_sidebar(sources, draw_state, state, width, height, cutoff=None, ne
                     changed = True
                 heading_hovered = _hovering(x, heading_y, row_width, heading_height, pointer=imgui.get_mouse_pos())
                 picker_open = getattr(draw_state, '_tint_edit_key', None) == 'tint_project:' + run_id
-                if file_metadata is not None and (heading_hovered or picker_open):
+                if project and (heading_hovered or picker_open):
                     changed |= _tint_slot(draw_state, "project:" + run_id, painted,
                                           picker_x, heading_y + max(0, (heading_height - Melty.px(13)) / 2),
                                           heading_hovered, heading_tint,
-                                          lambda value, _p=project: set_row_tint(file_metadata, _p, value),
+                                          lambda value, _p=project: set_tint(_p, value),
                                           show_brush=heading_hovered, brush_tint=arrow_tint)
                 # The heading's +: a new conversation in this folder, in the
                 # source of the run's newest conversation.

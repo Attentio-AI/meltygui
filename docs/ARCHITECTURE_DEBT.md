@@ -139,10 +139,16 @@ has been revalidated.
 File renderers receive `file_metadata`, supplied by core only when declared;
 explicit dictionaries, including empty dictionaries, override the shared store.
 Nested listings, breadcrumbs and selectors pass that value through. Directory
-scanning belongs to `model/file_model.py`; tint/order/drop operations over plain
+scanning belongs to `model/file_model.py`; order/drop operations over plain
 mappings belong to `model/file_metadata_model.py`; watcher ownership and resize
 diagnostics belong to `core/files/file_explorer_core.py`. Watch subscriptions
 survive transfer from the old module registry.
+
+Tints are not in `file_metadata`: since 2026-11-13 they live in each folder's
+`.melty` (the `melty_meta` library), and `model/tint_model.py` is their one
+reader and writer (an in-memory cache, a watcher thread, debounced writes).
+Views call `tint(path)` / `set_tint(path, value)` there rather than receive an
+injected value, so a supplied `file_metadata` no longer hides or replaces tints.
 
 `models/file_meta.py` retains its dict-like adapters, shared store and persistence
 workers. Its legacy polling loop cannot stop cooperatively, so moving worker
@@ -160,8 +166,7 @@ Local wrapping, selection, previews and layout helpers live with chat views.
 `view/chat_decoration_view.py` now owns buttons, cards, carets, activity dots,
 hit testing and tint helpers. Scale, pointer position and drawing channel are
 supplied by the caller. `model/chat_model.py` owns conversation ordering/activity
-operations and tint access over supplied metadata. Chat navigation and transcripts
-receive the same explicitly supplied metadata as file views.
+operations; a project's tint comes from `model/tint_model.py`, as in file views.
 
 `chat/chat_interface.py` still owns text measurement caches, title/prose/image
 presentation, viewport behavior and other mixed helpers. Higher-level chat views

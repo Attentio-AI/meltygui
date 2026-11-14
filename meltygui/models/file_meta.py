@@ -1,4 +1,4 @@
-"""Per-file display attributes (tint, icon, order …) in ONE store shared
+"""Per-file attributes (icon, order, project, breakpoints …) in ONE store shared
 by every meltygui app on the machine — the studio, melty_code_editor, the
 folder windows — as `file_meta_store()`: a FileMetaProxy, path string ->
 FileMeta, backed by a pickle at ~/.melty/file_meta.pkl on desktop, or in
@@ -10,7 +10,7 @@ live. The file I/O is the proxy's job and stays off the render thread:
 
 * Writes are debounced (`SAVE_DELAY_S` after the last edit) and atomic
   (tmp + os.replace) on a worker thread; an edit to an entry in place
-  (`entry["tint"] = …`) reaches the store through FileMeta's change hooks.
+  (`entry["icon"] = …`) reaches the store through FileMeta's change hooks.
   Empty entries are not written (the studio's folder scan setdefault()s
   thousands of them; they cost nothing in memory and re-create on demand).
 * Other processes' writes: a poller thread stats the file every
@@ -23,6 +23,10 @@ live. The file I/O is the proxy's job and stays off the render thread:
   `@no_save("file_meta")`); a root loaded from an older save migrates the
   entries it still holds into the store on its on_load, once — the store
   wins for a path it already has.
+
+Tints are not here: they live in each folder's `.melty`, read and written
+through `meltygui.model.tint_model`. Entries saved before 2026-11-13 still
+hold a `tint`; nothing reads it.
 
 `MELTY_FILE_META=/path.pkl` overrides the location (tests, a second user).
 An iOS override must resolve within the current app container.
@@ -117,13 +121,11 @@ class FileMeta(dict):
     its own, so file attributes have a home: class-level attrs declare the
     vocabulary and its defaults (and give draw_any / @defaults / the context
     menu a class to anchor on), while the dict itself holds only the values
-    actually attached to the file. Reading `entry.tint` falls through to the
-    class default when the file has nothing stored."""
+    actually attached to the file. Reading `entry.icon` falls through to the
+    class default when the file has nothing stored. A `tint` left from an
+    older save is stale (tints live in `.melty`, see tint_model): readers of
+    entries drop it."""
 
-    # Black transparent = UNPAINTED: no tint on the file's views, and every
-    # consumer (tabs, trees, search rows) falls back to its own default. Get
-    # tints through painted_tint(), not entry["tint"] directly.
-    tint = (0.0, 0.0, 0.0, 0.0)
     icon = None  # glyph drawn before the file name (editor tabs); None = no icon
     # A FOLDER marked as a project (folder_project): a root for the editor's
     # global search, the symbol's usage graph, tabs and editability. Files
@@ -132,24 +134,8 @@ class FileMeta(dict):
     environment = None  # Project venv folder override; None means auto-detect.
     breakpoints = None  # Deterministic source-site tuple keys -> breakpoint options.
 
-    # The pre-09-02 class default; stored values of it are dropped at load
-    # (folder_files._init_file_meta) so the files read as unpainted.
-    _LEGACY_DEFAULT_TINT = (0.11, 0.122, 0.14)
-
-    @staticmethod
-    def painted_tint(entry):
-        """The tint a user attached to `entry` (a FileMeta / dict / None) as
-        an rgb(a) tuple, or None when the file is unpainted — no tint, a
-        malformed one, or one with alpha 0 (the default)."""
-        tint = entry.get("tint") if isinstance(entry, dict) else None
-        if not (isinstance(tint, (tuple, list)) and len(tint) >= 3):
-            return None
-        if len(tint) >= 4 and not tint[3]:
-            return None
-        return tuple(tint)
-
     def __getattribute__(self, name):
-        # Stored-first attribute access: `entry.tint` is the file's own value
+        # Stored-first attribute access: `entry.icon` is the file's own value
         # when one is attached, the class default otherwise. (A plain
         # __getattr__ can't do this - normal lookup finds the class attr
         # first and the dict value would never win.) Dunder/internal names
@@ -221,7 +207,7 @@ class FileMeta(dict):
         except KeyError:
             return default
 
-    # ── Mutation hooks: an entry edited in-place (`entry["tint"] = ...`) tells
+    # ── Mutation hooks: an entry edited in-place (`entry["icon"] = ...`) tells
     # the store that holds it (FileMetaProxy stamps `_owner` on insertion)
     # so the shared file gets written. dict-level raw edits (`dict.pop(entry,
     # ...)`) bypass these on purpose - you store.touch() after those.
@@ -756,7 +742,7 @@ class FileMetaCollection(DictConversion):
     """AppModel's handle on the shared per-file attribute store.
 
     `file_meta` IS the process's FileMetaProxy (path string -> FileMeta:
-    `tint`, `expanded`, `order`, …), the same object file_meta_store()
+    `icon`, `expanded`, `order`, …), the same object file_meta_store()
     returns, so the folder tree, the editor tabs and the codec layer keep
     reading `root.file_meta_collection.file_meta` unchanged. It is no_save:
     the entries live in ~/.melty/file_meta.pkl, not the root save. A root

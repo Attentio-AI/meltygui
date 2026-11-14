@@ -32,9 +32,6 @@ from meltygui.chat.messages import FileTags
 from meltygui.chat.messages import CommandExecution
 from meltygui.chat.messages import input_text
 import meltygui.chat.images as chat_images
-from meltygui.models.file_meta import FileMeta
-from meltygui.models.file_meta import file_meta_store
-from meltygui.model.file_metadata_model import set_row_tint
 from meltygui.core.runtime.toggles import Tint
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.styling.fonts import Font

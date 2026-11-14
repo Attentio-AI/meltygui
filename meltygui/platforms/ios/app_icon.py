@@ -1,8 +1,6 @@
 """Launcher artwork for iOS, preserving PQ HDR instead of passing it through actool."""
 import hashlib
 import json
-import os
-import pickle
 import tomllib
 from pathlib import Path
 import plistlib
@@ -10,6 +8,7 @@ import shutil
 import struct
 import zlib
 
+import melty_meta
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
@@ -205,11 +204,6 @@ def write_hdr_icon(path, nits, size, cicp, alpha=None, *, artwork_scale=1.0):
 
 
 
-class _MetadataReader(pickle.Unpickler):
-    def find_class(self, module, name):
-        raise pickle.UnpicklingError('File metadata must contain plain values')
-
-
 def fallback_identity(root):
     """Read the app label and painted repository color, including generated hosts."""
     manifest = root / 'pyproject.toml'
@@ -222,16 +216,9 @@ def fallback_identity(root):
             name = Probe().config(desktop).get('Desktop Entry', 'Name', fallback='').strip()
             if name:
                 break
-    metadata = Path(os.environ.get('MELTY_FILE_META', Path.home() / '.melty/file_meta.pkl'))
-    tint = None
-    try:
-        with metadata.open('rb') as stream:
-            entries = _MetadataReader(stream).load().get('entries', {})
-        value = entries.get(str(repository), {}).get('tint')
-        if isinstance(value, (list, tuple)) and len(value) >= 3 and (len(value) < 4 or value[3]):
-            tint = [max(0, min(1, float(channel))) for channel in value[:3]]
-    except (OSError, ValueError, TypeError, AttributeError, EOFError, pickle.UnpicklingError):
-        pass
+    # A build reads the `.melty` once per request: no app, so not tint_model's watched cache.
+    value = melty_meta.tint(repository)
+    tint = [max(0, min(1, channel)) for channel in value[:3]] if value else None
     return str(name or repository.name), repository.name, tint
 
 

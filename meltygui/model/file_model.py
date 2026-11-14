@@ -143,26 +143,29 @@ def _file_meta(root=None):
 
 
 def _apply_meta(tree, folder, meta):
-    """Meta → tree, recursively: stamp __overrides__ entries and sort keys by
-    stored `order`. All writes are inbound state, not user edits — dunder-key
+    """Meta → tree, recursively: stamp __overrides__ entries (the entry's
+    params and the path's tint from tint_model) and sort keys by stored
+    `order`. All writes are inbound state, not user edits — dunder-key
     stores are raw (no dirty mark) and reorders use raw dict ops — so applying
     never dirties the host or triggers a save. Returns True if anything
     changed (caller invalidates the subtree so cached rows repaint)."""
+    from meltygui.model.tint_model import tint
     changed = False
     names = [n for n in tree if n != "__overrides__"]
     desired, orders = {}, {}
     for n in names:
-        entry = meta.get(str(folder / n))
-        if not isinstance(entry, dict):
-            continue
-        params = {k: v for k, v in entry.items()
-                  if k not in ("order", "project", "environment") and not (isinstance(k, str) and k.startswith("__"))
-                  # unpainted (alpha-0) tint: no override, the row keeps its own
-                  and not (k == "tint" and isinstance(v, (tuple, list))
-                           and len(v) >= 4 and not v[3])}
+        key = str(folder / n)
+        entry = meta.get(key)
+        params = ({k: v for k, v in entry.items()
+                   if k not in ("order", "project", "environment", "tint")
+                   and not (isinstance(k, str) and k.startswith("__"))}
+                  if isinstance(entry, dict) else {})
+        painted = tint(key)              # unpainted: no override, the row keeps its own
+        if painted is not None:
+            params["tint"] = painted
         if params:
             desired[f"__{n}__"] = params
-        if isinstance(entry.get("order"), (int, float)):
+        if isinstance(entry, dict) and isinstance(entry.get("order"), (int, float)):
             orders[n] = entry["order"]
     current = tree.get("__overrides__")
     if desired:
@@ -194,9 +197,12 @@ def _apply_meta(tree, folder, meta):
 
 def _collect_meta(tree, folder, meta):
     """Tree → meta, recursively: read each child's __overrides__ params back
-    into the persisted store, and capture drag reordering as `order` stamps.
-    Order is stamped only once a folder's key order diverges from the natural
-    sorted order (or was stamped before) — an untouched folder saves nothing."""
+    into the persisted store (its `tint` into tint_model), and capture drag
+    reordering as `order` stamps. Order is stamped only once a folder's key
+    order diverges from the natural sorted order (or was stamped before) — an
+    untouched folder saves nothing."""
+    from meltygui.model.tint_model import set_tint
+    from meltygui.model.tint_model import tint
     names = [n for n in tree if n != "__overrides__"]
     ovs = tree.get("__overrides__")
     ovs = ovs if isinstance(ovs, dict) else {}
@@ -209,7 +215,12 @@ def _collect_meta(tree, folder, meta):
         entry = {k: v for k, v in entry_src.items()
                  if not (isinstance(k, str) and k.startswith("__"))} \
             if isinstance(entry_src, dict) else {}
+        painted = entry.pop("tint", None)
+        if painted is not None or tint(folder / n) is not None:
+            set_tint(folder / n, painted)    # unchanged: a no-op
         old = meta.get(path)
+        if isinstance(old, dict) and dict.__contains__(old, "tint"):
+            entry["tint"] = dict.__getitem__(old, "tint")   # stale, left as it was
         if stamp_order:
             entry["order"] = i
         elif isinstance(old, dict) and "order" in old:
@@ -228,28 +239,14 @@ def _collect_meta(tree, folder, meta):
 def initialize_file_metadata(vis, root):
     skip_suffixes = {".pyc"}
     from meltygui.models.file_meta import FileMeta
-    from meltygui.core.runtime.toggles import Toggles
     meta = _file_meta(root)
     if meta is None:
         return
     # Upgrade entries deserialized as plain dicts (older saves / from_dict)
     # to FileMeta, keeping their stored values.
-    # Retroactive (09-02): stored tints that were never a user's pick - the
-    # old bluish-grey class default, the tab tint's fallback colour (which got
-    # written back onto 184 files), or an alpha-0 default — are dropped, so
-    # those files read as unpainted (FileMeta.tint, black background).
-    unpainted = {tuple(round(c, 3) for c in FileMeta._LEGACY_DEFAULT_TINT[:3]),
-                 tuple(round(c, 3) for c in Toggles.CodeEditor.tab_tint_fallback[:3])}
     for key, entry in list(meta.items()):
         if isinstance(entry, dict) and not isinstance(entry, FileMeta):
             meta[key] = FileMeta(entry)
-        stored = dict.get(meta[key], "tint") if isinstance(meta[key], dict) else None
-        if stored is None:
-            continue
-        if (FileMeta.painted_tint({"tint": stored}) is None
-                or tuple(round(c, 3) for c in stored[:3]) in unpainted):
-            dict.pop(meta[key], "tint", None)
-            meta.touch(key)      # raw dict op: tell the shared store
     from meltygui.core.runtime.paths import PACKAGE_ROOT
     module_root = PACKAGE_ROOT   # .../src
     for p in module_root.rglob("*"):

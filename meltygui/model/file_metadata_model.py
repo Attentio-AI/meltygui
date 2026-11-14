@@ -1,24 +1,6 @@
-"""Operations over supplied per-file dictionaries; no shared-store discovery."""
+"""Operations over supplied per-file dictionaries; no shared-store discovery.
+Tints are not here: `meltygui.model.tint_model` reads and writes them."""
 from meltygui.models.file_meta import FileMeta
-
-
-def set_row_tint(meta, path, value):
-    """Write `value` (an rgb(a) tuple) as the tint of `path` in the shared
-    file-meta store, creating the entry only now — the listing never
-    setdefault()s entries for the files it merely shows. None (the picker's
-    clear) removes the tint, and the entry too when it holds nothing else,
-    so an unpainted file leaves no trace in file_meta.pkl."""
-    key = str(path)
-    entry = meta.get(key)
-    if value is None:
-        if isinstance(entry, dict) and dict.__contains__(entry, "tint"):
-            del entry["tint"]
-            if dict.__len__(entry) == 0:
-                del meta[key]
-        return
-    if not isinstance(entry, dict):
-        entry = meta[key] = FileMeta()
-    entry["tint"] = tuple(value)
 
 
 def ordered_rows(rows, meta):

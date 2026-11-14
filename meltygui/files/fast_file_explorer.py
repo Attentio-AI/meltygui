@@ -18,8 +18,8 @@ file_tree model: names straight to the window draw list, no per-row widgets
 or draw_states, events as parameters, the blit cache while idle, its own
 scroll); `draw_fast_file_explorer` puts it in a ColumnLayout (columns.py,
 shared draggable edge, persisted) next to the shortcuts — the XDG user
-directories, home and the root. Each row wears the file's OWN tint from the
-shared file-meta store (`FileMeta.painted_tint`, what the studio's tabs and
+directories, home and the root. Each row wears the file's OWN tint
+(`tint_model.tint`, the `.melty` beside it, what the studio's tabs and
 trees paint) on its name and, stronger, on its icon — no row background;
 the selection and hover washes use the tint through the editor tab's colour recipe —
 and its icon from the meta entry, else the codec's, else the folder / file
@@ -27,10 +27,9 @@ glyph. Every row — the shortcuts too — leads with its tint control: a
 painted row shows its `draw_tuple_fast` chip (click = the colour-picker
 popover, the studio's tab-bar chip), an unpainted one a faint paint-brush
 button (shown only on the selected row / the current shortcut) whose click
-stamps `default_tint` in and opens the picker. The store is only
-WRITTEN for a row the user paints (a meta entry per browsed file would
-bloat ~/.melty/file_meta.pkl); clearing the colour in the picker drops the
-tint again, and the entry with it when nothing else is attached.
+stamps `default_tint` in and opens the picker. A tint is only WRITTEN
+for a row the user paints (`tint_model.set_tint`); clearing the colour in
+the picker unpaints it, and a `.melty` left empty is deleted.
 
 Rows drag to reorder (the code editor's tab bar model, `DragDrop.on_drag`
 per row + one `on_drop`): a landed drop stamps every row of the directory
@@ -175,10 +174,10 @@ def tint_control(draw_state, key, tint, x, y, size, text_y, hovered, default_tin
     (registered at 3). `swatch` is the colour the chip paints (see
     `chip_swatch`); None paints the tint itself. `show_brush` False draws
     (and registers) no brush for an unpainted row — the listing shows it
-    only on the selected row. ``setter(value)`` writes the tint somewhere
-    other than the file-meta store (the chat window's conversations); None
-    clears. `brush_color` optionally supplies the exact icon RGB (the chat
-    sidebar matches its expand arrow). Returns True when the store was written."""
+    only on the selected row. ``setter(value)`` writes the tint
+    (`tint_model.set_tint` for a path, the chat metadata for a
+    conversation); None clears. `brush_color` optionally supplies the exact icon RGB (the chat
+    sidebar matches its expand arrow). Returns True when a tint was written."""
     if setter is None:
         raise TypeError("tint_control requires a supplied value setter")
     write = setter

@@ -452,7 +452,7 @@ def _pill_tint(editor_ds, line0, symbol=None, token_tint=None):
     comment → `token_tint`; else a tinted definition named `symbol`, one
     dict read off the editor's cached def-tint name map), the innermost
     tinted class/def block containing the line (draw_text stamps its
-    fold-remapped block list as `_lv_tint_blocks`), the file's FileMeta
+    fold-remapped block list as `_lv_tint_blocks`), the file's painted
     tint, else None (the pill's default green). Cheap by construction: the
     block scan is memoized per line against the block tuple's identity
     (rebuilt only when the def-tint pass rebuilds), everything else is a
@@ -485,7 +485,7 @@ def _pill_tint(editor_ds, line0, symbol=None, token_tint=None):
         cache[line0] = got
     if got is not None:
         return got
-    # File tint: the same FileMeta color the editor tab wears. The path
+    # File tint: the same painted color the editor tab wears. The path
     # comes from the editor's jump_to Address, else the editor's file_key.
     _jt = _d.get("jump_to")
     path = getattr(_jt, "path", None) if _jt is not None else None
@@ -494,8 +494,8 @@ def _pill_tint(editor_ds, line0, symbol=None, token_tint=None):
         if not isinstance(path, str):
             return None
     if _FILE_TINT_FN is None:
-        from meltygui.editor.text_editor import _uj_file_tint
-        _FILE_TINT_FN = _uj_file_tint
+        from meltygui.editor.source_ui import _file_meta_tint
+        _FILE_TINT_FN = _file_meta_tint
     return _FILE_TINT_FN(path)
 
 

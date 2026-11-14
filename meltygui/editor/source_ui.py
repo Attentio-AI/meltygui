@@ -17,12 +17,11 @@ def _tab_text_color(tint, brightness, saturation, min_brightness=0.0):
 
 
 def _file_meta_tint(path):
-    """The tint the user painted on this file (FileMeta — same store the
-    editor tabs and folder tree read), or None."""
-    from meltygui.models.file_meta import FileMeta
-    from meltygui.models.file_meta import file_meta_store
-    tint = FileMeta.painted_tint(file_meta_store().get(str(path)))
-    return tuple(tint[:3]) if tint else None
+    """The rgb the user painted on this file (tint_model, what the editor
+    tabs and folder tree wear), or None."""
+    from meltygui.model.tint_model import tint
+    painted = tint(path) if path is not None else None
+    return painted[:3] if painted else None
 
 
 class _RowSpan:

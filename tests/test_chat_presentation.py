@@ -40,10 +40,12 @@ def test_button_restores_cursor_after_draw_failure(monkeypatch):
     assert positions == [(10, 20), (7, 8)]
 
 
-def test_conversation_values_work_with_plain_supplied_mappings():
-    metadata = {'/project': {'tint': (.2, .3, .4)}}
-    assert project_tint('/project', metadata) == (.2, .3, .4)
-    assert project_tint('/unknown', metadata) is None
+def test_conversation_values_work_with_plain_supplied_mappings(tmp_path, tints):
+    import melty_meta
+    melty_meta.set_tint(tmp_path, (.2, .3, .4))
+    assert project_tint(tmp_path) == (.2, .3, .4)
+    assert project_tint(tmp_path / 'unknown') is None
+    assert project_tint('') is None
     conversation = {}
     write = conversation_tint_setter(conversation)
     write([.4, .5, .6])

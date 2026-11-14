@@ -127,13 +127,11 @@ def _apply_chat_drop(chats, keys, drop):
     return True
 
 
-def project_tint(project, file_metadata):
-    from meltygui.models.file_meta import FileMeta
-    """The tint painted on the project's directory in the shared file-meta
-    store (what the file browser and the studio paint), or None."""
-    if not project:
-        return None
-    return FileMeta.painted_tint(file_metadata.get(str(project)) if file_metadata is not None else None)
+def project_tint(project):
+    """The tint painted on the project's directory (tint_model, what the file
+    browser and the studio paint), or None."""
+    from meltygui.model.tint_model import tint
+    return tint(project) if project else None
 
 
 def folder_tint(project):
@@ -146,10 +144,10 @@ def folder_tint(project):
     return colorsys.hsv_to_rgb(hue, 0.48, 0.65)
 
 
-def conversation_folder_tint(project, file_metadata=None):
+def conversation_folder_tint(project):
     """The folder color shared by the conversation header and the recent list:
     the directory's painted tint, else its stable own."""
-    return project_tint(project, file_metadata) or folder_tint(project)
+    return project_tint(project) or folder_tint(project)
 
 
 def conversation_tint_setter(meta):

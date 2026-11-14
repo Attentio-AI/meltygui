@@ -1,7 +1,7 @@
 """The chat equivalent of FileMetaCollection: account → project → chat.
 
 No colour is assigned here: a project (a directory) wears the tint painted
-on it in the shared file-meta store, a conversation the tint the user
+on it (tint_model, the folder's `.melty`), a conversation the tint the user
 painted on its row (``entry["tint"]``, absent until then) — the file
 browser's rule, brush then picker.
 """
@@ -120,7 +120,7 @@ def persistent_metadata(path):
         accounts = {}
     for account in accounts.values():
         for project in account.get("projects", {}).values():
-            project.pop("tint", None)          # a project's tint is the folder's, in the project-meta store
+            project.pop("tint", None)          # a project's tint is the folder's (tint_model)
             for chat in project.get("chats", {}).values():
                 if chat.get("tint") is not None:
                     chat["tint"] = tuple(chat["tint"])
