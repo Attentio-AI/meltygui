@@ -13,7 +13,6 @@ from meltygui import gui, os_window, imgui
 from meltygui.hdr_color import pack_color
 from meltygui.rust import Shaped, draw_any, is_default_for
 
-BAR = 34.        # the window's title strip covers the first rows of the content
 EXTRA = int(sys.argv[1]) if len(sys.argv) > 1 else 0
 
 DATA = {
@@ -44,4 +43,4 @@ def swatch(input_value: tuple, width=0., height=0.):
 
 @os_window(name='draw_any', app_id='meltygui-gui-any', width=560, height=640, use_cache=False)
 def app(width=None, height=None):
-    draw_any(DATA, name='data', expand=2, left=8., top=BAR + 8., width=width - 16., height=height - BAR - 16.)
+    draw_any(DATA, name='data', expand=2, left=8., top=8., width=width - 16., height=height - 16.)

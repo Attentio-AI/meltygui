@@ -6,6 +6,21 @@ These rules reduce boilerplate and maximize reuse of views and models.
 Full design: [CONTRIBUTING.md](CONTRIBUTING.md). Existing code is not always the
 intended pattern; see [known gaps](docs/ARCHITECTURE_DEBT.md).
 
+**Rust `@gui`.** `@render_func` is being reimplemented in Rust as `@gui`
+(`@os_window`, `draw_editor`, `meltygui.rust.draw_any`), beside the code these
+rules describe. It was built in the worktree `~/Desktop/meltygui-rust-editor`
+(branch `rust-editor-pathfinding`) and merged into `~/Desktop/meltygui`
+(`melty-rust-prototype`) on 2026-11-13; both carry it.
+Before writing a view or changing `@gui` code read, in `docs/`:
+`GUI_VIEW_GUIDE.md` (how to build a view; its worked example is
+`examples/gui_todo.py`), `GUI_REQUIREMENTS.md` (what Lukas decided, and these
+rules restated for `@gui`), `GUI_PROTOTYPE.md` (how it works) and
+`NATIVE_EDITOR.md` (the editor and `Source`). Most `@gui` views are public:
+named `draw_<thing>` in `meltygui/view/<feature>_view.py`, published by a row
+in `EXPORTS` of `meltygui/rust.py` and used as `meltygui.rust.draw_thing`.
+When Lukas decides something about `@gui` in chat, add a dated line to
+`GUI_REQUIREMENTS.md` in the same turn.
+
 ## Ownership
 
 - `view/<feature>_view.py`: local, plain render functions, never view classes or

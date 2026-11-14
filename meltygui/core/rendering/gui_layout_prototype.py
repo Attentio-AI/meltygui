@@ -136,6 +136,9 @@ class GuiGeometry:
         self.sequence = 0
         self.last_error = None
         self.offset = (0.,0.)
+        # Height of the window's title bar: the root's space starts under it
+        # (gui_window_prototype.title_bar). 0 without one.
+        self.inset = 0.
         self.native = None
         self.windows = _Tracked(self.changes)
         self.claim = (False,False)
@@ -149,7 +152,7 @@ class GuiGeometry:
     def projected_position(self,node):
         if not node:
             if self.native and self.native.pairs:
-                return tuple(g.position(pair[0]) for g,pair in zip(self.axes,self.native.pairs))
+                return self.native.origin(tuple(g.position(pair[0]) for g,pair in zip(self.axes,self.native.pairs)))
             return self.offset
         if node in self.frames:return self.frame_rect(node)[:2]
         if node in self.bindings:return self.cell_rect(*self.bindings[node])[:2]
@@ -558,7 +561,8 @@ class GuiGeometry:
             rect=(x-ox+sx-cx,y-oy+sy-cy,max(1.,w),h)
             freeze=(self.gesture and cache.invocations[node][1].get('freeze_resize',False)
                     and (node in self.frozen or not cache.graph.dirty(node))
-                    and not cache.graph.pending(node) and node not in cache.events)
+                    and not cache.graph.pending(node) and node not in cache.events
+                    and node not in cache.fresh)
             if cache.graph.allocate(node,rect):
                 if freeze:self.frozen.add(node)
                 cache._last_pointer=None

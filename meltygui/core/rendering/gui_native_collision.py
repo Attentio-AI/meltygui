@@ -22,6 +22,11 @@ class NativeCollision:
         self.os_frame=adapter
         self.observe(adapter.prototype_snapshot())
 
+    def origin(self, near):
+        """Where the root's (0, 0) is, given the frame's near corner in the
+        same space: under the window's title bar (LayoutGeometry.inset)."""
+        return near[0],near[1]+self.geometry.inset
+
     def observe(self, snapshot):
         geometry=self.geometry
         pairs,screen,mode,window_id,pending=snapshot
@@ -29,7 +34,7 @@ class NativeCollision:
         if changed_mode:
             self.cancel()
         self.mode,self.window_id=mode,window_id
-        geometry.offset=tuple(pair[0] for pair in pairs)
+        geometry.offset=self.origin(tuple(pair[0] for pair in pairs))
         if not self.pairs:
             for axis,graph in enumerate(geometry.axes):
                 # Existing local declarations become screen-space geometry once.
@@ -87,7 +92,7 @@ class NativeCollision:
         if not info['parent'] and not info['portal']:
             # The hosted root fills the surface below its native title strip.
             for axis,(graph,(n,f),(a,b)) in enumerate(zip(geometry.axes,self.pairs,pairs)):
-                gap=0. if axis==0 else geometry.cache.graph.rect(node)[1]
+                gap=0. if axis==0 else geometry.inset+geometry.cache.graph.rect(node)[1]
                 graph.replace_cells(serial+2*10**9,[(n,a,gap,gap),(b,f,0.,0.)])
         elif info['portal']:
             outer=geometry.windows.get(node)
@@ -100,7 +105,7 @@ class NativeCollision:
 
     def pointer_origin(self):
         if self.os_frame is not None:
-            return tuple(self.os_frame.applied_origin(axis) for axis in ('x','y'))
+            return self.origin(tuple(self.os_frame.applied_origin(axis) for axis in ('x','y')))
         return self.geometry.offset
 
     def move_policy(self,moving):
@@ -139,7 +144,7 @@ class NativeCollision:
         unchanged=stamp==self.committed
         if not unchanged:
             pairs=tuple(tuple(g.position(e) for e in p) for g,p in zip(geometry.axes,self.pairs))
-            geometry.offset=tuple(p[0] for p in pairs)
+            geometry.offset=self.origin(tuple(p[0] for p in pairs))
         if geometry.frames:
             for node in geometry.cache.root_ids:
                 if node in geometry.frames and not geometry.cache.graph.is_portal(node):

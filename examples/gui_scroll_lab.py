@@ -55,6 +55,6 @@ def app(show_nested=True, draw_state=None):
     if changed:
         draw_state.show_nested = show_nested
     imgui.text(f"Body calls: rows {CALLS['rows']}, lists {CALLS['lists']}, containers {CALLS['containers']}")
-    rows(ROW_COUNT, name='flat', left=16, top=110)
+    rows(ROW_COUNT, name='flat', left=16, top=80)
     if show_nested:
-        nested(DEPTH, name='nested', left=570, top=110)
+        nested(DEPTH, name='nested', left=570, top=80)

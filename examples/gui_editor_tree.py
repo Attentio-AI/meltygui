@@ -28,7 +28,6 @@ else:
     PATH = Path(tempfile.mkdtemp(prefix='melty-editor-tree-')) / 'sample.py'
     shutil.copy(Path(__file__).with_name('gui_editor_sample.py'), PATH)
 
-BAR = 34.          # the window's title strip covers the first rows of the content
 SHARE = .58        # the editor's share of the width
 GAP = 8.
 source = Source(PATH.read_text(), str(PATH))
@@ -38,6 +37,6 @@ state = EditorState()
 @os_window(name='Source and its tree', app_id='meltygui-gui-editor-tree', width=1360, height=840, use_cache=False)
 def app(width=None, height=None):
     split = width * SHARE
-    draw_editor(source, name='source', state=state, left=0., top=BAR, width=split, height=height - BAR, path=str(PATH))
+    draw_editor(source, name='source', state=state, left=0., top=0., width=split, height=height, path=str(PATH))
     # The same code as keys and values: an edit here is a splice of the source, which the editor follows.
-    draw_any(source.tree, name='tree', expand=1, left=split + GAP, top=BAR + GAP, width=width - split - GAP * 2, height=height - BAR - GAP * 2)
+    draw_any(source.tree, name='tree', expand=1, left=split + GAP, top=GAP, width=width - split - GAP * 2, height=height - GAP * 2)

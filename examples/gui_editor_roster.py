@@ -83,7 +83,6 @@ class Model:
 
 
 model = Model()
-BAR = 34
 
 
 def show(path, line, column):
@@ -101,8 +100,8 @@ def show(path, line, column):
 
 @os_window(name='Roster: tints and lookups across files', app_id='meltygui-gui-editor-roster', width=1500, height=640, use_cache=False)
 def app(width=None, height=None):
-    # Lever: the window's title strip covers the first rows of the content.
-    imgui.set_cursor_pos((8, BAR + 6))
+    # The toolbar is ImGui's own flow, which starts under the title bar. Lever: its inset.
+    imgui.set_cursor_pos((8., imgui.get_cursor_pos_y() + 10.))
     if imgui.button('Next sky tint'):
         model.repaint()
     imgui.same_line()
@@ -113,6 +112,6 @@ def app(width=None, height=None):
     half = width / 2
     for at, buffer in enumerate((model.left, model.right)):
         analysis = buffer.analysis
-        draw_editor(buffer.source, name=buffer.path.name, state=buffer.state, left=at * half, top=BAR + 36., width=half - 4, height=height - BAR - 40,
+        draw_editor(buffer.source, name=buffer.path.name, state=buffer.state, left=at * half, top=40., width=half - 4, height=height - 40.,
                     path=str(buffer.path), errors=analysis.errors, imports=analysis.imports, tints=analysis.tints,
                     roster=model.roster, on_open=show)

@@ -24,6 +24,10 @@ struct Shared {
     input: Py<PyAny>,
     stack: Py<PyList>,
     events: Py<PyDict>,
+    // Node to its Event (core/input/event.py), and the nodes whose Event was
+    // told something since they last ran.
+    inputs: Py<PyDict>,
+    fresh: Py<PySet>,
     backgrounds: Py<PyDict>,
     texture_refs: Py<PyDict>,
     staged_regions: Py<PyDict>,
@@ -96,7 +100,8 @@ impl Executor {
     #[allow(clippy::too_many_arguments)]
     fn execute<'py>(slf: &Bound<'py, Self>, py: Python<'py>, shared: &Shared, record: &Record, node: u64,
                     independent: bool, origin: (f64, f64), auto_cache: bool, mouse_owner: Option<u64>,
-                    focus: Option<u64>, events: &Bound<'py, PyDict>, progress: &mut Progress<'py>) -> PyResult<()> {
+                    focus: Option<u64>, events: &Bound<'py, PyDict>, event: Option<&Bound<'py, PyAny>>,
+                    progress: &mut Progress<'py>) -> PyResult<()> {
         let owner = shared.owner.bind(py);
         let graph = shared.graph.bind(py);
         let key = record.key.bind(py);
@@ -149,7 +154,7 @@ impl Executor {
         }
         let body = record.renderer.borrow(py).invoke(py, Some(input.clone_ref(py)), Some(&arguments), Some(Capture {
             unique: record.unique, explicit: record.caller_keys.bind(py), rect: old_rect, auto_height, scroll,
-            cache: owner, events: events.as_any(), fused: shared.graphics,
+            cache: owner, events: events.as_any(), event, node, fused: shared.graphics,
         }));
         let result = match body {
             Ok(result) => result.into_bound(py).downcast_into::<PyTuple>()?,
@@ -317,11 +322,27 @@ impl Executor {
             events.map(|events| events.downcast_into::<PyDict>()).transpose()?
         } else { None };
         let events = events.unwrap_or_else(|| PyDict::new(py));
+        // The view's Event, and whether it holds something this run is to read.
+        let inputs = shared.inputs.bind(py);
+        let event = if inputs.len() > 0 { inputs.get_item(key)? } else { None };
+        let fresh = shared.fresh.bind(py);
+        let told = fresh.len() > 0 && fresh.contains(key)?;
         let stack = shared.stack.bind(py);
         stack.append(key)?;
         let mut progress = Progress::default();
         let outcome = Self::execute(slf, py, &shared, &record, node, independent, origin, auto_cache, mouse_owner,
-                                    focus, &events, &mut progress);
+                                    focus, &events, event.as_ref(), &mut progress);
+        // A run that succeeded has read what its Event was told: it is cleared. A failed one keeps it.
+        let cleared = match (&outcome, told) {
+            (Ok(()), true) => {
+                let cleared = match &event {
+                    Some(event) => event.call_method0(intern!(py, "clear")).map(drop),
+                    None => Ok(()),
+                };
+                fresh.discard(key).and(cleared)
+            }
+            _ => Ok(()),
+        };
         // A failed body leaves no layout, declarations, regions or consumed events behind.
         let aborted = match &outcome {
             Err(_) => owner.call_method1(intern!(py, "_abort_execution"), (node, &events)).map(drop),
@@ -336,6 +357,7 @@ impl Executor {
         aborted?;
         popped?;
         released?;
+        cleared?;
         outcome
     }
 }
@@ -345,12 +367,13 @@ impl Executor {
     #[new]
     #[allow(clippy::too_many_arguments)]
     fn new(owner: Py<PyAny>, graph: Py<RetainedGraph>, graphics: bool, input: Py<PyAny>, stack: Py<PyList>,
-           events: Py<PyDict>, backgrounds: Py<PyDict>, texture_refs: Py<PyDict>, staged_regions: Py<PyDict>,
+           events: Py<PyDict>, inputs: Py<PyDict>, fresh: Py<PySet>,
+           backgrounds: Py<PyDict>, texture_refs: Py<PyDict>, staged_regions: Py<PyDict>,
            regions: Py<PyDict>, capture_info: Py<PyDict>, changes: Py<PyList>, right_active: Py<PySet>,
            pointer_claims: Py<PyDict>, active: Py<PySet>, no_claim: Py<PyAny>, clear: Py<PyAny>) -> Self {
         Self {
             shared: Some(Rc::new(Shared {
-                owner, graph, graphics, input, stack, events, backgrounds, texture_refs, staged_regions, regions,
+                owner, graph, graphics, input, stack, events, inputs, fresh, backgrounds, texture_refs, staged_regions, regions,
                 capture_info, changes, right_active, pointer_claims, active, no_claim, clear,
             })),
             gpu: None,

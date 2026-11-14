@@ -3,38 +3,35 @@
 ImGui owns widget IDs, keyboard focus and editing state globally. This bridge
 tracks which retained views must execute; it never copies IO into view contexts.
 
-Views declared with ``@gui(listen=(...))`` are event driven instead: raw pointer
-and key samples never rerun them, and each name they list arrives as a list in
-``view_events``:
+A view whose body takes ``event`` is event driven instead: raw pointer and key
+samples never rerun it. It runs when something it asked its ``Event`` about
+happened, and reads it there (core/input/event.py has the vocabulary; asking is
+subscribing). This file is the router: `deliver` turns each frame's sample into
+what the views' events say and wakes the views that asked.
 
-- ``keys``: ``(key, mods)`` presses and repeats, for the keyboard owner.
-- ``text``: typed strings, for the keyboard owner.
-- ``focus``: True / False when the view gains / loses the keyboard.
-- ``pointer``: ``Pointer`` press, drag and release of any button, in the
-  view's own coordinates.
-- ``hold``: ``Pointer`` of kind 'hold', once a frame while a button is held
-  and the pointer rests outside the view (what a drag past an edge needs to
-  keep scrolling).
-- ``hover``: ``Pointer`` of kind 'hover' when the pointer moves over the view
-  with no button held, and one of kind 'leave' when it has left.
-- ``touch``: ``Touch`` contacts, from hosts that report them through
-  ``ImGuiInput.touch``.
-- ``wheel``: ``(horizontal, vertical)`` steps no viewport consumed.
-- ``scroll``: True after a viewport under the pointer scrolled.
+- A press of a button goes to the innermost view around the hit one that asked
+  about that button (`taker`), inside what it takes of its box (`Event.reach`).
+  That view holds the pointer until every button is up: drags and releases are
+  its own, wherever the pointer goes.
+- A left press gives the keyboard to the innermost view around the hit one that
+  asked for keys, so popovers and inline widgets leave the keyboard with their
+  editor. Who has the keyboard, and the temporary popups a press or Escape
+  closes, are `cache.focus` (core/input/focus.py).
+- Hover goes to the innermost view around the pointer that asked about it, and
+  is kept while a button is held.
+- The wheel goes to the innermost asking view when no scroll view took it.
 
-A left press gives the keyboard, any press the pointer, to the innermost
-listening view around the hit one, so popovers and inline widgets leave the
-keyboard with their editor. Views that list nothing cost one dictionary truth
-test a frame. Who has the keyboard, and the temporary popups a press or Escape
-closes, are `cache.focus` (core/input/focus.py).
+A view declared ``@gui(listen=())`` only paints: nothing runs it but its
+arguments. Neither kind costs anything in a frame: with none of them in the
+app a frame pays one dictionary truth test.
 
 Window gestures are the host's by default, over every view: a left drag moves
 the Melty or OS window, a right drag resizes it. A view overrides the left
-one by listening for ``pointer`` (``left``: text selection, a list's rows),
+one by asking about the left button (``left``: text selection, a list's rows),
 over its whole rectangle or over the part of it the view says it uses
-(``reach``: an editor's rows, so the empty space below them still moves the
-window); nothing a view listens for overrides the right one. An ImGui item still owns
-the button that activated it (``finish``).
+(``Event.reach``: an editor's rows, so the empty space below them still moves
+the window); nothing a view asks overrides the right one. An ImGui item still
+owns the button that activated it (``finish``).
 
 ``@gui(cursor=shape)`` (a ``core/input/mouse_cursor.py`` shape) declares the
 pointer's shape over a view: the innermost declaring view around the hovered
@@ -45,15 +42,15 @@ for it.
 from collections import namedtuple
 import time
 
-# kind is 'press', 'drag', 'release', 'hold', 'hover' or 'leave'; clicks counts
-# 1, 2, 3 for repeated left presses; button is 0 left, 1 right, 2 middle (the
-# one pressed or released, else the first one held).
-Pointer = namedtuple('Pointer', 'kind x y clicks ctrl shift alt button', defaults=(0,))
+from meltygui.core.input.event import FOCUS, HOVER, KEYS, LEFT, MOVE, OUTSIDE, QUIET, SCROLL, TOUCH, WHEEL
+
 # One touch contact: kind is 'down', 'move' or 'up'; contact tells fingers apart.
 Touch = namedtuple('Touch', 'kind contact x y')
-# Levers: how close in seconds and pixels presses must be to count as a multi click.
+# Levers: how close in seconds and pixels presses must be to count as a multi click. A release
+# within CLICK_PIXELS of its press is a click (`Event.left_mouse_clicked`).
 CLICK_SECONDS = 0.4
-CLICK_PIXELS = 4.
+CLICK_PIXELS = 4.0
+BUTTONS = 3                      # left, right, middle: the buttons a view is told about
 
 
 # Neither mouse button is claimed by an idle view.
@@ -75,16 +72,15 @@ class ImGuiInput:
         self.settle_hover = set()
         self.right_active = set()
         self.pressed_keys = frozenset()
-        # Event delivery to listening views: presses queued by the host, the
-        # views owning the keyboard and the held pointer, the last press.
+        # Event delivery (`deliver`): the key presses the host queued, the view holding the
+        # pointer since a press (`grab`) and the one it hovers (`over`).
         self.keys = []
         self.grab = self.over = None
-        # A view that listens for the pointer is under it or holds it: left drags are that view's, not a window move.
+        # A view that asked about the left button is under the pointer or holds it: left drags are that view's, not a window move.
         self.left = False
         self.shape = None          # the declared pointer shape under the pointer, as of the last press while a button is held
-        # View to the part of its rectangle it takes the pointer in, (x0, y0, x1, y1) in its own coordinates (`reach`).
-        self.reaches = {}
-        self.press = (0., 0., 0., 0)
+        # Each button's last press, (time, x, y, clicks): what makes the next one a double or triple click.
+        self.presses = [(0.0, 0.0, 0.0, 0)] * BUTTONS
         self.touches = []
 
     def character(self, codepoint):
@@ -110,105 +106,188 @@ class ImGuiInput:
         x, y = cache.position(node)
         return position[0] - cache.origin[0] - x, position[1] - cache.origin[1] - y
 
-    def owner(self, node, name):
-        """The innermost view from `node` outward that listens for `name`."""
-        listeners, parent = self.cache.listeners, self.cache.graph.parent
+    def owner(self, node, asks):
+        """The innermost view from `node` outward whose body asked about one of `asks` (bits of core/input/event.py)."""
+        inputs, parent = self.cache.inputs, self.cache.graph.parent
         while node:
-            if name in listeners.get(node, ()):
+            event = inputs.get(node)
+            if event is not None and event.asked & asks:
                 return node
             node = parent(node)
         return None
 
-    def reach(self, node, rect=None):
-        """A listening view says where it takes the pointer: `rect` (x0, y0, x1, y1) in its own coordinates,
-        None for its whole rectangle. Outside it presses and left drags are the window's (it moves)."""
-        if rect is None:
-            self.reaches.pop(node, None)
-        else:
-            self.reaches[node] = rect
-
-    def taker(self, node, position):
-        """The view that takes the pointer at `position` over `node`: the innermost one around it that
-        listens for it, inside its own rectangle (a Melty window's title strip above it is the window's)
-        and inside what it said it uses of that (`reach`)."""
-        node = self.owner(node, 'pointer')
+    def taker(self, node, position, button):
+        """The view that takes `button` at `position` over `node`: the innermost one around it that
+        asked about that button, inside its own rectangle (a Melty window's title strip above it is the
+        window's) and inside what it said it uses of that (`Event.reach`). Outside, the press is the
+        window's: a left drag moves it."""
+        node = self.owner(node, 1 << button)
         if node is not None:
             x, y = self.local(node, position)
-            left, top, right, bottom = self.reaches.get(node) or (0., 0., *self.cache.graph.rect(node)[2:])
+            area = self.cache.inputs[node].area
+            if area is None:
+                area = (0.0, 0.0, *self.cache.graph.rect(node)[2:])
+            left, top, right, bottom = area
             if not (left <= x < right and top <= y < bottom):
                 return None
         return node
 
-    def post(self, node, name, item):
-        """Queue one event; the view's next run reads the list in view_events[name]."""
+    def wake(self, node):
+        """Run `node` again: its Event was told something. The run reads it and the executor clears it."""
         cache = self.cache
-        if node is None or node not in cache.records:
-            return
-        cache.events.setdefault(node, {}).setdefault(name, []).append(item)
+        cache.fresh.add(node)
         cache.geometry.frozen.discard(node)
         cache.graph.invalidate_node(node)
         if cache.request_frame:
             cache.request_frame()
 
+    def count(self, button, position):
+        """Which press in a row this one of `button` is: 1, 2 or 3 (the levers CLICK_SECONDS and CLICK_PIXELS)."""
+        now = time.monotonic()
+        then, x, y, clicks = self.presses[button]
+        near = abs(position[0] - x) + abs(position[1] - y) <= CLICK_PIXELS
+        if near and now - then <= CLICK_SECONDS:
+            clicks = clicks % 3 + 1
+        else:
+            clicks = 1
+        self.presses[button] = (now, position[0], position[1], clicks)
+        return clicks
+
+    def keyboard(self, node, has):
+        """`node` gained (`has`) or lost the keyboard (core/input/focus.py): its Event says so."""
+        event = self.cache.inputs.get(node)
+        if event is None or event is QUIET or node not in self.cache.records:
+            return
+        event.keyboard = has
+        if event.asked & FOCUS:
+            # (Told to a view while it runs, the edge is cleared with that run: `is_focused` is what stays.)
+            if has:
+                event.gained = True
+            else:
+                event.lost = True
+            self.wake(node)
+
     def deliver(self, position, buttons, old, wheel, modifiers, scrolled):
-        """Turn this frame's sample into events for the listening views."""
-        cache, listeners = self.cache, self.cache.listeners
+        """Turn this frame's sample into what the views' events say (core/input/event.py), and
+        wake each view that was told something it asked about."""
+        cache, inputs = self.cache, self.cache.inputs
         before = old[1] if old is not None else ()
         # The buttons that went down and up since the last sample (left, right, middle).
-        pressed = [at for at in range(3) if buttons[at] and not (at < len(before) and before[at])]
-        released = [at for at in range(3) if not buttons[at] and at < len(before) and before[at]]
-        held = next((at for at in range(3) if buttons[at]), None)
+        pressed = [at for at in range(BUTTONS) if buttons[at] and not (at < len(before) and before[at])]
+        released = [at for at in range(BUTTONS) if not buttons[at] and at < len(before) and before[at]]
+        held = any(buttons[:BUTTONS])
         moved = old is None or old[0] != position
         if pressed or scrolled or any(wheel):
             target = self.hit(position)
             if pressed and self.grab is None:
-                self.grab = self.taker(target, position)
+                self.grab = self.taker(target, position, pressed[0])
             if 0 in pressed:
-                cache.focus.take(self.owner(target, 'keys'))
-                now = time.monotonic()
-                then, x, y, clicks = self.press
-                near = abs(position[0] - x) + abs(position[1] - y) <= CLICK_PIXELS
-                self.press = (now, position[0], position[1],
-                              clicks % 3 + 1 if near and now - then <= CLICK_SECONDS else 1)
+                cache.focus.take(self.owner(target, KEYS))
             if scrolled:
-                self.post(self.owner(target, 'scroll'), 'scroll', True)
+                node = self.owner(target, SCROLL)
+                if node is not None:
+                    inputs[node].scrolls = True
+                    self.wake(node)
             elif any(wheel):
-                self.post(self.owner(target, 'wheel'), 'wheel', (wheel[1], wheel[0]))
+                node = self.owner(target, WHEEL)
+                if node is not None:
+                    event = inputs[node]
+                    event.wheel_y += wheel[0]
+                    event.wheel_x += wheel[1]
+                    self.wake(node)
+        counts = [self.count(button, position) for button in pressed]
         grab = self.grab
-        if grab is not None and grab in cache.records:
+        event = inputs.get(grab)
+        if event is not None and grab in cache.records:
             x, y = self.local(grab, position)
-            for kind, changed in (('press', pressed), ('release', released)):
-                for button in changed:
-                    self.post(grab, 'pointer', Pointer(kind, x, y, self.press[3], *modifiers[:3], button))
-            if held is not None and not pressed and moved:
-                self.post(grab, 'pointer', Pointer('drag', x, y, self.press[3], *modifiers[:3], held))
-            elif held is not None and not pressed and 'hold' in listeners.get(grab, ()):
+            told = False
+            for button, clicks in zip(pressed, counts):
+                bit = 1 << button
+                if event.asked & bit:
+                    event.downs |= bit
+                    event.held |= bit
+                    event.clicks = clicks
+                    event.start_x = x
+                    event.start_y = y
+                    event.travel = 0.0
+                    event.total_dx = 0.0
+                    event.total_dy = 0.0
+                    told = True
+            if event.held and (pressed or released or moved):
+                # Where the pointer is now, for what is told below. `dx` and `dy` add up until the view runs.
+                if not pressed:
+                    event.dx += x - event.x
+                    event.dy += y - event.y
+                event.total_dx = x - event.start_x
+                event.total_dy = y - event.start_y
+                event.travel = max(event.travel, abs(event.total_dx) + abs(event.total_dy))
+                event.x = x
+                event.y = y
+                event.ctrl, event.shift, event.alt = modifiers[:3]
+            for button in released:
+                bit = 1 << button
+                if event.held & bit:
+                    event.held &= ~bit
+                    event.ups |= bit
+                    if event.travel <= CLICK_PIXELS:
+                        event.taps |= bit
+                    told = True
+            if held and not pressed and moved and event.held:
+                event.drags |= event.held
+                told = True
+            elif held and not pressed and event.held and event.asked & OUTSIDE:
                 # Held still: only a pointer resting outside the view needs time to pass.
                 _, _, wide, tall = cache.graph.rect(grab)
                 if not (0 <= x < wide and 0 <= y < tall):
-                    self.post(grab, 'hold', Pointer('hold', x, y, self.press[3], *modifiers[:3], held))
-        if held is None:
+                    event.rests |= event.held
+                    told = True
+            if told:
+                self.wake(grab)
+        if not held:
             self.grab = None
-        if moved and held is None or self.over is not None:
-            # Hover goes to the innermost view around the pointer that asked for it.
-            over = self.owner(self.hit(position), 'hover') if held is None else self.over
+        # Hover goes to the innermost view around the pointer that asked about it. It follows the
+        # pointer's moves and a press, and stays where it is while a button is held.
+        frozen = held and not pressed
+        if (moved or pressed) and not frozen or self.over is not None:
+            over = self.over if frozen else self.owner(self.hit(position), HOVER | MOVE)
             if over != self.over:
-                if self.over in cache.records:
-                    self.post(self.over, 'hover', Pointer('leave', 0., 0., 0, *modifiers[:3]))
+                event = inputs.get(self.over)
+                if event is not None and self.over in cache.records:
+                    event.over = False
+                    self.wake(self.over)
                 self.over = over
-            if over is not None and moved and held is None:
-                self.post(over, 'hover', Pointer('hover', *self.local(over, position), 0, *modifiers[:3]))
+            if over is not None and not frozen:
+                event = inputs[over]
+                if not event.over:
+                    event.over = True
+                    event.moves = moved
+                    event.x, event.y = self.local(over, position)
+                    event.ctrl, event.shift, event.alt = modifiers[:3]
+                    self.wake(over)
+                elif moved and not held and event.asked & MOVE:
+                    event.moves = True
+                    event.x, event.y = self.local(over, position)
+                    event.ctrl, event.shift, event.alt = modifiers[:3]
+                    self.wake(over)
         for touch in self.touches:
-            target = self.owner(self.hit((touch.x, touch.y)), 'touch')
+            target = self.owner(self.hit((touch.x, touch.y)), TOUCH)
             if target is not None:
-                self.post(target, 'touch', touch._replace(**dict(zip('xy', self.local(target, (touch.x, touch.y))))))
+                x, y = self.local(target, (touch.x, touch.y))
+                event = inputs[target]
+                if not event.contacts:
+                    event.contacts = []
+                event.contacts.append(touch._replace(x=x, y=y))
+                self.wake(target)
         self.touches.clear()
         if self.keys or self.text:
             keyboard = cache.focus.keyboard
-            for item in self.keys:
-                self.post(keyboard, 'keys', item)
-            if self.text:
-                self.post(keyboard, 'text', ''.join(map(chr, self.text)))
+            event = inputs.get(keyboard)
+            if event is not None and keyboard in cache.records:
+                if self.keys:
+                    event.pressed = [*event.pressed, *self.keys]
+                if self.text:
+                    event.typed += ''.join(map(chr, self.text))
+                self.wake(keyboard)
 
     def hit(self, position):
         cache = self.cache
@@ -233,7 +312,7 @@ class ImGuiInput:
         self.text, self.characters = tuple(self.characters), []
         if old != self.sample or self.text or any(buttons) or self.pressed_keys:
             self.cache.calibration.input()
-        listeners, focus = self.cache.listeners, self.cache.focus
+        inputs, focus = self.cache.inputs, self.cache.focus
         pressed = any(down and (old is None or not old[1][i]) for i, down in enumerate(buttons))
         if focus.stack or focus.shut:
             # Open popups: a press outside one closes it, Escape the innermost (core/input/focus.py).
@@ -241,7 +320,7 @@ class ImGuiInput:
                 focus.press(self.hit(position))
             if self.keys:
                 focus.escape(self.keys)
-        if listeners:
+        if inputs:
             self.deliver(position, buttons, old, wheel, modifiers, scrolled)
         if self.keys:
             self.keys.clear()
@@ -256,7 +335,14 @@ class ImGuiInput:
             self.capture = self.hover
             self.focus = self.hover
         self.mouse_owner = self.capture if self.capture is not None else self.hover
-        self.left = bool(listeners) and (self.grab is not None or self.taker(self.hover, position) is not None)
+        # Left drags are a view's, not a window move, when the view that holds the pointer, or else
+        # the one under it, asked about the left button.
+        if not inputs:
+            self.left = False
+        elif self.grab is not None:
+            self.left = inputs[self.grab].asked & LEFT != 0
+        else:
+            self.left = self.taker(self.hover, position, 0) is not None
         cursors = self.cache.cursors
         if cursors:
             # The declared pointer shape: the innermost around the hovered view, held from a press to the release.
@@ -280,8 +366,8 @@ class ImGuiInput:
         dirty.update(self.settle_hover)
         self.settle_hover.clear()
         for node in dirty:
-            # Listening views run on their events, never on raw samples.
-            if node in self.cache.records and node not in listeners:
+            # A view with an Event runs for what it was told, never on raw samples.
+            if node in self.cache.records and node not in inputs:
                 self.cache.geometry.frozen.discard(node)
                 self.cache.graph.invalidate_node(node)
         if not any(buttons):
@@ -340,7 +426,6 @@ class ImGuiInput:
         self.settle_hover.discard(node)
         self.right_active.discard(node)
         self.pointer_claims.pop(node, None)
-        self.reaches.pop(node, None)
         for name in ('hover', 'capture', 'focus', 'mouse_owner', 'blur', 'grab', 'over'):
             if getattr(self, name) == node:
                 setattr(self, name, None)

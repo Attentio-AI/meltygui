@@ -1,14 +1,16 @@
 """Keyboard focus and temporary popups of one `@gui` surface.
 
-One view owns the keyboard (`keyboard`): it gets the `keys`, `text` and
-`focus` events of gui_imgui_input.py. A temporary popup is a view called with
-`popup=<open event>`; it is open exactly while it is on `stack`:
+One view owns the keyboard (`keyboard`): its `event` has the keys and the typed
+text, and `event.is_focused()` is true (core/input/event.py). A temporary popup
+is a view called with `popup=<open event>`; it is open exactly while it is on
+`stack`:
 
-    edited, picked = options(value, name='options', popup=pressed, left=0., top=height + 2)
+    edited, picked = options(value, name='options', popup=pressed, left=0.0, top=height + 2.0)
 
 Nobody keeps an open flag. The rules, all in this file:
 
-- A truthy `popup=` opens it. One that listens for `keys` takes the keyboard.
+- A truthy `popup=` opens it. One whose body asks for keys takes the keyboard
+  (`ran`: after its first run, which is where it asks).
 - A press outside its subtree closes it and still reaches what is under it.
   A popup opened from a popup is its descendant: a press in the child keeps
   the parent. The press that closed a popup cannot open it again, so a press
@@ -23,15 +25,18 @@ Nobody keeps an open flag. The rules, all in this file:
 it or with a popup opened from it (an editor with `focus=True` does not take
 the keyboard back from its own picker).
 """
+from meltygui.core.input.event import KEYS
 from meltygui.core.windowing.window_constants import KEY_ESCAPE
 
 
 class Popup:
-    """One open popup: its identity handle, node, declaring view and the keyboard's owner when it opened."""
-    __slots__ = ('handle', 'node', 'parent', 'back')
+    """One open popup: its identity handle, node, declaring view and the keyboard's owner when it opened.
+    `fresh` holds until its body has run in this opening (`Focus.ran`)."""
+    __slots__ = ('handle', 'node', 'parent', 'back', 'fresh')
 
     def __init__(self, handle, node, parent, back):
         self.handle, self.node, self.parent, self.back = handle, node, parent, back
+        self.fresh = True
 
 
 class Focus:
@@ -62,10 +67,10 @@ class Focus:
         old = self.keyboard
         if node == old:
             return
-        post = self.cache.imgui_input.post
-        post(old, 'focus', False)
+        tell = self.cache.imgui_input.keyboard
+        tell(old, False)
         self.keyboard, self.dropped = node, False
-        post(node, 'focus', True)
+        tell(node, True)
         if old is not None:
             for at, popup in enumerate(self.stack):
                 if self.inside(old, popup.node) and not self.inside(node, popup.node):
@@ -97,10 +102,19 @@ class Focus:
                 break
         popup = self.open[handle] = Popup(handle, node, parent, self.keyboard)
         self.stack.append(popup)
-        if 'keys' in self.cache.listeners.get(node, ()):
-            self.take(node)
         if self.cache.request_frame:
             self.cache.request_frame()
+
+    def ran(self, handle):
+        """The popup `handle` was declared: once its body has run in this opening, one that asked
+        for keys takes the keyboard. (Its body is where it asks, so this cannot be known at `push`.)"""
+        popup = self.open.get(handle)
+        if popup is None or not popup.fresh or popup.node not in self.cache.backgrounds:
+            return
+        popup.fresh = False
+        event = self.cache.inputs.get(popup.node)
+        if event is not None and event.asked & KEYS:
+            self.take(popup.node)
 
     def press(self, hit):
         """A button went down over `hit`: the popups it is not in close."""

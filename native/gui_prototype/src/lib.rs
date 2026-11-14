@@ -147,7 +147,7 @@ pub(crate) struct NativeState {
     rendering: bool,
 }
 const TRANSIENT_STATE: &[&str] = &[
-    "input_value", "draw_state", "cache", "view_events", "font_manager", "style_manager",
+    "input_value", "draw_state", "cache", "view_events", "event", "font_manager", "style_manager",
     "content_width", "content_height", "abs_left", "abs_top",
     "measured_width", "depth", "unique_events",
 ];
@@ -183,7 +183,7 @@ impl NativeState {
     }
     fn release_transients(&mut self) {
         for (name, slot) in self.shape.borrow().slots.iter() {
-            if matches!(name.as_str(), "cache" | "view_events" | "font_manager" | "style_manager") {
+            if matches!(name.as_str(), "cache" | "view_events" | "event" | "font_manager" | "style_manager") {
                 if let Some(value) = self.values.get_mut(*slot) { *value = None; }
                 self.owned.remove(slot);
                 self.overrides.remove(slot);
@@ -575,6 +575,10 @@ pub(crate) struct Capture<'a, 'py> {
     pub(crate) scroll: (f64, f64),
     pub(crate) cache: &'a Bound<'py, PyAny>,
     pub(crate) events: &'a Bound<'py, PyAny>,
+    // The view's Event (core/input/event.py) when it has one already. A body
+    // that takes `event` and has none yet gets it from the bridge, by `node`.
+    pub(crate) event: Option<&'a Bound<'py, PyAny>>,
+    pub(crate) node: u64,
     // The caller's capture scope already opened the view's ID scope and
     // measuring group and will close and measure them.
     pub(crate) fused: bool,
@@ -615,9 +619,9 @@ impl<'py> Args<'py> {
 
 // Framework values a layered capture only materializes for parameters that
 // actually ask for them by name.
-const FRAMEWORK_FIELDS: [&str; 12] = [
+const FRAMEWORK_FIELDS: [&str; 13] = [
     "width", "height", "scroll_offset", "return_extras", "cache", "view_events",
-    "left", "top", "input_value", "draw_state", "unique", "depth",
+    "left", "top", "input_value", "draw_state", "unique", "depth", "event",
 ];
 const WANT_WIDTH: u16 = 1 << 0;
 const WANT_HEIGHT: u16 = 1 << 1;
@@ -631,6 +635,7 @@ const WANT_INPUT: u16 = 1 << 8;
 const WANT_STATE: u16 = 1 << 9;
 const WANT_UNIQUE: u16 = 1 << 10;
 const WANT_DEPTH: u16 = 1 << 11;
+const WANT_EVENT: u16 = 1 << 12;
 fn wanted(parameters: &[Parameter]) -> u16 {
     let mut mask = 0;
     for parameter in parameters {
@@ -752,6 +757,14 @@ impl Renderer {
         if let Some(capture) = &capture {
             if wants(WANT_CACHE) && !args.contains(intern!(py, "cache"))? { args.set(intern!(py, "cache"), capture.cache)?; }
             if wants(WANT_EVENTS) && !args.contains(intern!(py, "view_events"))? { args.set(intern!(py, "view_events"), capture.events)?; }
+            // Only a declared `event` parameter gets the view's Event: having one is what makes
+            // a view event driven, so a **kwargs body is not handed one.
+            if self.wants & WANT_EVENT != 0 && !args.contains(intern!(py, "event"))? {
+                match capture.event {
+                    Some(event) => args.set(intern!(py, "event"), event)?,
+                    None => args.set(intern!(py, "event"), capture.cache.call_method1(intern!(py, "_input"), (capture.node,))?)?,
+                }
+            }
         } else if let Some(globals) = globals {
             for (key, value) in globals.bind(py).iter() {
                 if !args.contains(&key)? {
@@ -1143,7 +1156,8 @@ impl Renderer {
         view_events: &Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
         self.invoke(py, Some(input_value), Some(arguments),
-                    Some(Capture { unique, explicit, rect, auto_height, scroll, cache, events: view_events, fused: false }))
+                    Some(Capture { unique, explicit, rect, auto_height, scroll, cache, events: view_events,
+                                   event: None, node: 0, fused: false }))
     }
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
         visit.call(&self.runtime)?;

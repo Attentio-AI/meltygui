@@ -391,7 +391,7 @@ listed.
 | Run buttons | |
 | Console and bash modes; colouring for other languages | non-Python text paints plain |
 | Context menu, middle button, right-drag pan | a right drag over the editor resizes its window, as over any view (Lukas, 2026-11-12) |
-| Touch | the host delivers `touch` events; the editor does not listen |
+| Touch | the host delivers touch contacts (`event.touches()`); the editor does not ask for them |
 | Swap into `meltygui_pro` and `melty_code_editor` | untouched; they call `draw_text` |
 
 Code hosts are still what `draw_text` and `CodeDict` use. `Source` replaces them
@@ -581,6 +581,9 @@ reading.
 
 - **Input** (`core/rendering/gui_imgui_input.py`): `Pointer.button`; the event
   kinds `hold`, `hover` and `touch`; `@gui(cursor=shape)`. No new input handler.
+  (Since 2026-11-13 these are methods of the view's `event`,
+  `core/input/event.py`: the buttons by name, `left_mouse_held_outside()`,
+  `is_hovered()`, `touches()`.)
 - **Wake without the interpreter** (`native/gui_prototype/src/wake.rs`,
   `glfw_utils.waker` / `drain_wakes` / `close_wakes`, `window_api.poke`,
   `RetainedCache.waker`): a native thread queues a token and rouses the event

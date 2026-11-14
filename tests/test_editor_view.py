@@ -727,18 +727,23 @@ def test_a_large_text_gets_its_folds_from_the_source_thread(monkeypatch):
         host.close()
 
 
-def test_listening_views_get_events_and_plain_views_cost_nothing():
+def test_a_view_with_an_event_is_told_what_it_asks_and_a_painting_view_costs_nothing():
     from meltygui.core.rendering.retained_gui_prototype import RetainedGui
     cache = RetainedGui(graphics=False)
     got = []
 
     @cache.gui(width=100, height=100, listen=())
-    def child(view_events=None):
-        got.append(('child', dict(view_events)))
+    def child():
+        got.append(('child', None))
 
-    @cache.gui(width=200, height=200, listen=('keys', 'text', 'pointer', 'focus'))
-    def owner(view_events=None):
-        got.append(('owner', {name: list(items) for name, items in view_events.items()}))
+    @cache.gui(width=200, height=200)
+    def owner(event=None):
+        got.append(('owner', {
+            'down': event.left_mouse_down(), 'drag': event.left_mouse_drag(), 'up': event.left_mouse_up(),
+            'clicked': event.left_mouse_clicked(), 'held': event.is_left_mouse_held(), 'clicks': event.clicks,
+            'at': (event.x, event.y), 'moved': (event.dx, event.dy), 'total': (event.total_dx, event.total_dy),
+            'keys': list(event.keys()), 'text': event.text(),
+            'focused': event.is_focused(), 'gained': event.focus_gained(), 'lost': event.focus_lost()}))
         child(left=50, top=50)
 
     class IO:
@@ -754,20 +759,23 @@ def test_listening_views_get_events_and_plain_views_cost_nothing():
         cache.imgui_input.key(65, 0)
         cache.imgui_input.character(ord('a'))
         cache.imgui_input.process(IO); cache.flush()
-        name, events = got[-1]
-        assert name == 'owner' and events['focus'] == [True] and events['keys'] == [(65, 0)] and events['text'] == ['a']
-        press = events['pointer'][0]
-        assert (press.kind, press.x, press.y, press.clicks) == ('press', 50, 60, 1)
-        assert not any(name == 'child' for name, _ in got), 'a listening view ignores raw pointer samples'
+        name, said = got[-1]
+        assert name == 'owner' and said['focused'] and said['gained'] and said['keys'] == [(65, 0)] and said['text'] == 'a'
+        assert (said['down'], said['held'], said['at'], said['clicks']) == (True, True, (50, 60), 1)
+        assert not any(name == 'child' for name, _ in got), 'a view that only paints ignores raw pointer samples'
         IO.mouse_pos = (80, 90)
         cache.imgui_input.process(IO); cache.flush()
-        assert got[-1][1]['pointer'][0][:3] == ('drag', 70, 80)
+        said = got[-1][1]
+        assert (said['drag'], said['down'], said['at'], said['moved'], said['total']) == (True, False, (70, 80), (20, 20), (20, 20))
+        assert not said['keys'] and not said['text'] and not said['gained'], 'what happened is told once'
         IO.mouse_down = [False] * 5
         cache.imgui_input.process(IO); cache.flush()
-        assert got[-1][1]['pointer'][0].kind == 'release'
+        said = got[-1][1]
+        assert said['up'] and not said['held'] and not said['clicked'], 'released after a drag: no click'
         IO.mouse_pos = (500, 500); IO.mouse_down = [True] + [False] * 4
         cache.imgui_input.process(IO); cache.flush()
-        assert got[-1][1] == {'focus': [False]} and cache.focus.keyboard is None
+        said = got[-1][1]
+        assert said['lost'] and not said['focused'] and not said['down'] and cache.focus.keyboard is None
     finally:
         cache.close()
 
@@ -778,13 +786,19 @@ def test_pointer_buttons_hold_hover_touch_and_the_declared_cursor():
     cache = RetainedGui(graphics=False)
     got = []
 
-    @cache.gui(width=40, height=40, listen=('hover', 'touch'), cursor=mouse_cursor.HAND)
-    def chip(view_events=None):
-        got.append(('chip', {name: list(items) for name, items in view_events.items()}))
+    @cache.gui(width=40, height=40, cursor=mouse_cursor.HAND)
+    def chip(event=None):
+        got.append(('chip', {'hovered': event.is_hovered(), 'moved': event.mouse_moved(), 'at': (event.x, event.y),
+                             'touches': list(event.touches())}))
 
-    @cache.gui(width=200, height=200, listen=('keys', 'pointer', 'hold', 'focus'), cursor=mouse_cursor.TEXT)
-    def owner(view_events=None):
-        got.append(('owner', {name: list(items) for name, items in view_events.items()}))
+    @cache.gui(width=200, height=200, cursor=mouse_cursor.TEXT)
+    def owner(event=None):
+        got.append(('owner', {
+            'down': event.left_mouse_down(), 'drag': event.left_mouse_drag(), 'up': event.left_mouse_up(),
+            'outside': event.left_mouse_held_outside(),
+            'right down': event.right_mouse_down(), 'right drag': event.right_mouse_drag(),
+            'right up': event.right_mouse_up(), 'right clicked': event.right_mouse_clicked(),
+            'at': (event.x, event.y), 'keys': list(event.keys()), 'gained': event.focus_gained()}))
         chip(left=100, top=100)
 
     class IO:
@@ -800,35 +814,38 @@ def test_pointer_buttons_hold_hover_touch_and_the_declared_cursor():
         got.clear()
         cache.imgui_input.process(IO)
         cache.flush()
-        return {name: events for name, events in got}
+        return {name: said for name, said in got}
     try:
         with cache.frame():
             owner(left=10, top=10)
         step()
         assert mouse_cursor._requested == mouse_cursor.TEXT, 'the hovered view declares the shape'
-        found = step(down=(False, True))
-        press = found['owner']['pointer'][0]
-        assert (press.kind, press.button, press.x, press.y) == ('press', 1, 50, 60) and 'focus' not in found['owner']
+        said = step(down=(False, True))['owner']
+        assert (said['right down'], said['down'], said['at'], said['gained']) == (True, False, (50, 60), False)
         assert cache.focus.keyboard is None, 'only a left press moves the keyboard'
-        assert step((70, 70))['owner']['pointer'][0][:3] == ('drag', 60, 60)
+        said = step((70, 70))['owner']
+        assert (said['right drag'], said['drag'], said['at']) == (True, False, (60, 60))
         assert step() == {}, 'held still inside the view: nothing to do'
-        release = step(down=())['owner']['pointer'][0]
-        assert (release.kind, release.button) == ('release', 1)
+        said = step(down=())['owner']
+        assert said['right up'] and not said['right clicked'], 'released after a drag: no right click'
         step(down=(True,))
-        found = step((70, 260))
-        assert found['owner']['pointer'][0].kind == 'drag'
-        hold = step()['owner']['hold'][0]
-        assert (hold.kind, hold.x, hold.y, hold.button) == ('hold', 60, 250, 0), 'held still past the edge: once a frame'
-        assert step()['owner']['hold'][0].kind == 'hold' and mouse_cursor._requested == mouse_cursor.TEXT
+        assert step((70, 260))['owner']['drag']
+        said = step()['owner']
+        assert (said['outside'], said['drag'], said['at']) == (True, False, (60, 250)), 'held still past the edge: once a frame'
+        assert step()['owner']['outside'] and mouse_cursor._requested == mouse_cursor.TEXT
         step(down=())
-        hover = step((125, 130))['chip']['hover'][0]
-        assert (hover.kind, hover.x, hover.y) == ('hover', 15, 20) and mouse_cursor._requested == mouse_cursor.HAND
-        assert 'owner' not in step((126, 130)), 'a view that did not ask for hover is not run by motion'
-        assert step((60, 70))['chip']['hover'][0].kind == 'leave'
+        said = step((125, 130))['chip']
+        assert (said['hovered'], said['moved'], said['at']) == (True, True, (15, 20)) and mouse_cursor._requested == mouse_cursor.HAND
+        found = step((126, 130))
+        assert found['chip']['at'] == (16, 20) and 'owner' not in found, 'a view that did not ask about hover is not run by motion'
+        said = step((60, 70))['chip']
+        assert not said['hovered'] and not said['moved']
         assert step((61, 70)) == {}
         cache.imgui_input.touch('down', 7, 130, 135)
-        touch = step()['chip']['touch'][0]
+        touch = step()['chip']['touches'][0]
         assert (touch.kind, touch.contact, touch.x, touch.y) == ('down', 7, 20, 25)
+        step(down=(False, True))
+        assert step(down=())['owner']['right clicked'], 'pressed and released in place: a right click, told on the release'
     finally:
         cache.close()
 

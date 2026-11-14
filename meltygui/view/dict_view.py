@@ -16,12 +16,12 @@ identity, and the view returns `(True, input_value)`. The values of a dict that 
 (a tuple, a mapping proxy, a frozen dataclass) are read only; a dict inside it is still edited.
 `draw_any(a_dict)` comes here.
 
-The pointer: this view listens for none of it, so a left drag over a key, between the rows or below
-them moves the window the dict is in, and a right drag resizes it, as over any content
+The pointer: this view asks about none of its buttons, so a left drag over a key, between the rows
+or below them moves the window the dict is in, and a right drag resizes it, as over any content
 (docs/WINDOW_COLLISION_COLUMNS.md, "Gestures"). Only the controls take the pointer, each over what
 it draws: a branch's chevron and key, and the value views that use it. A view that is added here
-must do the same: listen for `pointer` only for a gesture of its own, and say with
-`cache.imgui_input.reach` when that is less than its box.
+must do the same: ask its `event` about a button only for a gesture of its own, and say with
+`event.reach` when that is less than its box.
 
 Cost: what is in view, never the size of the dict.
 - The open dicts are a tree of `Node`s holding each dict's keys (`list(dict)`, at C speed; the
@@ -215,34 +215,39 @@ def end(input_value):
     """Nothing: its position is the last row, which gives the collection its scroll range."""
 
 
-@gui(listen=('pointer',), cursor=mouse_cursor.HAND)
-def branch(input_value: bool, label='', height=0., view_events=None):
+@gui(cursor=mouse_cursor.HAND)
+def branch(input_value: bool, label='', height=0.0, event=None):
     """The chevron and key of a dict's row. `input_value` is whether the dict is open; a press flips
     it. It is as wide as what it draws: beside it the row is the window's to be moved by."""
-    pressed = any(event.kind == 'press' and not event.button for event in view_events.get('pointer', ()))
-    opened = input_value != pressed
-    table, draw_list = look(SLATE), imgui.get_window_draw_list()
-    middle = height * .5
+    pressed = event.left_mouse_down()
+    opened = input_value
+    if pressed:
+        opened = not opened
+    table = look(SLATE)
+    draw_list = imgui.get_window_draw_list()
+    middle = height * 0.5
     if opened:
-        draw_list.add_triangle_filled(0., middle - 3, 9., middle - 3, 4.5, middle + 4, table.dim)
+        draw_list.add_triangle_filled(0.0, middle - 3.0, 9.0, middle - 3.0, 4.5, middle + 4.0, table.dim)
     else:
-        draw_list.add_triangle_filled(1., middle - 5, 8., middle, 1., middle + 5, table.dim)
-    draw_list.add_text(ARROW, (height - imgui.get_text_line_height()) * .5, table.text, label)
+        draw_list.add_triangle_filled(1.0, middle - 5.0, 8.0, middle, 1.0, middle + 5.0, table.dim)
+    draw_list.add_text(ARROW, (height - imgui.get_text_line_height()) * 0.5, table.text, label)
     return pressed, opened
 
 
 @is_default_for(Keyed)
-@gui(scroll=True, listen=('scroll',), width=420, height=480)
-def draw_collection(input_value: object, tree: Tree = None, expand=1, editable=True, width=0., height=0.,
-                    scroll_offset=(0., 0.), view_events=None):
+@gui(scroll=True, width=420, height=480)
+def draw_collection(input_value: object, tree: Tree = None, expand=1, editable=True, width=0.0, height=0.0,
+                    scroll_offset=(0.0, 0.0), event=None):
     """Draw and edit a dict, or any value that is read by keys (core/rendering/keyed.py). `expand` is
     how many levels are open before the user opens or closes any; `editable=False` shows the values
     read only."""
+    # Asked on every run: a scroll then runs this view, which declares the rows that came into sight.
+    scrolled = event.scrolled()
     rows = tree.rows
     if rows is None or rows.value is not input_value or rows.expand != expand:
         rows = tree.rows = Rows(input_value, expand, map(tuple, tree.flipped))
-    elif not view_events:
-        # No input brought this run: the dict may have changed outside.
+    elif not scrolled:
+        # No scroll brought this run: the dict may have changed outside.
         rows.top = rows.check(rows.top)
     top = scroll_offset[1]
     table, draw_list = look(SLATE), imgui.get_window_draw_list()
