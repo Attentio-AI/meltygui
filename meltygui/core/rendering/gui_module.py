@@ -639,8 +639,9 @@ class Shared(Shim):
         if name == '__all__':
             return [name for name in dir(self._real) if not name.startswith('_')]
         value = getattr(self._real, name)
-        # staticmethod: a plain function kept on the class must not bind to the shim.
-        setattr(type(self), name, staticmethod(value) if isinstance(value, types.FunctionType) else value)
+        # staticmethod: a function kept on the class must not bind to the shim. Python functions bind,
+        # and so do Cython 3's (meltygui_imgui built from source); both have __get__, constants do not.
+        setattr(type(self), name, staticmethod(value) if hasattr(value, '__get__') else value)
         return value
 
 

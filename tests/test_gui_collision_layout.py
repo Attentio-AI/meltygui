@@ -762,3 +762,25 @@ def test_an_owner_that_asked_for_sizes_runs_once_when_the_drag_ends():
         cache.flush()
         assert calls['root']==2
     finally:cache.close()
+
+
+@pytest.mark.parametrize('height,frame', [(400, 400), (330, 330), (200, 320)])
+def test_a_layout_declared_with_too_little_room_is_solved_like_a_resize(height, frame):
+    """Saved sizes scaled into a smaller window leave a nested layout short: its edges push the
+    cells around it, and what the window cannot give grows the frame, as a runtime shrink does."""
+    cache = RetainedGui(graphics=False); layouts = {}; ids = {}
+    @cache.gui(width=300, height=height)
+    def root():
+        ids['root'] = cache.current
+        with cache.geometry.declare(3, axis=1, key='outer', sizes=(300, 100, 400), mins=40, padding=0) as outer:
+            layouts['outer'] = outer
+            with outer.cell(1):
+                layouts['inner'] = cache.geometry.declare(6, axis=1, key='inner', mins=40, padding=0)
+    try:
+        root()
+        assert cache.geometry.frame_rect(ids['root'])[3] == frame
+        for layout in layouts.values():
+            assert all(size >= 40 - 1e-6 for size in layout.sizes())
+        assert layouts['outer'].sizes()[1] == sum(layouts['inner'].sizes()) == 240
+    finally:
+        cache.close()

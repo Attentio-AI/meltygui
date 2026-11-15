@@ -500,7 +500,16 @@ class GuiGeometry:
         required = graph.span(near,far) or 0
         cap = graph.span(near,far,True)
         if available+1e-6 < required:
-            graph.solve(far,graph.position(near)+required,self.walls(axis,owner))
+            # Less room than the cells need (a window opened smaller than its saved layout): make
+            # it as a resize would. Push the far edge out, then the near one back, each squeezing
+            # its neighbours inside the walls; what is still missing grows the owner's frame past
+            # its rectangle, where shrinking a window under its layout's minimum leaves it too.
+            walls=self.walls(axis,owner)
+            start=self.bounds(self._frame_owner(owner))[axis][0]
+            for edge,held in ((far,walls),(near,walls),(far,[start])):
+                if graph.position(far)-graph.position(near)+1e-6 >= required or edge in held:continue
+                target=graph.position(near)+required if edge==far else graph.position(far)-required
+                graph.solve(edge,target,held)
         elif cap is not None and available-1e-6>cap:
             graph.solve(far,graph.position(near)+cap,self.walls(axis,owner))
         available=graph.position(far)-graph.position(near)

@@ -471,3 +471,25 @@ while True:
                    ('tip', 'tip', (65., 107.))]
     assert io.mouse_pos == (5., 7.) and not app.outside
     window.close()
+
+
+def test_shared_shim_does_not_bind_cython_functions():
+    """Cython 3 functions bind like Python ones without being FunctionType: the second lookup,
+    from the class, must give the function and not a method of the shim."""
+    import functools
+    import types
+
+    from meltygui.core.rendering.gui_module import Shared
+
+    class Binding:      # what a Cython 3 module function looks like to the shim
+        def __call__(self, *args):
+            return args
+
+        def __get__(self, instance, owner):
+            return self if instance is None else functools.partial(self, instance)
+
+    Shim = type('Shim', (Shared,), {})
+    shim = Shim(types.SimpleNamespace(__name__='real', place=Binding(), FLAG=3))
+    assert shim.place(1) == (1,)
+    assert shim.place(1) == (1,)
+    assert shim.FLAG == 3 and shim.FLAG == 3

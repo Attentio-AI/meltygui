@@ -320,6 +320,13 @@ rust is finally fast enough"). Current numbers:
   one grip's edit ran all of them, and `draw_tiles`, on every frame. The hand
   is a model with `Readers` now: the dragged grip moves the divider or aims
   the join itself and wakes `draw_tiles` only for what needs the tree. (11-15)
+- **A layout opened in less room than it was saved in is a window resize.**
+  "This should be treated as a window resize during runtime ... we just need
+  a collision solve at launch to correct for the size change." `declare` no
+  longer raises `unsatisfied layout span` for that: the short layout pushes
+  its far edge, then its near one, against the cells around it, and what the
+  window cannot give grows the owner's frame past its rectangle, as shrinking
+  a window under its layout's minimum does. (11-15)
 - **The worst case, many views changing width at once, is to be efficient in
   the framework itself.** "This is a stress test of the collision system
   itself, to get good performance here the code needs to be really
