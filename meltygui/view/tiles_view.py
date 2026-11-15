@@ -1,6 +1,9 @@
 """Tiles: a Blender style tree of splits whose leaves are tiles, split and joined from their corners.
 
-    changed, tiles = draw_tiles(tiles, name='tiles', tile=draw_scene)
+    changed, tiles = draw_tiles(tiles, name='tiles', tile=draw_scene, width=width, height=height)
+
+Place it like any view. An edge within `REACH_EDGE` of the window's edge is tied to it: a divider
+pushed against it resizes the window, and the window takes the tiles along. No cell around it.
 
 The value is a tree of plain dicts, edited in place:
 
@@ -24,7 +27,7 @@ Gestures, from the grips in three corners of a tile (the bottom left stays free)
 import meltygui_imgui as imgui
 
 from meltygui.core.input import mouse_cursor
-from meltygui.core.rendering.gui_layout_prototype import columns, rows
+from meltygui.core.rendering.gui_layout_prototype import anchor, columns, rows
 from meltygui.core.rendering.gui_prototype import gui
 from meltygui.hdr_color import pack_color
 
@@ -43,6 +46,7 @@ TEXT = pack_color(1.0, 1.0, 1.0)
 NOTE = 'Release to join'
 CORNERS = (('nw', True, True), ('ne', False, True), ('se', False, False))   # name, on the left, on the top
 AXES = {'x': 0, 'y': 1}
+REACH_EDGE = 100.0                          # an edge this near the window's is tied to it
 TOKEN = 7000                                # the first name a split's divider drags have for the solver
 
 
@@ -364,7 +368,7 @@ def place(node, tile, hand, layouts, spans):
 
 
 @gui(listen=(), no_save=('hand',))
-def draw_tiles(input_value: dict, tile=None, hand=None, draw_state=None, cache=None):
+def draw_tiles(input_value: dict, tile=None, hand=None, left=0.0, top=0.0, draw_state=None, cache=None):
     """The tree of tiles over the whole view. `tile` is the `@gui` view each tile is drawn with,
     given the tile's dict; without one the tiles are blank. Returns (True, tree) when a tile was
     split or joined, or a tile's view changed its dict."""
@@ -373,6 +377,7 @@ def draw_tiles(input_value: dict, tile=None, hand=None, draw_state=None, cache=N
     if hand is None:                # the corner drag in progress, shared with every grip
         hand = {}
         draw_state.hand = hand
+    anchor(REACH_EDGE)
     layouts = {}
     spans = {}
     changed = place(input_value, tile, hand, layouts, spans)

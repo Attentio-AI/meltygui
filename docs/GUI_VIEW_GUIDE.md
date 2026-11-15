@@ -5,7 +5,7 @@ Read this before writing one. Every rule here was either run on 2026-11-13
 (native Wayland, OpenGL) or is taken from the doc it links; "not run here"
 marks the second kind.
 
-- The worked example is [examples/gui_todo.py](../examples/gui_todo.py): 170
+- The worked example is [examples/gui_todo.py](../examples/gui_todo.py): 167
   lines, every pattern below in one file. Read it next to this guide.
 - Why the runtime behaves as it does: [GUI_REQUIREMENTS.md](GUI_REQUIREMENTS.md).
   Reference for each feature: [GUI_PROTOTYPE.md](GUI_PROTOTYPE.md).
@@ -20,16 +20,25 @@ A project that installs `~/Desktop/meltygui` editable has it. Python 3.12:
 ~/Desktop/meltygui/.venv/bin/python examples/gui_todo.py        # from ~/Desktop/meltygui
 ```
 
-Launch on a reserved agent desktop, never on desk-1 (`/home/lukas/AGENTS.md`),
-with a home of its own so no saved session is touched
-(`HOME=/tmp/<you>/home XDG_STATE_HOME=/tmp/<you>/home/state ...`).
+Launch on a reserved agent desktop, never on desk-1 (`/home/lukas/AGENTS.md`).
+Keep your run away from the saved state of the real app, which lives in two
+places:
+
+- **The session** (the views' state) is under the home: give the run a home
+  of its own (`HOME=/tmp/<you>/home XDG_STATE_HOME=/tmp/<you>/home/state ...`).
+- **The app's state** (`@save`, section 5) is a pickle beside the module that
+  defines the class, and no environment variable moves it: run a copy of the
+  app from a temp folder (`cp -r ~/Desktop/<app>/*.py /tmp/<you>/<app>/`,
+  then `~/Desktop/meltygui/.venv/bin/python /tmp/<you>/<app>/main.py`). The
+  same for an example: copy `gui_todo.py` out of `examples/` first.
 
 ## 1. The shape of an app
 
 An app is three kinds of thing:
 
 - **A model that is a value**: a dict, a list, a number, or a small class that
-  behaves like one. It holds the data and nothing about drawing.
+  behaves like one. It holds the data and nothing about drawing. What the app
+  keeps between runs is a `@save` class (section 5).
 - **Views**: plain functions under `@gui`. A view draws the value it is given
   and returns it, edited or not.
 - **A root** under `@os_window` that only composes: it passes parts of the
@@ -43,13 +52,13 @@ def app(width=None, height=None, cache=None):
     top = PAD
     added, _ = button('Add', name='add', left=PAD, top=top, width=60.0)
     if added:
-        todo.items[str(todo.next)] = {'title': f'Item {todo.next}', 'done': False}
-        todo.next += 1
-        cache.invalidate(todo.items)        # changed in place, outside the views that show it
-    picked, todo.filter = dropdown(todo.filter, name='filter', choices=FILTERS, left=PAD + 68.0, top=top, width=110.0)
+        Todo.items[str(Todo.next)] = {'title': f'Item {Todo.next}', 'done': False}
+        Todo.next += 1
+        cache.invalidate(Todo.items)        # changed in place, outside the views that show it
+    picked, Todo.filter = dropdown(Todo.filter, name='filter', choices=FILTERS, left=PAD + 68.0, top=top, width=110.0)
     uptime(clock, name='uptime', left=width - 80.0 - PAD, top=top, width=80.0)
     top += TOOLS + PAD
-    items(todo.items, name='items', show=todo.filter, left=0.0, top=top, width=width, height=height - top)
+    items(Todo.items, name='items', show=Todo.filter, left=0.0, top=top, width=width, height=height - top)
 ```
 
 No view classes, no controller object, no lookups of a global host, cache or
@@ -112,8 +121,8 @@ own file only to show every pattern in one place.
   ImGui widgets in a view, where (0, 0) is the view's corner.
 - Give the root a starting size and a smallest one: `width=`, `height=`,
   `min_width=`, `min_height=` on `@os_window`. The user's size is saved.
-  (The minimum is accepted; whether the compositor holds a window to it was
-  not checked.)
+  (Hyprland does not hold a window to it: whatever size the compositor gives,
+  the root is handed at least 1 by 1.)
 - **A floating window** is any view called with `melty_window=True`. Its start
   is `initial={'left': 80, 'top': 120, 'width': 300, 'height': 200}`, applied
   once; after that the user's geometry wins and is saved. Do not pass
@@ -142,7 +151,10 @@ for key, item in items.items():
 
 ## 5. State
 
-A view's parameters are its state. Read the parameter, write through
+Two kinds, each with one way to keep it: what a view holds is its parameters,
+what the app holds is a `@save` class.
+
+**A view's parameters are its state.** Read the parameter, write through
 `draw_state`:
 
 ```python
@@ -158,13 +170,65 @@ def options(input_value, choices=(), index=None, width=0.0, height=0.0, draw_sta
 - Hover, a held button and the keyboard are not state of yours: `event` holds
   them (`event.is_hovered()`, section 6).
 - A value the caller passes wins over the state on every run it is passed.
-- A group of fields is a `DictConversion` subclass with its fields set in
-  `__init__`, declared as a parameter annotated with the class and defaulting
-  to None: the framework makes one per view. (Not run here.)
-- **App state** is one `DictConversion` made with
-  `meltygui.persisted('name', Class, app_id=...)` before the root; `app_id`
-  must match the root's. It comes back on the next launch.
 - No ad hoc fields on `draw_state`: only declared parameters.
+- This is state of one view: its size, its scroll, its selection. What the
+  app is about (its documents, its layout, its settings) is the app's.
+
+**The app's state is a `@save` class.** The class is the state: there is no
+instance, its attributes are the fields, and the values in its body are what
+a first launch starts from.
+
+```python
+from meltygui import os_window, save
+
+
+@save
+class Todo:
+    items = {'1': {'title': 'Write the guide', 'done': True}}
+    filter = 'All'
+    next = 2
+
+
+@os_window(name='To do', app_id='meltygui-todo')
+def app(width=None, height=None, cache=None):
+    picked, Todo.filter = dropdown(Todo.filter, name='filter', choices=FILTERS)
+    items(Todo.items, name='items', show=Todo.filter)
+```
+
+- It is saved when the app closes, in a pickle of its own beside the module
+  that defines the class, named after the class: `Todo.pkl` next to
+  `gui_todo.py`. One store, one file, next to the code it belongs to.
+  `@save('items.pkl')` names the file; an absolute path puts it elsewhere.
+  Nothing else to name: no `app_id`, no base class, no call.
+- It is read where the class is decorated, so the saved values are there for
+  every line below the class. What its values are instances of is defined
+  above it.
+- The public plain attributes are saved. A name that starts with `_`, a
+  method and a property are not. A class in the body is saved with it
+  (`Look.Editor.tab_width`).
+- A value edited in place is saved as it is: `draw_tiles(Tiles.tree)` edits
+  the dict and the layout comes back, sizes included.
+- The root passes the parts on, like any model; a view does not reach for
+  the class itself.
+- A field added later starts from its default; one that is removed is dropped.
+  A pickle that does not load is moved aside (`Todo.pkl.broken-<time>`) and
+  the app starts from the defaults.
+- **`@save(to_code=True)`** keeps the class in its own source instead: on
+  close, each value that changed is written over its default in the file.
+  For what belongs in the code, such as a window's start size or a font size
+  the developer tunes while the app runs. The values are literals (numbers,
+  texts, `True`, `False`, `None`, lists, tuples, dicts, sets), each assigned
+  once at the top of the class. A default that is an expression (`2 / 3`) or
+  that was edited in the file while the app ran is left as it is, and stderr
+  says so.
+- This is the one way an app keeps state. `meltygui.persisted(...)` and a
+  `DictConversion` held as the app's model are how older apps did it: they
+  still work, new code uses neither.
+
+How it works, and its levers: [app_save.py](../meltygui/core/runtime/app_save.py).
+(Run on 2026-11-14, each from a copy in a temp folder: the example and
+`~/Desktop/tile-view` over a relaunch, and a `to_code` class written back on
+close.)
 
 ## 6. Input
 
@@ -343,8 +407,8 @@ What follows from the first row:
 
   ```python
   if added:
-      todo.items[key] = {...}
-      cache.invalidate(todo.items)      # `cache` is a parameter of the root
+      Todo.items[key] = {...}
+      cache.invalidate(Todo.items)      # `cache` is a parameter of the root
   ```
 
 - Never repair a stale view with `use_cache=False`, `live=True` or a state
@@ -439,7 +503,7 @@ What is there already:
 | Code or long text | `draw_editor`, from `meltygui.view.editor_view` for now ([NATIVE_EDITOR.md](NATIVE_EDITOR.md#using-draw_editor)) |
 | A button | `draw_button` from `meltygui.rust`: `pressed, _ = draw_button('Run', name='run')` |
 | One of a few choices | `draw_dropdown(value, choices=CHOICES)` from `meltygui.rust` |
-| Tiles the user splits and joins from their corners, as in Blender | `draw_tiles(tree, name='tiles', tile=view)` from `meltygui.rust`; the tree is plain dicts ([tiles_view.py](../meltygui/view/tiles_view.py)) |
+| Tiles the user splits and joins from their corners, as in Blender | `draw_tiles(tree, name='tiles', tile=view, width=width, height=height)` from `meltygui.rust`; the tree is plain dicts, and an edge within 100 px of the window's is tied to it, so no cell goes around it ([tiles_view.py](../meltygui/view/tiles_view.py)) |
 | A popup of your own, a picker | Section 7; [examples/gui_popups.py](../examples/gui_popups.py) |
 | A whole standalone ImGui app as one view | `gui_module('app.py')` ([gui_module.py](../meltygui/core/rendering/gui_module.py)) |
 

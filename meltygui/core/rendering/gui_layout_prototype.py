@@ -144,6 +144,8 @@ class GuiGeometry:
         self.claim = (False,False)
         self.frozen = set()
         self.drag_parents = None
+        # Views whose frame is tied to their window's (`anchor`): the solver places them.
+        self.anchored = set()
 
     def position(self, node):
         x,y=self.cache._position(node)
@@ -216,7 +218,8 @@ class GuiGeometry:
         serial=self.frames[node][0]
         args=self.cache.invocations[node][1]
         for axis,(graph,(near,far)) in enumerate(zip(self.axes,pairs)):
-            lo=args.get('min_width' if axis==0 else 'min_height',0.)
+            # A window is never under 1x1, whatever minimum it declares.
+            lo=max(1.,args.get('min_width' if axis==0 else 'min_height',0.))
             hi=args.get('max_width' if axis==0 else 'max_height',8192.)
             graph.replace_cells(serial,[(near,far,float(lo),float(hi))])
         if node not in self.windows:
@@ -322,6 +325,9 @@ class GuiGeometry:
             _, _, w, h = self.cache.graph.rect(node)
             rect = (x,y,w,h)
             if rect != old:
+                if node in self.anchored:
+                    # The caller placed the view anew: let go, `anchor` ties it again at the new gaps.
+                    for graph in self.axes:graph.replace_cells(serial,[])
                 for axis, (graph, pair) in enumerate(zip(self.axes, pairs)):
                     near, far = pair
                     shift = rect[axis]-old[axis]
@@ -496,6 +502,29 @@ class GuiGeometry:
             graph.solve(edge, max(low,min(high,graph.position(edge))), [near,far])
         return layout
 
+    def anchor(self, node, reach):
+        """Tie each edge of `node`'s frame that lies within `reach` of its window's edge to that
+        edge, at the gap it has now. A tied edge and the window's move each other like the two
+        sides of a cell: a divider pushed against it resizes the window, and the window resized
+        takes the view along. Call it from the view's body before it declares rows or columns.
+        A view in a layout cell is tied to the cell already."""
+        graph=self.cache.graph
+        if node in self.bindings or graph.is_portal(node):return
+        window=node
+        while graph.parent(window) and not graph.is_portal(window):
+            window=graph.parent(window)
+        if window==node:return
+        outer,inner=self.bounds(window),self.bounds(node)
+        serial=self.frames[node][0]
+        for axis,(a,b),(c,d) in zip(self.axes,outer,inner):
+            cells=[]
+            near=axis.position(c)-axis.position(a)
+            far=axis.position(b)-axis.position(d)
+            if 0.<=near<=reach:cells.append((a,c,near,near))
+            if 0.<=far<=reach:cells.append((d,b,far,far))
+            axis.replace_cells(serial,cells)
+        self.anchored.add(node)
+
     def cell_rect(self, layout, index):
         along = self.axes[layout.axis]
         cross = self.axes[1-layout.axis]
@@ -536,7 +565,7 @@ class GuiGeometry:
         cache = self.cache
         if self.native is not None:
             self.native.commit()
-        if not self.windows and not self.bindings:
+        if not self.windows and not self.bindings and not self.anchored:
             return
         # Commit placement parents before their descendants. Portal rectangles
         # remain parent-relative even across ordinary intermediate views.
@@ -548,8 +577,17 @@ class GuiGeometry:
             ox,oy=self.position(parent) if parent else self.offset
             sx,sy=cache.graph.state(parent).scroll_offset if parent else (0.,0.)
             cx,cy=cache.graph.state(node).content_offset
-            rect=(x-ox+sx-cx,y-oy+sy-cy,max(1.,w),max(0.,h))
+            rect=(x-ox+sx-cx,y-oy+sy-cy,max(1.,w),max(1.,h))
             cache.graph.allocate(node,rect)
+        for node in tuple(self.anchored):
+            if node not in self.frames or not graph.contains(node):
+                self.anchored.discard(node);continue
+            x,y,w,h=self.frame_rect(node)
+            parent=graph.parent(node)
+            ox,oy=self.position(parent)
+            sx,sy=graph.state(parent).scroll_offset
+            cx,cy=graph.state(node).content_offset
+            graph.allocate(node,(x-ox+sx-cx,y-oy+sy-cy,max(1.,w),max(0.,h)))
         for node,(layout,index) in tuple(self.bindings.items()):
             if not graph.contains(node) or not graph.contains(layout.owner): continue
             x,y,w,h=self.cell_rect(layout,index)
@@ -788,6 +826,7 @@ class GuiGeometry:
 
     def retire(self,node):
         self.frozen.discard(node)
+        self.anchored.discard(node)
         for key,l in tuple(self.layouts.items()):
             if l.owner==node:self.remove_layout(key)
         self.bindings.pop(node,None)
@@ -810,6 +849,17 @@ def columns(keys, *, key='columns', sizes=None, mins=None, maxes=None, fixed=Non
     window=_window.get()
     if window is None:raise RuntimeError('columns require a @gui window')
     return window.cache.geometry.declare(keys,axis=0,key=key,sizes=sizes,mins=mins,maxes=maxes,fixed=fixed,padding=padding)
+
+
+def anchor(reach=100.):
+    """Tie the running view's edges to its window's where they are within `reach` pixels of
+    them (`GuiGeometry.anchor`): what a view that fills a window calls before its rows or
+    columns, so that no caller has to wrap it in a cell."""
+    from meltygui.core.rendering.gui_prototype import _window
+    window=_window.get()
+    if window is None:raise RuntimeError('anchor requires a @gui window')
+    cache=window.cache
+    cache.geometry.anchor(cache.current,reach)
 
 
 def rows(keys, *, key='rows', sizes=None, mins=None, maxes=None, fixed=None, padding=4.):

@@ -31,6 +31,7 @@ from meltygui.core.runtime.app import mark
 from meltygui.core.runtime.app import persisted
 from meltygui.core.runtime.app import after_first_frame
 from meltygui.core.runtime.app import checkpoint
+from meltygui.core.runtime.app_save import save
 
 if TYPE_CHECKING:   # IDE / type checkers only; never executed
     import meltygui_imgui as imgui
@@ -97,7 +98,7 @@ def __getattr__(name):
 
 _PUBLIC_NAMES = [
     'Style', 'boot', 'embedded_imports', 'glfw_window', 'run', 'pressed',
-    'content_size', 'mark', 'persisted', 'after_first_frame', 'checkpoint',
+    'content_size', 'mark', 'persisted', 'save', 'after_first_frame', 'checkpoint',
     'toggles', 'window_api', 'imgui', 'rust',
 ]
 

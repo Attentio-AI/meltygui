@@ -143,3 +143,23 @@ def test_root_space_starts_under_the_title_bar(monkeypatch):
     assert shown == [(0., 30.)] and window.cache.geometry.inset == 30.
     assert tuple(window.cache.graph.rect(node)) == (0., 0., 400., 250.)
     window.close()
+
+
+def test_root_is_never_under_one_pixel(monkeypatch):
+    """A window the compositor made 40 by 10, lower than its 30 px title bar, still hands the root
+    a size of at least 1 by 1 instead of a negative height (examples/gui_todo.py crashed)."""
+    from meltygui.core.rendering.gui_native_collision import NativeCollision
+    window, surface = host(monkeypatch)
+    sizes = []
+
+    @gui(use_cache=False)
+    def root(input_value: object, width=None, height=None):
+        sizes.append((width, height))
+
+    window.draw(surface, root, {})
+    native = window.cache.geometry.native = NativeCollision(window.cache.geometry)
+    native.observe((((100., 140.), (100., 110.)), ((0., 1200.), (0., 900.)), 'feed', 1, ((), ())))
+    window.draw(surface, root, {})
+    window.draw(surface, root, {})
+    assert sizes[0] == (400., 250.) and sizes[1:] == [(40., 1.), (40., 1.)]
+    window.close()

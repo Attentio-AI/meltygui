@@ -372,7 +372,12 @@ def _first_frame_presented(surfaces):
 
 
 def persisted(name, factory, *, app_id=None):
-    """An object the app keeps between runs: last run's saved `name`, or a
+    """Superseded by `@save` (app_save.py), the standard for an app's state
+    since 2026-11-14: new code decorates a class instead, which is kept in a
+    pickle of its own beside its module. This keeps working for the apps
+    that use it.
+
+    An object the app keeps between runs: last run's saved `name`, or a
     fresh `factory()` when there is none (or the saved one is not an
     instance of `factory`, a class). It rides the app's session
     (app_session.AppSession.app_state) and is saved with the draw states
@@ -870,9 +875,11 @@ def checkpoint():
 
     Native hosts call this on the render thread between frames before the
     app is suspended; mobile processes may disappear without an exit callback.
-    The desktop exit uses the same save order. Return False if the runtime has
-    failed or a persistence write failed; a failed runtime keeps the last good
-    session instead of overwriting it. Pending source-save exceptions propagate.
+    The desktop exit uses the same save order: pending source edits, the
+    `@save` classes (app_save.py: each into its pickle, or into its source),
+    the session, settings, launch overrides. Return False if the runtime has
+    failed or a persistence write failed; a failed runtime keeps the last
+    good files instead of overwriting them. Pending source-save exceptions propagate.
     """
     if _state['failed']:
         return False
@@ -881,11 +888,14 @@ def checkpoint():
     if render_thread is not None and render_thread != threading.get_ident():
         raise RuntimeError('Application checkpoints must run on the render thread between frames')
     _flush_pending_saves()
+    # After the pending saves: a `@save(to_code=True)` class is written into the file as they left it.
+    import meltygui.core.runtime.app_save as app_save
+    classes_saved = app_save.write()
     session_saved = _save_session()
     settings_saved = _save_settings()
     from meltygui.core.runtime import launch_override
     overrides_saved = launch_override.flush()
-    return session_saved and settings_saved and overrides_saved
+    return classes_saved and session_saved and settings_saved and overrides_saved
 
 
 def _flush_pending_saves():

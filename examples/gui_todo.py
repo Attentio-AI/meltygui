@@ -2,8 +2,10 @@
 
     .venv/bin/python examples/gui_todo.py
 
-One file: a model that is a value (`Todo`), plain views that return `(changed, value)`, and a root
-that only composes. What to look at:
+One file: a model that is a value (`Todo`, a `@save` class: the app's state, kept between runs
+in `Todo.pkl` beside this file), plain views that return `(changed, value)`, and a root that only
+composes. Try it on a copy of this file in a folder of its own, so the pickle lands there.
+What to look at:
 - `button`, `dropdown`: controls drawn with the draw list, which ask their `event` what happened.
 - `options`: a temporary popup (`popup=`) that the pointer and the keyboard both drive, closed with
   `cache.focus.close()`.
@@ -15,8 +17,7 @@ import threading
 import time
 
 import meltygui.core.windowing.window_constants as glfw
-from meltygui import gui, os_window, imgui, persisted
-from meltygui.core.conversion.dict_conversion import DictConversion
+from meltygui import gui, os_window, imgui, save
 from meltygui.core.input import mouse_cursor
 from meltygui.hdr_color import pack_color
 from meltygui.rust import draw_bool, draw_str
@@ -34,16 +35,13 @@ TEXT = pack_color(0.92, 0.94, 0.96)
 DIM = pack_color(0.60, 0.64, 0.70)
 
 
-class Todo(DictConversion):
-    """The app's model, kept between runs: `items` is {key: {'title': str, 'done': bool}} in order."""
-    def __init__(self):
-        super().__init__()
-        self.items = {'1': {'title': 'Write the guide', 'done': True}, '2': {'title': 'Test it', 'done': False}}
-        self.filter = 'All'
-        self.next = 3
-
-
-todo = persisted('todo', Todo, app_id='meltygui-todo')
+@save
+class Todo:
+    """The app's model, kept between runs in Todo.pkl: `items` is {key: {'title': str, 'done': bool}}
+    in order. The values here are what a first launch starts from."""
+    items = {'1': {'title': 'Write the guide', 'done': True}, '2': {'title': 'Test it', 'done': False}}
+    filter = 'All'
+    next = 3
 
 
 # --- small controls ----------------------------------------------------------
@@ -160,10 +158,10 @@ def app(width=None, height=None, cache=None):
     top = PAD
     added, _ = button('Add', name='add', left=PAD, top=top, width=60.0)
     if added:
-        todo.items[str(todo.next)] = {'title': f'Item {todo.next}', 'done': False}
-        todo.next += 1
-        cache.invalidate(todo.items)        # changed in place, outside the views that show it
-    picked, todo.filter = dropdown(todo.filter, name='filter', choices=FILTERS, left=PAD + 68.0, top=top, width=110.0)
+        Todo.items[str(Todo.next)] = {'title': f'Item {Todo.next}', 'done': False}
+        Todo.next += 1
+        cache.invalidate(Todo.items)        # changed in place, outside the views that show it
+    picked, Todo.filter = dropdown(Todo.filter, name='filter', choices=FILTERS, left=PAD + 68.0, top=top, width=110.0)
     uptime(clock, name='uptime', left=width - 80.0 - PAD, top=top, width=80.0)
     top += TOOLS + PAD
-    items(todo.items, name='items', show=todo.filter, left=0.0, top=top, width=width, height=height - top)
+    items(Todo.items, name='items', show=Todo.filter, left=0.0, top=top, width=width, height=height - top)

@@ -90,6 +90,7 @@ rust is finally fast enough"). Current numbers:
 | A floating window is `melty_window=True`; a temporary one is `popup=` (section 9). | 11-11, 11-12 |
 | A root window is given a smallest size (`min_width`, `min_height`), not a static one: "static width and height is wrong." | 11-13 |
 | View sizing is "more robust and resistant to crashes": a width of zero or less, or a negative height, computed by a caller does not raise (task-runner's `status` crashed the app in a narrow window). Built by Claude, **Lukas has not reviewed how**: the view is drawn 1 px wide or with no height (`_fit_size`); non-finite sizes and widths over 8192 still raise. | 11-13 |
+| A window has an absolute minimum size of 1 by 1 px, "so that this can't happen": `examples/gui_todo.py` raised `size must be finite and nonnegative` once the compositor made its window lower than the title bar (and again at every launch, from the saved size). The root's size is floored where it is handed out (`surface_frame.py` `Melty.root_fill`, `gui_window_prototype.py` `draw`, `gui_native_collision.py` `commit`), a Melty window's in its solver cell (`GuiGeometry.window`). A declared `min_width` / `min_height` above 1 still applies. | 11-15 |
 | The title bar's height is never in app code. "I don't like sprinkling strip everywhere": a title bar wrapper "that leaves the inner view clean". The host puts the root's space under the bar (`title_bar` in `gui_window_prototype.py`): `top=0` is below it, `height` is what is left. | 11-13 |
 
 ## 4. How every view behaves
@@ -146,7 +147,8 @@ rust is finally fast enough"). Current numbers:
   `DrawState` grew organically; this one does not. (11-06)
 - **Persistence is the original `draw_state` design**: "take the object and
   persist it to disk, explicitly excluding parameters." No snapshots, no second
-  store. (11-06)
+  store. (11-06) For the app's own state he decided otherwise on 2026-11-14:
+  a pickle per `@save` class, below.
 - **Pruned at launch, never in a session.** What was not rendered when the app
   closed is not kept: "Anything not rendered is naturally pruned, keeping the
   app state file small and launch time fast." A view hidden and shown again in
@@ -162,6 +164,53 @@ rust is finally fast enough"). Current numbers:
   decorator default, then the signature default. (11-06, approved)
 - **His test case**: a Melty window's size and position survive hide and show,
   and an app restart. (11-06)
+- **An app's own state is a `@save` class**, the annotation of GUI Gym
+  (`gui-gym/persistence.py`): it "feels cleaner than dictconversion. I'd like
+  to adopt it for meltygui and make it the standard for app persistence."
+  The class is the state and its attributes are the fields. The guide had
+  `persisted(...)` and an injected `DictConversion` side by side, and an app
+  used the first where the second would have done ("I see the gap now").
+  (2026-11-14)
+- **A pickle per `@save` class, beside the module that defines it.** "I want
+  a pickle per store. That's better adherence to the locality rule."
+  ([APPS.md](APPS.md#designing-a-feature): each thing lives next to what it
+  belongs to.) This is the exception to "no second store" above: the views'
+  state stays in the session, the app's own state is not in it. The first
+  build of the same day put the class into the session; that is gone.
+  (2026-11-14)
+- **`@save(to_code=True)` writes the class back into its source through the
+  Rust parser**: GUI Gym "has functionality to write back to a save file or
+  write back to python source. This component should be modified to use the
+  rust based syntax parsing instead of the python. We should already have
+  rust parsing that we can reuse." (2026-11-14)
+- Built to those three rows on 2026-11-14 (by Claude; **Lukas has not
+  reviewed it**): `meltygui.save`
+  ([app_save.py](../meltygui/core/runtime/app_save.py)).
+  - The file is `<Class>.pkl` beside the module (`Tiles.pkl` next to
+    `main.py`); `@save('name.pkl')` names it. Plain `pickle` of
+    {field: value}, written whole or not at all at exit and at
+    `meltygui.checkpoint()`, and only when its bytes changed.
+  - It is read where the class is decorated, as in GUI Gym. Measured on a
+    copy of tile-view (2026-11-14, 25 fresh processes): 0.66 ms in the
+    decorator, of which 0.62 ms is the first `import pickle` of the process
+    and 0.03 ms the read and unpickle of its 200 byte file; 0.02 ms when
+    there is no file yet. To the first frame, 15 launches each in turn:
+    272 ms with `@save`, 271 ms with a plain class, a difference inside the
+    spread of either (257 to 294 ms).
+  - To code, `Source.tree` finds the class and the assignment and an
+    assignment to it splices the literal (`native/source/src/tree.rs`,
+    nothing added to it); `compile` judges the result before the file is
+    replaced.
+  - Decided while building, his to overrule: a pickle that does not load is
+    moved aside and the app starts from its defaults (the session's rule;
+    GUI Gym raises); no `flush` / `flush_async` (nothing in meltygui saves in
+    the middle of a run; `checkpoint()` saves everything now);
+    `persisted(...)` and injected `DictConversion` view state keep working
+    and are no longer taught for app state.
+  - Open: whether an app's `*.pkl` belongs in its `.gitignore` (GUI Gym's
+    does; tile-view's and the Hub templates' do not list it); where the
+    pickle goes when the module's folder cannot be written (an iOS bundle).
+  - How to use it: [guide, section 5](GUI_VIEW_GUIDE.md#5-state).
 
 ## 7. Geometry and scrolling
 
@@ -238,6 +287,9 @@ rust is finally fast enough"). Current numbers:
   joins in the opposite direction, "that's how it works in blender". Joining
   only a neighbouring tile of the same split, and a new tile being a copy,
   are Blender's behaviour too, not defects. (11-14)
+- **The tiles need no cell around them.** Their caller places them like any
+  view; an edge of theirs "within 100px of the window edge" collides with it
+  automatically (`anchor` in gui_layout_prototype.py). (11-14)
 
 ## 10. `draw_any` and `draw_collection`
 
@@ -341,7 +393,7 @@ still describe `@render_func`.
 | First parameter `input_value`, typed. | Optional. When present it is named `input_value`. |
 | Return an accurate `(changed, value)`; mutate mutable input in place. | Unchanged; `None` means unchanged. |
 | Inject events; do not poll ImGui input in a cached view. | The `event` parameter (section 3). ImGui widgets also work in cached views. |
-| No ad hoc `DrawState` fields. | State is the declared parameters and injected `DictConversion` objects; `no_save=` for runtime only ones. |
+| No ad hoc `DrawState` fields. | State is the declared parameters and injected `DictConversion` objects; `no_save=` for runtime only ones. The app's own state is a `@save` class (section 6, 2026-11-14). |
 | `initial={"width":, "height":, "window_pos":}` for a window's start. | `initial={'left':, 'top':, 'width':, 'height':}`. A passed `left` / `top` / `width` / `height` still applies on every frame it is passed. |
 | `@render_func(is_default_for=...)`. | `@is_default_for(...)` above `@gui`, from `meltygui.rust`. |
 | Use Melty windows and controls. | `melty_window=True`, `popup=`; no ImGui combos. |

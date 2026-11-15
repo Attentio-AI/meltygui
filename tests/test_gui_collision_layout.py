@@ -625,3 +625,32 @@ def test_rebuilt_layout_retires_the_cross_layouts_in_its_cells():
         outer=cache.geometry.layouts[(ids['root'],0,'outer')]
         assert inner.cross==(outer.edges[3],outer.edges[4])
     finally:cache.close()
+
+
+def test_anchor_ties_only_the_edges_near_the_window():
+    """A view that fills its window but for 250 px on the right: three edges are tied and follow
+    the window's, the far right one is not."""
+    cache=RetainedGui(graphics=False); ids={}
+
+    @cache.gui()
+    def tiles(input_value):
+        ids['tiles']=cache.current
+        cache.geometry.anchor(cache.current,100.)
+        with cache.geometry.declare(('a','b'),axis=0,key='main'):pass
+        return False,input_value
+
+    @cache.gui(width=600,height=300)
+    def root(input_value):
+        ids['root']=cache.current
+        tiles(None,name='tiles',left=20.,top=0.,width=330.,height=300.)
+        return False,input_value
+    try:
+        root(None);cache.flush()
+        geometry=cache.geometry
+        assert ids['tiles'] in geometry.anchored
+        (left,right),(top,bottom)=geometry.frames[ids['root']][1]
+        geometry.axes[1].solve(bottom,geometry.axes[1].position(bottom)+50,[top])
+        geometry.axes[0].solve(right,geometry.axes[0].position(right)+50,[left])
+        geometry.apply();cache.flush()
+        assert cache.graph.info(ids['tiles'])['rect']==(20,0,330,350)
+    finally:cache.close()

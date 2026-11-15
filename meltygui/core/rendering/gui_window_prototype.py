@@ -80,7 +80,8 @@ class _GuiWindow:
                 width=axes[0].position(pairs[0][1])-axes[0].position(pairs[0][0])
                 height=axes[1].position(pairs[1][1])-axes[1].position(pairs[1][0])
                 top=Melty.root_fill[2] if Melty.root_fill is not None else 0.
-                arguments['width'],arguments['height']=width,height-top
+                # The root is never under 1x1, however small the compositor makes the window.
+                arguments['width'],arguments['height']=max(1.,width),max(1.,height-top)
             with self.cache.frame():
                 result = view(value, **arguments)
             self.cache.flush()

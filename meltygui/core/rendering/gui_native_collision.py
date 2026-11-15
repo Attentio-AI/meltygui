@@ -149,7 +149,7 @@ class NativeCollision:
             for node in geometry.cache.root_ids:
                 if node in geometry.frames and not geometry.cache.graph.is_portal(node):
                     x,y,w,h=geometry.frame_rect(node)
-                    rect=(x-geometry.offset[0],y-geometry.offset[1],max(1.,w),max(0.,h))
+                    rect=(x-geometry.offset[0],y-geometry.offset[1],max(1.,w),max(1.,h))
                     geometry.cache.graph.allocate(node,rect)
                     value,args=geometry.cache.invocations[node]
                     geometry.cache.invocations[node]=(value,{**args,'width':rect[2],'height':rect[3]})

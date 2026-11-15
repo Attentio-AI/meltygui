@@ -148,7 +148,8 @@ def draw_surface_frame(surface, *, transparent=False, chrome=False, request=None
     # The root fills the OS MODEL's size (os_frame.content_size): equal
     # to the display except while our own resize is still landing.
     fill_w, fill_h = os_frame.content_size((disp_w, disp_h))
-    Melty.root_fill = (float(fill_w), float(fill_h) - top, float(top))   # (w, h below the chrome, top y)
+    # Never under 1x1: a window squeezed below its chrome still gives the root a valid size.
+    Melty.root_fill = (max(1., float(fill_w)), max(1., float(fill_h) - top), float(top))   # (w, h below the chrome, top y)
     Melty.root_fill_used = False
     # The body runs INSIDE the ground, as the studio's windows run inside
     # draw_main's show_bg: one bg depth down, the ground's tint and colour
