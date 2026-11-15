@@ -18,6 +18,36 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString, PyTuple};
 use std::rc::Rc;
 
+/// How a call's keyword arguments compare with the remembered ones.
+enum Call {
+    Same,
+    // They differ only in values of the parameters exempt from a new declaration.
+    Placed,
+    Other,
+}
+
+/// Same keys in the same order, with values that are identical objects or equal exact
+/// primitives (`same_argument`), except under the `exempt` names, where one number may
+/// replace another. A value that is or was None is not a placement: it changes what the
+/// caller leaves to the view.
+fn compare(previous: &Bound<'_, PyDict>, current: &Bound<'_, PyDict>, exempt: &[Py<PyString>]) -> PyResult<Call> {
+    if previous.len() != current.len() { return Ok(Call::Other); }
+    let py = current.py();
+    let mut call = Call::Same;
+    for ((key_a, value_a), (key_b, value_b)) in previous.iter().zip(current.iter()) {
+        if !key_a.is(&key_b) && !key_a.eq(&key_b)? { return Ok(Call::Other); }
+        if crate::retained::same_argument(&value_a, &value_b)? { continue; }
+        if value_a.is_none() || value_b.is_none() { return Ok(Call::Other); }
+        let mut listed = false;
+        for name in exempt {
+            if key_b.is(name.bind(py)) || key_b.eq(name.bind(py))? { listed = true; break; }
+        }
+        if !listed { return Ok(Call::Other); }
+        call = Call::Placed;
+    }
+    Ok(call)
+}
+
 struct Slot {
     // The caller's keyword arguments and position-default generation.
     kwargs: Py<PyDict>,
@@ -55,6 +85,8 @@ pub struct Declarations {
     api: Option<Rc<Api>>,
     path: Py<PyAny>,
     slots: HashMap<usize, Slot>,
+    // The parameters a call may change without being declared anew (`exempt`).
+    exempt: Vec<Py<PyString>>,
 }
 
 #[pymethods]
@@ -80,7 +112,14 @@ impl Declarations {
             api,
             path: py.import("pathlib")?.getattr("Path")?.unbind(),
             slots: HashMap::default(),
+            exempt: Vec::new(),
         })
+    }
+    /// The parameters exempt from a new declaration: a call that differs from the
+    /// remembered one only in their values is placed again by the bridge, with
+    /// everything else of its resolution kept. The bridge owns the list (`PLACED`).
+    fn exempt(&mut self, names: Vec<Py<PyString>>) {
+        self.exempt = names;
     }
     /// The texture cache, once the bridge created it; needed to place the
     /// image of an unchanged child inside a non-scrolling parent.
@@ -118,6 +157,7 @@ impl Declarations {
     }
     fn clear(&mut self) {
         let slots = std::mem::take(&mut self.slots);
+        self.exempt.clear();
         self.graph = None;
         self.identities = None;
         self.gpu = None;
@@ -134,16 +174,19 @@ impl Declarations {
     ///   nothing from the bridge, executed here first when it was dirty;
     /// - a list [handle, node, flags, resolved]: declared from the remembered
     ///   resolution, the bridge continues with change detection and execution;
+    /// - a list [handle, resolved]: only exempt parameters differ from the
+    ///   remembered call, or the state no longer holds what it resolved to. The
+    ///   bridge places the view again and keeps the rest of the resolution;
     /// - an int handle: nothing remembered applies, the bridge resolves fully.
-    /// `scoped` is whether no layout cell is active, `unbound` whether no view
-    /// is bound to a cell at all, `thawed` whether no view is frozen by a
-    /// resize gesture.
+    /// `scoped` is whether no layout cell of this parent is active, `unbound` whether the
+    /// bridge has no placement of its own to do, `bindings` the views bound to a cell (None: no
+    /// view is), `thawed` whether no view is frozen by a resize gesture.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (parent, renderer, keyed, key, name, generation, scoped, unbound, thawed, auto_layout, input, kwargs))]
+    #[pyo3(signature = (parent, renderer, keyed, key, name, generation, scoped, unbound, thawed, auto_layout, input, kwargs, bindings=None))]
     fn declare<'py>(slf: &Bound<'py, Self>, py: Python<'py>, parent: u64, renderer: u128, keyed: bool,
                     key: Option<Bound<'py, PyAny>>, name: Option<Bound<'py, PyAny>>, generation: u64, scoped: bool,
                     unbound: bool, thawed: bool, auto_layout: bool, input: Bound<'py, PyAny>,
-                    kwargs: Bound<'py, PyDict>) -> PyResult<Bound<'py, PyAny>> {
+                    kwargs: Bound<'py, PyDict>, bindings: Option<Bound<'py, PyDict>>) -> PyResult<Bound<'py, PyAny>> {
         // Phase one, under this table's borrow: identity, the remembered call
         // and the declaration itself. No view body runs here.
         let (graph, api, gpu, executor, node, flags, execute, position, extras, state) = {
@@ -155,9 +198,17 @@ impl Declarations {
             let handle = identities.borrow_mut(py).handle(renderer, key.as_ref(), name.as_ref(), keyed)?;
             let fallback = |py: Python<'py>| Ok(handle.into_pyobject(py)?.into_any());
             let Some(slot) = this.slots.get_mut(&handle) else { return fallback(py); };
-            if !scoped || slot.generation != generation
-                || !slot.state.borrow(py).unchanged(slot.kwargs.bind(py), &kwargs)? {
-                return fallback(py);
+            if !scoped || slot.generation != generation { return fallback(py); }
+            let call = compare(slot.kwargs.bind(py), &kwargs, &this.exempt)?;
+            if matches!(call, Call::Other) { return fallback(py); }
+            if matches!(call, Call::Placed) || !slot.state.borrow(py).settled() {
+                // A place that depends on the layout cursor is resolved in full.
+                if slot.flow.0.is_some() || slot.flow.1.is_some() || slot.automatic_width.is_some() {
+                    return fallback(py);
+                }
+                let resolved = slot.resolved.bind(py).clone().into_any();
+                drop(guard);
+                return Ok(PyList::new(py, [handle.into_pyobject(py)?.into_any(), resolved])?.into_any());
             }
             if slot.flow.0.is_some() || slot.flow.1.is_some() {
                 let Some(api) = &this.api else { return fallback(py); };
@@ -183,7 +234,13 @@ impl Declarations {
             let same_input = slot.input.as_ref().is_some_and(|previous| previous.as_ptr() == input.as_ptr());
             let mut nodes = graph.borrow_mut(py);
             let known = nodes.known_child(slot.node, parent);
-            let direct = parent != 0 && unbound && same_input && known
+            // `bindings` holds the views bound to a layout cell: only such a view needs the
+            // bridge's tail, the other views of an app with layouts finish here like any.
+            let free = match &bindings {
+                Some(bindings) => bindings.is_empty() || !bindings.contains(slot.node)?,
+                None => true,
+            };
+            let direct = parent != 0 && unbound && free && same_input && known
                 && !input.is_instance_of::<PyString>() && !input.is_instance(this.path.bind(py))?
                 && (this.api.is_none() || this.gpu.is_some())
                 && this.executor.as_ref().is_some_and(|executor| executor.borrow(py).attached(slot.node));
@@ -252,6 +309,7 @@ impl Declarations {
         if let Some(identities) = &self.identities { visit.call(identities)?; }
         if let Some(gpu) = &self.gpu { visit.call(gpu)?; }
         if let Some(executor) = &self.executor { visit.call(executor)?; }
+        for name in &self.exempt { visit.call(name)?; }
         for slot in self.slots.values() {
             visit.call(&slot.kwargs)?;
             visit.call(&slot.resolved)?;

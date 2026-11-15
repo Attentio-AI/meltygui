@@ -1,5 +1,5 @@
 """The tree edits and the pointer tests of draw_tiles (meltygui/view/tiles_view.py)."""
-from meltygui.view.tiles_view import GAP, aim, find, join, merge, split, tidy, under
+from meltygui.view.tiles_view import GAP, REACH, aim, blank, chosen, find, join, mend, merge, split, tidy, title, track, under
 
 
 def tree():
@@ -50,36 +50,70 @@ def test_tidy_splices_a_split_of_the_same_axis_and_keeps_the_root():
     assert only['id'] == 0 and only['axis'] == 'y' and ids(only) == [1, 2]
 
 
+def test_mend_replaces_an_id_a_view_edited_into_one_the_tree_has():
+    root = tree()
+    assert not mend(root) and ids(root) == [1, 2, [4, 5]]
+    dragged = root['cells'][0]
+    dragged['id'] = 2                                            # what a drag on draw_any's `id` row does
+    root['cells'][2]['cells'][1]['id'] = 3                       # a tile with its split's id
+    assert mend(root)
+    found = [root['id'], *ids(root)[:2], root['cells'][2]['id'], *ids(root)[2]]
+    assert len(set(found)) == 6 and root['id'] == 0 and max(found) == 6
+    assert not mend(root)
+
+
 def hand(x, y):
-    """A drag that began in tile 2, whose cell starts at (200, 0): the pointer at (x, y) in the window."""
-    return {'tile': 2, 'x': x, 'y': y, 'ox': 200.0 + GAP, 'oy': GAP}
+    """A drag that began in tile 2, the second cell of the root, whose cell starts at (200, 0): the
+    pointer at (x, y) in the window. `leaves` are the root's cells: two tiles and a split."""
+    return {'tile': 2, 'cell': 1, 'leaves': [1, 2, None], 'x': x, 'y': y, 'ox': 200.0 + GAP, 'oy': GAP}
 
 
-SPANS = {1: (200.0, 800.0), 2: (400.0, 800.0), 4: (600.0, 300.0), 5: (600.0, 500.0)}
+SIZES = [200.0, 400.0, 600.0]           # the root's cells along x
+ACROSS = 800.0                          # and their height
 
 
 def test_under_finds_the_source_a_leaf_neighbour_and_nothing_else():
-    root = tree()
-    assert under(root, 1, hand(300.0, 50.0), SPANS) == 1
-    assert under(root, 1, hand(100.0, 50.0), SPANS) == 0
-    assert under(root, 1, hand(700.0, 50.0), SPANS) is None      # a split, not a tile
-    assert under(root, 1, hand(100.0, 900.0), SPANS) is None     # below the shared edge
-    assert under(root, 1, hand(-10.0, 50.0), SPANS) is None      # past the neighbour
+    assert under(hand(300.0, 50.0), 0, SIZES, ACROSS) == 1
+    assert under(hand(100.0, 50.0), 0, SIZES, ACROSS) == 0
+    assert under(hand(700.0, 50.0), 0, SIZES, ACROSS) is None    # a split, not a tile
+    assert under(hand(100.0, 900.0), 0, SIZES, ACROSS) is None   # below the shared edge
+    assert under(hand(-10.0, 50.0), 0, SIZES, ACROSS) is None    # past the neighbour
 
 
 def test_join_turns_round_over_the_source_and_cancels_elsewhere():
     root = tree()
     drag = hand(100.0, 50.0)
-    aim(root, 1, drag, SPANS)
+    aim(drag, 0, SIZES, ACROSS)
     assert drag['gone'] == 1 and drag['other'] == 1
     drag.update(x=300.0)
-    aim(root, 1, drag, SPANS)
+    aim(drag, 0, SIZES, ACROSS)
     assert drag['gone'] == 2                                     # back over the source: it goes instead
     drag.update(y=900.0)
-    aim(root, 1, drag, SPANS)
+    aim(drag, 0, SIZES, ACROSS)
     assert drag['gone'] is None
     drag.update(x=300.0, y=50.0)
-    aim(root, 1, drag, SPANS)
+    aim(drag, 0, SIZES, ACROSS)
     assert merge(root, root, 1, drag)
     assert ids(root) == [1, [4, 5]] and root['sizes'] == [600.0, 600.0]
     assert find(root, 2) is None
+
+
+def test_track_wakes_draw_tiles_only_for_what_needs_the_tree():
+    drag = dict(hand(300.0, 50.0), sx=300.0, sy=50.0)
+    assert not track(drag)                                       # not far enough to be decided
+    drag.update(x=300.0 + REACH)
+    assert track(drag)                                           # `begin` decides: draw_tiles runs
+    drag['released'] = True
+    assert track(drag)
+
+
+def draw_big_scene(input_value):
+    pass
+
+
+def test_a_tile_shows_the_view_it_names_and_the_first_one_otherwise():
+    views = (blank, draw_big_scene)
+    assert chosen({'id': 1, 'view': 'draw_big_scene'}, views) is draw_big_scene
+    assert chosen({'id': 1}, views) is blank
+    assert chosen({'id': 1, 'view': 'renamed'}, views) is blank
+    assert title(draw_big_scene) == 'Big scene' and title(blank) == 'Blank'

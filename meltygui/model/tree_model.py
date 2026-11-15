@@ -35,7 +35,9 @@ that text lands, so a drag does not snap back. A `Code` is written as it is, a s
 literal it replaces, a float without float noise (`spell`). What was written as `Code` is answered
 as `Code` from then on, so a text field that is typed into stays one.
 
-Levers: `QUIET`, `INLINE`, `BATCH`, `spell`. To surface more of the code: tree.rs, `Grower`.
+A list, tuple, dict or set that would run past `WIDTH` is written over several lines (`wrap`).
+
+Levers: `QUIET`, `INLINE`, `BATCH`, `WIDTH`, `TAB`, `spell`, `wrap`. To surface more of the code: tree.rs, `Grower`.
 Not there yet: adding, removing and reordering keys; undo of a write (it is an edit from outside
 for the editor's history); targets that are no single name (`self.x = 1`).
 """
@@ -54,6 +56,11 @@ QUIET = 0.15
 INLINE = 60000
 # Lever: keys fetched at once where a branch's keys are read by index (the rows of a view).
 BATCH = 64
+# Levers: the column a written literal stays inside, and what one level of its items is indented by.
+WIDTH = 120
+TAB = '    '
+# Lever: characters looked back over for the start of the line a value is written on.
+REACH = 1000
 
 
 class Code(str):
@@ -109,6 +116,48 @@ def spell(value, old=''):
     if isinstance(value, (set, frozenset)):
         return '{' + ', '.join(map(spell, value)) + '}' if value else 'set()'
     return repr(value)
+
+
+def wrap(value, indent='', column=0, spell=spell):
+    """The source text of `value` for a place that starts at `column` of a line indented by `indent`:
+    on that line when it fits inside `WIDTH`, else its items on lines of their own one `TAB` deeper.
+    Items that fit share a line; one that has to break, or that holds lists or dicts of its own (a
+    level of a tree), stands alone, and so on down. `spell` spells a value on one line (a set's
+    items are put in the order of their spelling)."""
+    flat = spell(value)
+    return flat if column + len(flat) <= WIDTH else stacked(value, indent, spell, flat)
+
+
+def stacked(value, indent, spell, flat):
+    kind = type(value)
+    if kind not in BRACKETS or not value:
+        return flat
+    inner = indent + TAB
+    room = WIDTH - len(inner) - 1              # (the comma that ends each line)
+    if kind is dict:
+        items = [(f'{spell(key)}: ', item) for key, item in value.items()]
+    else:
+        items = [('', item) for item in (sorted(value, key=spell) if kind in (set, frozenset) else value)]
+    rows, joins = [], False                    # joins: the last row takes another item
+    for head, item in items:
+        text = head + spell(item)
+        alone = nested(item) or len(text) > room
+        if joins and not alone and len(rows[-1]) + 2 + len(text) <= room:
+            rows[-1] += f', {text}'
+        else:
+            rows.append(text if len(text) <= room else head + stacked(item, inner, spell, text[len(head):]))
+        joins = not alone
+    low, high = BRACKETS[kind]
+    return f'{low}\n' + ''.join(f'{inner}{row},\n' for row in rows) + f'{indent}{high}'
+
+
+def nested(value):
+    """Whether `value` is a list, tuple, dict or set that holds another."""
+    items = value.values() if type(value) is dict else value if type(value) in BRACKETS else ()
+    return any(type(item) in BRACKETS for item in items)
+
+
+BRACKETS = {list: '[]', tuple: '()', dict: '{}', set: '{}', frozenset: '{}'}
 
 
 class Keys:
@@ -421,24 +470,38 @@ class Tree:
                 return None
         return low, high
 
-    def put(self, branch, key, value):
-        """Write `value` in place of the value under `key` of `branch`: one splice of the source, which
-        every editor on it follows. The tree answers `value` there until that text is read."""
+    def spot(self, branch, key):
+        """(entry, low, high) of the value under `key` of `branch` in the text as it is now."""
         source, native = self.source, self.source.native
         for again in (False, True):
             node = branch.at()
             found = native.tree_find(node, key) if node >= 0 else None
             where = None if found is None else self.where(branch.path, key, found[0])
             if where is not None:
-                break
+                return found[0], *where
             if again or (found is None and self.version == source.head):
                 raise KeyError(f'{key!r} is not in {branch!r}: a write replaces a value the code has (adding a key is not there yet)')
             self.read()            # the text moved under it: look again in the text as it is
-        low, high = where
-        kind, _ = native.tree_text(found[0])
+
+    def margin(self, branch, key):
+        """(indent, column) of the value under `key` of `branch`: the indentation of the line it starts
+        on and how far into that line it starts. What `wrap` lays a literal out by."""
+        _, low, _ = self.spot(branch, key)
+        line = self.source.native.slice(max(0, low - REACH), low).rpartition('\n')[2]
+        return line[:len(line) - len(line.lstrip())], len(line)
+
+    def put(self, branch, key, value):
+        """Write `value` in place of the value under `key` of `branch`: one splice of the source, which
+        every editor on it follows. The tree answers `value` there until that text is read."""
+        source, native = self.source, self.source.native
+        entry, low, high = self.spot(branch, key)
+        kind, _ = native.tree_text(entry)
         old = native.slice(low, high)
-        # (A parameter without a default: the place after it takes `=value`.)
-        text = ('=' if kind == BLANK else '') + spell(value, old[1:] if kind == BLANK else old)
+        if type(value) in BRACKETS:
+            text = wrap(value, *self.margin(branch, key))
+        else:
+            text = spell(value, old[1:] if kind == BLANK else old)
+        text = '=' * (kind == BLANK) + text         # (a parameter without a default: the place after it takes `=value`)
         if text == old:
             return
         self.writing = True

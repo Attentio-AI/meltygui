@@ -156,8 +156,12 @@ def hyprland_socket_path():
 
 def forget_socket():
     """Drop the memoized socket so the next lookup rescans the instances."""
-    global _socket_resolution
+    global _socket_resolution, _backend
     _socket_resolution = None
+    _backend = None
+
+
+_backend = None      # (name, when to ask again)
 
 
 def backend():
@@ -166,10 +170,17 @@ def backend():
     off Linux: no compositor feed exists there, so rects stay unavailable."""
     if not sys.platform.startswith("linux"):
         return None
-    path = hyprland_socket_path()
-    if path and os.path.exists(path):
-        return "hyprland"
-    return "gnome"
+    # Asked many times a frame (the title bar's maximize reads): the answer is kept for
+    # HYPR_SOCKET_RECHECK_S, as the socket's resolution is, so a frame costs no stat call.
+    global _backend
+    now = time.monotonic()
+    if _backend is None or now >= _backend[1]:
+        path = hyprland_socket_path()
+        name = "gnome"
+        if path and os.path.exists(path):
+            name = "hyprland"
+        _backend = (name, now + HYPR_SOCKET_RECHECK_S)
+    return _backend[0]
 
 _lib = None
 

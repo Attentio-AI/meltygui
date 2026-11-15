@@ -69,7 +69,17 @@ class Layout:
     minima: tuple
     maxima: tuple
     raw: bool = False
+    kept: bool = False
     children: dict = field(default_factory=dict)
+
+    def sizes(self):
+        """The cells' extents along the layout's axis, edge to edge. Asking is subscribing: a
+        drag of the dividers runs only the views it resizes, and the owner of a layout that asked
+        runs once when the drag ends, if it left the cells at other sizes. For an owner that
+        keeps them: `draw_tiles` writes them into its tree."""
+        self.kept = True
+        position = self.manager.axes[self.axis].position
+        return [position(b)-position(a) for a,b in zip(self.edges,self.edges[1:])]
 
     @contextmanager
     def cell(self, key):
@@ -79,7 +89,7 @@ class Layout:
         manager, cache = self.manager, self.manager.cache
         previous = manager.cell_scope
         manager.cell_scope = (self, index)
-        count = len(self.children)
+        count = manager.binds
         before = 0
         if cache.graphics:
             import meltygui_imgui as imgui
@@ -95,9 +105,10 @@ class Layout:
         finally:
             if cache.graphics:
                 dl.pop_clip_rect()
-                # Cached child images contribute four vertices each. Other
-                # geometry belongs to Python and must be recaptured on reflow.
-                if dl.vtx_buffer_size-before > 4*(len(self.children)-count):
+                # Cached child images contribute four vertices each, those of a layout
+                # nested in this cell included: `apply` moves them. Other geometry
+                # belongs to Python and must be recaptured on reflow.
+                if dl.vtx_buffer_size-before > 4*(manager.binds-count):
                     self.raw = True
                     manager.changes[0] += 1
             manager.cell_scope = previous
@@ -144,8 +155,20 @@ class GuiGeometry:
         self.claim = (False,False)
         self.frozen = set()
         self.drag_parents = None
-        # Views whose frame is tied to their window's (`anchor`): the solver places them.
-        self.anchored = set()
+        # Views whose frame is tied to their window's (`anchor`): the solver places them. Each with
+        # the views whose commit can move it (itself and its ancestors); `loose` are not placed yet.
+        self.anchored = {}
+        self.loose = set()
+        # What `apply` last placed, so that it visits only the cells that changed since: the edge
+        # positions of each axis with the solver stamp they were read at, each layout owner's
+        # origin and scroll, and the bound views still to place (`stale`).
+        # Views bound to a cell so far: a cell counts the images drawn in it by the difference.
+        self.binds = 0
+        self.placed_edges = ({}, {})
+        self.placed_stamps = [None, None]
+        self.placed_owners = {}
+        self.placed = {}            # bound view -> (what its place was worked out from, rect, clip)
+        self.stale = set()
 
     def position(self, node):
         x,y=self.cache._position(node)
@@ -374,7 +397,7 @@ class GuiGeometry:
                         delta=desired[axis]-current[axis]
                         self.translate_window(window,axis,delta)
                         self.contain_carried(window,axis,delta)
-        self.apply()
+        self.apply(node)
         self.transactions.pop(node, None)
 
     def abort(self, node):
@@ -394,6 +417,11 @@ class GuiGeometry:
                 layout.__dict__.update(state)
                 layout.children = _Tracked(changes, state['children'])
             changes[0] += 1
+            # The graphs are other objects now: place every cell again.
+            self.placed_stamps = [None, None]
+            self.placed_edges = ({}, {})
+            self.placed.clear()
+            self.stale.update(self.bindings)
 
     def _frame_owner(self, node):
         while node in self.bindings:
@@ -462,7 +490,7 @@ class GuiGeometry:
         graph.replace_cells(layout.serial, [(a,b,float(lo),None if hi is None else float(hi))
                             for a,b,lo,hi in zip(layout.edges,layout.edges[1:],minima,maxima)])
         layout.cross, layout.padding = cross, float(padding)
-        layout.minima, layout.maxima, layout.raw = minima, maxima, False
+        layout.minima, layout.maxima, layout.raw, layout.kept = minima, maxima, False, False
         layout.children.clear()
         self.changes[0] += 1
         # Normalize initial dividers with BOTH frame edges held. The requested
@@ -523,7 +551,14 @@ class GuiGeometry:
             if 0.<=near<=reach:cells.append((a,c,near,near))
             if 0.<=far<=reach:cells.append((d,b,far,far))
             axis.replace_cells(serial,cells)
-        self.anchored.add(node)
+        if node not in self.anchored:
+            above={node}
+            parent=graph.parent(node)
+            while parent:
+                above.add(parent)
+                parent=graph.parent(parent)
+            self.anchored[node]=frozenset(above)
+            self.loose.add(node)
 
     def cell_rect(self, layout, index):
         along = self.axes[layout.axis]
@@ -551,52 +586,133 @@ class GuiGeometry:
         if scope and scope[0].owner==parent and not portal:
             self._open_transactions()
             previous=self.bindings.get(node)
-            if node in self.frames and (previous is None or previous[0] is not scope[0] or previous[1]!=scope[1]):
+            rebound=previous is None or previous[0] is not scope[0] or previous[1]!=scope[1]
+            if rebound:
+                self.stale.add(node)
+            if node in self.frames and rebound:
                 self.drop_frame(node)
                 self.cache.graph.invalidate_node(node)
             self.bindings[node]=scope
             scope[0].children[node]=scope[1]
+            self.binds+=1
         else:
             self.bindings.pop(node, None)
         if portal:
             self.window(node)
 
-    def apply(self):
+    def moved(self):
+        """The edges of each axis that are not where the last `apply` read them. A graph is asked
+        for its positions only when it was mutated since."""
+        moved = [(), ()]
+        for axis, graph in enumerate(self.axes):
+            stamp = graph.mutations
+            if stamp == self.placed_stamps[axis]:
+                continue
+            self.placed_stamps[axis] = stamp
+            values = graph.values()
+            old = self.placed_edges[axis]
+            moved[axis] = {edge for edge, at in values.items() if old.get(edge) != at}
+            self.placed_edges = (values, self.placed_edges[1]) if axis == 0 else (self.placed_edges[0], values)
+        return moved
+
+    def shifted(self, owner, seen):
+        """Whether a layout owner's origin or scroll is not what its cells were last placed with.
+        `seen` keeps the answer for the other cells of this `apply`."""
+        answer = seen.get(owner)
+        if answer is None:
+            now = (self.projected_position(owner), self.cache.graph.state(owner).scroll_offset)
+            answer = seen[owner] = self.placed_owners.get(owner) != now
+            self.placed_owners[owner] = now
+        return answer
+
+    def apply(self, owner=None):
+        """Write the solved rectangles to the views. A bound view is visited only when it is
+        `stale`: an edge of its cell or its layout owner's origin moved since the last call, it was
+        bound to another cell, or `owner`, the view whose execution is being committed, is that
+        view or the owner of its layout (its scroll or the view's own content offset may be new).
+        Every other cell has the allocation it would be given again."""
         cache = self.cache
         if self.native is not None:
             self.native.commit()
         if not self.windows and not self.bindings and not self.anchored:
             return
+        # This runs for every executed view: with no edge moved and nothing of `owner`'s to
+        # place, it ends here.
+        graph = cache.graph
+        along = self.moved()
+        shifted = bool(along[0] or along[1])
         # Commit placement parents before their descendants. Portal rectangles
         # remain parent-relative even across ordinary intermediate views.
-        graph = cache.graph
-        for node in sorted((n for n in self.windows if graph.contains(n)),key=lambda n:self.depth(n)):
-            if node not in cache.records:continue
-            x,y,w,h=self.frame_rect(node)
-            parent=cache.graph.parent(node)
-            ox,oy=self.position(parent) if parent else self.offset
-            sx,sy=cache.graph.state(parent).scroll_offset if parent else (0.,0.)
-            cx,cy=cache.graph.state(node).content_offset
-            rect=(x-ox+sx-cx,y-oy+sy-cy,max(1.,w),max(1.,h))
-            cache.graph.allocate(node,rect)
-        for node in tuple(self.anchored):
+        if self.windows:
+            for node in sorted((n for n in self.windows if graph.contains(n)),key=lambda n:self.depth(n)):
+                if node not in cache.records:continue
+                x,y,w,h=self.frame_rect(node)
+                parent=cache.graph.parent(node)
+                ox,oy=self.position(parent) if parent else self.offset
+                sx,sy=cache.graph.state(parent).scroll_offset if parent else (0.,0.)
+                cx,cy=cache.graph.state(node).content_offset
+                rect=(x-ox+sx-cx,y-oy+sy-cy,max(1.,w),max(1.,h))
+                cache.graph.allocate(node,rect)
+        loose = self.loose
+        for node,above in tuple(self.anchored.items()):
+            # Its place is its frame less its parent's origin: new when an edge moved, or when
+            # the committed view is it or an ancestor, which may have placed it or its parent anew.
+            if not (shifted or owner in above or node in loose):continue
             if node not in self.frames or not graph.contains(node):
-                self.anchored.discard(node);continue
+                self.anchored.pop(node,None);loose.discard(node);continue
+            loose.discard(node)
             x,y,w,h=self.frame_rect(node)
             parent=graph.parent(node)
             ox,oy=self.position(parent)
             sx,sy=graph.state(parent).scroll_offset
             cx,cy=graph.state(node).content_offset
             graph.allocate(node,(x-ox+sx-cx,y-oy+sy-cy,max(1.,w),max(0.,h)))
-        for node,(layout,index) in tuple(self.bindings.items()):
-            if not graph.contains(node) or not graph.contains(layout.owner): continue
-            x,y,w,h=self.cell_rect(layout,index)
-            dx,dy=self.projection_delta(layout.owner)
-            x,y=x+dx,y+dy
-            ox,oy=self.position(layout.owner)
-            sx,sy=cache.graph.state(layout.owner).scroll_offset
-            cx,cy=cache.graph.state(node).content_offset
-            rect=(x-ox+sx-cx,y-oy+sy-cy,max(1.,w),h)
+        stale, bindings = self.stale, self.bindings
+        if owner is not None:
+            if owner in bindings:
+                stale.add(owner)
+            owned = self.owner_layouts.get(owner)
+            if owned:
+                for key in owned:
+                    stale.update(self.layouts[key].children)
+        if shifted:
+            seen = {}
+            for node,(layout,index) in bindings.items():
+                if node in stale: continue
+                edges, cross = along[layout.axis], along[1-layout.axis]
+                if (self.shifted(layout.owner, seen)
+                        or layout.edges[index] in edges or layout.edges[index+1] in edges
+                        or layout.cross[0] in cross or layout.cross[1] in cross):
+                    stale.add(node)
+        if not stale:
+            return
+        waiting = set()
+        seen = {}
+        placed, stamps = self.placed, self.placed_stamps
+        for node in tuple(stale):                   # in no order: a cell's place does not depend on another's
+            binding = bindings.get(node)
+            if binding is None: continue            # not bound any more
+            layout,index = binding
+            if not graph.contains(node) or not graph.contains(layout.owner):
+                waiting.add(node)       # placed once both exist
+                continue
+            sx,sy=graph.state(layout.owner).scroll_offset
+            cx,cy=graph.state(node).content_offset
+            # A view that ran is placed again for its new image (`place_child`): with no edge
+            # moved since, the rectangle is the one worked out last time.
+            key=(stamps[0],stamps[1],sx,sy,cx,cy,layout.serial,index)
+            kept=placed.get(node)
+            if kept is not None and kept[0]==key:
+                rect,clip=kept[1],kept[2]
+            else:
+                self.shifted(layout.owner, seen)    # remembers what this cell is placed with
+                x,y,w,h=self.cell_rect(layout,index)
+                dx,dy=self.projection_delta(layout.owner)
+                x,y=x+dx,y+dy
+                ox,oy=self.position(layout.owner)
+                rect=(x-ox+sx-cx,y-oy+sy-cy,max(1.,w),h)
+                clip=(x-ox,y-oy,x-ox+w,y-oy+h)
+                placed[node]=(key,rect,clip)
             freeze=(self.gesture and cache.invocations[node][1].get('freeze_resize',False)
                     and (node in self.frozen or not cache.graph.dirty(node))
                     and not cache.graph.pending(node) and node not in cache.events
@@ -605,7 +721,8 @@ class GuiGeometry:
                 if freeze:self.frozen.add(node)
                 cache._last_pointer=None
             if cache.graphics and cache.gpu and node in cache.backgrounds:
-                cache.gpu.place_child(layout.owner,node,rect,(x-ox,y-oy,x-ox+w,y-oy+h))
+                cache.gpu.place_child(layout.owner,node,rect,clip)
+        self.stale = waiting
 
     def depth(self,node):
         depth=0
@@ -764,6 +881,7 @@ class GuiGeometry:
             if layout.raw:self.cache.graph.invalidate_node(layout.owner)
 
     def end_gesture(self):
+        self.settle()
         for graph in self.axes:
             graph.end_drag();graph.remove(4)
         self.gesture=None
@@ -772,6 +890,26 @@ class GuiGeometry:
         if self.native:
             self.native.move_policy(False)
             self.native.release()
+
+    def settle(self):
+        """Run, once, the owner of each layout that asked for its `sizes` and whose cells the
+        ending drag left at other sizes. No other owner runs for a drag."""
+        gesture=self.gesture
+        if not gesture or 'base' not in gesture:return
+        graph=self.cache.graph
+        owners=set()
+        for layout in self.layouts.values():
+            if not layout.kept or layout.owner in owners or not graph.contains(layout.owner):continue
+            was=gesture['base'][layout.axis]
+            now=self.axes[layout.axis].position
+            for a,b in zip(layout.edges,layout.edges[1:]):
+                if a not in was or b not in was or was[b]-was[a]!=now(b)-now(a):
+                    owners.add(layout.owner)
+                    break
+        for owner in owners:
+            graph.invalidate_node(owner)
+        if owners and self.cache.request_frame:
+            self.cache.request_frame()
 
     def paint(self,draw_list,origin,portal=None):
         shift=[origin[i]-self.offset[i] for i in range(2)]
@@ -826,7 +964,11 @@ class GuiGeometry:
 
     def retire(self,node):
         self.frozen.discard(node)
-        self.anchored.discard(node)
+        self.anchored.pop(node,None)
+        self.loose.discard(node)
+        self.stale.discard(node)
+        self.placed.pop(node, None)
+        self.placed_owners.pop(node, None)
         for key,l in tuple(self.layouts.items()):
             if l.owner==node:self.remove_layout(key)
         self.bindings.pop(node,None)

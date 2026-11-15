@@ -210,6 +210,14 @@ rust is finally fast enough"). Current numbers:
   - Open: whether an app's `*.pkl` belongs in its `.gitignore` (GUI Gym's
     does; tile-view's and the Hub templates' do not list it); where the
     pickle goes when the module's folder cannot be written (an iOS bundle).
+- **Code written back is wrapped and indented**: of tile-view's tree saved
+  with `to_code`, "The tree line gets long very quickly, I'd like the code
+  to do a better job with indentation ... generally for code formatting not
+  just this particular case." (2026-11-15) Built the same day: `wrap`
+  (`model/tree_model.py`) lays out every list, tuple, dict and set that
+  `Tree.put` or `@save(to_code=True)` writes. Inside `WIDTH` (120) it stays
+  on its line; else its items go one `TAB` deeper, short ones sharing lines,
+  one that holds lists or dicts of its own on lines of its own.
   - How to use it: [guide, section 5](GUI_VIEW_GUIDE.md#5-state).
 
 ## 7. Geometry and scrolling
@@ -290,6 +298,49 @@ rust is finally fast enough"). Current numbers:
 - **The tiles need no cell around them.** Their caller places them like any
   view; an edge of theirs "within 100px of the window edge" collides with it
   automatically (`anchor` in gui_layout_prototype.py). (11-14)
+- **A tile picks its view.** `draw_tiles` takes "a list of @gui functions, and
+  then display[s] them as a dropdown selector in each tile. That tile will
+  then invoke its selected view function." The list is `views=`, which
+  replaces `tile=`; the pick is kept in the tile's dict as the function's
+  name. (11-15)
+- **`apply` places only the cells that changed.** "Lets make apply only look
+  at cells whoes edges moved to start": writing the solved rectangles to the
+  views (`GuiGeometry.apply`) ran once per executed body over every cell of
+  the window, 11.4 ms of a 20.3 ms frame with 51 tiles. It now visits a cell
+  when one of its edges or its owner's origin moved, it was bound anew, or the
+  committed view is it or its layout's owner. (11-15)
+- **A divider drag does not run `draw_tiles`.** "Lets optimize draw_tiles
+  next... with the view guide in mind": it ran on every frame of a drag
+  because a layout nested in a cell made the outer one count as hand drawn.
+  Nested layouts no longer do. An owner that keeps its cells' sizes asks
+  `layout.sizes()` and runs once when the drag ends (`GuiGeometry.settle`);
+  an owner that does not ask still never runs for a drag. (11-15)
+- **A split or join drag runs the dragged grip, not every grip.** "Lets
+  optimize split and join next": a grip took the shared hand as its value, so
+  one grip's edit ran all of them, and `draw_tiles`, on every frame. The hand
+  is a model with `Readers` now: the dragged grip moves the divider or aims
+  the join itself and wakes `draw_tiles` only for what needs the tree. (11-15)
+- **The worst case, many views changing width at once, is to be efficient in
+  the framework itself.** "This is a stress test of the collision system
+  itself, to get good performance here the code needs to be really
+  efficient." Measured on 93 tiles, 49 resized a frame (199 bodies): 14.5 ms
+  a frame before, 12.1 ms after these, in interleaved runs. `apply` ends at
+  once when no edge moved and reuses a cell's rectangle; a flush tests each
+  dirty view hidden in a scroll view on its own, where it walked every
+  visible view of the window (also on idle frames); a declaration outside a
+  layout cell finishes natively in an app that has cells; the title bar's
+  backend check is kept for 2 s. Open: a declaration whose size alone changed
+  still resolves in Python (about 3 ms of the frame). (11-15)
+- **A list of parameters is exempt from a new declaration.** "Rather than hard
+  coding this for left and top lets maintain a list of parameters exempt from
+  re-declaration." `PLACED` in retained_gui_prototype.py (`left`, `top`,
+  `width`, `height`, `scroll_offset`, `content_offset`): a call that differs
+  from the remembered one only in their values is placed again by `_settle`,
+  the one function that decides a view's rectangle, also for a first
+  declaration. Nothing public changes. Measured: 276 of 283 declarations a
+  frame take it in the 93 tile resize, for about 0.3 ms of a 12.5 ms frame;
+  the estimate of 3 ms above was wrong, most of that is what follows the
+  resolution and still runs. (11-15)
 
 ## 10. `draw_any` and `draw_collection`
 

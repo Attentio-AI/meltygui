@@ -17,6 +17,8 @@ class NativeCollision:
         self.contact=False
         # Solver state last committed to the platform adapter.
         self.committed=None
+        # The rectangle each root was last allocated by `commit`.
+        self.rooted={}
 
     def begin(self, adapter):
         self.os_frame=adapter
@@ -146,13 +148,19 @@ class NativeCollision:
             pairs=tuple(tuple(g.position(e) for e in p) for g,p in zip(geometry.axes,self.pairs))
             geometry.offset=self.origin(tuple(p[0] for p in pairs))
         if geometry.frames:
+            graph=geometry.cache.graph
+            rooted=self.rooted
             for node in geometry.cache.root_ids:
-                if node in geometry.frames and not geometry.cache.graph.is_portal(node):
+                # This runs for every executed view. With the solver unchanged a root still has
+                # the rectangle it was given here unless its caller declared it at another one.
+                if unchanged and rooted.get(node)==graph.rect(node):continue
+                if node in geometry.frames and not graph.is_portal(node):
                     x,y,w,h=geometry.frame_rect(node)
                     rect=(x-geometry.offset[0],y-geometry.offset[1],max(1.,w),max(1.,h))
-                    geometry.cache.graph.allocate(node,rect)
+                    graph.allocate(node,rect)
                     value,args=geometry.cache.invocations[node]
                     geometry.cache.invocations[node]=(value,{**args,'width':rect[2],'height':rect[3]})
+                    rooted[node]=graph.rect(node)
         if unchanged:return
         if self.os_frame is not None:self.os_frame.prototype_commit(pairs)
         self.last=pairs

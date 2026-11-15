@@ -23,7 +23,8 @@ are not saved. A class in its body is saved with it (`Look.Editor.tab_width`).
                            (the locality rule, docs/APPS.md). {field: value}, plain `pickle`.
     @save('layout.pkl')    that file instead: beside the module, or where an absolute path says.
     @save(to_code=True)    the class's own source. Nothing is read: the code is the saved state.
-                           Each value that changed is written over its default, as a literal.
+                           Each value that changed is written over its default, as a literal;
+                           one too long for its line has its items on indented lines below.
 
 A pickle is read where the class is decorated, so the values are there for the lines below it. It
 costs one small file read during the import (0.03 ms for tile-view's layout, and 0.6 ms for the
@@ -39,7 +40,7 @@ good file and is reported. A pickle whose bytes are what the file holds is not w
 
 Writing to code goes through the Rust `Source` (model/source_model.py): `source.tree` finds the
 class and the assignment, and an assignment to it splices the new literal over the old one
-(tree_model.py, native/source/src/tree.rs). Nothing in Python looks for the place. Before the
+(tree_model.py, native/source/src/tree.rs), laid out by `wrap` there (its levers: `WIDTH`, `TAB`). Nothing in Python looks for the place. Before the
 file is replaced `compile` judges the new text (the judge of syntax everywhere:
 native/source/README.md) and the tree is read again to see that each value landed. Nothing is
 read or parsed at launch, and nothing at exit when no field changed. A field is written when
@@ -182,7 +183,7 @@ class Pickled:
 
 
 def spelled(value):
-    """The literal of `value` as Python prints it, with a set's items sorted so their order never
+    """The literal of `value` on one line, as Python prints it, with a set's items sorted so their order never
     counts. TypeError for a value that has no literal: to let a to_code field hold another type,
     add its row here."""
     kind = type(value)
@@ -226,7 +227,8 @@ class Coded:
     def write(self):
         """Write the fields that changed over their defaults in the file. Returns a note for each
         field that was left as it is; raises when the file could not be written."""
-        changed = {}
+        changed = {}               # label -> its literal on one line: what is compared, never the layout
+        values = {}
         notes = []
         for owner, name, label in self.fields:
             try:
@@ -235,11 +237,11 @@ class Coded:
                 notes.append(f'{label}: {error}')
                 continue
             if text != self.held[label]:
-                changed[label] = text
+                changed[label], values[label] = text, getattr(owner, name)
         if not changed:
             return notes
         from meltygui.model.source_model import Source
-        from meltygui.model.tree_model import Branch, Code
+        from meltygui.model.tree_model import Branch, Code, wrap
         with open(self.path, 'rb') as file:
             data = file.read()
         source = Source(data.decode('utf-8'), self.path)
@@ -265,15 +267,17 @@ class Coded:
                     notes.append(f'{label} is `{now}` in the file, not the `{self.held[label]}` this run '
                                  f'started from: left as it is')
                 else:
-                    body[name] = Code(text)         # one splice, at the span the tree found
-                    wrote[label] = (body, name)
+                    # One splice, at the span the tree found, wrapped to the line it starts on.
+                    laid = wrap(values[label], *tree.margin(body, name), spelled)
+                    body[name] = Code(laid)
+                    wrote[label] = (body, name, laid)
             if wrote:
                 text = source.text
                 compile(text, self.path, 'exec')
                 source.settle()                     # the readings the splices asked for end before this one
                 tree.read()
-                for label, (body, name) in wrote.items():
-                    if name not in body or read(body[name]) != changed[label]:
+                for label, (body, name, laid) in wrote.items():
+                    if name not in body or read(body[name]) != laid:
                         raise ValueError(f'{label} did not read back as written')
                 replace(self.path, text.encode('utf-8'), data)
                 stale(self.path)

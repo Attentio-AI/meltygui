@@ -218,7 +218,10 @@ def app(width=None, height=None, cache=None):
   For what belongs in the code, such as a window's start size or a font size
   the developer tunes while the app runs. The values are literals (numbers,
   texts, `True`, `False`, `None`, lists, tuples, dicts, sets), each assigned
-  once at the top of the class. A default that is an expression (`2 / 3`) or
+  once at the top of the class. A list or dict too long for its line is
+  written over indented lines, a tree one level per indent (`wrap` in
+  [tree_model.py](../meltygui/model/tree_model.py); levers `WIDTH`, `TAB`).
+  A default that is an expression (`2 / 3`) or
   that was edited in the file while the app ran is left as it is, and stderr
   says so.
 - This is the one way an app keeps state. `meltygui.persisted(...)` and a
@@ -395,6 +398,7 @@ output is shown again:
 | Something its body asked `event` about happened | Section 6. |
 | `cache.invalidate(obj)` | For an object changed in place by code outside the views that show it. |
 | `cache.wake(node)` | From any thread (section 11). |
+| A drag of its dividers ended | Only for a view that asked a `columns` / `rows` layout for its `sizes()`, and only if the drag left other sizes. |
 
 What follows from the first row:
 
@@ -413,6 +417,12 @@ What follows from the first row:
 
 - Never repair a stale view with `use_cache=False`, `live=True` or a state
   write on every run. Find the missing cause above.
+- **A divider drag runs the views it resizes, not the view that declared the
+  layout.** A view that keeps the sizes of its cells in its value asks for
+  them, `layout.sizes()`, and runs once when the drag ends: `place` in
+  [tiles_view.py](../meltygui/view/tiles_view.py). Drawing of your own inside
+  a cell (anything but child views and nested layouts) makes the layout one
+  that is recaptured on every frame of a drag, and its owner runs each time.
 - The root in the example is `use_cache=False`: it runs on every frame the
   window draws, so it may read the model directly. That is for the root only.
 
@@ -502,8 +512,8 @@ What is there already:
 | Any value, nested dicts and lists, dataclasses | `meltygui.rust.draw_any(value, name=...)`; a view of your own for a type, a key name or a shape is `@is_default_for(...)` above `@gui` |
 | Code or long text | `draw_editor`, from `meltygui.view.editor_view` for now ([NATIVE_EDITOR.md](NATIVE_EDITOR.md#using-draw_editor)) |
 | A button | `draw_button` from `meltygui.rust`: `pressed, _ = draw_button('Run', name='run')` |
-| One of a few choices | `draw_dropdown(value, choices=CHOICES)` from `meltygui.rust` |
-| Tiles the user splits and joins from their corners, as in Blender | `draw_tiles(tree, name='tiles', tile=view, width=width, height=height)` from `meltygui.rust`; the tree is plain dicts, and an edge within 100 px of the window's is tied to it, so no cell goes around it ([tiles_view.py](../meltygui/view/tiles_view.py)) |
+| One of a few choices | `draw_dropdown(value, choices=CHOICES)` from `meltygui.rust`; `label=` names choices that are not text |
+| Tiles the user splits and joins from their corners, as in Blender | `draw_tiles(tree, name='tiles', views=VIEWS, width=width, height=height)` from `meltygui.rust`; `VIEWS` is a module tuple of `@gui` views of a tile's dict, and each tile picks one from a dropdown in its head; the tree is plain dicts; a divider drag runs only the resized tiles, and `draw_tiles` once at its end to write the sizes; an edge within 100 px of the window's is tied to it, so no cell goes around it ([tiles_view.py](../meltygui/view/tiles_view.py)) |
 | A popup of your own, a picker | Section 7; [examples/gui_popups.py](../examples/gui_popups.py) |
 | A whole standalone ImGui app as one view | `gui_module('app.py')` ([gui_module.py](../meltygui/core/rendering/gui_module.py)) |
 

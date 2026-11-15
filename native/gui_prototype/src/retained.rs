@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyString, PyTuple};
 use std::collections::BTreeSet;
 use crate::hash::{Map as HashMap, Set as HashSet};
-use crate::geometry::{Geometry, POSITION, SIZE, SCROLL, CONTENT};
+use crate::geometry::{intersects, Geometry, POSITION, SIZE, SCROLL, CONTENT};
 use crate::{NativeState, Value};
 
 /// Lever: host frames a returned edit stays a view's live input while its
@@ -176,6 +176,20 @@ impl RetainedGraph {
             if flags & (SIZE|CONTENT)!=0 && self.nodes[&id].declared.is_none() {self.invalidate_node(id);}
             if flags & (SIZE|SCROLL|CONTENT)!=0 {self.composition(id);}
             if flags & POSITION!=0 && !self.nodes[&id].portal {self.composition(parent);}
+        }
+    }
+    /// Whether a walk from the roots and windows through `visible_children` reaches `id`: each
+    /// view on the way up lies in its parent's viewport. Roots and windows are always reached.
+    fn in_sight(&mut self, py: Python<'_>, id:u64) -> bool {
+        let mut current=id;
+        loop {
+            let Some(n)=self.nodes.get(&current) else {return false;};
+            if n.portal || n.parent==0 {return true;}
+            let parent=n.parent;
+            let r=self.geometry.rect(py,parent);
+            let s=self.geometry.scroll(py,parent);
+            if !intersects(self.geometry.rect(py,current),(s.0,s.1,r.2,r.3)) {return false;}
+            current=parent;
         }
     }
     fn collect_visible(&mut self, py: Python<'_>, id:u64, out:&mut Vec<u64>) {
@@ -680,9 +694,14 @@ impl RetainedGraph {
         self.sync(py);
         if self.dirty_set.is_empty() {return vec![];}
         let mut visible=vec![];
-        for id in self.geometry.roots() {if !self.nodes[&id].portal {self.collect_visible(py,id,&mut visible);}}
-        for id in self.windows() {self.collect_visible(py,id,&mut visible);}
-        visible.retain(|id|self.dirty_set.contains(id));
+        // A dirty view inside a scroll view waits until it is in sight; the others
+        // (`unclipped_dirty`, a subset) run wherever they are. Rows that were never in sight stay
+        // dirty for good, so each of them is tested on its own: the walk over every visible view
+        // of the window that this replaces cost the same on every flush, idle frames included.
+        if self.dirty_set.len()!=self.unclipped_dirty.len() {
+            let waiting:Vec<u64>=self.dirty_set.iter().copied().filter(|id|!self.unclipped_dirty.contains(id)).collect();
+            for id in waiting {if self.in_sight(py,id) {visible.push(id);}}
+        }
         visible.extend(self.unclipped_dirty.iter().copied());
         visible.retain(|id|self.nodes.get(id).is_some_and(|n|!n.bound));
         visible.sort_unstable();visible.dedup();

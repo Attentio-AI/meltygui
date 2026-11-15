@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from meltygui.model.source_model import Source
-from meltygui.model.tree_model import EMPTY, Branch, Code, spell
+from meltygui.model.tree_model import EMPTY, WIDTH, Branch, Code, spell, wrap
 
 ROOT = Path(__file__).resolve().parents[1]
 TEXT = '''import os
@@ -335,3 +335,29 @@ def test_values_agree_with_ast_on_the_repository():
         source.close()
     # (Literals read as values, not left as code: all but implicit concatenations, bytes and the like.)
     assert found[0] > 1000 and found[1] > found[0] * .9, found
+
+
+def test_a_list_or_dict_too_long_for_its_line_is_written_over_several(source):
+    tree = source.tree
+    tree['NAMES'] = ['short']
+    tree['Knobs']['label'] = {'id': 0, 'cells': [{'id': at, 'note': 'x' * 30} for at in range(3)], 'sizes': [1.5, 2.5]}
+    tree['Knobs']['scale']['locals']['if##0']['z'] = list(range(60))
+    text = source.text
+    assert "NAMES = ['short']\n" in text
+    assert """
+    label = {
+        'id': 0,
+        'cells': [
+            {'id': 0, 'note': 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'}, {'id': 1, 'note': 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'},
+            {'id': 2, 'note': 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'},
+        ],
+        'sizes': [1.5, 2.5],
+    }
+""" in text
+    assert "\n            z = [\n                0, 1, 2," in text and " 58, 59,\n            ]\n" in text
+    assert max(map(len, text.split('\n'))) <= WIDTH
+    compile(text, 'text', 'exec')
+    tree = settled(source)
+    assert tree['Knobs']['label'].plain()['cells'][2] == {'id': 2, 'note': 'x' * 30}
+    assert tree['Knobs']['scale']['locals']['if##0']['z'].plain() == list(range(60))
+    assert wrap({'a': {3, 1, 2}}) == "{'a': {1, 2, 3}}" and wrap(()) == '()' and wrap((1,), column=WIDTH) == '(\n    1,\n)'

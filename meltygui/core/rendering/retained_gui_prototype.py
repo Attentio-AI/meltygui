@@ -44,6 +44,38 @@ _CLEAR = (0., 0., 0., 0.)
 
 
 MIN_WIDTH = 1.0     # px a view with no room left is drawn at: the narrowest cache texture
+INFINITE = float('inf')
+# Lever: the parameters exempt from a new declaration. A call that differs from the remembered one
+# only in their values is placed again (`_placed`) and keeps the rest of its resolution: what kind
+# of view it is, its other arguments, its identity. They are also the ones that do not run a
+# body by themselves. A parameter belongs here when the state holds it and `_settle` writes it.
+PLACED = ('left', 'top', 'width', 'height', 'scroll_offset', 'content_offset')
+SIZED = ('left', 'top', 'width', 'height')      # of those, the ones a caller leaves to the view with None
+NOTHING = {}
+
+
+def _sized(func, state, width, height, automatic):
+    """The size a declaration asks for. An automatic height is the one measured last; a size with
+    no room left is floored and one that is no size is refused (`_fit_size`)."""
+    if automatic:
+        height = state.get('height', 0.) or 0.
+    if not (MIN_WIDTH <= width <= 8192. and 0. <= height < INFINITE):
+        width, height = _fit_size(func, width, height)
+    return width, height
+
+
+def _settle(func, state, caller, initial, left, top, width, height, minimum, maximum, bar=0.):
+    """Write a declaration's rectangle to the view's state and return the one that holds: (left,
+    top, width, height). The one place a view's rectangle is decided, for a first declaration and
+    for one that is only placed again. `caller` holds what the call passed (it wins over the
+    state), `left` ... `height` what applies where it passed nothing and the user set nothing,
+    `bar` the height of a window's title strip."""
+    state.configure({'width': width, 'height': height, 'left': left, 'top': top,
+                     'scroll_offset': (0., 0.), 'content_offset': (0., bar)}, caller, initial)
+    width, height = state.width, state.height
+    if not (MIN_WIDTH <= width <= 8192. and 0. <= height < INFINITE):
+        width, height = _fit_size(func, width, height)
+    return float(state.left), float(state.top), float(width), min(maximum, max(minimum, float(height)))
 
 
 def _fit_size(func, width, height):
@@ -93,6 +125,7 @@ class RetainedGui:
         self.graph = RetainedGraph()
         # Remembered resolutions of repeated declarations, declared natively.
         self.declared = Declarations(self.graph, self.identities, self.imgui)
+        self.declared.exempt(PLACED)
         self.graphics = graphics
         self.gpu = None
         from meltygui.core.rendering.gui_calibration import Calibration
@@ -356,7 +389,6 @@ class RetainedGui:
         self.shared_natives.append(shared)
         decoration_keyed, decoration_key = 'key' in decoration, decoration.get('key')
         decoration_name = decoration.get('name')
-        layout_keys = ('left', 'top', 'width', 'height', 'scroll_offset', 'content_offset')
 
         @wraps(func)
         def wrapper(input_value=None, **kwargs):
@@ -383,21 +415,46 @@ class RetainedGui:
             # executing parent is finished there, executed first when dirty
             # (a tuple).
             declared = self.declared
+            # A layout cell concerns the views its owner declares in it, and a binding the view
+            # that is bound: every other declaration may finish natively.
+            scope = geometry.cell_scope
             outcome = declared.declare(parent, renderer_id, keyed, key, kwargs.get('name', decoration_name),
-                                       generation[0], geometry.cell_scope is None,
-                                       not geometry.bindings and place is None,
-                                       not geometry.frozen, self.auto_layout, input_value, kwargs)
+                                       generation[0], scope is None or scope[0].owner != parent,
+                                       place is None,
+                                       not geometry.frozen, self.auto_layout, input_value, kwargs,
+                                       geometry.bindings)
             kind = type(outcome)
             if kind is tuple:
                 return outcome
             portal = popup = False
-            if kind is list:
+            if kind is list and len(outcome) == 4:
                 # Declared from the remembered resolution; continue below with
                 # change detection, execution and placement.
                 identity_handle, node, flags, resolved = outcome
                 binding = bindings[identity_handle]
                 state = binding.state
                 arguments, x, y, w, h, auto_height, scrollable, extras, caller_keys = resolved
+            elif kind is list:
+                # Placed again: only parameters of PLACED differ from the remembered call (a
+                # resize passes a new width on every frame). Its rectangle is settled anew, the
+                # rest of the resolution stands.
+                identity_handle, resolved = outcome
+                binding = bindings[identity_handle]
+                state = binding.state
+                arguments, _, _, _, _, auto_height, scrollable, extras, caller_keys = resolved
+                caller = {name: kwargs[name] for name in PLACED
+                          if name in kwargs and (kwargs[name] is not None or name not in SIZED)}
+                w, h = _sized(func, state, kwargs.get('width', width), kwargs.get('height', height), auto_height)
+                if 'width' in caller: caller['width'] = w
+                if 'height' in caller: caller['height'] = h
+                x, y, w, h = _settle(func, state, caller, kwargs.get('initial', decoration.get('initial', NOTHING)),
+                                     0. if left is None else left, 0. if top is None else top, w, h,
+                                     arguments['min_height'], arguments['max_height'])
+                arguments = {**arguments, **caller, 'width': w, 'height': None if auto_height else h}
+                declared.remember(identity_handle, kwargs, generation[0], None, None, None,
+                                  (arguments, x, y, w, h, auto_height, scrollable, extras, caller_keys), state)
+                node, flags = graph.declare_view(parent, 0, identity_handle, input_value, arguments,
+                                                 (x, y, w, -1. if auto_height else h), False, state, scrollable)
             else:
                 identity_handle = outcome
                 if 'popup' in kwargs:
@@ -466,9 +523,8 @@ class RetainedGui:
                         raise ValueError('width=None requires a parent or graphics host')
                     automatic_width = w
                 auto_height = h is None
-                if auto_height: h = state.get('height', 0.) or 0.
-                w, h = _fit_size(func, w, h)
-                caller = {k: v for k, v in caller.items() if not (k in ('left', 'top', 'width', 'height') and v is None)}
+                w, h = _sized(func, state, w, h, auto_height)
+                caller = {k: v for k, v in caller.items() if not (k in SIZED and v is None)}
                 # The state holds the size the view is drawn at, not an unusable one the caller computed.
                 if 'width' in caller: caller['width'] = w
                 if 'height' in caller: caller['height'] = h
@@ -476,15 +532,9 @@ class RetainedGui:
                     caller['left'], caller['top'] = self._fit(parent, caller['left'], caller['top'], w, h)
                 if allocation is not None:
                     caller.update(width=w, height=h, left=x, top=y)
-                state.configure({'width': w, 'height': h,
-                                 'left': float(x) if left is None else left,
-                                 'top': float(y) if top is None else top,
-                                 'scroll_offset': (0., 0.), 'content_offset': (0., 28. if portal and not popup else 0.)},
-                                caller, initial)
-                x, y = state.left, state.top
-                w, h = _fit_size(func, state.width, state.height)
-                x, y = float(x), float(y)
-                w, h = float(w), min(maximum, max(minimum, float(h)))
+                x, y, w, h = _settle(func, state, caller, initial,
+                                     float(x) if left is None else left, float(y) if top is None else top,
+                                     w, h, minimum, maximum, 28. if portal and not popup else 0.)
                 arguments = {**decoration, **kwargs, 'width': w, 'height': None if auto_height else h,
                              'min_height': minimum, 'max_height': maximum}
                 if popup:
@@ -524,7 +574,7 @@ class RetainedGui:
                      and not _same(graph.result(node, False)[1], input_value))
                         or (old_args is not arguments and (old_args.keys() != arguments.keys()
                             or any(not _same(old_args[k], v) for k, v in arguments.items()
-                                   if k not in layout_keys)))):
+                                   if k not in PLACED)))):
                     graph.invalidate_node(node)
                     dirty = True
                 if new_input and not pending:

@@ -345,12 +345,11 @@ impl NativeState {
     pub(crate) fn remember_geometry(&mut self) {
         self.resolved = Some(self.geometry_values());
     }
-    /// Whether a declaration memoized with keyword arguments `previous` still
-    /// applies to a call with `current`: placement, size and scroll still hold
-    /// the remembered values and the arguments are the same. Values rewritten
-    /// in between with the same result do not matter.
-    pub(crate) fn unchanged(&self, previous: &Bound<'_, PyDict>, current: &Bound<'_, PyDict>) -> PyResult<bool> {
-        Ok(self.resolved == Some(self.geometry_values()) && same_arguments(previous, current)?)
+    /// Whether placement, size and scroll still hold the values a memoized
+    /// declaration resolved to. Values rewritten in between with the same
+    /// result do not matter.
+    pub(crate) fn settled(&self) -> bool {
+        self.resolved == Some(self.geometry_values())
     }
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
         for value in self.values.iter().flatten() {

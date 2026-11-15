@@ -547,3 +547,48 @@ def test_checkpoint_writes_the_source_and_the_pickle_together(tmp_path, monkeypa
     assert app.checkpoint() is False
     assert line(path, 'width').startswith('width = 1111 ')
     assert pickle.loads((tmp_path / 'Tiles.pkl').read_bytes())['zoom'] == 2.0
+
+
+def test_a_literal_too_long_for_its_line_is_wrapped_and_read_back(tmp_path, monkeypatch, capsys):
+    found, path = module(tmp_path, monkeypatch)
+    Look = found.Look
+    leaf = lambda at: {'id': at, 'note': 'a note that takes some room'}
+    Look.tree['cells'] = [leaf(1), {'id': 2, 'axis': 'y', 'cells': [leaf(3), leaf(4), leaf(5)], 'sizes': [0.1 + 0.2, 300.5]}]
+    Look.items.extend(range(100))
+    Look.Editor.tab = [leaf(6), leaf(7), leaf(8), leaf(9)]
+    assert app_save.write() is True
+    assert capsys.readouterr().err == ''
+    text = path.read_text(encoding='utf-8')
+    assert """
+    tree = {
+        'id': 0, 'axis': 'x',
+        'cells': [
+            {'id': 1, 'note': 'a note that takes some room'},
+            {
+                'id': 2, 'axis': 'y',
+                'cells': [
+                    {'id': 3, 'note': 'a note that takes some room'}, {'id': 4, 'note': 'a note that takes some room'},
+                    {'id': 5, 'note': 'a note that takes some room'},
+                ],
+                'sizes': [0.30000000000000004, 300.5],
+            },
+        ],
+    }
+    tags = {'b', 'a'}
+""" in text
+    assert "\n    items = [\n        1, 2, 3, 0, 1, 2," in text and " 98, 99,\n    ]\n" in text
+    assert "\n        tab = [\n            {'id': 6, 'note'" in text and "\n        ]\n" in text    # by the indent of its own line
+    from meltygui.model.tree_model import WIDTH
+    assert max(map(len, text.split('\n'))) <= WIDTH
+
+    # The layout is not the value: nothing changed writes nothing, a change starts from the wrapped text.
+    before = path.stat().st_mtime_ns
+    assert app_save.write() is True and path.stat().st_mtime_ns == before
+    Look.tree['cells'] = [{'id': 1}]
+    Look.items.clear()
+    assert app_save.write() is True
+    assert capsys.readouterr().err == ''
+    assert line(path, 'tree') == "tree = {'id': 0, 'axis': 'x', 'cells': [{'id': 1}]}"
+    assert line(path, 'items') == 'items = []'
+    again, _ = module(tmp_path, monkeypatch, path.read_text(encoding='utf-8'), 'look_again')
+    assert again.Look.tree == Look.tree and again.Look.Editor.tab == Look.Editor.tab

@@ -6,7 +6,8 @@
 - `options`: the list, a temporary popup (`popup=`). The pointer or the arrows and Enter pick, a
   press outside or Escape closes it. Nobody keeps an open flag.
 Keep `choices` as a module constant: a tuple built in the caller's body is a new argument on every
-run. The colours are `look(tint)` of the value views (value_view.py).
+run. Choices that are not text (functions, objects) are named by `label=`, a function of one
+choice that is a module constant too. The colours are `look(tint)` of the value views (value_view.py).
 """
 import meltygui_imgui as imgui
 
@@ -21,7 +22,7 @@ ARROW = ''                # Font Awesome's chevron, at the box's right end
 
 
 @gui(cursor=mouse_cursor.HAND, no_save=('index',))
-def options(input_value, choices=(), index=None, width=0.0, height=0.0, draw_state=None, cache=None, event=None):
+def options(input_value, choices=(), label=str, index=None, width=0.0, height=0.0, draw_state=None, cache=None, event=None):
     """The list under a dropdown. Returns (True, choice) in the run one is picked."""
     if index is None:               # just opened: `index` is not saved
         index = 0
@@ -51,7 +52,7 @@ def options(input_value, choices=(), index=None, width=0.0, height=0.0, draw_sta
     for at, choice in enumerate(choices):
         if at == index:
             draw_list.add_rect_filled(0.0, at * ROW, width, (at + 1) * ROW, table.on, ROUND)
-        draw_list.add_text(PAD, at * ROW + y, table.text, str(choice))
+        draw_list.add_text(PAD, at * ROW + y, table.text, label(choice))
     if picked:
         cache.focus.close()         # the keyboard returns to whoever had it
         return True, choices[index]
@@ -59,12 +60,12 @@ def options(input_value, choices=(), index=None, width=0.0, height=0.0, draw_sta
 
 
 @gui(cursor=mouse_cursor.HAND, height=ROW)
-def draw_dropdown(input_value, choices=(), width=0.0, height=0.0, event=None):
+def draw_dropdown(input_value, choices=(), label=str, width=0.0, height=0.0, event=None):
     """Returns (True, choice) in the run another one is picked. The box shows what the list
     returned, so a pick is seen in the run it is made in."""
     pressed = event.left_mouse_down()
     hot = event.is_hovered()
-    picked, value = options(input_value, name='options', popup=pressed, choices=choices,
+    picked, value = options(input_value, name='options', popup=pressed, choices=choices, label=label,
                             left=0.0, top=height + GAP, width=width, height=len(choices) * ROW)
     table = look(TINT)
     fill = table.field
@@ -74,7 +75,7 @@ def draw_dropdown(input_value, choices=(), width=0.0, height=0.0, event=None):
     y = box(draw_list, table, width, height, fill)
     arrow = width - PAD - imgui.calc_text_size(ARROW).x
     draw_list.push_clip_rect(0.0, 0.0, arrow - PAD, height, True)
-    draw_list.add_text(PAD, y, table.text, str(value))
+    draw_list.add_text(PAD, y, table.text, label(value))
     draw_list.pop_clip_rect()
     draw_list.add_text(arrow, y, table.dim, ARROW)
     return picked, value

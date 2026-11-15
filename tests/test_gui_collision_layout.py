@@ -654,3 +654,111 @@ def test_anchor_ties_only_the_edges_near_the_window():
         geometry.apply();cache.flush()
         assert cache.graph.info(ids['tiles'])['rect']==(20,0,330,350)
     finally:cache.close()
+
+
+def test_apply_places_only_the_cells_that_changed():
+    """`GuiGeometry.apply` works out a cell's rectangle when one of its edges moved, and no
+    other's: a committed view's own cell and its layout's cells are placed from the kept one."""
+    cache=RetainedGui(graphics=False)
+    ids={}; layouts={}
+
+    @cache.gui()
+    def child(input_value):
+        ids[input_value]=cache.current
+        return False,input_value
+
+    @cache.gui(width=600,height=200)
+    def root(input_value):
+        ids['root']=cache.current
+        layout=layouts['main']=cache.geometry.declare(('a','b','c'),axis=0,key='main',mins=70,padding=5)
+        with layout:
+            for key in ('a','b','c'):
+                with layout.cell(key):child(key,key=key)
+        return False,input_value
+    root(None)
+    try:
+        geometry=cache.geometry
+        visited=[]
+        plain=geometry.cell_rect
+        def cell_rect(layout,index):
+            visited.append(layout.keys[index])
+            return plain(layout,index)
+        geometry.cell_rect=cell_rect
+        geometry.apply()
+        assert visited==[]                                  # nothing moved since the last commit
+        geometry.apply(ids['b'])
+        assert visited==[]                                  # its own cell: placed from the kept rectangle
+        geometry.drag(layouts['main'],1,40)                 # the divider between a and b
+        assert sorted(set(visited))==['a','b']
+        assert cache.graph.info(ids['a'])['rect']==(5,5,230,190)
+        assert cache.graph.info(ids['c'])['rect']==(405,5,190,190)
+        del visited[:]
+        geometry.apply(ids['root'])
+        assert sorted(set(visited))==['c']                  # the owner's commit places all its cells:
+        assert cache.graph.info(ids['c'])['rect']==(405,5,190,190)   # only c's is worked out anew
+    finally:cache.close()
+
+
+def nested(graphics, keep):
+    """A root with columns a | (rows b / c) declared by the one owner, as draw_tiles nests splits."""
+    cache=RetainedGui(graphics=graphics)
+    calls=Counter(); layouts={}; sizes={}
+
+    @cache.gui()
+    def child(input_value):
+        calls[input_value]+=1
+        return False,input_value
+
+    @cache.gui(width=400,height=200)
+    def root(input_value):
+        calls['root']+=1
+        outer=layouts['outer']=cache.geometry.declare(('a','right'),axis=0,key='outer',mins=70,padding=5)
+        with outer:
+            with outer.cell('a'):child('a',key='a')
+            with outer.cell('right'):
+                inner=layouts['inner']=cache.geometry.declare(('b','c'),axis=1,key='inner',mins=40,padding=5)
+                with inner:
+                    for key in ('b','c'):
+                        with inner.cell(key):child(key,key=key)
+        if keep:
+            sizes['outer']=outer.sizes()
+        return False,input_value
+    root(None)
+    return cache,calls,layouts,sizes
+
+
+def test_a_layout_nested_in_a_cell_does_not_make_the_outer_one_raw():
+    from conftest import _ensure_gl_context
+    _ensure_gl_context()
+    cache,calls,layouts,_=nested(True,False)
+    try:
+        assert not layouts['outer'].raw and not layouts['inner'].raw
+        g=cache.geometry
+        g.pointer((200,50),down=True,pressed=True)
+        g.pointer((250,50),down=True)
+        cache.flush()
+        g.pointer((250,50),released=True)
+        cache.flush()
+        assert calls['root']==1                             # the drag ran the resized cells only
+        assert calls['a']==2 and calls['b']==2 and calls['c']==2
+    finally:cache.close()
+
+
+def test_an_owner_that_asked_for_sizes_runs_once_when_the_drag_ends():
+    cache,calls,layouts,sizes=nested(False,True)
+    try:
+        g=cache.geometry
+        assert sizes['outer']==[200,200]
+        g.pointer((200,50),down=True,pressed=True)
+        for x in (220,250):
+            g.pointer((x,50),down=True)
+            cache.flush()
+        assert calls['root']==1 and sizes['outer']==[200,200]
+        g.pointer((250,50),released=True)
+        cache.flush()
+        assert calls['root']==2 and sizes['outer']==[250,150]
+        g.pointer((250,50),down=True,pressed=True)         # a press and release that moves nothing
+        g.pointer((250,50),released=True)
+        cache.flush()
+        assert calls['root']==2
+    finally:cache.close()
