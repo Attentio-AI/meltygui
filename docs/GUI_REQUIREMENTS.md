@@ -320,6 +320,41 @@ rust is finally fast enough"). Current numbers:
   one grip's edit ran all of them, and `draw_tiles`, on every frame. The hand
   is a model with `Readers` now: the dragged grip moves the divider or aims
   the join itself and wakes `draw_tiles` only for what needs the tree. (11-15)
+- **A view that runs twice in a frame is marked on screen.** "Let's make it
+  loud. Let's draw red rects around views that double rendered so it's
+  immediately visible in the screenshots", with "a little red tag in the top
+  right corner that says double render in small text". The executor counts
+  runs per frame (`Executor.end_frame`), `RetainedGui.present` draws the mark
+  for `DOUBLE_HOLD` seconds (levers: `DOUBLE_*` in
+  `retained_gui_prototype.py`). Always on; layout waves are not exempt. (11-15)
+- **A resize drag runs a view once a frame**, the first two fixes the mark
+  led to ("can you fix the module double render now"). `wake_next` is served
+  after the host's tree has run, only for a view nothing else ran
+  (`RetainedGui.frame`); and while the layout drags an edge or a window, the
+  pointer's moves run no view (`ImGuiInput.process`): presses and releases
+  still do. (11-15)
+- **A window resize runs the root once**: "when the size of the root window
+  changes it triggers a double render." `draw_tiles` wrote the rescaled split
+  sizes and reported an edit, and a reported edit ran the caller once more in
+  the same frame. Fixed by the next line; `draw_tiles` reports the sizes as
+  before. (11-15)
+- **A reported edit does not run the caller a second time, and the guide has
+  no drawing order rule.** Of "input first, then children, then drawing":
+  "That's a bad rule and I never requested it. It should not be in the guide
+  and it certainly should not be enforced by the framework." The refresh of
+  the caller after a child's edit ("One signalled refresh", in
+  `retained_gui_prototype.py` and `declare.rs`) is removed, and rule 4 is out
+  of `GUI_VIEW_GUIDE.md`. A caller runs once for an edit; what it drew from
+  the value before the child's call shows the edit on its next run.
+  `draw_collection` opens a pressed branch within the one run. (11-16)
+- **A right drag that resizes the OS window runs the root once.** "We are
+  still having a double render problem ... right click drag resize of the
+  main.py in melty-search, just the template project." The pointer moves with
+  the drag, so the input pass ran the root at the old size and the host's
+  declaration ran it again at the new one; the earlier fix held the pointer's
+  moves back only for the layout's own drags. A frame whose window size
+  differs from the last (`_GuiWindow.draw`, `resizing`) now holds them back
+  the same way (`ImGuiInput.process`). (11-16)
 - **A layout opened in less room than it was saved in is a window resize.**
   "This should be treated as a window resize during runtime ... we just need
   a collision solve at launch to correct for the size change." `declare` no

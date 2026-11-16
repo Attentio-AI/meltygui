@@ -82,14 +82,7 @@ own file only to show every pattern in one place.
    `changed` must be true exactly when the value differs from the input: it is
    what runs the caller again. Mutate a mutable input in place and return the
    same object; return a new value of the input's own type for an immutable one.
-4. **Input first, then children, then drawing.** Work out this run's value
-   from the events and from what child views return, then draw that value.
-   A view that draws its input and afterwards learns of an edit can stay stale
-   (measured for an edit that comes back through a popup, bug `9ed33b19b8e3`).
-   Asking `event` comes first of all, on every run (section 6).
-   `draw_bool` in [value_view.py](../meltygui/view/value_view.py) is the shortest
-   model of this order; `dropdown` in the example shows it with a popup.
-5. **The caller owns the value.** A view shows what its caller passes, like an
+4. **The caller owns the value.** A view shows what its caller passes, like an
    immediate mode widget, whether or not it is cached:
 
    ```python
@@ -354,8 +347,8 @@ def dropdown(input_value, choices=(), width=0.0, height=0.0, event=None):
   asks for none leaves the keyboard where it is.
 - Per opening state is a `no_save` parameter: it is its default again on each
   opening (`index` in the example's `options`).
-- Draw the anchor after the popup call, from the value it returned (rule 4 of
-  section 2).
+- Until `9ed33b19b8e3` is fixed, draw the anchor after the popup call, from the
+  value it returned (section 14).
 
 Rules and nesting: [Temporary popups](GUI_PROTOTYPE.md#temporary-popups).
 

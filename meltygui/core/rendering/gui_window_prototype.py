@@ -11,6 +11,8 @@ class _GuiWindow:
         self.bindings = {}
         self.closed = False
         self.input_backend = None
+        # The size the host gave the last frame: a different one is a window resize (`draw`).
+        self.size = None
 
     def solve_native(self, adapter):
         from meltygui.core.rendering.gui_native_collision import NativeCollision
@@ -70,9 +72,10 @@ class _GuiWindow:
             if self.cache.inputs or self.cache.focus.stack:
                 # The frame's ordered key presses and repeats, for the views with an Event and open popups (Escape).
                 self.cache.imgui_input.keys.extend(Melty.frame_key_events)
+            resizing, self.size = self.size not in (None, (width, height)), (width, height)
             self.cache.process_host_input(
                 drag_position=(self.input_backend.drag_mouse_pos
-                               if self.input_backend is not None else None))
+                               if self.input_backend is not None else None), resizing=resizing)
             self.cache.flush()
             if self.cache.geometry.native is not None:
                 pairs=self.cache.geometry.native.pairs

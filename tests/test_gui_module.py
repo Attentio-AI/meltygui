@@ -445,8 +445,9 @@ while True:
     seen.append(('after', tuple(imgui.get_io().mouse_pos)))
     imgui.set_tooltip('tip')
 ''')
-    io, log = SimpleNamespace(mouse_pos=(5., 7.)), []
+    io, log, dragged = SimpleNamespace(mouse_pos=(5., 7.)), [], [(0., 0.)]
     fakes = {'get_io': lambda: io, 'is_mouse_released': lambda button: True, 'is_item_hovered': lambda flags=0: True,
+             'get_mouse_drag_delta': lambda button, threshold: dragged[0],
              'open_popup': lambda label: log.append(('open', label, io.mouse_pos)),
              'begin_popup': lambda label: log.append(('begin', label, io.mouse_pos)) or True,
              'end_popup': lambda: log.append(('end', io.mouse_pos)),
@@ -469,6 +470,13 @@ while True:
     assert seen == [('item', (5., 7.)), ('menu', (65., 107.)), ('after', (5., 7.))]
     assert log == [('open', 'menu', (65., 107.)), ('begin', 'menu', (65., 107.)), ('end', (65., 107.)),
                    ('tip', 'tip', (65., 107.))]
+    assert io.mouse_pos == (5., 7.) and not app.outside
+    # A right release that ended a drag (the host's window resize) is not a click: nothing opens.
+    dragged[0] = (50., 30.)
+    del log[:]
+    cache.wake(node)
+    body(surface)
+    assert app.error is None and ('open', 'menu', (65., 107.)) not in log
     assert io.mouse_pos == (5., 7.) and not app.outside
     window.close()
 

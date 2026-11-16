@@ -320,9 +320,10 @@ def test_child_edit_still_reaches_the_parent_after_unchanged_declarations():
         assert seen[-1] == (False, 1)
         cache.send(child_node, 'bump')
         cache.flush()
-        assert model['count'] == 2 and (True, 2) in seen
+        assert model['count'] == 2 and seen[-1] == (True, 2)
+        runs = len(seen)
         with cache.frame(): parent(model)
-        assert seen[-1] == (False, 2)
+        assert len(seen) == runs        # the run that took the edit is the only one: no refresh follows it
     finally:
         cache.close()
 

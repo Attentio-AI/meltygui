@@ -70,6 +70,9 @@ class ImGuiInput:
         self.blur = None
         self.pointer_claims = {}
         self.settle_hover = set()
+        # While a layout gesture (a window move or resize drag) has the pointer: the views that were
+        # under it or held it, which are not run for its moves. They run once when it has ended.
+        self.gestured = set()
         self.right_active = set()
         self.pressed_keys = frozenset()
         # Event delivery (`deliver`): the key presses the host queued, the view holding the
@@ -295,7 +298,7 @@ class ImGuiInput:
         _, hits = cache.graph.hits(x, y)
         return hits[0][0] if hits else None
 
-    def process(self, io):
+    def process(self, io, resizing=False):
         self.serial += 1
         position = tuple(io.mouse_pos)
         buttons = tuple(io.mouse_down)
@@ -355,15 +358,24 @@ class ImGuiInput:
                 from meltygui.core.input import mouse_cursor
                 mouse_cursor.request(self.shape)
         dirty = {previous_blur}  # settle the old context's synthetic outside click
-        if old is None or old[:2] != self.sample[:2] or any(wheel) or self.hover != previous_hover:
-            dirty.update((previous_hover, self.hover, self.capture))
+        # The pointer is the layout's while it drags an edge or a window, and the host's in a frame
+        # that resizes the OS window (`resizing`): its moves run no view, and no hover is settled. A
+        # view the drag resizes runs for that, once, with its new size (a run here would be at the
+        # old one). A press or release still runs them: a right click acts on release.
+        gesture = ((resizing or self.cache.geometry.gesture is not None)
+                   and old is not None and old[1] == buttons)
+        if gesture:
+            self.gestured.update((previous_hover, self.hover, self.capture))
+        elif self.gestured or old is None or old[:2] != self.sample[:2] or any(wheel) or self.hover != previous_hover:
+            dirty.update((previous_hover, self.hover, self.capture), self.gestured)
+            self.gestured.clear()
         if previous_focus != self.focus:
             dirty.update((previous_focus, self.focus))
             self.blur = previous_focus
         if old is None or old[2:4] != self.sample[2:4] or self.text:
             dirty.add(self.focus)
         dirty.update(self.active)
-        dirty.update(self.settle_hover)
+        (self.gestured if gesture else dirty).update(self.settle_hover)
         self.settle_hover.clear()
         for node in dirty:
             # A view with an Event runs for what it was told, never on raw samples.

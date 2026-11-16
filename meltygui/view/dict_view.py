@@ -263,8 +263,10 @@ def draw_collection(input_value: object, tree: Tree = None, expand=1, editable=T
         rows.top = rows.grow(rows.value, (), '')
         shown = rows.window(first, count)
         items = [node.item(node.keys[index]) for _, node, index in shown]
-    flips = []
-    for (row, node, index), value in zip(shown, items):
+    at = 0
+    while at < len(shown):
+        (row, node, index), value = shown[at], items[at]
+        at += 1
         if value is MISSING:
             continue
         key = node.keys[index]
@@ -277,7 +279,12 @@ def draw_collection(input_value: object, tree: Tree = None, expand=1, editable=T
             wide_key = min(ARROW + imgui.calc_text_size(label).x + PAD, max(split - PAD - x, 1.))
             flipped, _ = branch(index in node.open, key=name, label=label, left=x, top=row * ROW, width=wide_key, height=ROW)
             if flipped:
-                flips.append(row)
+                # A flip moves only the rows below this one: they are read again, and this same
+                # run declares them where they are now.
+                rows.flip(row)
+                tree.flipped = sorted(rows.flipped, key=repr)
+                shown = rows.window(first, count)
+                items = [node.item(node.keys[index]) for _, node, index in shown]
             held = inner.count(value)
             draw_list.add_text(split + PAD, y + text_y, table.dim, f'{held} item{"s" * (held != 1)}')
             continue
@@ -291,10 +298,6 @@ def draw_collection(input_value: object, tree: Tree = None, expand=1, editable=T
         if edited:
             put(node.value, key, value)
             changed = True
-    for row in reversed(flips):
-        # (The rows below it are where they were in this run; the view runs again for the branch's answer.)
-        rows.flip(row)
-        tree.flipped = sorted(rows.flipped, key=repr)
     end(None, name='end', left=0., top=max(rows.count - 1, 0) * ROW, width=1., height=ROW)
     reach = rows.count * ROW - height
     if reach > 0:

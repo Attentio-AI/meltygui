@@ -99,6 +99,9 @@ def test_window_title_and_cached_body_move_on_the_same_pixel_grid(gl_context):
     def parent():child(melty_window=True,initial={'left': 10.2, 'top': 12.2})
     try:
         parent()
+        # A Melty window's view runs twice in the frame that mounts it, which present() would mark in
+        # red (RetainedGui._doubles): that frame ends here, the pixels compared below are the window's.
+        assert cache.executor.end_frame()==[ids['child']]
         target=output.target(1,200,150)
         reference=None
         for x,y in ((10.2,12.2),(10.7,12.7),(30.35,45.8),(10.2,12.2)):

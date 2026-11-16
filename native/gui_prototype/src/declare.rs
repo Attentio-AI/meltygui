@@ -278,9 +278,6 @@ impl Declarations {
         }
         let mut nodes = graph.borrow_mut(py);
         let (changed, value, w, h) = nodes.conclude(py, node)?;
-        // The caller may have drawn a label before assigning this return. One
-        // signalled refresh displays its post-edit state consistently.
-        if changed { nodes.invalidate_node(parent); }
         drop(nodes);
         let (x, y) = position;
         if let Some(api) = &api {

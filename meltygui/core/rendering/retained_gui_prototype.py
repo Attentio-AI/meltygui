@@ -52,6 +52,16 @@ INFINITE = float('inf')
 PLACED = ('left', 'top', 'width', 'height', 'scroll_offset', 'content_offset')
 SIZED = ('left', 'top', 'width', 'height')      # of those, the ones a caller leaves to the view with None
 NOTHING = {}
+# Levers of the double render mark (`RetainedGui._doubles`): how long it stays after the view last ran
+# twice in a frame (seconds), its colours (r, g, b, a for pack_color), the outline's thickness, and the tag's
+# text, text scale and padding (px).
+DOUBLE_HOLD = 1.0
+DOUBLE_RED = (0.95, 0.10, 0.10, 1.0)
+DOUBLE_INK = (1.0, 1.0, 1.0, 1.0)
+DOUBLE_LINE = 2.0
+DOUBLE_TAG = 'double render'
+DOUBLE_SCALE = 0.8
+DOUBLE_PAD = 3.0
 
 
 def _sized(func, state, width, height, automatic):
@@ -167,6 +177,9 @@ class RetainedGui:
         self.woken = deque()
         # Views that asked, while running, to run on the next frame (`wake_next`); process_host_input hands them to `woken`.
         self.later = []
+        # Those, from the input pass until the host's tree has run (`frame`): the ones no caller ran are woken
+        # then. `since` is Executor.runs at that input pass; `hosted`: a host declares through `frame`.
+        self.due, self.since, self.hosted = [], 0, False
         # For threads without the interpreter (`waker`): what hands out their handles, and what
         # turns the tokens they queued into `wake` calls. None until a view asks for a waker.
         self.wakers = self.drain = None
@@ -189,6 +202,8 @@ class RetainedGui:
         # raises. Without one the error leaves flush(), as before.
         self.on_failure = None
         self.request_frame = None
+        # Node to when (time.monotonic) its view last ran more than once in a frame: `_doubles` marks it.
+        self.doubled = {}
         # Node to the callback its view registered with on_retire().
         self.retiring = {}
         self.root_ids = set()
@@ -285,12 +300,23 @@ class RetainedGui:
     def wake_next(self, node):
         """Run `node` again on the next host frame: for a view that animates
         itself. Render thread only. Unlike `wake`, a call made while the view
-        runs is not served by this frame's later flush: it joins the next
-        frame's input pass, so the view runs once a frame (a second run in
-        one frame appends to its child windows)."""
+        runs is not served by this frame's later flush, and the next frame
+        serves it only after the host's tree has run (`frame`), for a view
+        nothing else ran by then: its caller may have a new size or value for
+        it, and a run ahead of that would be a second one in the frame (which
+        also appends to its child windows)."""
         self.later.append(node)
         if self.request_frame:
             self.request_frame()
+
+    def _take_later(self):
+        """The frame's input pass begins: what asked for this frame (`wake_next`) waits for the tree
+        (`frame`), so a view its input or its caller also runs still runs once. A host that never
+        declares through `frame` has no tree to wait for: there it runs with the input."""
+        if self.later:
+            (self.due if self.hosted else self.woken).extend(self.later)
+            self.later.clear()
+            self.since = self.executor.runs
 
     def on_retire(self, node, callback):
         """Run `callback` once, on this thread, when `node`'s view is retired
@@ -315,6 +341,7 @@ class RetainedGui:
         if self._frame_started is None:
             self._frame_started = time.monotonic()
         self.identities.begin_frame()
+        self.hosted = True
         # A view follows its caller within a few frames of an edit the caller did not take (retained.rs, `SETTLE`).
         if self.graph.settle() and self.request_frame:
             self.request_frame()
@@ -333,6 +360,11 @@ class RetainedGui:
             self.root_ids = self.frame_roots
         finally:
             self.frame_roots = None
+            if self.due:
+                # What asked for this frame (`wake_next`) and did not run with the tree or its input.
+                ran, since = self.executor.ran_since, self.since
+                self.woken.extend(node for node in self.due if not ran(node, since))
+                self.due.clear()
             self._retire()
 
     def gui(self, func=None, *, left=None, top=None, width=300, height=100, min_height=0, max_height=8192,
@@ -649,10 +681,6 @@ class RetainedGui:
                 elif self.auto_layout and not parent and not portal:
                     imgui.set_cursor_screen_pos((x, y))
                     imgui.dummy(w, h)
-            if changed and parent:
-                # The caller may have drawn a label before assigning this return.
-                # One signalled refresh displays its post-edit state consistently.
-                graph.invalidate_node(parent)
             if extras:
                 return changed, value, self.states[node]
             return changed, value
@@ -1118,19 +1146,18 @@ class RetainedGui:
         if pressed and target:
             self.send(*target)
 
-    def process_host_input(self, *, drag_position=None):
+    def process_host_input(self, *, drag_position=None, resizing=False):
         """Uncached adapter at the host boundary, never inside a cached body.
 
         Route raw ImGui IO and retained hit regions. Claim gestures through the host
         router so a retained control cannot also drag the outer OS window.
+        `resizing`: the host's window has a new size this frame, so the pointer's moves
+        run no view here (ImGuiInput.process): the tree runs them at that size.
         """
         import meltygui_imgui as imgui
         self._frame_started = time.monotonic()
-        if self.later:
-            # With this frame's input, so a view that input also runs still runs once.
-            self.woken.extend(self.later)
-            self.later.clear()
-        self.imgui_input.process(imgui.get_io())
+        self._take_later()
+        self.imgui_input.process(imgui.get_io(), resizing)
         # Resolve actual widget ownership before allowing background gestures.
         self.flush()
         if self.geometry.gesture is None:
@@ -1190,11 +1217,44 @@ class RetainedGui:
                 dl.add_text(left+9,top+5,0xFFFFFFFF,'Owned @gui window (drag title)')
             self._draw_image(dl,node,x,y+title,w,h)
             self.geometry.paint(dl,origin,portal=node)
+        again = self.executor.end_frame()
+        if again or self.doubled:
+            self._doubles(dl, origin, again)
 
         if self.gpu and self._frame_started is not None:
             self.calibration.maintenance(self.gpu, frame_seconds=time.monotonic()-self._frame_started,
                 pressure=bool(self.drag or self.imgui_input.active or self.imgui_input.capture is not None))
         self._frame_started = None
+
+    def _doubles(self, dl, origin, again):
+        """Outline, in red with a tag in the top right corner, every view that ran more than once
+        in a frame (`again`: the ones of this frame, from Executor.end_frame), for DOUBLE_HOLD
+        seconds after its last such frame. A second run draws the same pixels: this is what shows it."""
+        from meltygui.hdr_color import pack_color
+        now = time.monotonic()
+        for node in again or ():
+            self.doubled[node] = now
+        if self.inline_roots:       # the legacy bridge places its roots itself: nothing is drawn at them here
+            self.doubled.clear()
+            return
+        imgui = self.imgui
+        red, ink = pack_color(*DOUBLE_RED), pack_color(*DOUBLE_INK)
+        imgui.set_window_font_scale(DOUBLE_SCALE)
+        wide, tall = imgui.calc_text_size(DOUBLE_TAG)
+        for node, when in tuple(self.doubled.items()):
+            if now - when > DOUBLE_HOLD or node not in self.records:
+                del self.doubled[node]
+                continue
+            x, y = self._position(node)
+            _, _, w, h = self.graph.rect(node)
+            left, top, right, bottom = (math.floor(v + .5) for v in (x + origin[0], y + origin[1],
+                                                                     x + origin[0] + w, y + origin[1] + h))
+            dl.add_rect(left, top, right, bottom, red, 0., 0, DOUBLE_LINE)
+            dl.add_rect_filled(right - wide - 2. * DOUBLE_PAD, top, right, top + tall + 2. * DOUBLE_PAD, red)
+            dl.add_text(right - wide - DOUBLE_PAD, top + DOUBLE_PAD, ink, DOUBLE_TAG)
+        imgui.set_window_font_scale(1.)
+        if self.doubled and self.request_frame:
+            self.request_frame()        # until the last mark has run out
 
     def _draw_image(self,dl,node,x,y,w,h):
         texture,tw,th=self.gpu.image(node)

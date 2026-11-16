@@ -59,6 +59,11 @@ struct Record {
     captured: bool,
     clear_background: bool,
     idle_claim: bool,
+    // The frame (Executor.frame) of its last run, and the one it was last reported in (`doubles`).
+    frame: u64,
+    reported: u64,
+    // Executor.runs as its last run left it (`ran_since`).
+    at: u64,
 }
 impl Record {
     fn snapshot(&self, py: Python<'_>) -> Self {
@@ -69,6 +74,7 @@ impl Record {
             caller_keys: self.caller_keys.clone_ref(py), key: self.key.clone_ref(py),
             scope: self.scope.as_ref().map(|scope| scope.clone_ref(py)),
             captured: self.captured, clear_background: self.clear_background, idle_claim: self.idle_claim,
+            frame: self.frame, reported: self.reported, at: self.at,
         }
     }
 }
@@ -88,6 +94,9 @@ pub struct Executor {
     keepalive: Option<Py<PyList>>,
     records: HashMap<u64, Record>,
     runs: u64,
+    // The frame being counted (`end_frame` starts the next) and the views that ran in it more than once.
+    frame: u64,
+    doubles: Vec<u64>,
     // The cache's presentation origin and whether cheap views share one pass.
     origin: (f64, f64),
     auto_cache: bool,
@@ -271,12 +280,19 @@ impl Executor {
             let mut this = slf.borrow_mut();
             // The retained hit geometry may have changed; pointer samples compare this.
             this.runs += 1;
+            let (frame, at) = (this.frame, this.runs);
+            let mut again = false;
             if let Some(record) = this.records.get_mut(&node) {
+                again = record.frame == frame && record.reported != frame;
+                if again { record.reported = frame; }
+                record.frame = frame;
+                record.at = at;
                 record.captured = true;
                 record.clear_background = clear;
                 record.idle_claim = idle_claim;
                 record.state = state.unbind();
             }
+            if again { this.doubles.push(node); }
         }
         if result.get_item(0)?.is_truthy()? {
             owner.call_method1(intern!(py, "_propagate"), (node, input))?;
@@ -380,6 +396,8 @@ impl Executor {
             keepalive: None,
             records: HashMap::default(),
             runs: 0,
+            frame: 1,
+            doubles: Vec::new(),
             origin: (0., 0.),
             auto_cache: true,
         }
@@ -403,6 +421,7 @@ impl Executor {
             label: PyBytes::new(py, format!("gui-{unique}").as_bytes()).unbind(),
             state, caller_keys, key: node.into_pyobject(py)?.into_any().unbind(),
             scope: None, captured: false, clear_background: false, idle_claim: false,
+            frame: 0, reported: 0, at: 0,
         });
         drop(previous);
         Ok(())
@@ -433,6 +452,16 @@ impl Executor {
     #[getter]
     fn runs(&self) -> u64 {
         self.runs
+    }
+    /// Whether the view ran after `runs` read that value: a wake asked before then is served.
+    fn ran_since(&self, node: u64, runs: u64) -> bool {
+        self.records.get(&node).is_some_and(|record| record.at > runs)
+    }
+    /// Ends the frame runs are counted in: the views that ran more than once since the last call
+    /// (None: none did), each named once. The host calls it where it presents.
+    fn end_frame(&mut self) -> Option<Vec<u64>> {
+        self.frame += 1;
+        (!self.doubles.is_empty()).then(|| std::mem::take(&mut self.doubles))
     }
     fn clear(&mut self) {
         let records = std::mem::take(&mut self.records);

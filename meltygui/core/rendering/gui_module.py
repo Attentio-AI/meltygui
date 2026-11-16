@@ -90,6 +90,7 @@ import traceback
 import types
 from pathlib import Path
 
+from meltygui.core.rendering.gui_imgui_input import CLICK_PIXELS
 from meltygui.core.rendering.gui_prototype import gui
 
 # Lever: the calls an app waits for events with; the first never blocks, the others do.
@@ -683,6 +684,7 @@ class Imgui(Shared):
     def new_frame(self):
         self._app.namespace[DRAWN] = True
 
+
     def get_foreground_draw_list(self):
         # The host's own foreground list is not part of the view: it is painted in the host
         # window's coordinates and is gone on a frame the view does not run.
@@ -740,23 +742,39 @@ class Imgui(Shared):
         self._real.end_popup()
         self.inside()
 
+    def clicked(self, button):
+        """The button was released where it was pressed: what opens a context menu. A release further
+        than CLICK_PIXELS from its press ended a drag (the host's window resize, on the right button).
+        The drag is measured where the host has the pointer: the view may have moved under it."""
+        real = self._real
+        if not real.is_mouse_released(button):
+            return False
+        self.outside()
+        try:
+            dx, dy = real.get_mouse_drag_delta(button, CLICK_PIXELS)
+        finally:
+            self.inside()
+        return not (dx or dy)
+
     def begin_popup_context_item(self, label=None, mouse_button=1):
         real = self._real
         if label is None:
+            if real.is_mouse_released(mouse_button & 3) and not self.clicked(mouse_button & 3):
+                return False        # the end of a drag: ImGui would open on it
             # ImGui names this popup after the item, an id this binding does not give: left to
             # ImGui, it opens where the pointer is in the view's own coordinates.
             shown = real.begin_popup_context_item(None, mouse_button)
             self._app.shows |= shown
             return shown
         # The item is the view's: asked where the pointer is the view's, opened where it is the host's.
-        if real.is_mouse_released(mouse_button & 3) and real.is_item_hovered(real.HOVERED_ALLOW_WHEN_BLOCKED_BY_POPUP):
+        if self.clicked(mouse_button & 3) and real.is_item_hovered(real.HOVERED_ALLOW_WHEN_BLOCKED_BY_POPUP):
             self.open_popup(label)
         return self.begin_popup(label)
 
     def begin_popup_context_window(self, label=None, popup_flags=1, also_over_items=True):
         real = self._real
         label = 'window_context' if label is None else label
-        if real.is_mouse_released(popup_flags & 3) and (also_over_items or not real.is_any_item_hovered()):
+        if self.clicked(popup_flags & 3) and (also_over_items or not real.is_any_item_hovered()):
             (x, y), (width, height) = real.get_mouse_pos(), self._app.extent()
             if 0 <= x < width and 0 <= y < height:      # the app's window is its view
                 self.open_popup(label)

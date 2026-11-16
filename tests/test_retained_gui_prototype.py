@@ -422,3 +422,163 @@ def test_a_thread_without_the_interpreter_wakes_a_view_through_the_frame_loops_q
     glfw_utils.drain_wakes()
     glfw_utils.close_wakes()
     assert other.woken == []
+
+
+def test_a_view_run_twice_between_presents_is_reported_once():
+    cache = RetainedGui(graphics=False)
+    ids = {}
+
+    @cache.gui
+    def leaf(input_value: int, cache=None):
+        ids['leaf'] = cache.current
+        return False, input_value
+
+    @cache.gui
+    def other(input_value: int, cache=None):
+        ids['other'] = cache.current
+        return False, input_value
+
+    leaf(1)
+    other(1)
+    assert cache.executor.end_frame() is None       # one run each: nothing to report
+    for _ in range(3):      # three runs in one frame: named once
+        cache.invalidate_id(ids['leaf'])
+        cache.flush()
+    cache.invalidate_id(ids['other'])
+    cache.flush()
+    assert cache.executor.end_frame() == [ids['leaf']]
+    cache.invalidate_id(ids['leaf'])
+    cache.flush()
+    assert cache.executor.end_frame() is None       # the next frame counts from zero
+    cache.close()
+
+
+def test_wake_next_runs_a_view_once_in_a_frame_that_also_resizes_it():
+    cache = RetainedGui(graphics=False)
+    runs, ids = [], {}
+
+    @cache.gui
+    def ticker(input_value: int, cache=None, width=0.0):
+        runs.append(width)
+        ids['ticker'] = cache.current
+        cache.wake_next(cache.current)      # it animates: every frame
+
+    @cache.gui
+    def root(input_value: int, width=0.0):
+        ticker(input_value, width=width)
+
+    def frame(width):
+        cache._take_later()     # process_host_input, without the pointer
+        cache.flush()
+        with cache.frame():
+            root(1, width=width)
+        cache.flush()
+        return cache.executor.end_frame()
+
+    assert frame(100.0) is None and runs == [100.0]
+    assert frame(120.0) is None and runs == [100.0, 120.0]              # resized: once, at the new size
+    assert frame(120.0) is None and runs == [100.0, 120.0, 120.0]       # nothing else ran it: the wake does
+    cache.invalidate_id(ids['ticker'])                                  # its input ran it before the tree
+    assert frame(120.0) is None and len(runs) == 4
+    cache.close()
+
+
+def test_pointer_moves_run_no_view_while_a_layout_gesture_has_the_pointer():
+    from types import SimpleNamespace
+    cache = RetainedGui(graphics=False)
+    runs = []
+
+    @cache.gui(width=100, height=100)
+    def hovered(input_value: int):
+        runs.append(input_value)
+
+    hovered(1)
+
+    def move(x, right=False):
+        io = SimpleNamespace(mouse_pos=(x, 10.0), mouse_down=(False, right, False), keys_down=(), key_ctrl=False,
+                             key_shift=False, key_alt=False, key_super=False, mouse_wheel=0.0, mouse_wheel_horizontal=0.0)
+        cache.imgui_input.process(io)
+        cache.flush()
+        return len(runs)
+
+    assert move(10.0) == 2 and move(11.0) == 3          # raw samples: it runs for every move over it
+    assert move(12.0, right=True) == 4                  # the press, before the layout takes the drag
+    cache.geometry.gesture = {'button': 1}              # what geometry.pointer holds during a resize drag
+    assert move(13.0, right=True) == 4 and move(14.0, right=True) == 4      # the drag's moves run nothing
+    assert move(14.0) == 5                              # the release reaches it: a right click acts on release
+    cache.geometry.gesture = None
+    assert move(14.0, right=True) == 6
+    cache.geometry.gesture = {'button': 1}
+    assert move(15.0, right=True) == 6
+    cache.geometry.gesture = None
+    assert move(15.0, right=True) == 7 and move(15.0, right=True) == 7      # once after the gesture, then at rest
+    cache.close()
+
+
+def test_a_reported_edit_runs_the_caller_once():
+    cache = RetainedGui(graphics=False)
+    runs, ids = dict(parent=0), {}
+
+    @cache.gui
+    def box(input_value: dict, cache=None, view_events=None):
+        ids['box'] = cache.current
+        if 'grow' in view_events:
+            input_value['size'] += 1        # in place: the caller's object
+            return True, input_value
+        return False, input_value
+
+    @cache.gui
+    def number(input_value: int, cache=None, view_events=None, step=0):
+        ids['number'] = cache.current
+        grown = 'grow' in view_events or step > input_value
+        return grown, input_value + grown
+
+    @cache.gui
+    def parent(input_value: dict, step=0):
+        runs['parent'] += 1
+        box(input_value['box'])
+        changed, input_value['count'] = number(input_value['count'], step=step)
+        return False, input_value
+
+    data = {'box': {'size': 1}, 'count': 1}
+    parent(data)
+    assert cache.executor.end_frame() is None and runs['parent'] == 1
+    for view, read in (('box', lambda: data['box']['size']), ('number', lambda: data['count'])):
+        cache.send(ids[view], 'grow')       # the view runs on its own, then its caller for the edit
+        cache.flush()
+        assert read() == 2 and cache.executor.end_frame() is None
+    assert runs['parent'] == 3
+    parent(data, step=3)                    # an edit made in answer to the caller's own argument
+    cache.flush()
+    assert data['count'] == 3 and runs['parent'] == 4 and cache.executor.end_frame() is None
+    cache.close()
+
+
+def test_a_pointer_move_in_a_frame_that_resizes_the_window_runs_the_root_once():
+    from types import SimpleNamespace
+    cache = RetainedGui(graphics=False)
+    runs, size = [], [None]
+
+    @cache.gui
+    def root(input_value: int = None, width=0.0, height=0.0):
+        runs.append(width)
+
+    def frame(x, width, right=True):
+        io = SimpleNamespace(mouse_pos=(x, 10.0), mouse_down=(False, right, False), keys_down=(), key_ctrl=False,
+                             key_shift=False, key_alt=False, key_super=False, mouse_wheel=0.0, mouse_wheel_horizontal=0.0)
+        resizing, size[0] = size[0] not in (None, width), width      # _GuiWindow.draw
+        cache._take_later()
+        cache.imgui_input.process(io, resizing)     # process_host_input, without the layout's pointer
+        cache.flush()
+        with cache.frame():
+            root(None, width=width, height=100.0)
+        cache.flush()
+        return cache.executor.end_frame()
+
+    assert frame(10.0, 100.0) is None and runs == [100.0]
+    assert frame(20.0, 110.0) is None and runs == [100.0, 110.0]            # the drag moves and resizes: once, at the new size
+    assert frame(30.0, 120.0) is None and runs == [100.0, 110.0, 120.0]
+    assert frame(40.0, 120.0) is None and runs[3:] == [120.0]               # the size held: the move reaches it
+    assert frame(50.0, 130.0) is None and runs[4:] == [130.0]
+    assert frame(50.0, 130.0, right=False) is None and runs[5:] == [130.0]  # the release, once
+    cache.close()
