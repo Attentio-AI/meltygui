@@ -552,12 +552,11 @@ impl RetainedGraph {
             .declared
             .take()
             .ok_or_else(|| PyRuntimeError::new_err("commit without begin"))?;
-        let removed: Vec<_> = n
-            .children
-            .iter()
-            .filter(|c| !fresh.contains(c))
-            .copied()
-            .collect();
+        // The same children in the same order is the common run: nothing was removed, and the
+        // scan below (quadratic in the children) is skipped.
+        let removed: Vec<_> = if n.children == fresh { Vec::new() } else {
+            n.children.iter().filter(|c| !fresh.contains(c)).copied().collect()
+        };
         n.children = fresh;
         self.geometry.state(py,id).borrow_mut(py).rendering=false;
         self.geometry.extent(py,id,&n.children);

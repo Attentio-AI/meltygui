@@ -8,6 +8,11 @@ app, whose `@os_window` function is its frame.
 
 The module is not imported: each view instance runs it, and the .py files
 beside it, in namespaces of its own, so its globals are that instance's state.
+The main file is a module named after its path (`MAIN_NAME`) that reads its own
+`__name__` as '__main__'; a file beside it keeps its plain name. Both are in
+sys.modules for what finds a class by its module (inspect, pickle, CodeDict):
+the first instance holds the name. An import of the pre-rename framework
+(`FOREIGN`) is refused: it would start a second runtime in the host's context.
 A top level `name = <value>` is a parameter: a value passed to the call
 replaces the global on every frame it is passed (and the module's own value is
 not computed), an omitted one leaves the global to the module. No name is
@@ -28,10 +33,15 @@ How the module becomes lifecycle code (`split`):
 - A meltygui app has no loop of its own: the hosting view calls its
   `@os_window` / `@glfw_window` functions directly, with its own size, and
   `meltygui.run` does nothing. Closing runs their `on_close`.
+- A legacy app, `@glfw_window` over `@render_func` (the code editor), is drawn as
+  it is standalone: its root is a Melty window, here pinned over the hosting
+  view instead of the OS window (`legacy_frame`, `draw_legacy`). The legacy
+  pipeline keeps its window coordinates, caches and layer pass; no bridge.
 - A thread whose target holds the loop is not started; its generator runs on
   the render thread. Other threads are real.
 - Windowing is imported from shims (`SHIMS`): GLFW, the ImGui context / frame /
-  backend calls, GL clears, signal and atexit handlers, `sys.argv`. The app
+  backend calls, GL clears, signal and atexit handlers, `sys.argv` and argparse
+  (the app's command line is empty, not the host's). The app
   sees the view as its window: its size, pointer and focus. Where a windowing
   call is plainly one of those that do nothing hosted (swap_buffers, render,
   new_frame, glClear...), it is compiled away (`Quiet`) and costs nothing.
@@ -70,11 +80,12 @@ Compiled programs are shared by every instance of a file (`program`).
 Gaps: edits to the file are not picked up by a running instance, a wait inside
 a lambda, a comprehension or a sibling file is not supported, a window
 function's decoration (tint, scroll, events) and `settings=` are dropped and
-its injected state objects are not saved with the session, style variables
+its injected state objects are not saved with the session, an app that needs
+command line arguments has none, classes of the main file pickle under the
+module's hosted name (not '__main__'), style variables
 (rounding, padding) and the app's own fonts are not applied, and in-place
 edits of a mutable first parameter are not reported as changed. A window function
-that is a legacy `@render_func` draws only under the legacy bridge (MELTY_RUST=1), where a native root's tiles do not
-follow a right-drag resize of the window.
+that is a legacy `@render_func` is a Melty window pinned over the view (`legacy_frame`): it draws above the host's own views.
 """
 import ast
 import atexit
@@ -359,13 +370,23 @@ class Drive(ast.NodeTransformer):
     visit_ListComp = visit_SetComp = visit_DictComp = visit_GeneratorExp = keep
 
 
+class Named(ast.NodeTransformer):
+    """`__name__` read in the app's main file is '__main__', as when it is run: the module itself
+    has a name of its own (`App.start`), so its classes are found by their `__module__`."""
+
+    def visit_Name(self, node):
+        if node.id == '__name__' and isinstance(node.ctx, ast.Load):
+            return ast.copy_location(ast.Constant('__main__'), node)
+        return node
+
+
 def waits(tree):
     return [node for node in ast.walk(tree) if called(node) in WAIT_CALLS]
 
 
 def split(source, filename='<gui_module>'):
     """Module source -> Program: suspended at its event waits, its top level names made parameters."""
-    tree = ast.parse(source, filename)
+    tree = Named().visit(ast.parse(source, filename))
     host = hosts(tree)
     quiet = Quiet(host)
     tree = quiet.visit(tree)
@@ -544,7 +565,7 @@ class Guest:
 
 class Io(Guest):
     """ImGui's io for a hosted app: the display is its view, input state is a copy."""
-    display_size = property(lambda self: self._app.extent())
+    display_size = property(lambda self: sys.modules['meltygui_imgui'].Vec2(*self._app.extent()))
     mouse_down = property(lambda self: list(self._real().mouse_down))
 
 
@@ -579,6 +600,10 @@ class Colors(dict):
 
     def __missing__(self, index):
         return self.real().colors[index]
+
+    def __setitem__(self, index, value):
+        # Read back as ImGui gives a colour: a Vec4 (`.w`), whatever sequence the app stored.
+        super().__setitem__(index, sys.modules['meltygui_imgui'].Vec4(*value))
 
 
 class Top:
@@ -915,21 +940,57 @@ class Glfw(types.ModuleType):
         return value
 
 
-def legacy_frame(function):
-    """The frame of a legacy `@render_func` root: its own wrapper injects draw_state and state, and
-    it fills the hosting view. The view's draw list is not the window's, so the legacy z-layer
-    channels start over in it."""
+# Lever: what `@glfw_window(...)` says about the OS window; the rest decorates the root view.
+WINDOW_ONLY = ('width', 'height', 'app_id', 'app_name', 'on_close', 'settings')
+# app: (root, its value, its decoration, the surface it is on, width, height) of each hosted legacy root (`draw_legacy`).
+_legacy = {}
+
+
+def legacy_frame(function, app, decoration):
+    """The frame of a legacy `@render_func` root, as `@glfw_window` draws one standalone: a Melty
+    window pinned over the hosting view. Legacy views draw in window coordinates and finish in the
+    host's layer pass (menus, popovers, shadows), so the view itself only says where and how large;
+    `draw_legacy` draws the root after the host's own, every frame of the surface."""
+    kwargs = {name: value for name, value in decoration.items() if name not in WINDOW_ONLY}
+    value = kwargs.pop('value', None)       # the root's input value, as `@glfw_window(value=...)` gives it
+
     def frame(draw_state, cache, values):
-        import meltygui_imgui as imgui
-        from meltygui.core.melty import Melty
-        split, Melty.channels_split = Melty.channels_split, False
-        try:
-            return function(None, name=function.__name__, width=values['width'], height=values['height'])
-        finally:
-            if Melty.channels_split:
-                imgui.get_window_draw_list().channels_merge()
-            Melty.channels_split = split
+        from meltygui.core.melty import Melty as Host
+        if not _legacy:
+            from meltygui.core.runtime import extensions
+            extensions.register('hosted_roots', draw_legacy)
+        if 'unique_name' not in kwargs and cache is not None and cache.stack:
+            # The root's identity is under the hosting view's: each instance has its own draw states,
+            # and with them the state objects injected into the root and every view below it.
+            kwargs['unique_name'] = f'{kwargs.get("name") or function.__name__} {cache.uniques[cache.current]}'
+        _legacy[app] = function, value, kwargs, Host.current_surface(), values['width'], values['height']
     return frame
+
+
+def draw_legacy(surface):
+    """The legacy roots hosted on `surface`, each over its view (extension 'hosted_roots', app.py)."""
+    from meltygui.core.melty import Melty as Host
+    from meltygui.core.windowing.surface_frame import root_view_kwargs
+    for app, (function, value, kwargs, home, width, height) in tuple(_legacy.items()):
+        if home is not surface or not app.ready:
+            continue
+        fill = Host.root_fill, Host.root_fill_used
+        try:
+            corner = app.origin()
+            # The view is the root's whole window: no OS chrome to keep clear of.
+            Host.root_fill, Host.root_fill_used = (width, height, 0.), False
+            name = kwargs.get('name') or function.__name__
+            pinned = root_view_kwargs(name, **{'header_indent': 0., 'with_header_end': None,
+                                               'display_name': name, **kwargs})
+            pinned['window_pos'] = corner
+            pinned['initial'] = {'width': width, 'height': height, 'window_pos': corner}
+            function(value, **pinned)
+        except Exception:
+            app.fail()
+            if app.show is not None:
+                app.show()
+        finally:
+            Host.root_fill, Host.root_fill_used = fill
 
 
 # code object: (the view values it declares, its parameters that may be injected state). Every
@@ -937,7 +998,7 @@ def legacy_frame(function):
 _plans = {}
 
 
-def window_frame(function):
+def window_frame(function, app=None, decoration=()):
     """How the hosting view calls a window function: `frame(draw_state, cache, values)`.
 
     The function gets what it declares of `width`, `height`, `draw_state` and
@@ -947,7 +1008,7 @@ def window_frame(function):
     costs a native call (about 0.2 us each).
     """
     if getattr(function, '__render_func__', False):
-        return legacy_frame(function)
+        return legacy_frame(function, app, decoration)
     plan = _plans.get(function.__code__)
     if plan is None:
         declared = inspect.signature(function).parameters
@@ -990,7 +1051,7 @@ class Melty(Shared):
         app = self._app
         if decoration.get('on_close'):
             app.exits.append(decoration['on_close'])
-        app.roots.append(window_frame(function))
+        app.roots.append(window_frame(function, app, decoration))
         return function
 
     glfw_window = os_window
@@ -1027,6 +1088,20 @@ def thread_shim(app):
     return Shim(threading, Thread=Thread)
 
 
+def arguments(app):
+    """argparse for a hosted app: it reads the command line from the real `sys`, which is the host's."""
+    import argparse
+    script = os.path.basename(app.program.code.co_filename)
+
+    class ArgumentParser(argparse.ArgumentParser):
+        def __init__(self, prog=None, **options):
+            super().__init__(prog=script if prog is None else prog, **options)
+
+        def parse_known_args(self, args=None, namespace=None):
+            return super().parse_known_args([] if args is None else args, namespace)
+    return Shim(argparse, ArgumentParser=ArgumentParser)
+
+
 def register(app):
     def register(function, *args, **kwargs):
         app.exits.append(functools.partial(function, *args, **kwargs))
@@ -1039,7 +1114,15 @@ def register(app):
 SHIMS = {'imgui': (Imgui, None), 'meltygui_imgui': (Imgui, None), 'meltygui': (Melty, None),
          'glfw': (Glfw, None), 'threading': (thread_shim, None), 'atexit': (register, None),
          'sys': (lambda app: Passing(sys, argv=[app.program.code.co_filename]), None),
+         'argparse': (arguments, None),
          'OpenGL': (None, gl_shim), 'signal': (None, signal_shim)}
+
+
+# Lever: the name a hosted main file's module has in sys.modules, before its path.
+MAIN_NAME = '__main__ '
+# Lever: imports that bring a second copy of the framework (the pre-rename one in latent-descent).
+# It would start its own runtime in the host's ImGui context (font atlas, GL) and take the host down.
+FOREIGN = ('melty', 'src.lsd')
 
 
 def load(name, globals=None, locals=None, fromlist=(), level=0):
@@ -1048,6 +1131,9 @@ def load(name, globals=None, locals=None, fromlist=(), level=0):
     if app is None or level:
         return builtins.__import__(name, globals, locals, fromlist, level)
     top, _, rest = name.partition('.')
+    if top == FOREIGN[0] or name.startswith(FOREIGN[1]):
+        raise ImportError(f'{name}: the app is written for another copy of the framework '
+                          f'(`melty` / `src.lsd.gl_gui`), which cannot share the host\'s ImGui context')
     shim = SHIMS.get(top)
     if shim is not None:
         make, shared = shim
@@ -1085,11 +1171,21 @@ def load(name, globals=None, locals=None, fromlist=(), level=0):
             code = beside(path)
             module = app.modules[top] = types.ModuleType(top)
             module.__dict__.update({'__file__': path, '__builtins__': SCOPE, APP: app})
-            # What looks a class up by its `__module__` (CodeDict, pickle, dataclasses, typing) finds
-            # the module by name: the first instance to load the file holds the name until it closes.
+            # What looks a class up by its `__module__` (CodeDict, inspect, dataclasses, and pickle, whose
+            # files name the module as a standalone run does) finds the module by name: the first
+            # instance to load a file of that name holds it until it closes.
             sys.modules.setdefault(top, module)
             exec(code, module.__dict__)
             return module
+    held = sys.modules.get(top)
+    if not rest and held is not None and held.__dict__.get(APP, app) is not app:
+        # Another hosted app's file holds this name (above): this app's import is its own, kept here.
+        del sys.modules[top]
+        try:
+            module = app.modules[top] = importlib.import_module(top)
+        finally:
+            sys.modules[top] = held
+        return module
     try:
         return builtins.__import__(name, globals, locals, fromlist, level)
     except ModuleNotFoundError:
@@ -1199,8 +1295,13 @@ class App:
         """Run the module up to where its frame loop starts. With `background`, on the loader
         thread unless the file is known to load fast (INLINE); `show` then reports the end."""
         program = self.program
-        self.namespace = {'__name__': '__main__', '__file__': program.code.co_filename,
-                          ARGS: args, APP: self, DRAWN: False, '__builtins__': SCOPE}
+        # The main file is a module under a name of its own, not the host's '__main__': inspect, pickle
+        # and dataclasses find its classes there. The first instance of a file holds the name.
+        module = types.ModuleType(MAIN_NAME + program.code.co_filename)
+        sys.modules.setdefault(module.__name__, module)
+        self.namespace = module.__dict__
+        self.namespace.update({'__file__': program.code.co_filename, ARGS: args, APP: self, DRAWN: False,
+                               '__builtins__': SCOPE})
         self.wake, self.again, self.show = wake, again, show
         if background and (program.seconds is None or program.seconds > INLINE):
             load_later(self.load_module)
@@ -1367,6 +1468,7 @@ class App:
         if self.timer is not None:
             self.timer.cancel()
         self.closing = True
+        _legacy.pop(self, None)
         # A loop waiting on another (join) ends on the pass after it.
         for _ in range(len(self.frames) + 1):
             self.step(stop=True)
@@ -1377,10 +1479,14 @@ class App:
                 leave()
             except Exception:
                 self.fail()
-        for name, module in self.modules.items():
-            if sys.modules.get(name) is module:
-                del sys.modules[name]
-            module.__dict__.clear()
+        for module in self.modules.values():
+            if APP in module.__dict__:      # its own file, not an ordinary module kept for it (`load`)
+                if sys.modules.get(module.__name__) is module:
+                    del sys.modules[module.__name__]
+                module.__dict__.clear()
+        name = self.namespace.get('__name__')
+        if getattr(sys.modules.get(name), '__dict__', None) is self.namespace:
+            del sys.modules[name]
         self.namespace.clear()
         self.__init__(self.program)
 

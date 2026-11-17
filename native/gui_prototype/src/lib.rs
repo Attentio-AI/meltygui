@@ -20,11 +20,11 @@ mod edges;
 mod wake;
 
 static ABSENT: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
-/// What a view is called with when no value is passed to it (`_gui_native.ABSENT`): one object,
-/// distinct from every value a caller can pass, None included.
+/// What a view is called with when no value is passed to it: `inspect.Parameter.empty`, Python's
+/// marker for an empty parameter (`ABSENT` in gui_prototype.py). Not None, which a caller may pass.
 pub(crate) fn absent(py: Python<'_>) -> &Bound<'_, PyAny> {
-    ABSENT.get_or_init(py, || py.import("builtins").and_then(|builtins| builtins.getattr("object"))
-        .and_then(|object| object.call0()).expect("builtins.object()").unbind()).bind(py)
+    ABSENT.get_or_init(py, || py.import("inspect").and_then(|inspect| inspect.getattr("Parameter"))
+        .and_then(|parameter| parameter.getattr("empty")).expect("inspect.Parameter.empty").unbind()).bind(py)
 }
 
 struct Shape {
@@ -1251,6 +1251,5 @@ fn _gui_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<executor::Executor>()?;
     m.add_class::<wake::Wakes>()?;
     m.add_function(wrap_pyfunction!(same_arguments, m)?)?;
-    m.add("ABSENT", absent(m.py()))?;
     Ok(())
 }

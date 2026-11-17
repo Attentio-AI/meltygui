@@ -510,6 +510,28 @@ with SHA-256, truncated to 16 bytes. Hashing happens on identity-cache misses.
 There is no collision-detection layer, by design. Small runtime handles are used
 for graph operations; they are not persistent identifiers.
 
+### The value is the first parameter
+
+A view's value is its first parameter under any name; `input_value` is only the
+convention. The wrappers take it by position (`value, /, *more`). One value
+travels to the retained graph as the node's input, which is what the cache
+tracks: `cache.invalidate(obj)`, the edit a caller has not answered, the echo
+of a returned edit. Further values are bound to the next parameters by name
+(`bind_positional`), and a value passed by name is moved to the same place, so
+both spellings behave alike. Lever: `FILLED` in
+[gui_prototype.py](../meltygui/core/rendering/gui_prototype.py), the names a
+call carries for the framework; a first parameter of that name is not a value.
+
+Nothing passed is `ABSENT` (`inspect.Parameter.empty`), never None. `invoke`
+([lib.rs](../native/gui_prototype/src/lib.rs)) then resolves the value in the
+loop every parameter resolves in, and a returned `(True, value)` is written as
+`draw_state.<name> = value` would be (`author`). A value the caller passed is
+neither mirrored on the state nor saved. The graph holds no edit for a view
+that owns its value and has nothing to settle (`commit`,
+[retained.rs](../native/gui_prototype/src/retained.rs)); the view runs once
+more instead, to show it (`_propagate`). Tests:
+[test_gui_value.py](../tests/test_gui_value.py).
+
 ### One state object, a small fixed core
 
 The fixed core is `unique`, `dlt_count`, and the geometry/context fields needed
@@ -772,7 +794,7 @@ resolved in full.
 | Largest user so far | the [native editor](NATIVE_EDITOR.md): [editor_view.py](../meltygui/view/editor_view.py) |
 | Default views | [gui_any.py](../meltygui/core/rendering/gui_any.py) (`draw_any`, `is_default_for`), [keyed.py](../meltygui/core/rendering/keyed.py) (`Keyed`, `keyed_as`), [value_view.py](../meltygui/view/value_view.py), [dict_view.py](../meltygui/view/dict_view.py); tests [routing and rows](../tests/test_gui_any.py), [views](../tests/test_gui_any_view.py) |
 | Session persistence | [app_session.py](../meltygui/core/runtime/app_session.py), [load_save_v2.py](../meltygui/core/conversion/load_save_v2.py) |
-| Contract tests | [a view follows its caller](../tests/test_gui_immediate.py), [identity](../tests/test_gui_identity.py), [persistence](../tests/test_gui_persistence.py), [positions](../tests/test_gui_position_api.py), [scroll/geometry](../tests/test_gui_scroll_geometry.py) |
+| Contract tests | [a view follows its caller](../tests/test_gui_immediate.py), [the value parameter](../tests/test_gui_value.py), [identity](../tests/test_gui_identity.py), [persistence](../tests/test_gui_persistence.py), [positions](../tests/test_gui_position_api.py), [scroll/geometry](../tests/test_gui_scroll_geometry.py) |
 | Interactive and measured checks | [scroll lab](../examples/gui_scroll_lab.py), [benchmark](../tests/benchmark_gui_scrolling.py) |
 
 Run graphics tests and the lab on a reserved agent desktop with isolated session

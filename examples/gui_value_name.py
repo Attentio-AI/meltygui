@@ -2,9 +2,11 @@
 
     .venv/bin/python examples/gui_value_name.py
 
-Each is shown twice: with nothing passed (the count is the view's own state) and with the app's
-count passed (`Counts`, kept in Counts.pkl beside this file: try it on a copy in a folder of its
-own). Press each row, press Reset, relaunch: the rows differ where `input_value` is still special.
+A view's value is its first parameter, whatever it is called. Each counter is shown twice: with
+nothing passed, where the count is the view's own state and the returned edit is kept in it (and
+saved with the session), and with the app's count passed (`Counts`, kept in Counts.pkl beside this
+file: try it on a copy in a folder of its own), where the edit goes back to the caller. The label
+is the second parameter, passed by position on those rows. Both names behave alike.
 """
 from meltygui import gui, os_window, imgui, save
 
@@ -22,20 +24,15 @@ class Counts:
 
 
 @gui(width=WIDE, height=ROW)
-def count(input_value: int = 0, label='', draw_state=None):
-    input_value = input_value or 0      # None when nothing is passed: this default is never used
+def count(input_value: int = 0, label=''):
     if imgui.button(f'{label}: {input_value}'):
-        draw_state.input_value = input_value + 1
         return True, input_value + 1
-    return False, input_value
 
 
 @gui(width=WIDE, height=ROW)
-def count_named(not_input_value: int = 0, label='', draw_state=None):
+def count_named(not_input_value: int = 0, label=''):
     if imgui.button(f'{label}: {not_input_value}'):
-        draw_state.not_input_value = not_input_value + 1
         return True, not_input_value + 1
-    return False, not_input_value
 
 
 @gui(width=WIDE, height=ROW)
@@ -48,12 +45,10 @@ def press(input_value: str = ''):
 def app():
     step = ROW + PAD
     count(name='own', label='input_value, nothing passed', left=PAD, top=PAD)
-    changed, Counts.position = count(Counts.position, name='passed', label='input_value, passed',
-                                     left=PAD, top=PAD + step)
+    changed, Counts.position = count(Counts.position, 'input_value, passed', name='passed', left=PAD, top=PAD + step)
     count_named(name='own', label='not_input_value, nothing passed', left=PAD, top=PAD + 2 * step)
-    changed, Counts.name = count_named(not_input_value=Counts.name, name='passed', label='not_input_value, passed',
+    changed, Counts.name = count_named(Counts.name, 'not_input_value, passed', name='passed',
                                        left=PAD, top=PAD + 3 * step)
     reset, _ = press('Reset the passed counts', name='reset', left=PAD, top=PAD + 4 * step)
     if reset:
         Counts.position = Counts.name = 0
-

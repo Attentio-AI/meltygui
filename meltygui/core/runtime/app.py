@@ -609,6 +609,7 @@ def _searchable_body(body, config=None):
         from meltygui.editor.source_preview import draw_pending_preview
         draw_pending_preview()
         call('root_draw', surface)
+        call('hosted_roots', surface)     # legacy apps hosted in @gui views (gui_module.draw_legacy)
         settings = config.get('settings') if config is not None else None
         surface.settings = settings
         if settings is not None:

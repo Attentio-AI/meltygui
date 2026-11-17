@@ -534,3 +534,68 @@ def test_a_hosted_app_imports_from_its_projects_environment(monkeypatch, tmp_pat
     finally:
         for name in ('only_in_project', 'through_pth', 'package_beside', 'file_beside'):
             sys.modules.pop(name, None)
+
+
+def loaded(tmp_path, source, name='hosted.py'):
+    """An App of `source` run to the end of its module code (it has no frame loop: `error` says so)."""
+    from meltygui.core.rendering import gui_module as hosting
+    path = tmp_path / name
+    path.write_text(source)
+    app = App(hosting.program(str(path)))
+    app.start({})
+    return app
+
+
+def test_the_main_file_is_a_module_of_its_own_that_reads_as_main(tmp_path):
+    import inspect
+    import sys
+    app = loaded(tmp_path, 'class Setting: pass\nran = __name__ == "__main__"\n')
+    namespace = app.namespace
+    assert namespace['ran'] is True
+    # Its classes are found by their module, with the file they are in: not the host's __main__.
+    setting = namespace['Setting']
+    assert sys.modules[setting.__module__].__dict__ is namespace
+    assert inspect.getsourcefile(setting) == str(tmp_path / 'hosted.py')
+    name = setting.__module__
+    app.loaded = True
+    app.close()
+    assert name not in sys.modules
+
+
+def test_argparse_reads_the_apps_command_line_not_the_hosts(monkeypatch, tmp_path):
+    import sys
+    monkeypatch.setattr(sys, 'argv', ['host.py', '--host-only', 'file'])
+    app = loaded(tmp_path, 'import argparse\nparser = argparse.ArgumentParser()\n'
+                           'parser.add_argument("--size", default=3)\nfound = parser.parse_args()\n')
+    assert app.namespace['found'].size == 3 and app.namespace['parser'].prog == 'hosted.py'
+
+
+def test_another_copy_of_the_framework_is_refused(tmp_path):
+    app = loaded(tmp_path, 'import melty\n')
+    assert 'another copy of the framework' in app.error
+
+
+def test_style_colours_and_display_size_read_back_as_imgui_vectors():
+    from meltygui.core.rendering import gui_module as hosting
+    colours = hosting.Colors(lambda: None)
+    colours[3] = (0.1, 0.2, 0.3, 0.4)
+    assert colours[3].w == 0.4 and tuple(colours[3]) == (0.1, 0.2, 0.3, 0.4)
+    io = hosting.Io(lambda: None, _app=type('Sized', (), {'extent': lambda self: (640, 480)})())
+    assert io.display_size.x == 640 and io.display_size.y == 480
+
+
+def test_each_instance_of_a_legacy_root_has_an_identity_of_its_own(monkeypatch):
+    """The root's legacy identity is under the hosting view's, so two instances share no draw state."""
+    from types import SimpleNamespace
+    from meltygui.core.rendering import gui_module as hosting
+    monkeypatch.setattr(hosting, '_legacy', {})
+
+    def root(input_value, draw_state):
+        pass
+    names = []
+    for node, unique in (('left', 11), ('right', 12)):
+        app = object()
+        frame = hosting.legacy_frame(root, app, {'name': 'Editor', 'width': 900})
+        frame(None, SimpleNamespace(stack=[node], current=node, uniques={node: unique}), {'width': 400, 'height': 300})
+        names.append(hosting._legacy[app][2]['unique_name'])
+    assert names == ['Editor 11', 'Editor 12']

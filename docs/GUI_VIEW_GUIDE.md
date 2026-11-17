@@ -72,13 +72,19 @@ own file only to show every pattern in one place.
 
 ## 2. The contract of a view
 
-1. **Signature.** `input_value` is the first parameter when the view takes a
-   value (it must have that name), with the type it draws as annotation. Every
-   other parameter has a default. Callers may pass any of them by name.
+1. **Signature.** The first parameter is the view's value, under any name
+   (`input_value` by convention), with the type it draws as annotation. A value
+   passed by position goes to it, further ones to the next parameters, as in
+   Python: `draw_thing(model, 'Title')`. Every other parameter has a default,
+   and callers may pass any of them by name. A first parameter the framework
+   fills by name (rule 2, and `FILLED` in
+   [gui_prototype.py](../meltygui/core/rendering/gui_prototype.py)) is not a
+   value: such a view takes none.
 2. **Ask the framework by name.** A parameter called `width`, `height`,
    `left`, `top`, `scroll_offset`, `draw_state`, `cache` or `event` is
    filled in by the framework when the caller does not pass it.
-3. **Return `(changed, value)`**, or nothing when the view never edits.
+3. **Return `(changed, value)`**, or nothing when the view never edits (the
+   caller then gets `(False, value)`).
    `changed` must be true exactly when the value differs from the input: it is
    what runs the caller again. Mutate a mutable input in place and return the
    same object; return a new value of the input's own type for an immutable one.
@@ -88,6 +94,7 @@ own file only to show every pattern in one place.
    ```python
    changed, model.name = field(model.name)   # kept: the caller passes it back
    field('fixed')                            # an edit shows for a few frames, then 'fixed' again
+   field()                                   # nothing passed: the view keeps its own (section 5)
    ```
 
 ## 3. Place and size
@@ -140,7 +147,7 @@ for key, item in items.items():
   view in the parent, so a skipped call shifts the ones after it.
 - A key is a string, an int, None or a tuple of those, and is stable for the
   item: its dict key, never its index in a filtered list.
-- Identity never looks at `input_value`.
+- Identity never looks at the view's value.
 
 ## 5. State
 
@@ -163,6 +170,24 @@ def options(input_value, choices=(), index=None, width=0.0, height=0.0, draw_sta
 - Hover, a held button and the keyboard are not state of yours: `event` holds
   them (`event.is_hovered()`, section 6).
 - A value the caller passes wins over the state on every run it is passed.
+- **The view's value is state like any other when nothing is passed**: its
+  default at first, then what the view wrote. A returned edit is that write,
+  so a view can be prototyped with no model at all and given one later:
+
+  ```python
+  @gui
+  def count(value: int = 0):
+      if imgui.button(f'Count {value}'):
+          return True, value + 1          # the same as draw_state.value = value + 1
+
+  count(name='clicks')                            # the view's own count, saved with the session
+  changed, Model.clicks = count(Model.clicks)     # later: the app's; the edit is the caller's to keep
+  ```
+
+  A value annotated with a `DictConversion` class is injected the same way
+  when nothing is passed (`def picker(selection: Selection = None)`). An edit
+  to a value the caller passed is never written to the state: the caller owns
+  it. Worked example: [examples/gui_value_name.py](../examples/gui_value_name.py).
 - No ad hoc fields on `draw_state`: only declared parameters.
 - This is state of one view: its size, its scroll, its selection. What the
   app is about (its documents, its layout, its settings) is the app's.
@@ -555,6 +580,7 @@ did not check.
 | `imgui.combo` in a cached view: list misplaced, no row can be picked (`c3582148b768`) | A `popup=` view |
 | ImGui popups, tooltips, `begin_child` in a cached view (`fb94b9e2eed2`, `689e8767ed78`) | `popup=`, `scroll=True` |
 | The view that opened a popup is not run again with the pick (`9ed33b19b8e3`) | Draw after the popup call, from its return |
+| A view is not run again when its caller passes back the edit it returned: an ImGui button or checkbox that drew before the edit stays stale until the pointer moves (`90293f1fa9dd`). A view that was passed nothing is run again | Draw after handling the input, or `cache.wake_next(cache.current)` in the run that returns the edit |
 | A left drag on an OS window's body does not move it unless the root holds a `columns` / `rows` layout (`78d4ccd04ec6`) | Drag the title bar |
 | A view larger than 8192 px raises (`c3b99fd82886`) | Child views in a scroll view |
 | The wheel carries no modifiers and a scroll view takes it first (`c1cc6c3481b5`) | No Ctrl+wheel zoom yet |

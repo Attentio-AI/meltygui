@@ -39,7 +39,8 @@ def test_os_window_is_gui_host_shorthand(registrations, monkeypatch, decorate):
     window, surface = host(monkeypatch)
     try:
         body = app._root_body(minimal, 'Minimal', config=config)
-        assert body(surface) == (False, None)
+        # The first parameter is the view's value: a body that returns nothing hands it back.
+        assert body(surface) == (False, 19)
         body(surface)
         assert calls == [(19, 400., 250.)]  # host size wins over initial window geometry
         config['view_kwargs']['completely_new_argument'] = 22
@@ -76,7 +77,7 @@ def test_bare_decorators_and_user_minimal_example(registrations, monkeypatch):
 
 
 @pytest.mark.parametrize('cached', [True, False])
-def test_no_input_no_return_preserves_caller_value_and_injection(monkeypatch, cached):
+def test_no_return_hands_back_the_value_which_is_injected_when_nothing_is_passed(monkeypatch, cached):
     class LocalState(DictConversion):
         def __init__(self):
             super().__init__()
@@ -90,14 +91,19 @@ def test_no_input_no_return_preserves_caller_value_and_injection(monkeypatch, ca
         seen.append((state, custom_argument))
 
     window, surface = host(monkeypatch)
-    value = {'preserve': 'identity'}
+    own = LocalState()
     try:
-        result = window.draw(surface, view, {'value': value, 'custom_argument': 'caller'})
-        assert result[0] is False and result[1] is value
-        window.draw(surface, view, {'value': value, 'custom_argument': 'new argument'})
+        result = window.draw(surface, view, {'custom_argument': 'caller'})
+        assert result[0] is False and result[1] is seen[0][0] and type(result[1]) is LocalState
+        window.draw(surface, view, {'custom_argument': 'new argument'})
         assert seen[0][0] is seen[1][0]
         assert seen[1][0].count == 2
         assert [v for _, v in seen] == ['caller', 'new argument']
+        # A value the host passes takes the injected one's place, which is kept for when it stops.
+        result = window.draw(surface, view, {'value': own, 'custom_argument': 'passed'})
+        assert result[1] is own and seen[-1][0] is own and own.count == 1
+        window.draw(surface, view, {'custom_argument': 'again'})
+        assert seen[-1][0] is seen[0][0] and seen[0][0].count == 3
     finally:
         window.close()
 

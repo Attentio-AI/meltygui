@@ -9,11 +9,9 @@ from meltygui.core.rendering.gui_imgui_import import enable_imgui_import
 
 enable_imgui_import()
 
-try:
-    # What a view is called with when no value is passed to it: not None, which a caller may pass.
-    from meltygui.core.rendering._gui_native import ABSENT
-except ImportError:     # not built: `_new_native` says how, when the first view is drawn
-    ABSENT = object()
+# What a view is called with when no value is passed to it: not None, which a caller may pass.
+# Python's own marker for an empty parameter, so the native side finds the same object (`absent`, lib.rs).
+ABSENT = inspect.Parameter.empty
 
 # Lever: the names a call can carry for the framework itself. A view whose first parameter is one of
 # them takes no value: nothing reaches it by position, and what it returns is not kept as its state.

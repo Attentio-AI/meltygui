@@ -364,7 +364,6 @@ class FontManager:
         adjacent). Between frames only; every previously returned handle is
         dangling afterwards."""
         self.bakes += 1
-        import sys; print("BAKE", self.bakes, len(include), file=sys.stderr)  # TEMP-CLAUDE
         # Variant retention. A bake is the only moment a variant can leave the
         # atlas, and it leaves only when it has not been drawn for
         # Toggles.Fonts.variant_idle_flushes surface frames, or when more

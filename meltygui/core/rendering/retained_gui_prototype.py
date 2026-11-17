@@ -849,6 +849,10 @@ class RetainedGui:
         # A returned edit: other views of the same input repaint.
         self.geometry.frozen.clear()
         self.graph.invalidate(_alias(input_value), exclude=node)
+        if input_value is ABSENT:
+            # The view owns its value, so no caller passes the edit back to it: it runs once more
+            # by itself, for a body that drew before it knew (an ImGui button with its value as label).
+            self.wake_next(node)
 
     def _abort_execution(self, node, events):
         self.geometry.abort(node)
