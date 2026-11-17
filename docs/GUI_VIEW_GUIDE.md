@@ -486,9 +486,10 @@ changed, model.gain = meltygui.rust.draw_float(model.gain, name='gain', left=8.0
   file (`branch` and `end` in [dict_view.py](../meltygui/view/dict_view.py)).
 - **Home**: `meltygui/view/<feature>_view.py`, beside the views of the same
   feature.
-- **Publish**: one row in `EXPORTS` of [rust.py](../meltygui/rust.py),
-  `'draw_thing': 'meltygui.view.thing_view'`. Nothing is imported until the
-  name is first used.
+- **Publish**: run `.venv/bin/python stubs.py`. It finds every module-level
+  `@gui` function named `draw_<thing>`, rewrites `VIEWS` in
+  [rust.py](../meltygui/rust.py) and the stubs the IDE completes from.
+  Nothing is imported until the name is first used.
 - **Use**: an app writes `meltygui.rust.draw_thing(...)` or
   `from meltygui.rust import draw_thing`. Library code imports the defining
   module.

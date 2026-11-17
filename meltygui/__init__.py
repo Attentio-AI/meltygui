@@ -16,7 +16,6 @@ import sys
 if sys.platform.startswith('linux') and (os.environ.get('WAYLAND_DISPLAY') or os.environ.get('WAYLAND_SOCKET')):
     os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
 
-from typing import TYPE_CHECKING
 from meltygui.core.styling.style import Style
 from meltygui.core.styling.style import default_tint_accumulation
 from meltygui.core.styling.style import default_scalar_accumulation
@@ -32,22 +31,6 @@ from meltygui.core.runtime.app import persisted
 from meltygui.core.runtime.app import after_first_frame
 from meltygui.core.runtime.app import checkpoint
 from meltygui.core.runtime.app_save import save
-
-if TYPE_CHECKING:   # IDE / type checkers only; never executed
-    import meltygui_imgui as imgui
-    from meltygui.core.rendering.gui_prototype import gui, os_window
-    from meltygui.core.rendering.gui_module import gui_module
-    from meltygui.state.new_core_model import DrawState
-    from meltygui.model.tile_model import multi_instance
-    from meltygui.view.chat_view import draw_claude_chat
-    from meltygui.core.rendering.render_dispatch import draw_any
-    from meltygui.view.menu_view import draw_menu_bar
-    from meltygui.view.file_view import draw_breadcrumbs
-    from meltygui import rust
-    from meltygui.core.rendering.gui_layout_prototype import columns, rows
-    from meltygui.core.core_render import render_func
-    from meltygui.core.runtime.toggles import Toggles as toggles
-    import meltygui.core.windowing.window_api as window_api
 
 # Non-render helpers keep explicit locations; @render_func views are discovered.
 _LAZY_EXPORTS = {
@@ -80,21 +63,25 @@ def __getattr__(name):
     if name == 'window_api':
         import meltygui.core.windowing.window_api as window_api
         return window_api
-    if name == 'rust':
-        # The `@gui` draw functions (`meltygui.rust.draw_any`): a table of names, loaded when asked for.
-        import meltygui.rust as rust
-        return rust
     if name == '__all__':
         value = list(dict.fromkeys([*_PUBLIC_NAMES, *_LAZY_EXPORTS, *_render_exports()]))
         globals()[name] = value
         return value
+    import importlib
+    from meltygui.core.runtime.app import _wait_imports
     spec = _LAZY_EXPORTS.get(name)
+    if spec is None and not name.startswith('_'):
+        # A submodule or subpackage: `meltygui.rust`, `meltygui.view`. The IDE's list is __init__.pyi (stubs.py).
+        path = f'{__name__}.{name}'
+        try:
+            return importlib.import_module(path)
+        except ModuleNotFoundError as error:
+            if error.name != path:
+                raise
     if spec is None:
         spec = _render_exports().get(name)
     if spec is None:
         raise AttributeError(name)
-    import importlib
-    from meltygui.core.runtime.app import _wait_imports
     _wait_imports()
     value = getattr(importlib.import_module(spec[0]), spec[1])
     globals()[name] = value

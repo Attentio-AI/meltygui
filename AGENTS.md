@@ -16,8 +16,9 @@ Before writing a view or changing `@gui` code read, in `docs/`:
 `examples/gui_todo.py`), `GUI_REQUIREMENTS.md` (what Lukas decided, and these
 rules restated for `@gui`), `GUI_PROTOTYPE.md` (how it works) and
 `NATIVE_EDITOR.md` (the editor and `Source`). Most `@gui` views are public:
-named `draw_<thing>` in `meltygui/view/<feature>_view.py`, published by a row
-in `EXPORTS` of `meltygui/rust.py` and used as `meltygui.rust.draw_thing`.
+named `draw_<thing>` in `meltygui/view/<feature>_view.py`, published by running
+`stubs.py` (it writes `VIEWS` in `meltygui/rust.py` and the IDE stubs) and used as
+`meltygui.rust.draw_thing`.
 When Lukas decides something about `@gui` in chat, add a dated line to
 `GUI_REQUIREMENTS.md` in the same turn.
 
