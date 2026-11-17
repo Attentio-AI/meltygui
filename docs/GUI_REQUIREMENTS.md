@@ -604,6 +604,17 @@ rust is finally fast enough"). Current numbers:
   a better one: "record the git hash and the current diff at launch. That
   give you everything you need to retrieve the original launch state the code
   and is cheap in nearly all cases." (2026-11-17)
+- **Launch capture as a git tree, and a prototype to be built.** To Claude's
+  variant (the working state stored as a git tree with its objects outside the
+  repo, read like a commit; a file whose ctime is older than the launch is read
+  from disk; the shared in-RAM text is the view's working buffer and the file
+  object is what it sets): "That seems reasonable. Let move forward with a
+  prototype implementation." It goes on the main meltygui repo, "in a way where
+  I can test it side by side with the existing source object". The end goal is
+  the usage code with the tree drawn: `draw_any(toggles_source.tree)`,
+  `draw_any(function_source.tree)`, `draw_any(module_source.tree)` (this
+  replaces `draw_any(source)` in the row of the same day above).
+  (2026-11-17)
 - **Cross file symbols**: one roster per project, owned by Melty's shared
   runtime and injected. Python says which files belong and pushes current
   text; a Rust thread reads and indexes. (11-11, approved)

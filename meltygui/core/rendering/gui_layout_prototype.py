@@ -13,6 +13,9 @@ import math
 FILLS = 0.5
 
 
+RECT = ('left', 'top', 'width', 'height')     # the fields of a view's state that are its rectangle
+
+
 class _Tracked(dict):
     """A geometry table that counts its own mutations in a shared counter.
 
@@ -605,6 +608,33 @@ class GuiGeometry:
         self.snug.discard((node,0))
         self.snug.discard((node,1))
 
+    def put(self, node, rect):
+        """Give a view `anchor` constrained the rectangle the solver has for it. It is written
+        as what the call resolved to, not as an authored field (`graph.allocate` authors: right
+        for a window the user moved): its place and size are its caller's, and an authored one
+        would be saved and outrank the flow position or the fill size on a later run, when the
+        caller passes another `left` or `width`, or none. A wrapping axis is the measurement's."""
+        graph=self.cache.graph
+        if graph.rect(node)==rect:return
+        fields={'left':rect[0],'top':rect[1]}
+        wraps=self.wraps(node)
+        if not wraps[0]:fields['width']=rect[2]
+        if not wraps[1]:fields['height']=rect[3]
+        graph.state(node).configure(fields,fields,{})
+
+    def disown(self, node):
+        """A view about to be constrained by `anchor`: drop the place and size a session saved
+        as authored for it (written by `graph.allocate` before `put` was), keeping the
+        values, and run its caller again so that the call's own resolve."""
+        graph=self.cache.graph
+        state=graph.state(node)
+        authored=state.save_state()[2]
+        stale={name:getattr(state,name) for name in RECT if name in authored}
+        if not stale:return
+        for name in stale:delattr(state,name)
+        state.configure(stale,stale,{})
+        graph.invalidate_node(graph.parent(node))
+
     def gap(self, node, axis):
         """The cell that holds `node`'s near edge at the gap it has to its window's near edge
         (`left` / `top` hold), as a list: empty for an edge outside the window."""
@@ -649,6 +679,7 @@ class GuiGeometry:
             else:cells.append((c,d,size,size))      # of a wrapping axis: the size found last time
             axis.replace_cells(serial,cells)
         if node not in self.anchored:
+            self.disown(node)
             above={node}
             parent=graph.parent(node)
             while parent:
@@ -803,7 +834,7 @@ class GuiGeometry:
             ox,oy=self.position(parent)
             sx,sy=graph.state(parent).scroll_offset
             cx,cy=graph.state(node).content_offset
-            graph.allocate(node,(x-ox+sx-cx,y-oy+sy-cy,max(1.,w),max(0.,h)))
+            self.put(node,(x-ox+sx-cx,y-oy+sy-cy,max(1.,w),max(0.,h)))
         stale, bindings = self.stale, self.bindings
         if owner is not None:
             if owner in bindings:
