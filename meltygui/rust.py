@@ -8,6 +8,17 @@ Each name is loaded from the module that owns it when it is first asked for, so 
 module loads nothing. To publish another view, add a row to `EXPORTS`.
 """
 import importlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:   # what the IDE completes; keep one import per `EXPORTS` row (tests/test_rust_exports.py)
+    from meltygui.core.rendering.gui_any import draw_any, is_default_for
+    from meltygui.core.rendering.shaped import Shaped
+    from meltygui.core.rendering.keyed import Keyed, keyed_as
+    from meltygui.view.dict_view import draw_collection
+    from meltygui.view.value_view import draw_bool, draw_int, draw_float, draw_str, draw_none, draw_value
+    from meltygui.view.button_view import draw_button
+    from meltygui.view.choice_view import draw_dropdown
+    from meltygui.view.tiles_view import draw_tiles
 
 # name -> the module that defines it
 EXPORTS = {

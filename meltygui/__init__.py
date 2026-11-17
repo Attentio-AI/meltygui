@@ -43,6 +43,11 @@ if TYPE_CHECKING:   # IDE / type checkers only; never executed
     from meltygui.core.rendering.render_dispatch import draw_any
     from meltygui.view.menu_view import draw_menu_bar
     from meltygui.view.file_view import draw_breadcrumbs
+    from meltygui import rust
+    from meltygui.core.rendering.gui_layout_prototype import columns, rows
+    from meltygui.core.core_render import render_func
+    from meltygui.core.runtime.toggles import Toggles as toggles
+    import meltygui.core.windowing.window_api as window_api
 
 # Non-render helpers keep explicit locations; @render_func views are discovered.
 _LAZY_EXPORTS = {

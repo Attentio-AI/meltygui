@@ -73,6 +73,8 @@ rust is finally fast enough"). Current numbers:
 | --- | --- |
 | `@os_window` is `@gui` plus an OS window: one decorator to remember, not two. | 10-09 |
 | `input_value` is optional in a view's signature; returning `None` means unchanged. "That's an old friction point with meltygui." | 10-09 |
+| `input_value` is to have no special meaning to the framework: "Other parameter names are fully general, and you can almost replace input_value with a custom name now." Worked down case by case; one counter under both names, to see what still differs: [examples/gui_value_name.py](../examples/gui_value_name.py). | 11-16 |
+| State injection is to work for a view's value too, to cut the boilerplate of prototyping a view: "start with injected state during the prototyping phase, and then add pass our own state later on." | 11-16 |
 | Callers and definitions can both make up arguments: "I really love having flexibility on both the function caller side and on the function def side to make up new arguments without breaking the interface points." No list of known framework fields; every field is equally fast. | 10-09 |
 | `left` and `top` are the one way to place a view, relative to the parent's content. `window_pos` is gone. | 11-07 |
 | `name=` tells repeated calls apart (section 5). | 11-06 |
