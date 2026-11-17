@@ -1,5 +1,5 @@
 """Private @glfw_window adapter for the opt-in native @gui experiment."""
-from meltygui.core.rendering.gui_prototype import _bind_native, _new_native, _window, _renderer_name
+from meltygui.core.rendering.gui_prototype import _bind_native, _new_native, _window, _renderer_name, ABSENT
 from meltygui.core.rendering.retained_gui_prototype import RetainedGui
 
 
@@ -20,7 +20,7 @@ class _GuiWindow:
         if geometry.native is None:geometry.native=NativeCollision(geometry)
         geometry.native.begin(adapter)
 
-    def call(self, view, input_value, kwargs):
+    def call(self, view, input_value, kwargs, more=()):
         if self.closed:
             raise RuntimeError('GUI window is closed')
         if view not in self.bindings:
@@ -30,7 +30,7 @@ class _GuiWindow:
             options.pop('live', None)
             self.bindings[view] = (self.cache.gui(func, **options) if cached
                                    else _bind_native(self.native, func, **options))
-        return self.bindings[view](input_value, **kwargs)
+        return self.bindings[view](input_value, *more, **kwargs)
 
     def title_bar(self):
         """The window's title bar is the window's, not the app's: the root view and everything it
@@ -52,7 +52,7 @@ class _GuiWindow:
         width, height = (Melty.root_fill[:2] if Melty.root_fill is not None
                          else imgui.get_content_region_available())
         arguments = dict(view_kwargs)
-        value = arguments.pop('value', None)
+        value = arguments.pop('value', ABSENT)
         arguments.setdefault('width', width)
         arguments.setdefault('height', height)
         self.cache.request_frame = surface.request_frame

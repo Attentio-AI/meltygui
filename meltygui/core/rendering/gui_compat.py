@@ -876,15 +876,16 @@ class Bridge:
             entry.site.islands.pop(entry.unique, None)
 
     # ---- native @gui views ------------------------------------------------
-    def call(self, view, input_value, kwargs):
+    def call(self, view, input_value, kwargs, more=()):
         """The _window host protocol: bind a @gui view on first use."""
         declare = self.bindings[view] = self.bind(view)
-        return declare(input_value, **kwargs)
+        return declare(input_value, *more, **kwargs)
 
     def bind(self, view):
         from meltygui.core.melty import Melty
-        from meltygui.core.rendering.gui_prototype import _bind_native, _new_native
+        from meltygui.core.rendering.gui_prototype import _bind_native, _new_native, ABSENT, positional, bind_positional
         func, options = view.__gui_definition__
+        (names, first), code = positional(func), func.__code__
         options = dict(options)
         retained = options.pop('use_cache', True)
         options.pop('live', None)
@@ -931,7 +932,12 @@ class Bridge:
         automatic = retained and options.get('width', 300) is None
         name = options.get('name')
 
-        def declare(input_value=None, **kwargs):
+        def declare(input_value=ABSENT, /, *more, **kwargs):
+            nonlocal names, first, code
+            if more:
+                if func.__code__ is not code:       # a source edit: the parameters may have moved
+                    (names, first), code = positional(func), func.__code__
+                bind_positional(func, names, first, more, kwargs)
             stack = cache.stack
             if stack and stack[-1] not in nodes:
                 return inner(input_value, **kwargs)     # a native caller: plain @gui

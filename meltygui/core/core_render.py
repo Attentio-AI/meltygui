@@ -111,6 +111,7 @@ def _report_draw_exception(e, draw_state, func):
 
     if draw_state is not None:
         draw_state._stack_trace = e
+    import traceback as _tb, sys as _s; _tb.print_exception(e, file=_s.stderr)  # TEMP-CLAUDE
 
     # Called directly from the wrapper's except blocks, while the failed
     # view's ImGui group/clip is active. Draw on every failed frame.

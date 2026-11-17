@@ -7,7 +7,7 @@ use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyString, PyTuple};
 use std::collections::BTreeSet;
 use crate::hash::{Map as HashMap, Set as HashSet};
 use crate::geometry::{intersects, Geometry, POSITION, SIZE, SCROLL, CONTENT};
-use crate::{NativeState, Value};
+use crate::{absent, NativeState, Value};
 
 /// Lever: host frames a returned edit stays a view's live input while its
 /// caller still passes the value from before it. Then the caller is run
@@ -288,7 +288,8 @@ impl RetainedGraph {
                     input: input.clone_ref(py),
                     caller_input: input.clone_ref(py),
                     kwargs: kwargs.clone_ref(py),
-                    value: input.clone_ref(py),
+                    // Never handed to a caller: a view that was passed nothing returns None until it ran.
+                    value: if input.bind(py).is(absent(py)) { py.None() } else { input.clone_ref(py) },
                     pending: false,
                     settle: 0,
                     verify: false,
@@ -562,7 +563,9 @@ impl RetainedGraph {
         self.geometry.extent(py,id,&n.children);
         n.executions += 1;
         n.value = result.get_item(1)?.unbind();
-        if changed {
+        // A view that was passed nothing owns its value and its state holds the edit: there is no
+        // caller's value to protect the edit from, and none to follow.
+        if changed && !n.caller_input.bind(py).is(absent(py)) {
             n.input = n.value.clone_ref(py);
             (n.settle, n.verify) = (SETTLE, false);
             self.settling.insert(id);

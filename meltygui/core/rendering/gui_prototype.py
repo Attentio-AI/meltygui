@@ -9,8 +9,42 @@ from meltygui.core.rendering.gui_imgui_import import enable_imgui_import
 
 enable_imgui_import()
 
+try:
+    # What a view is called with when no value is passed to it: not None, which a caller may pass.
+    from meltygui.core.rendering._gui_native import ABSENT
+except ImportError:     # not built: `_new_native` says how, when the first view is drawn
+    ABSENT = object()
+
+# Lever: the names a call can carry for the framework itself. A view whose first parameter is one of
+# them takes no value: nothing reaches it by position, and what it returns is not kept as its state.
+# Add a name here when the framework starts to read it from a call.
+FILLED = frozenset((
+    'width', 'height', 'left', 'top', 'scroll_offset', 'content_offset', 'min_width', 'max_width',
+    'min_height', 'max_height', 'draw_state', 'cache', 'event', 'view_events', 'unique', 'depth',
+    'key', 'name', 'initial', 'popup', 'melty_window', 'glfw_window', 'scroll', 'tint', 'movable',
+    'resizable', 'return_extras', 'window_pos'))
+
 
 _window = ContextVar('prototype_gui_window', default=None)
+
+
+def positional(func):
+    """A view's parameter names in order, and the one that is its value: the first, which a value
+    passed by position goes to and a returned edit is about (None: the framework fills it)."""
+    names = tuple(name for name, parameter in inspect.signature(func).parameters.items()
+                  if parameter.kind is not inspect.Parameter.VAR_KEYWORD)
+    return names, names[0] if names and names[0] not in FILLED else None
+
+
+def bind_positional(func, names, first, more, kwargs):
+    """The values after the first go to the parameters after the first by name, as Python binds them."""
+    if first is None or len(more) >= len(names):
+        raise TypeError(f'{func.__name__}() takes {len(names) if first else 0} values by position, '
+                        f'{len(more) + 1} were given')
+    for name, value in zip(names[1:], more):
+        if name in kwargs:
+            raise TypeError(f'{func.__name__}() got multiple values for {name!r}')
+        kwargs[name] = value
 
 
 def _check_position_arguments(arguments, no_save=()):
@@ -27,8 +61,13 @@ def os_window(func=None, **decoration):
 def gui(func=None, *, glfw_window=False, **decoration):
     """Declare a view; its enclosing @glfw_window owns native state and caches.
 
-    ``input_value`` is optional in the function signature. Returning None means
-    unchanged, preserving any caller-supplied input. ``glfw_window=True`` hosts
+    The first parameter is the view's value, under any name: what a caller passes
+    by position goes to it (further values go to the next parameters, as in Python)
+    and the returned ``(changed, value)`` is about it. Returning None means
+    unchanged. Passed nothing, it resolves like every parameter, from the view's
+    state (``draw_state.<name> = value``, or a returned edit, which is the same
+    write), then the defaults. A first parameter the framework fills (``FILLED``:
+    ``width``, ``draw_state`` ...) is not a value. ``glfw_window=True`` hosts
     this function as an OS window; ``@os_window`` is the convenient spelling.
     ``use_cache=False`` draws an immediate host/toolbar body. Other views retain
     their output and execute only when invalidated. No application runtime setup.
@@ -72,7 +111,7 @@ def gui(func=None, *, glfw_window=False, **decoration):
             if name not in ('use_cache', 'live', 'inject', 'events', 'state_id', 'no_save')})
 
     @wraps(func)
-    def wrapper(input_value=None, **kwargs):
+    def wrapper(input_value=ABSENT, /, *more, **kwargs):
         window = _window.get()
         if window is None:
             raise RuntimeError('@gui must be called inside @os_window (or a @glfw_window hosted @gui root)')
@@ -81,7 +120,9 @@ def gui(func=None, *, glfw_window=False, **decoration):
             bound = window.bindings[wrapper]
         except KeyError:
             # First use, or a closed window whose bindings were released.
-            return window.call(wrapper, input_value, kwargs)
+            return window.call(wrapper, input_value, kwargs, more)
+        if more:
+            return bound(input_value, *more, **kwargs)
         return bound(input_value, **kwargs)
 
     wrapper.__gui__ = True
@@ -121,6 +162,7 @@ def _bind_native(native, func=None, *, inject=None, events=(), state_id=None, no
         annotations = parameter_annotations(func)
         parameters = []
         var_kwargs = False
+        first = positional(func)[1]
         for name, parameter in signature.parameters.items():
             if name == 'window_pos':
                 raise TypeError('@gui parameters use left and top, not window_pos')
@@ -131,31 +173,35 @@ def _bind_native(native, func=None, *, inject=None, events=(), state_id=None, no
                 raise TypeError('@gui prototype accepts named parameters and **kwargs, not positional-only or *args')
             factory = factories.get(name)
             annotation = annotations.get(name)
-            if (factory is None and name not in ('input_value', 'draw_state')
+            if (factory is None and name != 'draw_state'
                     and inspect.isclass(annotation) and issubclass(annotation, DictConversion)
                     and parameter.default in (None, inspect.Parameter.empty)):
                 factory = annotation
-            parameters.append((name, parameter.default is not inspect.Parameter.empty,
+            # A value need not be passed: without a default of its own it is None.
+            parameters.append((name, parameter.default is not inspect.Parameter.empty or name == first,
                                None if parameter.default is inspect.Parameter.empty else parameter.default,
                                factory))
-        return Renderer(native, func, decoration, parameters, list(events), var_kwargs, identity, list(no_save) + list(events))
+        return Renderer(native, func, decoration, parameters, list(events), var_kwargs, identity,
+                        list(no_save) + list(events), first is not None)
 
     renderer = compile_plan()
     code = func.__code__
+    names, first = positional(func)
 
     def refresh():
         """Recompile the parameter plan after the function's code was replaced."""
-        nonlocal code
+        nonlocal code, names, first
         if func.__code__ is not code:
             renderer.reconfigure(compile_plan())
             code = func.__code__
+            names, first = positional(func)
 
     @wraps(func)
-    def wrapper(input_value=None, **kwargs):
-        nonlocal code
+    def wrapper(input_value=ABSENT, /, *more, **kwargs):
         if func.__code__ is not code:
-            renderer.reconfigure(compile_plan())
-            code = func.__code__
+            refresh()
+        if more:
+            bind_positional(func, names, first, more, kwargs)
         return renderer(input_value, **kwargs)
 
     wrapper.__gui_native__ = renderer

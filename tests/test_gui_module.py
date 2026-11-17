@@ -501,3 +501,36 @@ def test_shared_shim_does_not_bind_cython_functions():
     assert shim.place(1) == (1,)
     assert shim.place(1) == (1,)
     assert shim.FLAG == 3 and shim.FLAG == 3
+
+
+def test_a_hosted_app_imports_from_its_projects_environment(monkeypatch, tmp_path):
+    """A package the host lacks is found in the .venv of the app's project, on the first import."""
+    import sys
+    from meltygui.core.rendering import gui_module as hosting
+    site = tmp_path / hosting.SITES[0]
+    site.mkdir(parents=True)
+    (site / 'only_in_project.py').write_text('value = 7\n')
+    elsewhere = tmp_path / 'elsewhere'
+    elsewhere.mkdir()
+    (elsewhere / 'through_pth.py').write_text('value = 9\n')
+    (site / 'editable.pth').write_text(f'{elsewhere}\n')
+    monkeypatch.setattr(sys, 'path', list(sys.path))
+    app = tmp_path / 'project' / 'app.py'
+    app.parent.mkdir()
+    (app.parent / 'package_beside').mkdir()
+    (app.parent / 'package_beside' / '__init__.py').write_text('value = 11\n')
+    (app.parent / 'file_beside.py').write_text('class Named: pass\n')
+    scope = {hosting.APP: type('Hosted', (), {'modules': {}, 'program': type('P', (), {
+        'beside': {}, 'code': compile('', str(app), 'exec')})()})()}
+    try:
+        assert hosting.load('only_in_project', scope).value == 7
+        assert hosting.load('through_pth', scope).value == 9
+        assert hosting.load('package_beside', scope).value == 11
+        # A file beside the app is the instance's own, and found by the name its classes carry.
+        beside = hosting.load('file_beside', scope)
+        assert sys.modules[beside.Named.__module__] is beside
+        with pytest.raises(ModuleNotFoundError):
+            hosting.load('in_no_environment', scope)
+    finally:
+        for name in ('only_in_project', 'through_pth', 'package_beside', 'file_beside'):
+            sys.modules.pop(name, None)

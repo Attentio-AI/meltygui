@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use crate::hash::{Map as HashMap, Set as HashSet};
 use std::rc::{Rc, Weak};
 use std::time::Instant;
+use pyo3::sync::GILOnceCell;
 mod hash;
 mod declare;
 mod executor;
@@ -17,6 +18,14 @@ mod retained;
 mod texture;
 mod edges;
 mod wake;
+
+static ABSENT: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
+/// What a view is called with when no value is passed to it (`_gui_native.ABSENT`): one object,
+/// distinct from every value a caller can pass, None included.
+pub(crate) fn absent(py: Python<'_>) -> &Bound<'_, PyAny> {
+    ABSENT.get_or_init(py, || py.import("builtins").and_then(|builtins| builtins.getattr("object"))
+        .and_then(|object| object.call0()).expect("builtins.object()").unbind()).bind(py)
+}
 
 struct Shape {
     slots: HashMap<String, usize>,
@@ -147,7 +156,7 @@ pub(crate) struct NativeState {
     rendering: bool,
 }
 const TRANSIENT_STATE: &[&str] = &[
-    "input_value", "draw_state", "cache", "view_events", "event", "font_manager", "style_manager",
+    "draw_state", "cache", "view_events", "event", "font_manager", "style_manager",
     "content_width", "content_height", "abs_left", "abs_top",
     "measured_width", "depth", "unique_events",
 ];
@@ -207,6 +216,14 @@ impl NativeState {
     fn put(&mut self, name: &str, value: Value) {
         let slot = self.shape.borrow_mut().slot(name);
         self.put_slot(slot, value);
+    }
+    /// A field written by the view (`draw_state.name = value`, or its returned edit): it outranks
+    /// the defaults, is outranked by what a caller passes, and is saved.
+    fn author(&mut self, name: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let slot = self.shape.borrow_mut().slot(name);
+        self.put_slot(slot, Value::field(name, value)?);
+        self.overrides.insert(slot, Value::field(name, value)?);
+        Ok(())
     }
     fn at(&self, slot: usize) -> Option<&Value> {
         self.values.get(slot).and_then(Option::as_ref)
@@ -304,10 +321,7 @@ impl NativeState {
     }
     fn __setattr__(&mut self, name: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
         if name=="window_pos" {return Err(PyAttributeError::new_err("use left and top for relative position"));}
-        let slot = self.shape.borrow_mut().slot(name);
-        self.put_slot(slot, Value::field(name,value)?);
-        self.overrides.insert(slot, Value::field(name,value)?);
-        Ok(())
+        self.author(name, value)
     }
     fn __delattr__(&mut self, name: &str) -> PyResult<()> {
         let slot = self.shape.borrow().slots.get(name).copied();
@@ -618,9 +632,9 @@ impl<'py> Args<'py> {
 
 // Framework values a layered capture only materializes for parameters that
 // actually ask for them by name.
-const FRAMEWORK_FIELDS: [&str; 13] = [
+const FRAMEWORK_FIELDS: [&str; 12] = [
     "width", "height", "scroll_offset", "return_extras", "cache", "view_events",
-    "left", "top", "input_value", "draw_state", "unique", "depth", "event",
+    "left", "top", "draw_state", "unique", "depth", "event",
 ];
 const WANT_WIDTH: u16 = 1 << 0;
 const WANT_HEIGHT: u16 = 1 << 1;
@@ -630,11 +644,10 @@ const WANT_CACHE: u16 = 1 << 4;
 const WANT_EVENTS: u16 = 1 << 5;
 const WANT_LEFT: u16 = 1 << 6;
 const WANT_TOP: u16 = 1 << 7;
-const WANT_INPUT: u16 = 1 << 8;
-const WANT_STATE: u16 = 1 << 9;
-const WANT_UNIQUE: u16 = 1 << 10;
-const WANT_DEPTH: u16 = 1 << 11;
-const WANT_EVENT: u16 = 1 << 12;
+const WANT_STATE: u16 = 1 << 8;
+const WANT_UNIQUE: u16 = 1 << 9;
+const WANT_DEPTH: u16 = 1 << 10;
+const WANT_EVENT: u16 = 1 << 11;
 fn wanted(parameters: &[Parameter]) -> u16 {
     let mut mask = 0;
     for parameter in parameters {
@@ -652,6 +665,9 @@ pub(crate) struct Renderer {
     code: Option<Py<PyAny>>,
     defaults: Py<PyDict>,
     parameters: Vec<Parameter>,
+    // The first parameter is the view's value: what is passed by position goes to it, and what the
+    // body returns is about it. False when the framework fills that parameter (or there is none).
+    valued: bool,
     // FRAMEWORK_FIELDS that are declared parameters, as WANT_* bits.
     wants: u16,
     events: Vec<String>,
@@ -669,7 +685,8 @@ impl Renderer {
         capture: Option<Capture<'_, '_>>,
     ) -> PyResult<Py<PyAny>> {
         let start = Instant::now();
-        let input_value = input_value.unwrap_or_else(|| py.None());
+        // None: nothing was passed, and the view's value resolves like any other parameter.
+        let input_value = input_value.filter(|value| !value.bind(py).is(absent(py)));
         // A declaration already rejected window_pos for captures.
         let layered = capture.is_some() && !self.var_kwargs;
         let args = match kwargs {
@@ -869,7 +886,6 @@ impl Renderer {
             ds.put_slot(SLOT_CONTENT_WIDTH, Value::Float(width));
             ds.put_slot(SLOT_CONTENT_HEIGHT, Value::Float(height));
         }
-        if wants(WANT_INPUT) { args.set(intern!(py, "input_value"), &input_value)?; }
         if wants(WANT_STATE) { args.set(intern!(py, "draw_state"), &state)?; }
         if wants(WANT_UNIQUE) { args.set(intern!(py, "unique"), &unique_value)?; }
         // Each capture is its own root: depth counts immediate nesting only.
@@ -904,18 +920,26 @@ impl Renderer {
             Args::Merged(merged) if self.var_kwargs => merged.copy()?,
             _ => PyDict::new(py),
         };
-        for parameter in &self.parameters {
+        // What a body that returns nothing hands back, and whether the caller passed the view's value
+        // (by position, or under its name).
+        let mut current = input_value.as_ref().map(|value| value.clone_ref(py));
+        let mut passed = input_value.is_some();
+        for (index, parameter) in self.parameters.iter().enumerate() {
             let key = parameter.key.bind(py);
+            let first = self.valued && index == 0;
             let position = matches!(parameter.name.as_str(), "left" | "top");
             // A capture's size and scroll come from its overlay, not the
             // declaration's stored arguments.
             let overlaid = capture.is_some() && matches!(parameter.name.as_str(), "width" | "height" | "scroll_offset");
-            let explicit = if position { None } else {
+            let explicit = if position { None } else if first && input_value.is_some() {
+                input_value.as_ref().map(|value| value.bind(py).clone())
+            } else {
                 match if overlaid { args.get(key)? } else { kwargs.map(|kw| kw.get_item(key)).transpose()?.flatten() } {
                     Some(value) if explicit_keys.as_ref().map_or(true, |keys| keys.contains(key).unwrap_or(false)) => Some(value),
                     _ => None,
                 }
             };
+            if first { passed = explicit.is_some(); }
             // Authored state is only consulted (and converted) when no caller
             // value outranks it. The borrow ends before any later branch.
             let authored = if position || explicit.is_some() { None } else {
@@ -956,11 +980,13 @@ impl Renderer {
                 )));
             };
             clean.set_item(key, &value)?;
+            if first { current = Some(value.clone_ref(py)); }
             // Framework-injected self references are transient, not persisted in state.
             // None requests automatic sizing; it is not a measured dimension.
             let automatic_size = matches!(parameter.name.as_str(), "width" | "height")
                 && value.bind(py).is_none();
-            if parameter.name != "draw_state" && parameter.name != "input_value" && !automatic_size {
+            // A value the caller passed is the caller's: the state neither holds nor saves it.
+            if parameter.name != "draw_state" && !(first && passed) && !automatic_size {
                 state
                     .borrow_mut(py)
                     .put_slot(parameter.slot, Value::field(&parameter.name, value.bind(py))?);
@@ -1020,11 +1046,23 @@ impl Renderer {
         }
         let result = result?;
         cleanup?;
-        // Drawing-only functions need neither an input parameter nor a return.
-        // Preserve the caller's value so they compose with editable views.
+        // Drawing-only functions need neither a value parameter nor a return.
+        // Preserve the value so they compose with editable views.
         let result = if result.is_none(py) {
-            (false, input_value).into_pyobject(py)?.into_any().unbind()
+            (false, current.unwrap_or_else(|| py.None())).into_pyobject(py)?.into_any().unbind()
         } else {
+            if self.valued && !passed {
+                // Nothing was passed, so the view owns its value: a returned edit is the same as
+                // `draw_state.<first parameter> = value`. A passed value's edit is the caller's to keep.
+                let edit = result.bind(py).downcast::<PyTuple>()?;
+                if edit.get_item(0)?.is_truthy()? {
+                    let (parameter, edited) = (&self.parameters[0], edit.get_item(1)?);
+                    let held = current.as_ref().map(|value| Value::from_py(value.bind(py)));
+                    if !held.is_some_and(|held| held.same(&Value::from_py(&edited))) {
+                        state.borrow_mut(py).author(&parameter.name, &edited)?;
+                    }
+                }
+            }
             result
         };
         if capture.is_some() {
@@ -1078,6 +1116,7 @@ impl Renderer {
             })
             .collect();
         self.wants = replacement.wants;
+        self.valued = replacement.valued;
     }
     #[new]
     fn new(
@@ -1090,6 +1129,7 @@ impl Renderer {
         var_kwargs: bool,
         identity: u128,
         excluded: Vec<String>,
+        valued: bool,
     ) -> PyResult<Self> {
         let plan: Vec<Parameter> = {
             let rt = runtime.borrow(py);
@@ -1115,6 +1155,7 @@ impl Renderer {
             code,
             defaults,
             wants: wanted(&plan),
+            valued: valued && !plan.is_empty(),
             parameters: plan,
             events,
             var_kwargs,
@@ -1127,14 +1168,21 @@ impl Renderer {
     fn code(&self, py: Python<'_>) -> Option<Py<PyAny>> {
         self.code.as_ref().map(|v| v.clone_ref(py))
     }
-    #[pyo3(signature = (input_value=None, **kwargs))]
+    /// An immediate call. At most one value by position: the bridge binds further ones to the
+    /// parameters after the first by name before it calls (`bind_positional`, gui_prototype.py).
+    #[pyo3(signature = (*values, **kwargs))]
     fn __call__(
         &self,
         py: Python<'_>,
-        input_value: Option<Py<PyAny>>,
+        values: &Bound<'_, PyTuple>,
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
-        self.invoke(py, input_value, kwargs, None)
+        let value = match values.len() {
+            0 => None,
+            1 => Some(values.get_item(0)?.unbind()),
+            _ => return Err(PyTypeError::new_err("a view takes one value by position here")),
+        };
+        self.invoke(py, value, kwargs, None)
     }
     /// One retained capture. The declaration's arguments are read, not
     /// copied; `rect`, `auto_height` and `scroll` supply the current geometry
@@ -1203,5 +1251,6 @@ fn _gui_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<executor::Executor>()?;
     m.add_class::<wake::Wakes>()?;
     m.add_function(wrap_pyfunction!(same_arguments, m)?)?;
+    m.add("ABSENT", absent(m.py()))?;
     Ok(())
 }

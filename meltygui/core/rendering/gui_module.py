@@ -72,7 +72,9 @@ a lambda, a comprehension or a sibling file is not supported, a window
 function's decoration (tint, scroll, events) and `settings=` are dropped and
 its injected state objects are not saved with the session, style variables
 (rounding, padding) and the app's own fonts are not applied, and in-place
-edits of a mutable first parameter are not reported as changed.
+edits of a mutable first parameter are not reported as changed. A window function
+that is a legacy `@render_func` draws only under the legacy bridge (MELTY_RUST=1), where a native root's tiles do not
+follow a right-drag resize of the window.
 """
 import ast
 import atexit
@@ -913,6 +915,23 @@ class Glfw(types.ModuleType):
         return value
 
 
+def legacy_frame(function):
+    """The frame of a legacy `@render_func` root: its own wrapper injects draw_state and state, and
+    it fills the hosting view. The view's draw list is not the window's, so the legacy z-layer
+    channels start over in it."""
+    def frame(draw_state, cache, values):
+        import meltygui_imgui as imgui
+        from meltygui.core.melty import Melty
+        split, Melty.channels_split = Melty.channels_split, False
+        try:
+            return function(None, name=function.__name__, width=values['width'], height=values['height'])
+        finally:
+            if Melty.channels_split:
+                imgui.get_window_draw_list().channels_merge()
+            Melty.channels_split = split
+    return frame
+
+
 # code object: (the view values it declares, its parameters that may be injected state). Every
 # instance of a file has the same window functions: their signature is read once.
 _plans = {}
@@ -927,6 +946,8 @@ def window_frame(function):
     The size is read from `values`, the view's own kwargs: a draw_state attribute
     costs a native call (about 0.2 us each).
     """
+    if getattr(function, '__render_func__', False):
+        return legacy_frame(function)
     plan = _plans.get(function.__code__)
     if plan is None:
         declared = inspect.signature(function).parameters
@@ -1064,9 +1085,54 @@ def load(name, globals=None, locals=None, fromlist=(), level=0):
             code = beside(path)
             module = app.modules[top] = types.ModuleType(top)
             module.__dict__.update({'__file__': path, '__builtins__': SCOPE, APP: app})
+            # What looks a class up by its `__module__` (CodeDict, pickle, dataclasses, typing) finds
+            # the module by name: the first instance to load the file holds the name until it closes.
+            sys.modules.setdefault(top, module)
             exec(code, module.__dict__)
             return module
+    try:
+        return builtins.__import__(name, globals, locals, fromlist, level)
+    except ModuleNotFoundError:
+        if not adopt(app.program.code.co_filename):
+            raise
     return builtins.__import__(name, globals, locals, fromlist, level)
+
+
+# Lever: where a hosted app's own packages are looked for, relative to the app's folder and each
+# folder above it (the first that exists wins). Only an environment of the running Python version.
+SITES = (f'.venv/lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages',
+         '.venv/Lib/site-packages')
+_sites = {}     # app folder: its import path was already added
+
+
+def adopt(path):
+    """Add what the app at `path` would import from when run on its own, after the host's own path:
+    its folder (packages beside it) and the environment of its project. True when this call
+    added something (import again)."""
+    folder = os.path.dirname(os.path.abspath(path))
+    if _sites.setdefault(folder, False):
+        return False
+    _sites[folder] = True
+    added = folder not in sys.path
+    if added:
+        sys.path.append(folder)
+    above = folder
+    while True:
+        for site in SITES:
+            site = os.path.join(above, site)
+            if os.path.isdir(site):
+                if site not in sys.path:
+                    import site as sites        # runs the folder's .pth files: editable installs
+                    sites.addsitedir(site)
+                    added = True
+                above = ''
+                break
+        above, last = os.path.dirname(above), above
+        if above == last:
+            break
+    if added:
+        importlib.invalidate_caches()
+    return added
 
 
 # The builtins of every hosted namespace: one table for all apps (a copy each was most of an instance).
@@ -1311,7 +1377,9 @@ class App:
                 leave()
             except Exception:
                 self.fail()
-        for module in self.modules.values():
+        for name, module in self.modules.items():
+            if sys.modules.get(name) is module:
+                del sys.modules[name]
             module.__dict__.clear()
         self.namespace.clear()
         self.__init__(self.program)

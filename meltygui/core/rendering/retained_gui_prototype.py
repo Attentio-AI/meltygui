@@ -15,7 +15,8 @@ import math
 import inspect
 import time
 
-from meltygui.core.rendering.gui_prototype import _bind_native, _new_native, _renderer_name, _check_position_arguments
+from meltygui.core.rendering.gui_prototype import (
+    _bind_native, _new_native, _renderer_name, _check_position_arguments, ABSENT, positional, bind_positional)
 from meltygui.core.rendering.gui_imgui_input import ImGuiInput
 from meltygui.core.input.event import Event, QUIET
 
@@ -34,7 +35,8 @@ PATH_ALIAS = 4096
 def _alias(value):
     if isinstance(value, Path) or (isinstance(value, str) and len(value) <= PATH_ALIAS):
         return 'path:' + str(value)
-    return f'object:{id(value)}'
+    # A view that was passed nothing is tracked with the ones passed None, as when both were None.
+    return f'object:{id(None if value is ABSENT else value)}'
 
 
 # Absent tint, distinct from every caller value including None.
@@ -145,6 +147,7 @@ class RetainedGui:
         self._auto_cache = Toggles.Rust.auto_cache
         from meltygui.core.rendering.gui_cache_policy import RasterPolicy
         self.raster_policy = RasterPolicy()
+        self.bakes = None       # the font atlas bake the retained packets were recorded against (`flush`)
         self.stack = []
         self.records = {}
         self.bindings = {}
@@ -382,6 +385,7 @@ class RetainedGui:
                                        listen=listen, cursor=cursor, **decoration)
         decorated_left, decorated_top = left, top
         parameters = inspect.signature(func).parameters
+        names, first = positional(func)
         def position_default(name, decorated):
             parameter = parameters.get(name)
             if decorated is None and parameter is not None and parameter.default is not inspect.Parameter.empty:
@@ -392,9 +396,10 @@ class RetainedGui:
         # declarations resolved from the old defaults are not reused.
         generation = [0]
         def refresh_positions():
-            nonlocal parameters, left, top
+            nonlocal parameters, left, top, names, first
             previous = (left, top)
             parameters = inspect.signature(func).parameters
+            names, first = positional(func)
             left = position_default('left', decorated_left)
             top = position_default('top', decorated_top)
             if previous == (left, top):
@@ -423,7 +428,12 @@ class RetainedGui:
         decoration_name = decoration.get('name')
 
         @wraps(func)
-        def wrapper(input_value=None, **kwargs):
+        def wrapper(input_value=ABSENT, /, *more, **kwargs):
+            if more:
+                bind_positional(func, names, first, more, kwargs)
+            elif input_value is ABSENT and first in kwargs:
+                # The view's value passed by name: the same value, tracked the same way.
+                input_value = kwargs.pop(first)
             stack = self.stack
             if graphics and not stack:
                 if not imgui.is_frame_active():
@@ -494,7 +504,7 @@ class RetainedGui:
                     # declared only while it is open. Closed, this lookup is all the call costs.
                     popup = True
                     if not self.focus.shown(identity_handle, kwargs.pop('popup')):
-                        closed = self.focus.result(identity_handle, input_value)
+                        closed = self.focus.result(identity_handle, None if input_value is ABSENT else input_value)
                         return (*closed, None) if kwargs.get('return_extras') else closed
                 binding = bindings.get(identity_handle)
                 if binding is None:
@@ -993,6 +1003,13 @@ class RetainedGui:
 
     def flush(self):
         """Run only dirty functions, then replay retained packets bottom-up."""
+        from meltygui.core.melty import Melty
+        fonts = Melty.font_mgr
+        if fonts is not None and fonts.bakes != self.bakes:
+            # The atlas was repacked (a font was added): every packet holds glyphs of the old one.
+            self.bakes = fonts.bakes
+            for node in self.records:
+                self.graph.invalidate_node(node)
         if self.drain is not None:
             self.drain()
         while self.woken:
