@@ -4,9 +4,14 @@ What a caller passes by position goes to it, further values go to the next param
 returned `(changed, value)` is about it. Passed nothing, it resolves like every other parameter:
 from the view's state, then the defaults. A returned edit is then the same as
 `draw_state.<name> = value`; an edit to a value the caller passed is the caller's to keep.
+`draw_state.<name>` reads the value either way, as it reads every parameter. A passed value is
+not copied to the state: the read goes through to the caller's, so the state never keeps it alive
+and never saves it.
 Every case runs under the name `input_value` and under another one: the name means nothing.
 """
+import gc
 import textwrap
+import weakref
 from types import FunctionType
 
 import pytest
@@ -27,6 +32,17 @@ def count({name}: int = 0, step=1, draw_state=None, view_events=None, press=Fals
     if press or 'press' in (view_events or ()):
         return True, {name} + step
 '''
+
+
+# A view that says whether its state reads the very value it was passed.
+READER = '''
+def show({name}=None, draw_state=None):
+    seen.append(draw_state.{name} is {name})
+'''
+
+
+class Model:
+    """A value that is tracked by identity, to see who still holds it."""
 
 
 class Picked(DictConversion):
@@ -77,13 +93,14 @@ def test_a_value_reaches_the_first_parameter_by_position_and_by_name(rig, name):
         one = rig(name)
         assert passed(one) == (False, 5)        # no return: the value is handed back
         assert one.seen == [(5, 1)]
-        assert name not in one.state().as_dict()        # the caller's: the state does not hold it
+        assert getattr(one.state(), name) == 5          # read through the state, like every parameter
 
 
 @pytest.mark.parametrize('name', NAMES)
 def test_further_values_go_to_the_next_parameters_as_python_binds_them(rig, name):
     one = rig(name)
     assert one.frame(5, 3) == (False, 5) and one.seen == [(5, 3)]
+    assert (getattr(one.state(), name), one.state().step) == (5, 3)
     with pytest.raises(TypeError, match="multiple values for 'step'"):
         one.frame(5, 3, step=4)
     with pytest.raises(TypeError, match='values by position'):
@@ -130,19 +147,76 @@ def test_a_state_write_and_a_returned_edit_are_the_same(rig, name):
 
 
 @pytest.mark.parametrize('name', NAMES)
-def test_an_edit_to_a_passed_value_is_the_callers_and_never_becomes_state(rig, name):
+def test_an_edit_to_a_passed_value_is_the_callers_and_the_state_reads_it(rig, name):
     one = rig(name)
     held = 10
     one.frame(held)
     one.press()
     changed, held = one.frame(held)
     assert (changed, held) == (True, 11)
+    assert getattr(one.state(), name) == 11         # the edit, before the caller has passed it back
     assert [one.frame(held) for _ in range(6)] == [(False, 11)] * 6
-    assert name not in one.state().as_dict()
-    # A caller that does not take it is followed, as before.
+    assert getattr(one.state(), name) == 11
+    # A caller that does not take it is followed, as before, and so is what the state holds.
     one.press()
     assert one.frame(11) == (True, 12)
+    assert getattr(one.state(), name) == 12
     assert [one.frame(11) for _ in range(6)][-1] == (False, 11)
+    assert getattr(one.state(), name) == 11
+    # Read is not owned: passed nothing, the view is back at its default.
+    assert one.frame() == (False, 0)
+
+
+@pytest.mark.parametrize('name', NAMES)
+def test_the_state_reads_a_passed_value_and_keeps_no_reference_to_it(rig, name):
+    one = rig(name, source=READER)
+    model = Model()
+    reference = weakref.ref(model)
+    one.frame(model)
+    assert one.seen == [True]                           # in the body
+    assert getattr(one.state(), name) is model          # and between runs, while the view is declared
+    assert one.state().as_dict()[name] is model and one.state().get(name) is model
+    one.frame(None)                                     # the caller passes something else
+    del model
+    gc.collect()
+    assert reference() is None
+    assert getattr(one.state(), name) is None
+
+
+@pytest.mark.parametrize('name', NAMES)
+def test_an_immediate_view_reads_a_passed_value_only_while_it_runs(name):
+    runtime, seen = _new_native(graphics=False), []
+    view = _bind_native(runtime, define(READER, name, seen))
+    model = Model()
+    reference = weakref.ref(model)
+    with native_frame(runtime):
+        state = view(model, return_extras=True)[2]
+    assert seen == [True]
+    with pytest.raises(AttributeError, match="its caller's"):
+        getattr(state, name)
+    assert name not in state.as_dict() and state.get(name) is None
+    del model
+    gc.collect()
+    assert reference() is None                          # nothing of the frame is left behind
+
+
+@pytest.mark.parametrize('name', NAMES)
+def test_a_passed_value_is_never_stored_or_saved(name):
+    session = AppSession()
+    one = Rig(name, registry=session.draw_state_registry)
+    one.frame(); one.press(); one.frame()           # the view's own value: 1
+    one.frame(50)
+    assert getattr(one.state(), name) == 50         # the caller's, over the view's own
+    assert one.state().save_state()[0][name] == 1   # what is saved is what the view owns
+    one.cache.prepare_save(); one.cache.close()
+    again = Rig(name, registry=loads(dumps(session), run_on_load=False).draw_state_registry)
+    assert again.frame() == (False, 1)
+    again.cache.close()
+    # A view that owns nothing saves nothing under its value's name.
+    lone = Rig(name)
+    lone.frame(50)
+    assert name not in lone.state().save_state()[0]
+    lone.cache.close()
 
 
 @pytest.mark.parametrize('name', NAMES)

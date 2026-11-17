@@ -54,7 +54,9 @@ struct Slot {
     generation: u64,
     // Layout cursor coordinates the resolution depended on; None: explicit axis.
     flow: (Option<f64>, Option<f64>),
+    // The room right of / below the cursor a size that fills its parent was resolved from.
     automatic_width: Option<f64>,
+    automatic_height: Option<f64>,
     // (arguments, x, y, w, h, automatic height, scrollable, extras, caller keys).
     resolved: Py<PyTuple>,
     arguments: Py<PyDict>,
@@ -131,9 +133,10 @@ impl Declarations {
     /// w, h, automatic height, scrollable, extras, caller keys); `flow_x` and
     /// `flow_y` are the cursor coordinates it depended on, None when explicit.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (handle, kwargs, generation, flow_x, flow_y, automatic_width, resolved, state))]
+    #[pyo3(signature = (handle, kwargs, generation, flow_x, flow_y, automatic_width, automatic_height, resolved, state))]
     fn remember(&mut self, py: Python<'_>, handle: usize, kwargs: Py<PyDict>, generation: u64, flow_x: Option<f64>,
-                flow_y: Option<f64>, automatic_width: Option<f64>, resolved: Bound<'_, PyTuple>,
+                flow_y: Option<f64>, automatic_width: Option<f64>, automatic_height: Option<f64>,
+                resolved: Bound<'_, PyTuple>,
                 state: Py<NativeState>) -> PyResult<()> {
         let arguments = resolved.get_item(0)?.downcast_into::<PyDict>()?.unbind();
         let (x, y, w, h): (f64, f64, f64, f64) = (resolved.get_item(1)?.extract()?, resolved.get_item(2)?.extract()?,
@@ -142,7 +145,7 @@ impl Declarations {
         state.borrow_mut(py).remember_geometry();
         // Replace in two steps: dropping the old slot can run Python destructors.
         let previous = self.slots.insert(handle, Slot {
-            kwargs, generation, flow: (flow_x, flow_y), automatic_width,
+            kwargs, generation, flow: (flow_x, flow_y), automatic_width, automatic_height,
             arguments, position: (x, y), rect: (x, y, w, if auto_height { -1. } else { h }),
             scrollable: resolved.get_item(6)?.is_truthy()?, extras: resolved.get_item(7)?.is_truthy()?,
             resolved: resolved.unbind(), state, node: 0, input: None,
@@ -203,28 +206,39 @@ impl Declarations {
             if matches!(call, Call::Other) { return fallback(py); }
             if matches!(call, Call::Placed) || !slot.state.borrow(py).settled() {
                 // A place that depends on the layout cursor is resolved in full.
-                if slot.flow.0.is_some() || slot.flow.1.is_some() || slot.automatic_width.is_some() {
+                if slot.flow.0.is_some() || slot.flow.1.is_some() || slot.automatic_width.is_some()
+                    || slot.automatic_height.is_some() {
                     return fallback(py);
                 }
                 let resolved = slot.resolved.bind(py).clone().into_any();
                 drop(guard);
                 return Ok(PyList::new(py, [handle.into_pyobject(py)?.into_any(), resolved])?.into_any());
             }
-            if slot.flow.0.is_some() || slot.flow.1.is_some() {
-                let Some(api) = &this.api else { return fallback(py); };
-                let cursor: (f64, f64) = if parent != 0 || auto_layout {
-                    api.cursor.bind(py).call0()?.extract()?
-                } else { (0., 0.) };
+            let flows = slot.flow.0.is_some() || slot.flow.1.is_some();
+            if flows || slot.automatic_width.is_some() || slot.automatic_height.is_some() {
+                // The cursor is read where the bridge reads it: under a parent or an automatic layout.
+                let cursor: (f64, f64) = match &this.api {
+                    Some(api) if parent != 0 || auto_layout => api.cursor.bind(py).call0()?.extract()?,
+                    Some(_) => (0., 0.),
+                    None if flows => return fallback(py),
+                    None => (0., 0.),
+                };
                 if slot.flow.0.is_some_and(|x| x != cursor.0) || slot.flow.1.is_some_and(|y| y != cursor.1) {
                     return fallback(py);
                 }
-                if let Some(width) = slot.automatic_width {
-                    let available = if parent != 0 {
-                        graph.borrow_mut(py).constraints(py, parent).0 - cursor.0
+                // A size that fills its parent holds while the room it was resolved from does.
+                if slot.automatic_width.is_some() || slot.automatic_height.is_some() {
+                    let room: (f64, f64) = if parent != 0 {
+                        let (wide, tall) = graph.borrow_mut(py).constraints(py, parent);
+                        (wide - cursor.0, tall - cursor.1)
                     } else {
-                        api.content_region.bind(py).call0()?.get_item(0)?.extract::<f64>()?
+                        let Some(api) = &this.api else { return fallback(py); };
+                        api.content_region.bind(py).call0()?.extract()?
                     };
-                    if available != width { return fallback(py); }
+                    if slot.automatic_width.is_some_and(|width| width != room.0)
+                        || slot.automatic_height.is_some_and(|height| height != room.1) {
+                        return fallback(py);
+                    }
                 }
             }
             // The bridge is not needed when the same input declares the same

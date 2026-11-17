@@ -102,14 +102,62 @@ own file only to show every pattern in one place.
 - **`left`, `top`, `width`, `height`** on the call place a view in its parent's
   content, in logical pixels. A body draws in its own space, from (0, 0) to
   (`width`, `height`); never add the view's position inside it.
-- A size with no room left (`width=width - left - PAD` in a narrow window) is
-  safe: the view is drawn 1 px wide, or with no height, and returns to its size
-  when room does (`_fit_size` in `retained_gui_prototype.py`). Only NaN,
-  infinity or a width over 8192 raises, naming the view.
+- **A width or a height is one of three things**, the same on both axes:
+
+  | Passed | Meaning |
+  |---|---|
+  | a number, 0 or more | that many pixels |
+  | nothing, or a very large number | **fill**: from the view's left / top edge to the parent's right / bottom one. `draw_view(width=1e8, height=1e8)` says it over a size the definition fixes |
+  | `None` | **wrap**: as large as the view's content |
+
+  ```python
+  @gui                              # fills its parent
+  @gui(height=30)                   # fills across, 30 high
+  @gui(height=None)                 # fills across, as high as its content (a paragraph)
+  @gui(width=None, height=24)       # a chip: as wide as its label
+  draw_view(value, width=1e8)       # fill, over a width the definition fixes
+  ```
+
+  `meltygui.FILL` (1e8) and `meltygui.WRAP` (None) are names for the same
+  values: `draw_view(width=meltygui.FILL, height=meltygui.WRAP)`. They need not
+  be used; use them where the call reads better with them.
 - A value passed on the call applies on every run it is passed. A size the
-  view always has goes on the decorator (`@gui(height=30)`); without either a
-  view is 300 by 100.
-- An axis that is not given follows ImGui's flow. Give both in a composed
+  view always has goes on the decorator (`@gui(height=30)`).
+- **Fill** follows the parent's size. The edge it starts from is `left` /
+  `top` where given, else ImGui's flow. A floating window or popup has no
+  parent to fill: it is 300 by 100 (`UNSIZED` in `retained_gui_prototype.py`).
+- **Wrap** measures what moved ImGui's cursor: widgets, `imgui.dummy`, child
+  views. Draw list shapes alone measure nothing, so reserve their space with
+  `imgui.dummy(w, h)`. A wrapped width is at most the room a fill would have
+  had. Inside a wrapping parent a filling view has nothing to fill and wraps
+  too.
+- **In the body `width` and `height` are always numbers**: the space the view
+  has to draw in, whatever was asked for. Use them directly. On a wrapping
+  axis they are the room the view may take, and it then becomes as large as
+  what it drew. Where nothing bounds a wrapped height (a scroll view's
+  content, a parent that wraps too) `height` is 8192 (`UNBOUNDED` in
+  `gui_size.py`), the tallest a view can be: lay out as a scrolling view
+  would.
+- A body that must know what was asked takes a `canvas` parameter:
+  `canvas.width` and `canvas.height` are the values passed (the call's, else
+  the definition's): pixels, `1e8` for fill, None for wrap. It is read only.
+  `draw_editor` uses it to be as high as its text when wrapped:
+
+  ```python
+  def draw_editor(..., width=None, height=None, canvas=None):
+      if canvas.height is None:
+          height = min(height, rows * line_height)     # past the room it scrolls
+  ```
+- A `width=0.0` or `height=0.0` in the view's own signature is not a size: it
+  only asks for the resolved number.
+- A size a caller computed down to nothing (`width=width - left - PAD` at 0)
+  is safe: the view is drawn 1 px wide, or with no height, and returns to its
+  size when room does (`_fit_size` in `retained_gui_prototype.py`). Only NaN,
+  infinity or a width over 8192 raises, naming the view.
+- Any number from a million up fills (`FILL_FROM` in `gui_size.py`): no view
+  is that large, so a size computed that high by mistake fills its parent
+  instead of raising.
+- A position that is not given follows ImGui's flow. Give both in a composed
   layout.
 - **The root** receives `width` and `height`: the space under the window's
   title bar. `top=0` is the first pixel below the bar, so a view that fills the
@@ -125,9 +173,31 @@ own file only to show every pattern in one place.
   the root is handed at least 1 by 1.)
 - **A floating window** is any view called with `melty_window=True`. Its start
   is `initial={'left': 80, 'top': 120, 'width': 300, 'height': 200}`, applied
-  once; after that the user's geometry wins and is saved. Do not pass
-  `left` / `top` / `width` / `height` to a window: that pins it. It has a title
+  once; after that the user's geometry wins and is saved. It has a title
   strip of its own, and its content starts below it.
+- **What the call passes decides what the user can resize**, for width and
+  height independently:
+
+  | On the call | The window along that axis |
+  |---|---|
+  | nothing | the user's to resize (a size on the decorator is only where it starts) |
+  | a number | fixed at that size |
+  | `None` | always as large as its content |
+
+  ```python
+  draw_editor(text, melty_window=True, min_width=200, min_height=50)                # resizable
+  draw_editor(text, melty_window=True, height=100, min_width=200)                   # 100 high, any width
+  draw_editor(text, melty_window=True, height=None, min_width=200, min_height=50)   # as high as its text
+  ```
+
+  A fixed or wrapping axis is a span whose minimum and maximum are that one
+  size, and nothing else: the collision rules apply to it as to any span at
+  its limit (`WINDOW_COLLISION_COLUMNS.md`). A resize drag along it cannot
+  change the size, so it carries the opposite edge and the window travels.
+  A wrapping window is laid out in its parent's size, so it is never larger
+  than that. `min_width` / `min_height` hold for it too. Passing `left` / `top`
+  still pins the position. (A window that fills, `1e8`, is not built: it is
+  300 by 100 and resizable.)
 - A view cannot be larger than 8192 px on a side. Long content is a scroll
   view with many child views (section 8).
 
@@ -170,6 +240,17 @@ def options(input_value, choices=(), index=None, width=0.0, height=0.0, draw_sta
 - Hover, a held button and the keyboard are not state of yours: `event` holds
   them (`event.is_hovered()`, section 6).
 - A value the caller passes wins over the state on every run it is passed.
+- **`draw_state` reads every parameter**, whoever supplied it:
+  `draw_state.choices` or `draw_state.input_value` gives what the caller
+  passed as readily as what the view keeps. The value is the one parameter a
+  `return` can write; in every other way it is a parameter like the rest.
+- **A passed value is read through, never copied.** `draw_state.input_value`
+  goes to the caller's own value, so the state does not keep a model or a
+  tensor alive, does not save it, and does not fall back to it once the
+  caller passes nothing. It can be read for as long as the view is declared;
+  in an immediate view (`use_cache=False`) only while its body runs, and
+  `AttributeError` otherwise. (A passed keyword argument is still copied into
+  the state and saved, as of 2026-11-17.)
 - **The view's value is state like any other when nothing is passed**: its
   default at first, then what the view wrote. A returned edit is that write,
   so a view can be prototyped with no model at all and given one later:
@@ -186,8 +267,8 @@ def options(input_value, choices=(), index=None, width=0.0, height=0.0, draw_sta
 
   A value annotated with a `DictConversion` class is injected the same way
   when nothing is passed (`def picker(selection: Selection = None)`). An edit
-  to a value the caller passed is never written to the state: the caller owns
-  it. Worked example: [examples/gui_value_name.py](../examples/gui_value_name.py).
+  to a value the caller passed is the caller's to keep: `draw_state` reads it
+  until the caller has answered, and the view does not own or save it. Worked example: [examples/gui_value_name.py](../examples/gui_value_name.py).
 - No ad hoc fields on `draw_state`: only declared parameters.
 - This is state of one view: its size, its scroll, its selection. What the
   app is about (its documents, its layout, its settings) is the app's.

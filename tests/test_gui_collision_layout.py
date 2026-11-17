@@ -784,3 +784,37 @@ def test_a_layout_declared_with_too_little_room_is_solved_like_a_resize(height, 
         assert layouts['outer'].sizes()[1] == sum(layouts['inner'].sizes()) == 240
     finally:
         cache.close()
+
+
+def test_a_window_resizes_only_along_the_axes_its_call_does_not_size():
+    """Nothing passed: the user's to resize (a size on the definition is where it starts). A number
+    on the call pins that axis; None makes it as large as the content. A pinned axis is a span at
+    its minimum and maximum: a drag there moves the opposite edge with it, so the window travels."""
+    cache=RetainedGui(graphics=False);ids={}
+    @cache.gui(width=180,height=120,min_width=80,min_height=50)
+    def window(input_value):ids[input_value]=cache.current
+    @cache.gui(width=900,height=600)
+    def root():
+        window('free',key='free',melty_window=True,initial={'left': 20, 'top': 40})
+        window('high',key='high',melty_window=True,height=100,initial={'left': 320, 'top': 40})
+        window('wide',key='wide',melty_window=True,width=150,initial={'left': 620, 'top': 40})
+        window('wrap',key='wrap',melty_window=True,width=None,height=None,initial={'left': 20, 'top': 320})
+    def drag(name):
+        x,y,w,h=cache.window_rect(ids[name])
+        g=cache.geometry
+        g.pointer((x+w-10,y+h-10),right_pressed=True,right_down=True)
+        g.pointer((x+w+30,y+h+20),right_down=True)
+        cache.flush()
+        g.pointer((x+w+30,y+h+20),right_released=True)
+        cache.flush()
+        after=cache.window_rect(ids[name])
+        return after[2]-w,after[3]-h,after[0]-x,after[1]-y
+    try:
+        root();attach_native(cache,900,600);cache.flush()
+        assert cache.window_rect(ids['high'])[3]==100 and cache.window_rect(ids['wide'])[2]==150
+        assert drag('free')==(40,30,0,0)
+        assert drag('high')==(40,0,0,30)
+        assert drag('wide')==(0,30,40,0)
+        assert drag('wrap')==(0,0,40,30)
+        assert cache.window_rect(ids['high'])[3]==100 and cache.window_rect(ids['wide'])[2]==150
+    finally:cache.close()

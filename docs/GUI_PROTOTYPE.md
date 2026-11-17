@@ -176,7 +176,9 @@ def inspector(input_value, preview=None, selection: Selection = None,
     imgui.text(f'{len(selection.items)} selected')
 ```
 
-Named parameters are mirrored on state when resolved. Arbitrary caller kwargs
+Named parameters are mirrored on state when resolved; the view's value is
+read through to its caller's instead while it is passed
+([below](#the-value-is-the-first-parameter)). Arbitrary caller kwargs
 do not automatically become state fields. `DictConversion` annotations with an
 absent/None default are injected; explicit `inject={'field': factory}` is also
 available. Caller-provided instances are borrowed rather than replacing the
@@ -526,7 +528,16 @@ Nothing passed is `ABSENT` (`inspect.Parameter.empty`), never None. `invoke`
 ([lib.rs](../native/gui_prototype/src/lib.rs)) then resolves the value in the
 loop every parameter resolves in, and a returned `(True, value)` is written as
 `draw_state.<name> = value` would be (`author`). A value the caller passed is
-neither mirrored on the state nor saved. The graph holds no edit for a view
+read through the state and never copied to it: `NativeState.lent` marks its
+slot and `borrowed` finds the value where it lives, on the runtime's stack
+while the view's body runs (its `Frame`), else in the graph's node (`input`,
+[retained.rs](../native/gui_prototype/src/retained.rs), reached through a weak
+pointer), which holds what the caller last passed, or the view's edit until
+the caller has answered it, for as long as the view is declared. The state so
+adds no reference to a passed model or tensor, there is nothing to release
+when a view retires, and what is saved does not change. An immediate view has
+no node: its passed value reads while its body runs and raises
+`AttributeError` otherwise. The graph holds no edit for a view
 that owns its value and has nothing to settle (`commit`,
 [retained.rs](../native/gui_prototype/src/retained.rs)); the view runs once
 more instead, to show it (`_propagate`). Tests:

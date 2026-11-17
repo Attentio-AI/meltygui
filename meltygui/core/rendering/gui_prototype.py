@@ -20,7 +20,7 @@ FILLED = frozenset((
     'width', 'height', 'left', 'top', 'scroll_offset', 'content_offset', 'min_width', 'max_width',
     'min_height', 'max_height', 'draw_state', 'cache', 'event', 'view_events', 'unique', 'depth',
     'key', 'name', 'initial', 'popup', 'melty_window', 'glfw_window', 'scroll', 'tint', 'movable',
-    'resizable', 'return_extras', 'window_pos'))
+    'resizable', 'return_extras', 'window_pos', 'canvas'))
 
 
 _window = ContextVar('prototype_gui_window', default=None)
@@ -65,7 +65,9 @@ def gui(func=None, *, glfw_window=False, **decoration):
     unchanged. Passed nothing, it resolves like every parameter, from the view's
     state (``draw_state.<name> = value``, or a returned edit, which is the same
     write), then the defaults. A first parameter the framework fills (``FILLED``:
-    ``width``, ``draw_state`` ...) is not a value. ``glfw_window=True`` hosts
+    ``width``, ``draw_state`` ...) is not a value. ``draw_state.<name>`` reads
+    every parameter, a passed one included; a passed value is read through to
+    the caller's, never copied to the state or saved. ``glfw_window=True`` hosts
     this function as an OS window; ``@os_window`` is the convenient spelling.
     ``use_cache=False`` draws an immediate host/toolbar body. Other views retain
     their output and execute only when invalidated. No application runtime setup.

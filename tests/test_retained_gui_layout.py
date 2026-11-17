@@ -155,7 +155,7 @@ def test_width_change_rewraps_text_and_moves_cached_sibling(graphics):
     cache = RetainedGui()
     calls, ids = Counter(), {}
 
-    @cache.gui(width=None, height=None)
+    @cache.gui(height=None)
     def paragraph(input_value: str, draw_state=None, cache=None):
         calls['paragraph'] += 1
         ids['paragraph'] = cache.current
@@ -602,5 +602,262 @@ def test_seeded_layout_transitions_match_fresh_render_and_retire_resources(graph
             cache.flush()
             assert {node: cache.graph.info(node)['executions'] for node in cache.graph.nodes()} == calls
             assert cache.gpu.stats() == stats
+    finally:
+        cache.close()
+
+
+def test_automatic_width_ends_at_the_parents_edge_from_a_fixed_left(graphics):
+    """A width nobody gave fills from the view's left edge (the call's, the definition's, else the flow cursor)."""
+    cache = RetainedGui()
+    ids = {}
+
+    @cache.gui(height=10)
+    def fill(input_value: object, cache=None):
+        ids[input_value] = cache.current
+        return False, input_value
+
+    @cache.gui(left=30, height=10)
+    def inset(input_value: object, cache=None):
+        ids[input_value] = cache.current
+        return False, input_value
+
+    @cache.gui(width=100, height=80)
+    def root(input_value: dict, cache=None):
+        ids['root'] = cache.current
+        fill('call', name='call', left=input_value['left'], top=0)
+        fill('flow', name='flow', top=20)
+        inset('definition', top=40)
+        fill('none', name='none', left=140, top=60)
+        return False, input_value
+
+    model = {'left': 20}
+    rect = lambda name: cache.graph.info(ids[name])['rect']
+    try:
+        root(model)
+        cache.flush()
+        assert rect('call') == (20., 0., 80., 10.)
+        assert rect('flow')[0] + rect('flow')[2] == 100.
+        assert rect('definition') == (30., 40., 70., 10.)
+        assert rect('none') == (140., 60., 1., 10.)        # no room left: the narrowest view, not an error
+        model['left'] = 45
+        cache.invalidate_id(ids['root'])
+        root(model)
+        cache.flush()
+        assert rect('call') == (45., 0., 55., 10.)
+    finally:
+        cache.close()
+
+
+def test_a_view_given_no_size_fills_its_parent_and_follows_it(graphics):
+    """No width or height on the call or the definition: the view runs from its left / top edge to
+    the parent's right / bottom one, and is resolved again when the parent's size changes."""
+    cache = RetainedGui()
+    ids, seen = {}, {}
+
+    @cache.gui
+    def fill(input_value: object, width=0., height=0., cache=None):
+        ids[input_value], seen[input_value] = cache.current, (width, height)
+        return False, input_value
+
+    @cache.gui(height=None)
+    def content(input_value: object, cache=None):
+        ids[input_value] = cache.current
+        imgui.dummy(10, 17)
+        return False, input_value
+
+    @cache.gui(width=40, height=None)
+    def measured(input_value: object, cache=None):
+        ids[input_value] = cache.current
+        fill('inner')
+        imgui.dummy(40, 23)
+        return False, input_value
+
+    @cache.gui(width=120, height=90)
+    def root(input_value: object):
+        fill('placed', name='placed', left=20, top=30)
+        content('content', left=0, top=0)       # an explicit None is still the content's height
+        measured('measured', left=0, top=40)
+        fill('window', name='window', melty_window=True, initial={'left': 5, 'top': 5})
+        return False, input_value
+
+    rect = lambda name: cache.graph.info(ids[name])['rect']
+    try:
+        root(None)
+        cache.flush()
+        assert rect('placed') == (20., 30., 100., 60.) and seen['placed'] == (100., 60.)
+        assert rect('content')[2:] == (120., 17.)
+        # In a parent that is as high as its content the view is too: here it draws nothing.
+        assert rect('inner')[2:] == (40., 0.) and 23. <= rect('measured')[3] < 40.
+        assert rect('window')[2:] == (300., 100.)       # a window has no parent to fill (UNSIZED)
+        root(None, width=200, height=50)
+        cache.flush()
+        assert rect('placed') == (20., 30., 180., 20.) and seen['placed'] == (180., 20.)
+        root(None, width=200, height=10)
+        cache.flush()
+        assert rect('placed') == (20., 30., 180., 0.)   # no room left: no height, not an error
+    finally:
+        cache.close()
+
+
+def test_a_root_without_a_host_has_the_unsized_size():
+    cache = RetainedGui(graphics=False)
+    ids = {}
+
+    @cache.gui
+    def root(input_value: object, cache=None):
+        ids['root'] = cache.current
+        return False, input_value
+
+    try:
+        with cache.frame():
+            root(None)
+        assert cache.graph.info(ids['root'])['rect'][2:] == (300., 100.)
+    finally:
+        cache.close()
+
+
+def test_none_wraps_the_content_and_a_very_large_number_fills_on_both_axes(graphics):
+    """`None` (meltygui.WRAP): as large as what moved the cursor, at most the room the parent has.
+    Any very large number (meltygui.FILL, 1e8): the parent's room, also over a size the definition fixes."""
+    import meltygui
+    assert (meltygui.FILL, meltygui.WRAP) == (1e8, None)
+    cache = RetainedGui()
+    ids, seen, model = {}, {}, {'wide': 35.}
+
+    @cache.gui(width=None, height=None)
+    def chip(input_value: object, width=0., height=0., cache=None):
+        ids[input_value], seen[input_value] = cache.current, (width, height)
+        imgui.dummy(model['wide'], 12)
+        return False, input_value
+
+    @cache.gui(width=40, height=10)
+    def fixed(input_value: object, width=0., height=0., cache=None):
+        ids[input_value], seen[input_value] = cache.current, (width, height)
+        return False, input_value
+
+    @cache.gui(width=None, height=20)
+    def strip(input_value: object, cache=None):
+        ids[input_value] = cache.current
+        fixed('inner', name='inner', width=meltygui.FILL, top=0)    # nothing to fill across: wraps
+        imgui.dummy(25, 5)
+        return False, input_value
+
+    @cache.gui(width=120, height=90)
+    def root(input_value: object, cache=None):
+        ids['root'] = cache.current
+        chip('chip', left=10, top=0)
+        fixed('filled', name='filled', left=10, top=30, width=1e8, height=2e6)
+        fixed('wrapped', name='wrapped', left=10, top=45, width=meltygui.WRAP, height=None)
+        strip('strip', left=0, top=60)
+        return False, input_value
+
+    rect = lambda name: cache.graph.info(ids[name])['rect']
+    try:
+        root(None)
+        cache.flush()
+        # The body is told the room it may take: its width and height are always numbers.
+        assert rect('chip') == (10., 0., 35., 12.) and seen['chip'] == (110., 90.)
+        assert rect('filled') == (10., 30., 110., 60.) and seen['filled'] == (110., 60.)
+        assert rect('wrapped')[2:] == (1., 0.)          # it draws nothing
+        assert rect('strip')[2] == 25. and rect('inner')[2] == 1.
+        model['wide'] = 400.                            # wider than the room: the room
+        cache.invalidate_id(ids['chip'])
+        cache.flush()
+        assert rect('chip')[2:] == (110., 12.)
+        model['wide'] = 20.
+        root(None, width=60)                            # the parent narrows: both follow
+        cache.flush()
+        cache.invalidate_id(ids['chip'])
+        cache.flush()
+        assert rect('chip')[2] == 20. and rect('filled')[2] == 50.
+    finally:
+        cache.close()
+
+
+def test_a_body_is_given_numbers_and_canvas_holds_what_was_passed(graphics):
+    """`width` and `height` are the space to draw in, whatever was asked; `canvas` is what was asked.
+    A wrapped height is given the parent's room, or UNBOUNDED where nothing bounds it."""
+    import meltygui
+    from meltygui.core.rendering.gui_size import UNBOUNDED
+    cache = RetainedGui()
+    ids, seen = {}, {}
+
+    @cache.gui
+    def view(input_value: object, width=0., height=0., canvas=None, cache=None):
+        ids[input_value], seen[input_value] = cache.current, (width, height, canvas.width, canvas.height)
+        imgui.dummy(10, 9000 if input_value == 'tall' else 15)
+        return False, input_value
+
+    @cache.gui(width=80, height=None)
+    def wrapping(input_value: object, cache=None):
+        view('nested', height=None)
+        return False, input_value
+
+    @cache.gui(width=80, height=50, scroll=True)
+    def scrolling(input_value: object, cache=None):
+        view('row', height=None, top=0)
+        return False, input_value
+
+    @cache.gui(width=200, height=120)
+    def root(input_value: object, sized=30):
+        view('fill', name='fill', left=0, top=100)
+        view('wrap', name='wrap', left=0, top=20, width=None, height=None)
+        view('sized', name='sized', left=100, top=0, width=sized, height=20)
+        view('tall', name='tall', left=150, top=0, width=10, height=None, max_height=40)
+        wrapping(None, left=0, top=60)
+        scrolling(None, left=100, top=60)
+        return False, input_value
+
+    try:
+        root(None)
+        cache.flush()
+        assert seen['fill'] == (200., 20., meltygui.FILL, meltygui.FILL)
+        assert seen['wrap'] == (200., 100., None, None)
+        assert seen['sized'] == (30., 20., 30, 20)
+        assert seen['nested'][1] == UNBOUNDED and seen['row'][1] == UNBOUNDED
+        # Content taller than a view can be is cut at max_height instead of being refused.
+        assert cache.graph.info(ids['tall'])['rect'][3] == 40.
+        root(None, sized=45)
+        cache.flush()
+        assert seen['sized'] == (45., 20., 45, 20)
+        with pytest.raises(AttributeError):
+            seen_canvas = meltygui.core.rendering.gui_size.canvas(1, 2)
+            seen_canvas.width = 0
+    finally:
+        cache.close()
+
+
+def test_a_wrapping_window_keeps_measuring_after_the_layout_places_it(graphics):
+    """A move or a resize drag allocates the window's rectangle (`graph.allocate`). The axes that are
+    as large as the content stay so: the next run of the view alone (typing in it) resizes it."""
+    cache = RetainedGui()
+    size, ids = [60., 30.], {}
+
+    @cache.gui(width=None, height=None)
+    def window(input_value: object, cache=None):
+        ids['window'] = cache.current
+        imgui.dummy(*size)
+        return False, input_value
+
+    @cache.gui(width=400, height=300)
+    def root(input_value: object):
+        window(None, melty_window=True, initial={'left': 20, 'top': 40})
+        return False, input_value
+
+    rect = lambda: cache.graph.info(ids['window'])['rect']
+    try:
+        root(None)
+        cache.flush()
+        assert rect()[2:] == (60., 30.)
+        cache.graph.allocate(ids['window'], (90., 70., 60., 30.))     # the user moved it
+        cache.flush()
+        size[:] = 85., 55.
+        cache.invalidate_id(ids['window'])      # only the window runs: its owner is not declared again
+        cache.flush()
+        assert rect() == (90., 70., 85., 55.)
+        size[:] = 40., 20.
+        cache.invalidate_id(ids['window'])
+        cache.flush()
+        assert rect() == (90., 70., 40., 20.)
     finally:
         cache.close()

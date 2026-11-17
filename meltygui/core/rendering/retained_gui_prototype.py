@@ -15,6 +15,7 @@ import math
 import inspect
 import time
 
+from meltygui.core.rendering.gui_size import FILL, FILL_FROM, UNBOUNDED, canvas as _canvas
 from meltygui.core.rendering.gui_prototype import (
     _bind_native, _new_native, _renderer_name, _check_position_arguments, ABSENT, positional, bind_positional)
 from meltygui.core.rendering.gui_imgui_input import ImGuiInput
@@ -54,6 +55,13 @@ INFINITE = float('inf')
 PLACED = ('left', 'top', 'width', 'height', 'scroll_offset', 'content_offset')
 SIZED = ('left', 'top', 'width', 'height')      # of those, the ones a caller leaves to the view with None
 NOTHING = {}
+# Lever: the size of a filling view that has no parent to fill: a floating window or popup, a root
+# without a host. (FILL and WRAP, what a size can be besides pixels: gui_size.py.)
+UNSIZED = (300., 100.)
+
+
+def _fills(size):
+    return size is not None and FILL_FROM <= size < INFINITE      # infinity is a caller's bug, not a size
 # Levers of the double render mark (`RetainedGui._doubles`): how long it stays after the view last ran
 # twice in a frame (seconds), its colours (r, g, b, a for pack_color), the outline's thickness, and the tag's
 # text, text scale and padding (px).
@@ -370,7 +378,7 @@ class RetainedGui:
                 self.due.clear()
             self._retire()
 
-    def gui(self, func=None, *, left=None, top=None, width=300, height=100, min_height=0, max_height=8192,
+    def gui(self, func=None, *, left=None, top=None, width=FILL, height=FILL, min_height=0, max_height=8192,
             inject=None, events=(), state_id=None, no_save=(), scroll=False, place=None, listen=None,
             cursor=None, **decoration):
         _check_position_arguments(decoration, no_save)
@@ -468,6 +476,9 @@ class RetainedGui:
             kind = type(outcome)
             if kind is tuple:
                 return outcome
+            if kind is list and len(outcome) == 2 and (_fills(kwargs.get('width')) or _fills(kwargs.get('height'))):
+                # A number replaced by FILL is no placement: the size is resolved from the parent.
+                outcome, kind = outcome[0], int
             portal = popup = False
             if kind is list and len(outcome) == 4:
                 # Declared from the remembered resolution; continue below with
@@ -483,17 +494,21 @@ class RetainedGui:
                 identity_handle, resolved = outcome
                 binding = bindings[identity_handle]
                 state = binding.state
-                arguments, _, _, _, _, auto_height, scrollable, extras, caller_keys = resolved
+                # (A size the call does not pass stands as it was resolved: one that fills is never placed again.)
+                arguments, _, _, w, h, auto_height, scrollable, extras, caller_keys = resolved
                 caller = {name: kwargs[name] for name in PLACED
                           if name in kwargs and (kwargs[name] is not None or name not in SIZED)}
-                w, h = _sized(func, state, kwargs.get('width', width), kwargs.get('height', height), auto_height)
+                w, h = _sized(func, state, kwargs.get('width', w), kwargs.get('height', h), auto_height)
                 if 'width' in caller: caller['width'] = w
                 if 'height' in caller: caller['height'] = h
                 x, y, w, h = _settle(func, state, caller, kwargs.get('initial', decoration.get('initial', NOTHING)),
                                      0. if left is None else left, 0. if top is None else top, w, h,
                                      arguments['min_height'], arguments['max_height'])
                 arguments = {**arguments, **caller, 'width': w, 'height': None if auto_height else h}
-                declared.remember(identity_handle, kwargs, generation[0], None, None, None,
+                if 'canvas' in arguments:
+                    asked = arguments['canvas']
+                    arguments['canvas'] = _canvas(kwargs.get('width', asked.width), kwargs.get('height', asked.height))
+                declared.remember(identity_handle, kwargs, generation[0], None, None, None, None,
                                   (arguments, x, y, w, h, auto_height, scrollable, extras, caller_keys), state)
                 node, flags = graph.declare_view(parent, 0, identity_handle, input_value, arguments,
                                                  (x, y, w, -1. if auto_height else h), False, state, scrollable)
@@ -535,6 +550,7 @@ class RetainedGui:
                 initial = kwargs.pop('initial', decoration.get('initial', {}))
                 extras = kwargs.pop('return_extras', False)
                 w, h = kwargs.pop('width', width), kwargs.pop('height', height)
+                asked = w, h
                 minimum = kwargs.pop('min_height', min_height)
                 maximum = kwargs.pop('max_height', max_height)
                 if (not math.isfinite(minimum) or not math.isfinite(maximum)
@@ -555,16 +571,50 @@ class RetainedGui:
                     ax, ay, w, h = allocation
                     px, py = self._position(parent)
                     x, y = ax-px, ay-py
-                automatic_width = None
-                if w is None:
-                    if parent:
-                        w = graph.constraints(parent)[0] - x
-                    elif graphics:
-                        w = imgui.get_content_region_available()[0]
+                automatic_width = automatic_height = None
+                # The room a wrapping view is laid out in: its body's `width` / `height`.
+                wrap_width, wrap_height = None, UNBOUNDED
+                hosted = not portal and (parent or graphics)
+                if not hosted:
+                    # Nothing to fill: a window, or a root without a host. One that wraps is laid
+                    # out in what its parent has.
+                    if _fills(w): w = UNSIZED[0]
+                    if _fills(h): h = UNSIZED[1]
+                    within = graph.constraints(parent) if parent else (UNSIZED[0], -1.)
+                    if w is None: wrap_width = min(max(within[0], MIN_WIDTH), 8192.)
+                    if h is None and within[1] >= 0: wrap_height = within[1]
+                # FILL and WRAP are both resolved from the room the parent has: from the view's left /
+                # top edge to the parent's right / bottom one. The edge is the one the call or the
+                # definition fixes, else the flow cursor. `automatic_*` is what the native memo
+                # compares (declare.rs): the room right of / below the cursor. In a parent that is
+                # as large as its content a filling view has nothing to fill: it wraps too.
+                if hosted and (w is None or _fills(w)):
+                    room = graph.constraints(parent)[0] if parent else imgui.get_content_region_available()[0] + x
+                    automatic_width = room - x
+                    edge = kwargs.get('left')
+                    if edge is None: edge = left
+                    span = min(max(room - (x if edge is None else edge), MIN_WIDTH), 8192.)
+                    if w is None or (parent and self.invocations[parent][1].get('width', 0.) is None):
+                        wrap_width = span
                     else:
-                        raise ValueError('width=None requires a parent or graphics host')
-                    automatic_width = w
+                        w = span
+                if hosted and (h is None or _fills(h)):
+                    room = graph.constraints(parent)[1] if parent else imgui.get_content_region_available()[1] + y
+                    edge = kwargs.get('top')
+                    if edge is None: edge = top
+                    span = max(room - (y if edge is None else edge), 0.)
+                    if h is not None:
+                        automatic_height = room - y
+                        h = None if parent and room < 0 else span
+                    elif not (parent and (room < 0 or graph.is_scrollable(parent))):
+                        # Wrapping in a parent with a height of its own: that room. In a scroll
+                        # view, or a parent that wraps too, nothing bounds it (UNBOUNDED).
+                        automatic_height = room - y
+                        wrap_height = span
                 auto_height = h is None
+                if wrap_width is not None:
+                    # Until it is measured (and where it is not: no host), the width measured last.
+                    w = min(state.get('width', 0.) or wrap_width, wrap_width)
                 w, h = _sized(func, state, w, h, auto_height)
                 caller = {k: v for k, v in caller.items() if not (k in SIZED and v is None)}
                 # The state holds the size the view is drawn at, not an unusable one the caller computed.
@@ -579,6 +629,23 @@ class RetainedGui:
                                      w, h, minimum, maximum, 28. if portal and not popup else 0.)
                 arguments = {**decoration, **kwargs, 'width': w, 'height': None if auto_height else h,
                              'min_height': minimum, 'max_height': maximum}
+                if wrap_width is not None:
+                    # Read by the executor (executor.rs): the body is laid out in `wrap_width` and the
+                    # view is then as wide as what it drew.
+                    arguments['width'], arguments['wrap_width'] = None, wrap_width
+                if auto_height:
+                    arguments['wrap_height'] = wrap_height
+                if 'canvas' in parameters:
+                    arguments['canvas'] = _canvas(*asked)
+                if portal and not popup:
+                    # Read by GuiGeometry.pinned: a window is the user's to resize along an axis the
+                    # call does not size (a size on the definition is where it starts). A number on
+                    # the call pins it there; None, from either, makes it as large as its content.
+                    for name, size, held in (('width', asked[0], w), ('height', asked[1], h)):
+                        if size is None:
+                            arguments['fixed_' + name] = None
+                        elif name in raw and not _fills(size):
+                            arguments['fixed_' + name] = held
                 if popup:
                     # No window gestures (gui_layout_prototype.py reads these): a popup stays where it opened.
                     arguments.setdefault('movable', False)
@@ -590,14 +657,14 @@ class RetainedGui:
                     flow_x = flow_y = None
                 else:
                     if (left is not None or 'left' in caller) and automatic_width is None: flow_x = None
-                    if top is not None or 'top' in caller: flow_y = None
+                    if (top is not None or 'top' in caller) and automatic_height is None: flow_y = None
                 # Layout cells and portals re-resolve every declaration: their
                 # rectangle comes from the constraint solver, not these inputs.
                 if portal or allocation is not None:
                     declared.forget(identity_handle)
                 else:
                     # Also records the state geometry this call resolved to.
-                    declared.remember(identity_handle, raw, generation[0], flow_x, flow_y, automatic_width,
+                    declared.remember(identity_handle, raw, generation[0], flow_x, flow_y, automatic_width, automatic_height,
                                       (arguments, x, y, w, h, auto_height, scrollable, extras, caller_keys), state)
                 node, flags = graph.declare_view(parent, 0, identity_handle, input_value, arguments,
                                                  (x, y, w, -1. if auto_height else h), portal, state, scrollable)
@@ -810,6 +877,7 @@ class RetainedGui:
     def _state_replaced(self, node, state):
         binding = self.declarations[node]
         binding.state = self.states[node] = state
+        self.graph.lend(node, state)
         # The remembered call was resolved against the previous state object.
         self.declared.forget(binding.handle)
         self.associate(state, node)

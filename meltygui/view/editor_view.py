@@ -961,7 +961,7 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
                 first_line=1, file_tint=None, folds=None, search='', errors=None, imports=None, tints=None, live=None,
                 breakpoints=None, paused=None, marks=None, path=None, complete=True,
                 completion_source=None, ghost='', on_submit=None, roster=None, on_open=None, focus=False,
-                width=None, height=None, cache=None, event=None):
+                width=None, height=None, canvas=None, cache=None, event=None):
     """Edit `input_value`; returns `(changed, text)`. While the text is
     still loading pass `LOADING` (state/editor_state.py): the rows the last
     session showed are painted from the state's snapshot, read only.
@@ -1037,6 +1037,9 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
     ed.land()
     scroll_y = ed.pane.scroll_offset[1] if ed.pane is not None else 0.
     ed.scroll_to = None
+    if canvas.height is None:
+        # Wrapped (`height=None`): as high as the text, up to the room there is; past that it scrolls.
+        height = min(height, max(ed.rows.count, 1) * ed.lh)
     view = height
     editable = editable and not ed.standin
     desk = keys.Desk(editable, single_line, on_submit, imgui.set_clipboard_text, imgui.get_clipboard_text,

@@ -235,7 +235,7 @@ def branch(input_value: bool, label='', height=0.0, event=None):
 
 
 @is_default_for(Keyed)
-@gui(scroll=True, width=420, height=480)
+@gui(scroll=True)
 def draw_collection(input_value: object, tree: Tree = None, expand=1, editable=True, width=0.0, height=0.0,
                     scroll_offset=(0.0, 0.0), event=None):
     """Draw and edit a dict, or any value that is read by keys (core/rendering/keyed.py). `expand` is

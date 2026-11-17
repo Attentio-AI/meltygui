@@ -26,7 +26,7 @@ def mark(demo, name, cache):
     demo.ids[name] = cache.current
 
 
-@gui(width=None, height=None)
+@gui(height=None)
 def changing_content(input_value: dict, draw_state=None, cache=None, demo=None, label=''):
     mark(demo, label + '/content', cache)
     # Raw drawing reserves its layout extent with dummy, just like ImGui items.
@@ -59,7 +59,7 @@ def owned_window(input_value: dict, cache=None, demo=None, label=''):
     return False, input_value
 
 
-@gui(width=None, height=None)
+@gui(height=None)
 def layout_parent(input_value: object, draw_state=None, cache=None, demo=None, label=''):
     mark(demo, label + '/parent', cache)
     if demo.show:

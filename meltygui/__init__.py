@@ -31,6 +31,8 @@ from meltygui.core.runtime.app import persisted
 from meltygui.core.runtime.app import after_first_frame
 from meltygui.core.runtime.app import checkpoint
 from meltygui.core.runtime.app_save import save
+from meltygui.core.rendering.gui_size import FILL
+from meltygui.core.rendering.gui_size import WRAP
 
 # Non-render helpers keep explicit locations; @render_func views are discovered.
 _LAZY_EXPORTS = {
@@ -91,7 +93,7 @@ def __getattr__(name):
 _PUBLIC_NAMES = [
     'Style', 'boot', 'embedded_imports', 'glfw_window', 'run', 'pressed',
     'content_size', 'mark', 'persisted', 'save', 'after_first_frame', 'checkpoint',
-    'toggles', 'window_api', 'imgui', 'rust',
+    'toggles', 'window_api', 'imgui', 'rust', 'FILL', 'WRAP',
 ]
 
 

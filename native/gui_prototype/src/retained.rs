@@ -4,7 +4,9 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyString, PyTuple};
+use std::cell::RefCell;
 use std::collections::BTreeSet;
+use std::rc::Rc;
 use crate::hash::{Map as HashMap, Set as HashSet};
 use crate::geometry::{intersects, Geometry, POSITION, SIZE, SCROLL, CONTENT};
 use crate::{absent, NativeState, Value};
@@ -20,7 +22,10 @@ struct Node {
     parent: u64,
     children: Vec<u64>,
     declared: Option<Vec<u64>>,
-    input: Py<PyAny>,
+    // What the body runs with: what the caller last passed, or the view's own edit until the
+    // caller has answered it. Shared, so the view's state reads a passed value here instead of
+    // keeping a reference of its own (`NativeState::borrowed`); it ends with the node.
+    input: Rc<RefCell<Py<PyAny>>>,
     caller_input: Py<PyAny>,
     kwargs: Py<PyDict>,
     value: Py<PyAny>,
@@ -265,6 +270,7 @@ impl RetainedGraph {
             let id = self.serial;
             self.identities.bind(py).set_item(&identity, id)?;
             let state=match state {Some(s)=>s,None=>Py::new(py,NativeState::py_new())?};
+            let lent = Rc::new(RefCell::new(input.clone_ref(py)));
             {
                 let mut state=state.borrow_mut(py);
                 if !supplied_state {
@@ -273,6 +279,7 @@ impl RetainedGraph {
                 }
                 if state.lookup("scroll_offset").is_none() {state.put("scroll_offset",Value::Point(0.,0.));}
                 if state.lookup("content_offset").is_none() {state.put("content_offset",Value::Point(0.,if portal {28.}else{0.}));}
+                state.record = Rc::downgrade(&lent);
             }
             self.geometry.attach(py,id,parent,state);
             self.dirty_set.insert(id);
@@ -285,7 +292,7 @@ impl RetainedGraph {
                     parent,
                     children: vec![],
                     declared: None,
-                    input: input.clone_ref(py),
+                    input: lent,
                     caller_input: input.clone_ref(py),
                     kwargs: kwargs.clone_ref(py),
                     // Never handed to a caller: a view that was passed nothing returns None until it ran.
@@ -350,7 +357,8 @@ impl RetainedGraph {
                 self.settling.insert(id);
             }
         } else if !same_argument(input.bind(py), node.caller_input.bind(py))? {
-            node.input = input.clone_ref(py);
+            // (`replace`: the value let go of is dropped once the cell is free again.)
+            drop(node.input.replace(input.clone_ref(py)));
             node.caller_input = input;
             (node.settle, node.verify) = (0, false);
         } else if node.verify {
@@ -359,8 +367,9 @@ impl RetainedGraph {
             // pixel-only redraws. This declaration was asked for after them
             // (`settle`): what the caller passes now is the value.
             node.verify = false;
-            if !same_argument(node.input.bind(py), input.bind(py))? {
-                node.input = input;
+            let shown = node.input.borrow().clone_ref(py);
+            if !same_argument(shown.bind(py), input.bind(py))? {
+                drop(node.input.replace(input));
                 node.dirty = true;self.dirty_set.insert(id);if !in_scroll {self.unclipped_dirty.insert(id);}
             }
         }
@@ -406,7 +415,7 @@ impl RetainedGraph {
     pub(crate) fn begin_execution(&mut self, py: Python<'_>, id: u64)
         -> PyResult<(Py<PyAny>, Py<PyDict>, (f64,f64,f64,f64), (f64,f64), u64, bool, bool, (f64,f64))> {
         let node = self.nodes.get(&id).ok_or_else(|| PyRuntimeError::new_err("retired view"))?;
-        let (input, args) = (node.input.clone_ref(py), node.kwargs.clone_ref(py));
+        let (input, args) = (node.input.borrow().clone_ref(py), node.kwargs.clone_ref(py));
         let rect = self.rect(py, id);
         self.begin(py, id)?;
         let origin = self.geometry.origin(py, id);
@@ -503,7 +512,7 @@ impl RetainedGraph {
         if n.auto_height {args.set_item(intern!(py,"height"),py.None())?;} else {args.set_item(intern!(py,"height"),r.3)?;}
         args.set_item(intern!(py,"left"),r.0)?;args.set_item(intern!(py,"top"),r.1)?;
         args.set_item(intern!(py,"scroll_offset"),self.geometry.scroll(py,id))?;
-        Ok((n.input.clone_ref(py),args.unbind()))
+        Ok((n.input.borrow().clone_ref(py),args.unbind()))
     }
     fn begin(&mut self, py:Python<'_>, id: u64) -> PyResult<()> {
         let n = self
@@ -565,7 +574,7 @@ impl RetainedGraph {
         // A view that was passed nothing owns its value and its state holds the edit: there is no
         // caller's value to protect the edit from, and none to follow.
         if changed && !n.caller_input.bind(py).is(absent(py)) {
-            n.input = n.value.clone_ref(py);
+            drop(n.input.replace(n.value.clone_ref(py)));
             (n.settle, n.verify) = (SETTLE, false);
             self.settling.insert(id);
         }
@@ -628,7 +637,7 @@ impl RetainedGraph {
             node.settle = node.settle.saturating_sub(1);
             if node.settle > 0 {
                 self.settling.insert(id);
-            } else if !same_argument(node.input.bind(py), node.caller_input.bind(py))? {
+            } else if !same_argument(node.input.borrow().clone_ref(py).bind(py), node.caller_input.bind(py))? {
                 node.verify = true;
                 asked = true;
                 let parent = node.parent;
@@ -643,6 +652,11 @@ impl RetainedGraph {
     fn settle_frames() -> u8 { SETTLE }
     fn in_scroll(&self, id:u64)->bool {self.nodes.get(&id).is_some_and(|n|n.in_scroll)}
     pub(crate) fn invalidate_node(&mut self, id: u64) { self.mark(id); }
+    /// The view runs with another state object than the one it was declared with: that one reads
+    /// a passed value from this node too.
+    fn lend(&self, py: Python<'_>, id: u64, state: Py<NativeState>) {
+        if let Some(n) = self.nodes.get(&id) { state.borrow_mut(py).record = Rc::downgrade(&n.input); }
+    }
     /// Make a node caller-bound: flush never runs it on its own (its body
     /// needs state only its caller sets up). It runs when its caller declares
     /// it dirty; the graph's own invalidations are reported by take_woken.
@@ -797,12 +811,17 @@ impl RetainedGraph {
         if ![rect.0,rect.1,rect.2,rect.3].iter().all(|v|v.is_finite()) || rect.2<=0. || rect.3<0. {return Err(PyRuntimeError::new_err("invalid layout allocation"));}
         if !self.nodes.contains_key(&id) {return Err(PyRuntimeError::new_err("retired layout child"));}
         if self.geometry.rect(py,id)==rect {return Ok(false);}
+        // An axis that is as large as the view's content is not the layout's to set: a window that
+        // wraps keeps measuring after it was moved (its place is allocated, its size is not).
+        let node=&self.nodes[&id];
+        let wraps=(node.kwargs.bind(py).get_item(intern!(py,"width"))?.is_some_and(|width|width.is_none()),node.auto_height);
         let s=self.geometry.state(py,id);let mut s=s.borrow_mut(py);
-        for (name,value) in [("left",Value::Float(rect.0)),("top",Value::Float(rect.1)),("width",Value::Float(rect.2)),("height",Value::Float(rect.3))] {
+        for (name,value,wrapped) in [("left",Value::Float(rect.0),false),("top",Value::Float(rect.1),false),
+                                     ("width",Value::Float(rect.2),wraps.0),("height",Value::Float(rect.3),wraps.1)] {
+            if wrapped {continue;}
             let python=value.to_py(py);
             s.__setattr__(name,python.bind(py))?;
         }
-        self.nodes.get_mut(&id).unwrap().auto_height=false;
         drop(s);self.sync(py);Ok(true)
     }
     fn raise_window(&mut self, id: u64) {
@@ -900,7 +919,7 @@ impl RetainedGraph {
         for (id,n) in &self.nodes {
             visit.call(self.geometry.state_ref(*id))?;
             visit.call(&n.identity)?;
-            visit.call(&n.input)?;
+            if let Ok(input) = n.input.try_borrow() { visit.call(&*input)?; }
             visit.call(&n.caller_input)?;
             visit.call(&n.kwargs)?;
             visit.call(&n.value)?;

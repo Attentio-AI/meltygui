@@ -120,11 +120,26 @@ impl Executor {
         let (input, arguments, old_rect, mut local, parent, portal, auto_height, scroll) =
             graph.borrow_mut().begin_execution(py, node)?;
         let arguments = arguments.into_bound(py);
-        let w = old_rect.2;
+        // A view as wide as its content (`width` None): laid out in the room it may take
+        // (`wrap_width`, from the bridge), then as wide as what it drew.
+        let wrap_width: Option<f64> = match arguments.get_item(intern!(py, "width"))? {
+            Some(width) if width.is_none() => match arguments.get_item(intern!(py, "wrap_width"))? {
+                Some(room) => Some(room.extract()?),
+                None => None,
+            },
+            _ => None,
+        };
+        let mut w = wrap_width.unwrap_or(old_rect.2);
         let requested_h = if auto_height { -1. } else { old_rect.3 };
         // Measure without the old texture's clip truncating newly grown content.
         // This is a logical capture viewport, not an 8192px texture allocation.
         let h = if auto_height { 8192. } else { requested_h.max(1.) };
+        // What the body is told it has: its rectangle, or the room a wrapping axis may take
+        // (`wrap_height`: the parent's, or the tallest a view can be where nothing bounds it).
+        let wrap_height: f64 = if !auto_height { old_rect.3 } else {
+            match arguments.get_item(intern!(py, "wrap_height"))? { Some(room) => room.extract()?, None => 8192. }
+        };
+        let room = (old_rect.0, old_rect.1, w, wrap_height);
         // Layout transactions exist once any row, column or window was
         // declared; until then an owner opens one lazily on first use.
         if layout()? && owner.call_method1(intern!(py, "_layout_begin"), (node,))?.is_truthy()? {
@@ -162,7 +177,7 @@ impl Executor {
             progress.began = Some(scope);
         }
         let body = record.renderer.borrow(py).invoke(py, Some(input.clone_ref(py)), Some(&arguments), Some(Capture {
-            unique: record.unique, explicit: record.caller_keys.bind(py), rect: old_rect, auto_height, scroll,
+            unique: record.unique, explicit: record.caller_keys.bind(py), rect: room, auto_height, scroll,
             cache: owner, events: events.as_any(), event, node, fused: shared.graphics,
         }));
         let result = match body {
@@ -212,6 +227,18 @@ impl Executor {
             };
             buffers = listed.extract()?;
             content_height = Some(measured_h);
+            if let Some(room) = wrap_width {
+                w = measured_w.clamp(1., room.max(1.));
+                // A window's smallest and largest width hold for one that wraps too.
+                for (name, least) in [(intern!(py, "min_width"), true), (intern!(py, "max_width"), false)] {
+                    if let Some(bound) = arguments.get_item(name)? {
+                        let bound: f64 = bound.extract()?;
+                        w = if least { w.max(bound) } else { w.min(bound.max(1.)) };
+                    }
+                }
+            }
+        } else if wrap_width.is_some() {
+            w = old_rect.2;
         }
         // A declaration has state before its first execution, including culled
         // views. Register that first alias before skipping repeats.
@@ -226,15 +253,16 @@ impl Executor {
                 None => state.borrow().at(SLOT_HEIGHT).and_then(Value::number).unwrap_or(0.),
             }
         };
-        if !(0.0..=8192.0).contains(&measured_h) {
-            return Err(PyValueError::new_err("measured cache height must be 0..8192 pixels"));
-        }
         let bound = |name: &Bound<'py, pyo3::types::PyString>| -> PyResult<f64> {
             arguments.get_item(name)?.ok_or_else(|| PyKeyError::new_err(name.clone().unbind()))?.extract()
         };
         let (minimum, maximum) = (bound(intern!(py, "min_height"))?, bound(intern!(py, "max_height"))?);
         if measured_h < minimum { measured_h = minimum; }
         if measured_h > maximum { measured_h = maximum; }
+        // After the bounds: content taller than a view can be is cut at `max_height`, not refused.
+        if !(0.0..=8192.0).contains(&measured_h) {
+            return Err(PyValueError::new_err("measured cache height must be 0..8192 pixels"));
+        }
         // Graph measurement writes resolved size without authoring an override.
         let background = if tinted || arguments.contains(intern!(py, "tint"))? {
             Some(owner.call_method1(intern!(py, "_background"), (&state, &arguments))?)

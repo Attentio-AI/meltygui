@@ -40,6 +40,8 @@ from meltygui.core.runtime.app import persisted as persisted
 from meltygui.core.runtime.app import after_first_frame as after_first_frame
 from meltygui.core.runtime.app import checkpoint as checkpoint
 from meltygui.core.runtime.app_save import save as save
+from meltygui.core.rendering.gui_size import FILL as FILL
+from meltygui.core.rendering.gui_size import WRAP as WRAP
 from meltygui.core.rendering.gui_layout_prototype import columns as columns
 from meltygui.core.rendering.gui_layout_prototype import rows as rows
 from meltygui.core.rendering.gui_prototype import gui as gui

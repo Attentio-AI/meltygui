@@ -235,16 +235,39 @@ class GuiGeometry:
         self.serial += 1
         return self.serial
 
-    def window(self,node):
-        self._open_transactions()
+    def pinned(self,node,axis):
+        """Whether a window's size along `axis` is not the user's to change: the call or the
+        definition gave it (`fixed_width` / `fixed_height` from RetainedGui.gui: a number of
+        pixels, or None for a window as large as its content). Such an axis is a span whose
+        minimum and maximum are that size (`span`), nothing more: a drag on it pushes or pulls
+        the opposite edge, as at any minimum or maximum (docs/WINDOW_COLLISION_COLUMNS.md)."""
+        return ('fixed_width','fixed_height')[axis] in self.cache.invocations[node][1]
+
+    def span(self,node):
+        """The sizes a window's frame may take, per axis: its minimum to its maximum, or the one
+        size of a pinned axis (the size its content measured where it wraps)."""
         pairs=self.bounds(node)
         serial=self.frames[node][0]
         args=self.cache.invocations[node][1]
+        size=self.cache.graph.rect(node)[2:]
         for axis,(graph,(near,far)) in enumerate(zip(self.axes,pairs)):
             # A window is never under 1x1, whatever minimum it declares.
             lo=max(1.,args.get('min_width' if axis==0 else 'min_height',0.))
             hi=args.get('max_width' if axis==0 else 'max_height',8192.)
-            graph.replace_cells(serial,[(near,far,float(lo),float(hi))])
+            if self.pinned(node,axis):
+                fixed=args[('fixed_width','fixed_height')[axis]]
+                lo=hi=max(1.,size[axis] if fixed is None else fixed)
+            try:
+                graph.replace_cells(serial,[(near,far,float(lo),float(hi))])
+            except ValueError:
+                # What surrounds the window leaves no room for that size: the previous span stands.
+                pass
+
+    def window(self,node):
+        self._open_transactions()
+        pairs=self.bounds(node)
+        serial=self.frames[node][0]
+        self.span(node)
         if node not in self.windows:
             graph=self.axes[1]
             # The title strip is the window's content offset (0 for a popover).
@@ -371,6 +394,7 @@ class GuiGeometry:
 
     def captured(self,node):
         if node not in self.frames:return
+        if node in self.windows:self.span(node)     # a window that wraps: its content's new size
         _,_,w,h=self.cache.graph.rect(node)
         for graph,(near,far),size in zip(self.axes,self.frames[node][1],(w,h)):
             graph.solve(far,graph.position(near)+size,[near])

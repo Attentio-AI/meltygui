@@ -151,12 +151,19 @@ pub(crate) struct NativeState {
     // inputs are unchanged, reconfiguring would write the same values again.
     resolved: Option<[Option<f64>; 8]>,
     excluded: HashSet<String>,
+    // The slot of the view's value while its caller passes it. The state keeps no reference to
+    // such a value: a read goes through to where it lives (`borrowed`), the frame of the running
+    // body (`frames`: the runtime's stack) or else the graph's record of the view (`record`,
+    // retained.rs).
+    lent: Option<usize>,
+    frames: Weak<RefCell<Vec<Frame>>>,
+    record: Weak<RefCell<Py<PyAny>>>,
     renderer: u128,
     observer: Option<(u64, Weak<RefCell<HashMap<u64,u8>>>)>,
     rendering: bool,
 }
 const TRANSIENT_STATE: &[&str] = &[
-    "draw_state", "cache", "view_events", "event", "font_manager", "style_manager",
+    "draw_state", "cache", "view_events", "event", "font_manager", "style_manager", "canvas",
     "content_width", "content_height", "abs_left", "abs_top",
     "measured_width", "depth", "unique_events",
 ];
@@ -170,6 +177,9 @@ impl NativeState {
             revision: 0,
             resolved: None,
             excluded: TRANSIENT_STATE.iter().map(|v| v.to_string()).collect(),
+            lent: None,
+            frames: Weak::new(),
+            record: Weak::new(),
             renderer: 0,
             observer: None,
             rendering: false,
@@ -186,7 +196,10 @@ impl NativeState {
             if let Some(value) = self.values.get_mut(*slot).and_then(Option::take) { state.put_slot(target, value); }
             if let Some(value) = self.owned.remove(slot) { state.owned.insert(target, value); }
             if let Some(value) = self.overrides.remove(slot) { state.overrides.insert(target, value); }
+            if self.lent == Some(*slot) { state.lent = Some(target); }
         }
+        state.frames = std::mem::take(&mut self.frames);
+        state.record = std::mem::take(&mut self.record);
         state.excluded = std::mem::take(&mut self.excluded);
         *self = state;
     }
@@ -231,6 +244,34 @@ impl NativeState {
     fn lookup(&self, name: &str) -> Option<&Value> {
         let slot = self.shape.borrow().slots.get(name).copied()?;
         self.at(slot)
+    }
+    /// The value the caller passes, read where it lives: on the stack while the view's body runs
+    /// (its `Frame`), else in the graph's record of the view, which is there as long as the view
+    /// is declared. Nothing is copied to the state, so a tensor is free the moment its caller and
+    /// its view let go of it. `me` is this state's own object, to find its frame.
+    /// None: `slot` is not such a value (or the caller stopped passing it): the state's own is read.
+    fn borrowed(&self, py: Python<'_>, slot: usize, me: usize) -> PyResult<Option<Py<PyAny>>> {
+        if self.lent != Some(slot) { return Ok(None); }
+        if let Some(frames) = self.frames.upgrade() {
+            let value = frames.borrow().iter().rev().find(|frame| frame.state == me)
+                .and_then(|frame| frame.value.as_ref().map(|value| value.clone_ref(py)));
+            if value.is_some() { return Ok(value); }
+        }
+        let Some(input) = self.record.upgrade() else {
+            return Err(PyAttributeError::new_err(
+                "the view's value is its caller's: it is read while the view is declared (an immediate view: while it runs)"));
+        };
+        let value = input.borrow().clone_ref(py);
+        Ok((!value.bind(py).is(absent(py))).then_some(value))
+    }
+    /// What `draw_state.<name>` reads: a passed value where it lives, every other field from its slot.
+    fn read(slf: &PyRef<'_, Self>, name: &str) -> PyResult<Option<Py<PyAny>>> {
+        let py = slf.py();
+        let Some(slot) = slf.shape.borrow().slots.get(name).copied() else { return Ok(None) };
+        Ok(match slf.borrowed(py, slot, slf.as_ptr() as usize)? {
+            Some(value) => Some(value),
+            None => slf.at(slot).map(|value| value.to_py(py)),
+        })
     }
     fn number(&self, name: &str, default: f64) -> f64 {
         self.lookup(name).and_then(Value::number).unwrap_or(default)
@@ -314,10 +355,8 @@ impl NativeState {
         }
         Ok(())
     }
-    fn __getattr__(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
-        self.lookup(name)
-            .map(|v| v.to_py(py))
-            .ok_or_else(|| PyAttributeError::new_err(name.to_owned()))
+    fn __getattr__(slf: PyRef<'_, Self>, name: &str) -> PyResult<Py<PyAny>> {
+        Self::read(&slf, name)?.ok_or_else(|| PyAttributeError::new_err(name.to_owned()))
     }
     fn __setattr__(&mut self, name: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
         if name=="window_pos" {return Err(PyAttributeError::new_err("use left and top for relative position"));}
@@ -337,16 +376,16 @@ impl NativeState {
         Err(PyAttributeError::new_err(name.to_owned()))
     }
     #[pyo3(signature = (name, default=None))]
-    fn get(&self, py: Python<'_>, name: &str, default: Option<Py<PyAny>>) -> Py<PyAny> {
-        self.lookup(name)
-            .map(|v| v.to_py(py))
-            .unwrap_or_else(|| default.unwrap_or_else(|| py.None()))
+    fn get(slf: PyRef<'_, Self>, name: &str, default: Option<Py<PyAny>>) -> Py<PyAny> {
+        Self::read(&slf, name).ok().flatten().unwrap_or_else(|| default.unwrap_or_else(|| slf.py().None()))
     }
-    fn as_dict(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+    fn as_dict(slf: PyRef<'_, Self>) -> PyResult<Py<PyDict>> {
+        let py = slf.py();
         let result = PyDict::new(py);
-        for (name, slot) in &self.shape.borrow().slots {
-            if let Some(value) = self.at(*slot) {
-                result.set_item(name, value.to_py(py))?;
+        for name in slf.shape.borrow().slots.keys() {
+            // (A passed value that cannot be read now, in an immediate view at rest, is left out.)
+            if let Ok(Some(value)) = Self::read(&slf, name) {
+                result.set_item(name, value)?;
             }
         }
         Ok(result.unbind())
@@ -391,6 +430,10 @@ impl NativeState {
 struct Frame {
     width: f64,
     child_ns: u64,
+    // Whose body this is (its state object), and the value its caller passed it: what
+    // `draw_state.<value>` reads while the body runs (`NativeState::borrowed`). Gone with the frame.
+    state: usize,
+    value: Option<Py<PyAny>>,
 }
 
 // ImGui entry points used around every body, resolved once per runtime so a
@@ -415,7 +458,7 @@ struct Runtime {
     imgui: Option<Py<PyAny>>,
     api: Option<Rc<Api>>,
     owner: Option<Py<PyAny>>,
-    stack: Vec<Frame>,
+    stack: Rc<RefCell<Vec<Frame>>>,
     width: f64,
     calls: u64,
     wrapper_ns: u64,
@@ -434,7 +477,11 @@ impl Runtime {
                 ids.registry.bind(py).set_item(unique, &state)?;
                 ids.states.insert(unique);
                 let unique_value=unique.into_pyobject(py)?.into_any().unbind();
-                state.borrow_mut(py).put("unique",Value::Object(unique_value.clone_ref(py)));
+                {
+                    let mut state = state.borrow_mut(py);
+                    state.put("unique",Value::Object(unique_value.clone_ref(py)));
+                    state.frames = Rc::downgrade(&self.stack);
+                }
                 let label=PyString::new(py,&format!("gui-{unique}")).unbind();
                 self.nodes.insert(unique, (state, unique_value, label));
             }
@@ -479,7 +526,7 @@ impl Runtime {
             imgui,
             api: None,
             owner: None,
-            stack: Vec::new(),
+            stack: Rc::new(RefCell::new(Vec::new())),
             width: 300.0,
             calls: 0,
             wrapper_ns: 0,
@@ -496,7 +543,7 @@ impl Runtime {
         identity_frame: bool,
         globals: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<()> {
-        if !self.stack.is_empty() {
+        if !self.stack.borrow().is_empty() {
             return Err(PyRuntimeError::new_err("begin_frame during rendering"));
         }
         if let Some(scope) = scope {
@@ -516,7 +563,7 @@ impl Runtime {
         Ok(())
     }
     fn end_frame(&mut self, py: Python<'_>) -> PyResult<()> {
-        if !self.stack.is_empty() {
+        if !self.stack.borrow().is_empty() {
             return Err(PyRuntimeError::new_err("unbalanced gui calls"));
         }
         self.owner = None;
@@ -530,11 +577,11 @@ impl Runtime {
         result.set_item("body_us", self.body_ns as f64 / 1000.0)?;
         result.set_item("nodes", self.nodes.len())?;
         result.set_item("fields", self.shape.borrow().slots.len())?;
-        result.set_item("stack_depth", self.stack.len())?;
+        result.set_item("stack_depth", self.stack.borrow().len())?;
         Ok(result.unbind())
     }
     fn clear(&mut self, py: Python<'_>) -> PyResult<()> {
-        if !self.stack.is_empty() {
+        if !self.stack.borrow().is_empty() {
             return Err(PyRuntimeError::new_err("clear during rendering"));
         }
         for (unique, (state, _, _)) in &self.nodes {
@@ -711,10 +758,8 @@ impl Renderer {
         let (captured, explicit_keys, supplied_unique) = match &capture {
             Some(capture) => {
                 if wants(WANT_WIDTH) { args.set(intern!(py, "width"), capture.rect.2)?; }
-                if wants(WANT_HEIGHT) {
-                    if capture.auto_height { args.set(intern!(py, "height"), py.None())?; }
-                    else { args.set(intern!(py, "height"), capture.rect.3)?; }
-                }
+                // Always numbers: a wrapping view is given the room it is laid out in (executor.rs).
+                if wants(WANT_HEIGHT) { args.set(intern!(py, "height"), capture.rect.3)?; }
                 if wants(WANT_SCROLL) { args.set(intern!(py, "scroll_offset"), capture.scroll)?; }
                 if wants(WANT_EXTRAS) { args.set(intern!(py, "return_extras"), true)?; }
                 (true, Some(capture.explicit.clone()), Some(capture.unique))
@@ -758,7 +803,7 @@ impl Renderer {
             }
             let api = rt.api(py)?;
             let (state, unique_value, label) = rt.nodes.get(&unique).unwrap();
-            let width = rt.stack.last().map_or(rt.width, |frame| frame.width);
+            let width = rt.stack.borrow().last().map_or(rt.width, |frame| frame.width);
             (
                 state.clone_ref(py),
                 unique,
@@ -792,8 +837,8 @@ impl Renderer {
             Ok(args.get(key)?.and_then(|v| v.extract().ok()).unwrap_or(default))
         };
         let stored_height = state.borrow(py).at(SLOT_HEIGHT).and_then(Value::number).unwrap_or(24.0);
-        // A capture's size is its current rectangle; automatic height keeps
-        // the stored extent until the body is measured.
+        // A capture's size is its current rectangle; a wrapped height keeps the stored extent
+        // until the body is measured (the body's `height` parameter is the room it has).
         let (width, height) = match &capture {
             Some(capture) => (capture.rect.2.max(1.0),
                               if capture.auto_height { stored_height } else { capture.rect.3 }.max(1.0)),
@@ -889,7 +934,7 @@ impl Renderer {
         if wants(WANT_STATE) { args.set(intern!(py, "draw_state"), &state)?; }
         if wants(WANT_UNIQUE) { args.set(intern!(py, "unique"), &unique_value)?; }
         // Each capture is its own root: depth counts immediate nesting only.
-        if wants(WANT_DEPTH) { args.set(intern!(py, "depth"), if capture.is_some() { 0 } else { self.runtime.borrow(py).stack.len() })?; }
+        if wants(WANT_DEPTH) { args.set(intern!(py, "depth"), if capture.is_some() { 0 } else { self.runtime.borrow(py).stack.borrow().len() })?; }
         if !self.events.is_empty() {
             if let Some(owner) = owner {
                 let event_args = PyDict::new(py);
@@ -983,13 +1028,18 @@ impl Renderer {
             if first { current = Some(value.clone_ref(py)); }
             // Framework-injected self references are transient, not persisted in state.
             // None requests automatic sizing; it is not a measured dimension.
-            let automatic_size = matches!(parameter.name.as_str(), "width" | "height")
-                && value.bind(py).is_none();
-            // A value the caller passed is the caller's: the state neither holds nor saves it.
-            if parameter.name != "draw_state" && !(first && passed) && !automatic_size {
-                state
-                    .borrow_mut(py)
-                    .put_slot(parameter.slot, Value::field(&parameter.name, value.bind(py))?);
+            // Nor is the room a wrapped height is laid out in: the state keeps the measured one.
+            let automatic_size = (matches!(parameter.name.as_str(), "width" | "height") && value.bind(py).is_none())
+                || (parameter.name == "height" && capture.as_ref().is_some_and(|capture| capture.auto_height));
+            // The state holds every parameter as it resolved. A value the caller passed is the one
+            // it does not copy: `draw_state.<name>` reads it through to the caller's (`borrowed`),
+            // so the state never keeps it alive.
+            if parameter.name != "draw_state" && !automatic_size {
+                let mut ds = state.borrow_mut(py);
+                if first { ds.lent = passed.then_some(parameter.slot); }
+                if !(first && passed) {
+                    ds.put_slot(parameter.slot, Value::field(&parameter.name, value.bind(py))?);
+                }
             }
         }
         let fused = capture.as_ref().is_some_and(|capture| capture.fused);
@@ -1000,9 +1050,12 @@ impl Renderer {
                 return Err(error);
             }
         }
-        self.runtime.borrow_mut(py).stack.push(Frame {
+        self.runtime.borrow(py).stack.borrow_mut().push(Frame {
             width,
             child_ns: 0,
+            state: state.as_ptr() as usize,
+            // A passed value is on the stack for the length of the body, and no longer.
+            value: if passed { current.as_ref().map(|value| value.clone_ref(py)) } else { None },
         });
         let identities = self.runtime.borrow(py).identities.clone_ref(py);
         identities.borrow_mut(py).enter(unique);
@@ -1010,7 +1063,10 @@ impl Renderer {
         let result = self.func.bind(py).call((), Some(&clean)).map(Bound::unbind);
         identities.borrow_mut(py).leave(result.is_ok());
         let body_ns = body_start.elapsed().as_nanos() as u64;
-        let child_ns = self.runtime.borrow_mut(py).stack.pop().unwrap().child_ns;
+        // (Popped apart from its use: the frame's value is let go of after the stack is free again.)
+        let frame = self.runtime.borrow(py).stack.borrow_mut().pop().unwrap();
+        let child_ns = frame.child_ns;
+        drop(frame);
         let cleanup = (|| -> PyResult<()> {
             if let (Some(api), false) = (&api, fused) {
                 let end = api.end_group.bind(py).call0();
@@ -1039,7 +1095,7 @@ impl Renderer {
             rt.calls += 1;
             rt.wrapper_ns += elapsed.saturating_sub(body_ns);
             rt.body_ns += body_ns.saturating_sub(child_ns);
-            if let Some(parent) = rt.stack.last_mut() {
+            if let Some(parent) = rt.stack.borrow_mut().last_mut() {
                 parent.child_ns += elapsed;
             }
             if capture.is_some() { rt.owner = None; }
@@ -1052,8 +1108,9 @@ impl Renderer {
             (false, current.unwrap_or_else(|| py.None())).into_pyobject(py)?.into_any().unbind()
         } else {
             if self.valued && !passed {
-                // Nothing was passed, so the view owns its value: a returned edit is the same as
-                // `draw_state.<first parameter> = value`. A passed value's edit is the caller's to keep.
+                // The one thing special about the first parameter: a returned edit writes it. Nothing
+                // was passed, so the view owns its value and the edit is `draw_state.<name> = value`.
+                // A passed value's edit is the caller's to keep; the graph has it until the caller does.
                 let edit = result.bind(py).downcast::<PyTuple>()?;
                 if edit.get_item(0)?.is_truthy()? {
                     let (parameter, edited) = (&self.parameters[0], edit.get_item(1)?);
