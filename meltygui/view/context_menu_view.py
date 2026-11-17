@@ -3,9 +3,12 @@ clicked, then those of each view around it, a line between two views' options.
 
 - `draw_context_menu`: the popup. The pointer or the arrows and Enter pick; a press outside or
   Escape closes it (the popup rules, core/input/focus.py).
+- An option that is a dict of options is a submenu: the dropdown's list (`options`,
+  choice_view.py), opened beside its row. Its keys, its chevron and its width are that view's.
 - `call`: runs a picked option, and is where its arguments are found.
 - `rows`, `extent`: the layout and the size of the menu.
-The levers are the constants below. The colours are `look(tint)` of the value views (value_view.py).
+The levers are the constants below, and the menu's narrowest and widest in choice_view.py. The
+colours are `look(tint)` of the value views (value_view.py).
 """
 import inspect
 import traceback
@@ -15,17 +18,18 @@ import meltygui_imgui as imgui
 import meltygui.core.windowing.window_constants as glfw
 from meltygui.core.input import mouse_cursor
 from meltygui.core.rendering.gui_prototype import gui
+from meltygui.view import choice_view
+from meltygui.view.choice_view import MORE, options
 from meltygui.view.value_view import PAD, ROUND, ROW, SLATE, box, look
 
 TINT = SLATE                    # the tint the menu's colours are made from
 GAP = 7.0                       # height of the line between two views' options
-NARROWEST = 120.0               # the menu is at least this wide
-WIDEST = 420.0                  # and at most this: a longer label is cut
 
 
 def rows(sections):
-    """The menu's rows from the top, as (y, view, label, function), and its height. `sections` is
-    [(view, {label: function})]; a GAP separates two of them."""
+    """The menu's rows from the top, as (y, view, label, option), and its height. `sections` is
+    [(view, {label: option})], an option a function or a dict of options (a submenu); a GAP
+    separates two sections."""
     found = []
     y = 0.0
     for at, (node, options) in enumerate(sections):
@@ -38,10 +42,10 @@ def rows(sections):
 
 
 def extent(sections):
-    """(width, height) of the menu of `sections`: as wide as its longest label."""
-    found, height = rows(sections)
-    width = max(imgui.calc_text_size(label).x for _, _, label, _ in found) + 2.0 * PAD
-    return min(max(width, NARROWEST), WIDEST), height
+    """(width, height) of the menu of `sections`: as wide as its widest section's list."""
+    _, height = rows(sections)
+    width = max(choice_view.extent(options)[0] for _, options in sections)
+    return width, height
 
 
 def row_at(found, y):
@@ -81,29 +85,48 @@ def call(action, cache, node):
 
 @gui(cursor=mouse_cursor.HAND, no_save=('index',))
 def draw_context_menu(input_value: list, index=None, width=0.0, height=0.0, draw_state=None, cache=None, event=None):
-    """The menu of `input_value`, the sections [(view, {label: function})], innermost view first.
-    A pick runs its function for its view (`call`), then that view and the ones around it run again
-    (the function may have changed what they show), and the menu closes."""
+    """The menu of `input_value`, the sections [(view, {label: option})], innermost view first.
+    A pick, here or in a submenu, runs its function for its view (`call`), then that view and the
+    ones around it run again (the function may have changed what they show), and the menu closes."""
     found, _ = rows(input_value)
     if index is None:               # just opened: `index` is not saved, and nothing is selected yet
         index = -1
-    picked = False
-    # The keyboard: the arrows move the selection around, Enter picks it. Asking for the keys is
-    # what gives the open menu the keyboard.
+    chosen = False                  # Enter or a press: the selected row is picked, or its submenu opens
+    opened = False                  # Right, or the pointer came to the row: only its submenu opens
+    # The keyboard. Asking for the keys is what gives the open menu the keyboard.
     for key, mods in event.keys():
         if key == glfw.KEY_DOWN:
             index = (index + 1) % len(found)
         elif key == glfw.KEY_UP:
             index = (max(index, 0) - 1) % len(found)
         elif key in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER):
-            picked = index >= 0
+            chosen = True
+        elif key == glfw.KEY_RIGHT:
+            opened = True
     # The pointer: the row it moves over is selected, a press picks it.
     pressed = event.left_mouse_down()
     if pressed or event.mouse_moved():
-        index = row_at(found, event.y)
+        over = row_at(found, event.y)
+        if over != index:
+            opened = True
+        index = over
     if pressed:
-        picked = index >= 0
+        chosen = True
     draw_state.index = index
+    picked = False
+    action = None
+    owner = 0                       # the view whose option the selected row is
+    if index >= 0:
+        top, owner, _, option = found[index]
+        if isinstance(option, dict):
+            # The selected row's submenu, beside it: it returns the function picked in it, at any depth.
+            # Another row selected: this call is not made, and it closes.
+            across, down = choice_view.extent(option)
+            picked, action = options(None, key=index, popup=chosen or opened, choices=option,
+                                     left=width, top=top, width=across, height=down)
+        elif chosen:
+            picked = True
+            action = option
     table = look(TINT)
     draw_list = imgui.get_window_draw_list()
     box(draw_list, table, width, height)
@@ -116,19 +139,21 @@ def draw_context_menu(input_value: list, index=None, width=0.0, height=0.0, draw
         last = node
         if at == index:
             draw_list.add_rect_filled(0.0, y, width, y + ROW, table.select, ROUND)
+    more = width - PAD - imgui.calc_text_size(MORE).x
     draw_list.push_clip_rect(0.0, 0.0, width - PAD, height, True)
-    for y, _, label, _ in found:
+    for y, _, label, option in found:
         draw_list.add_text(PAD, y + text_y, table.text, label)
+        if isinstance(option, dict):
+            draw_list.add_text(more, y + text_y, table.dim, MORE)
     draw_list.pop_clip_rect()
     if not picked:
         return
-    _, node, _, action = found[index]
     cache.focus.close()             # the keyboard returns to whoever had it
     try:
-        call(action, cache, node)
+        call(action, cache, owner)
     except Exception:
         traceback.print_exc()       # an option that fails is reported, and the app goes on
     # What the option changed in place is shown by the view it belongs to and the views around it.
-    while node:
-        cache.invalidate_id(node)
-        node = cache.graph.parent(node)
+    while owner:
+        cache.invalidate_id(owner)
+        owner = cache.graph.parent(owner)

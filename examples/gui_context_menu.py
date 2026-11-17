@@ -5,6 +5,9 @@
 Right click a note. Its own options come first, then the list's, then the window's, with a line
 between each: a menu is made of the options of every view around the pointer, innermost first.
 
+An option that is a dict of options is a submenu (`Move` on a note): it opens beside its row, by
+the pointer or Right, and nests to any depth.
+
 An option's function is given the parameters of its view that it names. `delete(input_value, items)`
 gets the note's key and the dict the list passed it; `add(input_value)` gets the list's dict. One
 that takes nothing is just called. After a pick the view and the ones around it run again, so an
@@ -38,6 +41,17 @@ def upper(input_value, items):
     items[input_value] = items[input_value].upper()
 
 
+def first(input_value, items):
+    rest = dict(items)
+    items.clear()
+    items[input_value] = rest.pop(input_value)
+    items.update(rest)
+
+
+def last(input_value, items):
+    items[input_value] = items.pop(input_value)
+
+
 def add(input_value):
     key = str(max((int(key) for key in input_value), default=0) + 1)
     input_value[key] = f'Note {key}'
@@ -47,7 +61,7 @@ def clear(input_value):
     input_value.clear()
 
 
-@context_menu({'Delete': delete, 'Upper case': upper})
+@context_menu({'Delete': delete, 'Upper case': upper, 'Move': {'To the top': first, 'To the bottom': last}})
 @gui(height=ROW)
 def note(input_value: str, items: dict = None, width=0.0, height=0.0, event=None):
     """One note: `input_value` is its key in `items`."""

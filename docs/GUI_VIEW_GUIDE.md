@@ -494,6 +494,12 @@ def dropdown(input_value, choices=(), width=0.0, height=0.0, event=None):
   asks for none leaves the keyboard where it is.
 - Per opening state is a `no_save` parameter: it is its default again on each
   opening (`index` in the example's `options`).
+- **A submenu is a popup the list calls for its selected row**, keyed by the
+  row: `options(value, key=text, popup=opened, choices=choice, left=width,
+  top=index * ROW, ...)`. A pick in it comes back as the call's return; when
+  another row is selected the call is no longer made and the submenu closes.
+  `options` in [choice_view.py](../meltygui/view/choice_view.py) is the
+  worked example.
 - Until `9ed33b19b8e3` is fixed, draw the anchor after the popup call, from the
   value it returned (section 14).
 
@@ -530,6 +536,10 @@ def notes(input_value: dict, width=0.0, height=0.0):
   called. A name the view does not have keeps the function's default, and is
   an error without one. To reach something of the view around it, pass it
   down as an argument (`items=` above).
+- **A dict of options in place of a function is a submenu**, to any depth:
+  `{'Delete': delete, 'Move': {'Up': up, 'Down': down}}`. Its row has a
+  chevron; the pointer, Right or Enter opens it beside the row, Left closes
+  it. Its functions are given what they name like any option's.
 - After a pick the option's view and the views around it run again, so an
   option may change the model in place. Keep the dict of options a module
   constant, as written above the view.
@@ -699,8 +709,8 @@ What is there already:
 | Code or long text | `draw_editor`, from `meltygui.view.editor_view` for now ([NATIVE_EDITOR.md](NATIVE_EDITOR.md#using-draw_editor)) |
 | A button | `draw_button` from `meltygui.rust`: `pressed, _ = draw_button('Run', name='run')` |
 | A function to call with arguments the user edits | `ran, _ = draw_function(fit, name='fit')` from `meltygui.rust`: its parameters as values (`draw_any` of a dict the view keeps, each starting at its default or what its type builds) and a button that calls it, in that run, so only for a call that returns at once. `ran` is true in the run of a call that returned; what it returned is the view's `result` (`ran, _, state = draw_function(fit, return_extras=True)`, then `state.result`); an exception is shown under the button. A class is called the same way and builds an instance ([function_view.py](../meltygui/view/function_view.py)) |
-| One of a few choices | `draw_dropdown(value, choices=CHOICES)` from `meltygui.rust`; `label=` names choices that are not text |
-| Tiles the user splits and joins from their corners, as in Blender | `draw_tiles(tree, name='tiles', views=VIEWS, width=width, height=height)` from `meltygui.rust`; `VIEWS` is a module tuple of `@gui` views of a tile's dict, and each tile picks one from a dropdown in its head; the tree is plain dicts and may start as `{}` or bare nested `{'cells': [{}, {}]}` (ids, axes and sizes are filled in); a divider drag runs only the resized tiles, and `draw_tiles` once at its end to write the sizes; an edge within 100 px of the window's is tied to it, so no cell goes around it ([tiles_view.py](../meltygui/view/tiles_view.py)) |
+| One of a few choices | `draw_dropdown(value, choices=CHOICES)` from `meltygui.rust`. `CHOICES` is a sequence of the choices (`label=` names those that are not text) or a dict `{label: choice}`; in a dict a value that is a dict is a submenu, to any depth, and the value is the leaf picked ([choice_view.py](../meltygui/view/choice_view.py)) |
+| Tiles the user splits and joins from their corners, as in Blender | `draw_tiles(tree, name='tiles', views=VIEWS, width=width, height=height)` from `meltygui.rust`; `VIEWS` is a module tuple of `@gui` views of a tile's dict, and each tile picks one from a dropdown in its head; the tree is plain dicts and may start as `{}` or bare nested `{'cells': [{}, {}]}` (ids, axes and sizes are filled in); a divider drag runs only the resized tiles, and `draw_tiles` once at its end to write the sizes; no cell goes around it: where it ends on the window's edge a divider pushed against that edge resizes the window, and given a `width` / `height` elsewhere it keeps them and the push moves the window's left / top edge; `width=None` / `height=None` wraps it to its tiles' minimums ([tiles_view.py](../meltygui/view/tiles_view.py)) |
 | A popup of your own, a picker | Section 7; [examples/gui_popups.py](../examples/gui_popups.py) |
 | A right click menu on a view | `@context_menu({label: function})` from `meltygui`, above `@gui` (section 7) |
 | A whole standalone ImGui app as one view | `gui_module('app.py')` ([gui_module.py](../meltygui/core/rendering/gui_module.py)) |
@@ -750,6 +760,7 @@ did not check.
 | ImGui popups, tooltips, `begin_child` in a cached view (`fb94b9e2eed2`, `689e8767ed78`) | `popup=`, `scroll=True` |
 | The view that opened a popup is not run again with the pick (`9ed33b19b8e3`) | Draw after the popup call, from its return |
 | A view is not run again when its caller passes back the edit it returned: an ImGui button or checkbox that drew before the edit stays stale until the pointer moves (`90293f1fa9dd`). A view that was passed nothing is run again | Draw after handling the input, or `cache.wake_next(cache.current)` in the run that returns the edit |
+| A pick in a popup opened from a popup (a submenu) runs the outer popup and its caller twice in that frame (`1bd0b2d648ed`) | Nothing: the value is right, the double render mark shows for a second |
 | A left drag on an OS window's body does not move it unless the root holds a `columns` / `rows` layout (`78d4ccd04ec6`) | Drag the title bar |
 | A view larger than 8192 px raises (`c3b99fd82886`) | Child views in a scroll view |
 | The wheel carries no modifiers and a scroll view takes it first (`c1cc6c3481b5`) | No Ctrl+wheel zoom yet |

@@ -400,6 +400,34 @@ rust is finally fast enough"). Current numbers:
   then invoke its selected view function." The list is `views=`, which
   replaces `tile=`; the pick is kept in the tile's dict as the function's
   name. (11-15)
+- **No margin for pushing the window.** "If I remember correctly, we have a
+  100 pixel margin for pushing on parent edges. Lets start by removing that."
+  `anchor` takes no reach (this replaces "within 100px" above). (11-17)
+- **A placed view is constrained to its parent, and the solve finds what has
+  to move.** "I'd like the rules implemented as written. With a fixed sized
+  view, growing the size of the inner tile should actually pull the left edge
+  of the tile view, and that edge should pull the left os window edge ... The
+  guiding principal of the collision system is that when the user request
+  that something move, like the right edge of the tile window, we do what we
+  can to make that happen without violating any of the constraints specified
+  by the view layout. In this case, the size and position of the tile view is
+  constrained relative to its parent. To move the right edge we must move the
+  parents left edge. Moving the parents left edge should be automatically
+  discovered by the collision solve." `anchor` gives the view a fixed gap to
+  its window's near edge and a fixed span; a view that ends on the window's
+  far edge is tied to that edge instead (it fills). The rule is in
+  WINDOW_COLLISION_COLUMNS.md, "Views placed in a window". (11-17)
+- **Wrapping is part of the collision solve.** "This case is instructive.
+  draw_tiles(width=None, height=1e8). In this case height is the default fill
+  behavior, width is wrap contents. Wrapping contents for a tile view means
+  the minimum width the collision solving can find. I would like wrapping to
+  fit elegantly into the collision tiling system." A wrapping axis of a view
+  with rows or columns is solved to its cells' minimums as its layout closes
+  (`GuiGeometry.wrap` / `shrink`), which is also the size the view is measured
+  at; it then holds like a number. A tile can be split along it: the view
+  grows by the new tile. Open: a wrapping tile view runs again on every frame
+  its window's width changes, and the left edge pointer feedback (agent seat)
+  was left alone as no obvious, clean fix was found. (11-17)
 - **`draw_tiles` takes any dict.** "Have the tiles add id as necessary and not
   force the user to know how they work. Make sure a blank dict works by
   default. Simple nested dict structures should work by default as well.
@@ -536,6 +564,46 @@ rust is finally fast enough"). Current numbers:
   key and survive inserted lines. (11-11, bug `1e417233ac0a`)
 - **Several editors on one source.** "I have lots of multi editor workflows I
   need to support." (11-11)
+- **`Source` takes what the code belongs to, and does its own file io**
+  (wanted, not built; design under review first): `Source(Toggles)`,
+  `Source(sample_function)` and `Source(a_module)` beside `Source(text, path)`,
+  and `draw_any(source)` draws it. "This is an expansion of scope for source,
+  as the constructor will now have to delegate the file io required." It is
+  the step toward the Melty code editor in `@gui`: several source trees,
+  saving and loading, conflict resolution, git history. (2026-11-17)
+- **That usage code is the bar for every code feature**: it "is very
+  intuitive and easy for me to remember, the end goal of this design is to
+  make interfacing with code feel like that for all features in the code
+  editor." The design is being done again for code file io; nothing is
+  settled yet. (2026-11-17)
+- **Two buckets of requirements, kept apart**: those "driven by how I want
+  the interface to work and the mental model encouraged by the framework", and
+  those "driven by performance constraints". (2026-11-17)
+- **Pending saves are a performance workaround, not wanted UX.** "The entire
+  pendingsave feature exists entirely because file io is slow, not because I
+  like the UX of working with pending saves. In a perfect world where flash
+  storage is as fast as ram there is no pending save. We have one code string
+  object and editing that edits the file on disk." (2026-11-17)
+- **Virtual files are under consideration** (an idea, not decided): file io
+  and when to save happen in a layer the framework is wrapped in, so "the
+  framework can stay pristine". His condition: files are read on the render
+  thread with "performance on par with a direct read from a python str".
+  (2026-11-17)
+- **Versions of code the interface must make natural to read** (his list,
+  "non exhaustive"): the code on disk at a path; the code at a specific
+  worktree, and there at a specified git commit; the code being executed
+  (disk diverges from the running app through changes on disk or through
+  hotswaps, and this version "stays in sync with the code post hotswap"); the
+  initial code at launch time. (2026-11-17)
+- **The model is one object that is the file on disk.** "From the model side,
+  I want the simplicity of one object that is the file on disk. Set the value,
+  and done." Waiting for typing to rest is the view's business: it "can live
+  inside the @gui render function for the text". (2026-11-17)
+- **The launch version is not made by reading every file at launch**:
+  "Reading every file on launch is not what we want." His first idea, open to
+  a better one: "record the git hash and the current diff at launch. That
+  give you everything you need to retrieve the original launch state the code
+  and is cheap in nearly all cases." (2026-11-17)
 - **Cross file symbols**: one roster per project, owned by Melty's shared
   runtime and injected. Python says which files belong and pushes current
   text; a Rust thread reads and indexes. (11-11, approved)

@@ -6,8 +6,13 @@
 Each tile shows one of `views`, picked from the dropdown in its head, and keeps the pick in its
 dict as the view's name. With one view there is no head; with none the tiles are blank.
 
-Place it like any view. An edge within `REACH_EDGE` of the window's edge is tied to it: a divider
-pushed against it resizes the window, and the window takes the tiles along. No cell around it.
+Place and size it like any view, with no cell around it (`anchor`). Its `left` / `top` hold.
+- No size, or one that ends on the window's edge: it fills. A divider pushed against that edge
+  resizes the window, and the window resized takes the tiles along.
+- A number: it holds. A divider pushed past a tile's minimum moves the whole view, and with it
+  the window's left / top edge.
+- None: it wraps, as small as its tiles can be (every tile across it at `MINS`), and holds like
+  a number. A split along that axis adds a tile's width; a join takes one away.
 
 The value is any dict, edited in place. {} is one tile; a dict with 'cells' is a split of them:
 
@@ -69,7 +74,6 @@ TEXT = pack_color(1.0, 1.0, 1.0)
 NOTE = 'Release to join'
 CORNERS = (('nw', True, True), ('ne', False, True), ('se', False, False))   # name, on the left, on the top
 AXES = {'x': 0, 'y': 1}
-REACH_EDGE = 100.0                          # an edge this near the window's is tied to it
 TOKEN = 7000                                # the first name a split's divider drags have for the solver
 
 
@@ -273,7 +277,9 @@ def begin(tree, parent, index, hand, layouts):
     low = MINS[axis]
     high = span - MINS[axis]
     if high < low:
-        return False                                # no room for two
+        if not layout.manager.wraps(layout.owner)[axis]:
+            return False                            # no room for two
+        high = low                                  # a view that wraps grows by the new tile
     along = local(hand)[axis]
     at = min(max(along, low), high)
     holder, edge = split(tree, parent, index, axis, at, span, before)
@@ -514,7 +520,7 @@ def draw_tiles(input_value: dict, views=(blank,), hand=None, draw_state=None, ca
         hand = Hand()
         draw_state.hand = hand
     hand.readers.note()             # a grip wakes this view when the gesture needs the tree
-    anchor(REACH_EDGE)
+    anchor()
     layouts = {}
     changed = mend(input_value)
     if place(input_value, views, hand, layouts):

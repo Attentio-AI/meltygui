@@ -228,6 +228,18 @@ A divider reaching an enclosing frame can push it outward; a capped chain can pu
 
 At a true immovable boundary, respect the available span and connected constraints. Do not produce negative sizes or solve an impossible min/max combination by silently changing the user's limits. Exact precedence for contradictory constraints remains unspecified and should be resolved explicitly if encountered.
 
+### Views placed in a window
+
+Clarified by Lukas on 2026-11-17. The guiding principle of the collision system: when the user asks for something to move, do what can be done to make that happen without violating any constraint the view layout specifies. Which other edges have to move is discovered by the solve, not written per case.
+
+A view with rows or columns that its caller places in a window (`draw_tiles(left=100, top=100, width=400, height=400)`) is constrained relative to that window: its `left` / `top` are a fixed gap to the window's near edge, and its `width` / `height` are a fixed span. There is no margin within which this applies. Dragging a divider right past the last tile's minimum asks the view's right edge to move. The span is fixed, so the view's left edge moves with it; the gap is fixed, so the window's left edge moves with that. For an OS window that is its left edge. The view keeps its size and its place in the window; the window is what changes.
+
+A view that ends on its window's far edge fills on that axis: the two far edges are tied instead of the span, so the divider resizes the window and a window resize takes the view along.
+
+A view that wraps on an axis (`draw_tiles(width=None, height=1e8)`) is as small on it as the collision solve can make its rows and columns: every cell across it at its minimum. That size is then a fixed span like a number's, so a divider there moves the view and the window's near edge. It is found from the constraints as the layout is declared and found again when a layout in the view changes (a tile split or joined, a minimum changed), never from what the view drew. The other axis keeps its own rule: in the example the height fills.
+
+Implementation: `GuiGeometry.anchor` in `core/rendering/gui_layout_prototype.py`. Known defect, not a rule: any push of an OS window's near edge can feed back through the pointer correction (`_update_surface_slide` in `core/graphics/overlay_renderer.py`) and oscillate with growing amplitude. Observed with agent-seat input on Hyprland, for a filling view pushed left as well as for a fixed one.
+
 ## Tile texture replay during resize
 
 Once tile geometry changes during a live resize gesture, `draw_tiles` may

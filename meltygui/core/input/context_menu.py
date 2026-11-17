@@ -3,7 +3,7 @@
     def delete(item, items):
         items.pop(item)
 
-    @context_menu({'Delete': delete, 'Say hello': lambda: print('hello')})
+    @context_menu({'Delete': delete, 'More': {'Say hello': lambda: print('hello')}})
     @gui(height=24)
     def draw_row(item, items=None):
         ...
@@ -11,7 +11,8 @@
 `@context_menu(options)` goes above `@gui` (or `@os_window`). A right click on the view shows its
 options, then, under a line each, those of every view around it, innermost first. It acts on the
 release, so a right drag still resizes. An option's function is called with the parameters of its
-view that it names (`item`, `items`, `draw_state`, `cache`), or with nothing.
+view that it names (`item`, `items`, `draw_state`, `cache`), or with nothing. An option that is a
+dict of options is a submenu, to any depth; its functions are called the same way.
 
 Where things are, and how to change them:
 - `MENUS`: view name -> its options. The decorator writes that row and one in `AFTER`
@@ -50,13 +51,22 @@ class Menu:
         self.fresh = True                   # until it was declared once: the popup's open event
 
 
-def context_menu(options):
-    """Give the view below a right click menu. `options` is {label: function}, in the order shown."""
+def check(options):
+    """Raise unless `options` is what a menu is made of: {label: function}, or in place of a
+    function a dict of the same kind, a submenu."""
     if not isinstance(options, dict) or not options:
-        raise TypeError('@context_menu takes a dict of {label: function}')
+        raise TypeError('@context_menu takes a dict of {label: function}, a submenu a dict of the same in place of a function')
     for label, action in options.items():
-        if not isinstance(label, str) or not callable(action):
+        if isinstance(action, dict):
+            check(action)
+        elif not isinstance(label, str) or not callable(action):
             raise TypeError(f'@context_menu options are {{label: function}}, not {label!r}: {action!r}')
+
+
+def context_menu(options):
+    """Give the view below a right click menu. `options` is {label: function}, in the order shown;
+    a dict of options in place of a function is a submenu."""
+    check(options)
 
     def register(view):
         if not getattr(view, '__gui__', False):

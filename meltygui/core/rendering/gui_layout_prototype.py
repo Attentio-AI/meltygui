@@ -9,6 +9,10 @@ from dataclasses import dataclass, field
 import math
 
 
+# Lever: a view whose far edge is within this of its window's far edge fills the window (`anchor`).
+FILLS = 0.5
+
+
 class _Tracked(dict):
     """A geometry table that counts its own mutations in a shared counter.
 
@@ -117,6 +121,8 @@ class Layout:
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self.manager.wrap(self)     # before the size below is drawn: it is what a wrapping owner measures
         if self.manager.cache.graphics and exc_type is None:
             import meltygui_imgui as imgui
             x, y, w, h = self.manager.layout_rect(self)
@@ -159,6 +165,7 @@ class GuiGeometry:
         # the views whose commit can move it (itself and its ancestors); `loose` are not placed yet.
         self.anchored = {}
         self.loose = set()
+        self.snug = set()           # (wrapping view, axis) as small as its cells allow: `shrink`
         # What `apply` last placed, so that it visits only the cells that changed since: the edge
         # positions of each axis with the solver stamp they were read at, each layout owner's
         # origin and scroll, and the bound views still to place (`stale`).
@@ -282,7 +289,7 @@ class GuiGeometry:
         if self.native is not None:
             return self.native.walls(axis)
         owner=self._frame_owner(node)
-        while owner in self.anchored:               # its edges push its window's: what holds that holds
+        while owner in self.anchored:               # a tied view pushes its window: the walls are that window's
             owner=self._frame_owner(self.holder(owner))
             if self.cache.graph.parent(owner):
                 owner=self._frame_owner(self.holder(owner))
@@ -374,6 +381,11 @@ class GuiGeometry:
             old=self.frame_rect(node)
             x, y = self.position(node)
             _, _, w, h = self.cache.graph.rect(node)
+            if node in self.anchored:
+                # A wrapping axis has the size its cells gave it, not one a caller could place anew.
+                wraps = self.wraps(node)
+                if wraps[0]: w = old[2]
+                if wraps[1]: h = old[3]
             rect = (x,y,w,h)
             if rect != old:
                 if node in self.anchored:
@@ -401,7 +413,9 @@ class GuiGeometry:
         if node not in self.frames:return
         if node in self.windows:self.span(node)     # a window that wraps: its content's new size
         _,_,w,h=self.cache.graph.rect(node)
-        for graph,(near,far),size in zip(self.axes,self.frames[node][1],(w,h)):
+        wraps=self.wraps(node) if node in self.anchored else (False,False)
+        for axis,(graph,(near,far),size) in enumerate(zip(self.axes,self.frames[node][1],(w,h))):
+            if wraps[axis]:continue                 # its cells gave it its size (`wrap`)
             graph.solve(far,graph.position(near)+size,[near])
 
     def commit(self, node):
@@ -446,6 +460,7 @@ class GuiGeometry:
                 layout.__dict__.update(state)
                 layout.children = _Tracked(changes, state['children'])
             changes[0] += 1
+            self.snug.clear()
             # The graphs are other objects now: place every cell again.
             self.placed_stamps = [None, None]
             self.placed_edges = ({}, {})
@@ -516,8 +531,15 @@ class GuiGeometry:
                             children=_Tracked(self.changes))
             self.layouts[identity] = layout
             self.owner_layouts.setdefault(owner,set()).add(identity)
-        graph.replace_cells(layout.serial, [(a,b,float(lo),None if hi is None else float(hi))
-                            for a,b,lo,hi in zip(layout.edges,layout.edges[1:],minima,maxima)])
+        cells = [(a,b,float(lo),None if hi is None else float(hi))
+                 for a,b,lo,hi in zip(layout.edges,layout.edges[1:],minima,maxima)]
+        try:
+            changed = graph.replace_cells(layout.serial, cells)
+        except ValueError:
+            if not self.loosen(owner, axis):raise
+            changed = graph.replace_cells(layout.serial, cells)
+        if changed and self.snug:
+            self.snug.discard((self._frame_owner(owner), axis))     # a wrapping view is measured again
         layout.cross, layout.padding = cross, float(padding)
         layout.minima, layout.maxima, layout.raw, layout.kept = minima, maxima, False, False
         layout.children.clear()
@@ -576,25 +598,55 @@ class GuiGeometry:
             window=graph.parent(window)
         return window
 
+    def release(self, node):
+        """Forget a view `anchor` constrained: it is gone, or in a cell now."""
+        self.anchored.pop(node,None)
+        self.loose.discard(node)
+        self.snug.discard((node,0))
+        self.snug.discard((node,1))
+
+    def gap(self, node, axis):
+        """The cell that holds `node`'s near edge at the gap it has to its window's near edge
+        (`left` / `top` hold), as a list: empty for an edge outside the window."""
+        graph=self.axes[axis]
+        a=self.bounds(self.holder(node))[axis][0]
+        c=self.frames[node][1][axis][0]
+        near=graph.position(c)-graph.position(a)
+        return [(a,c,near,near)] if near>=0. else []
+
+    def wraps(self, node):
+        """Per axis, whether the view is as large as its content (`width=None` / `height=None`)."""
+        arguments=self.cache.invocations[node][1]
+        return arguments.get('width',0.) is None, arguments.get('height',0.) is None
+
     def anchor(self, node):
-        """Tie each edge of `node`'s frame to the same edge of its window, at the gap it has now,
-        however wide. A tied edge and the window's move each other like the two sides of a fixed
-        cell: a divider pushed against the view's edge pushes the window's, and the window
-        resized takes the view along. Call it from the view's body before it declares rows or
-        columns. A view in a layout cell is tied to the cell already; an edge outside the window
-        is left free."""
+        """Constrain `node`'s frame to its window's, as its caller placed and sized it. The near
+        edge keeps its gap to the window's near edge (`gap`). The size is one of three, per axis:
+        - fill (the view ends on the window's far edge): the two far edges are one. A divider
+          pushed against it resizes the window, and the window resized takes the view along.
+        - a number: a span that cannot change. To move one of its edges the solver has to move
+          the other, and through the gap the window's near edge: a divider pushed against the
+          right edge of a view at left=100, width=400 moves the window's left edge.
+        - wrap (None): a span that cannot change either, as small as the view's rows and columns
+          can be made. It is found as they are declared (`wrap`).
+        docs/WINDOW_COLLISION_COLUMNS.md, "Views placed in a window". Call it from the view's
+        body before it declares rows or columns. A view in a layout cell is constrained by the
+        cell already; an edge outside the window is left free."""
         graph=self.cache.graph
         if node in self.bindings or graph.is_portal(node):return
         window=self.holder(node)
         if window==node:return
         outer,inner=self.bounds(window),self.bounds(node)
+        if self.native is None and graph.parent(window):
+            self.bounds(self.holder(window))        # what `walls` holds a drag in this view with: made now, not mid drag
         serial=self.frames[node][0]
-        for axis,(a,b),(c,d) in zip(self.axes,outer,inner):
-            cells=[]
-            near=axis.position(c)-axis.position(a)
+        wraps=self.wraps(node)
+        for index,(axis,(a,b),(c,d)) in enumerate(zip(self.axes,outer,inner)):
+            cells=self.gap(node,index)
             far=axis.position(b)-axis.position(d)
-            if near>=0.:cells.append((a,c,near,near))
-            if far>=0.:cells.append((d,b,far,far))
+            size=axis.position(d)-axis.position(c)
+            if not wraps[index] and 0.<=far<FILLS:cells.append((d,b,far,far))
+            else:cells.append((c,d,size,size))      # of a wrapping axis: the size found last time
             axis.replace_cells(serial,cells)
         if node not in self.anchored:
             above={node}
@@ -604,6 +656,40 @@ class GuiGeometry:
                 parent=graph.parent(parent)
             self.anchored[node]=frozenset(above)
             self.loose.add(node)
+
+    def loosen(self, node, axis):
+        """Drop the fixed size `anchor` gave the frame `node` is laid out in, along `axis`: its
+        cells need more room than it has, and it grows past its rectangle as a window under its
+        layout's minimum does. Returns whether there was one to drop."""
+        node=self._frame_owner(node)
+        if node not in self.anchored:return False
+        self.axes[axis].replace_cells(self.frames[node][0],self.gap(node,axis))
+        return True
+
+    def wrap(self, layout):
+        """A layout of a wrapping view was declared: make the view as small as its cells allow
+        (`shrink`). Called as the layout closes, so that the size it draws, which is the size
+        the view is measured at, is that one. A layout in a cell waits for the outermost."""
+        node=layout.owner
+        if node not in self.anchored or self.cell_scope is not None:return
+        for axis,wrapping in enumerate(self.wraps(node)):
+            if wrapping:self.shrink(node,axis)
+
+    def shrink(self, node, axis):
+        """Make a wrapping view as small along `axis` as its rows and columns allow, and hold it
+        there: the far edge is pulled to the near one until every cell is at its minimum."""
+        graph=self.axes[axis]
+        # No layout in it changed since it was made small (`declare`, `remove_layout`): it still
+        # is. Letting the span go to measure again would end the drag in progress.
+        if (node,axis) in self.snug:return
+        serial,pairs,_=self.frames[node]
+        near,far=pairs[axis]
+        cells=self.gap(node,axis)
+        graph.replace_cells(serial,cells)
+        least=graph.span(near,far) or 0.
+        graph.solve(far,graph.position(near)+least,[near])
+        graph.replace_cells(serial,cells+[(near,far,least,least)])
+        self.snug.add((node,axis))
 
     def cell_rect(self, layout, index):
         along = self.axes[layout.axis]
@@ -710,7 +796,7 @@ class GuiGeometry:
             # the committed view is it or an ancestor, which may have placed it or its parent anew.
             if not (shifted or owner in above or node in loose):continue
             if node not in self.frames or not graph.contains(node):
-                self.anchored.pop(node,None);loose.discard(node);continue
+                self.release(node);continue
             loose.discard(node)
             x,y,w,h=self.frame_rect(node)
             parent=graph.parent(node)
@@ -995,6 +1081,7 @@ class GuiGeometry:
         if layout is None:return
         self.owner_layouts[layout.owner].discard(identity)
         if not self.owner_layouts[layout.owner]:self.owner_layouts.pop(layout.owner)
+        if self.snug:self.snug.discard((self._frame_owner(layout.owner),layout.axis))
         dependents=self.axes[layout.axis].remove(layout.serial)
         for key,other in tuple(self.layouts.items()):
             if other.serial in dependents:self.remove_layout(key)
@@ -1015,7 +1102,7 @@ class GuiGeometry:
 
     def retire(self,node):
         self.frozen.discard(node)
-        self.anchored.pop(node,None)
+        self.release(node)
         self.loose.discard(node)
         self.stale.discard(node)
         self.placed.pop(node, None)

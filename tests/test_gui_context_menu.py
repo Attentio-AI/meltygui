@@ -14,6 +14,7 @@ from editor_host import Host
 from meltygui.core.input import context_menu as menus
 from meltygui.core.input.context_menu import context_menu
 from meltygui.core.rendering.gui_prototype import AFTER, _renderer_name, gui
+from meltygui.view import choice_view
 from meltygui.view.context_menu_view import GAP, draw_context_menu
 from meltygui.view.value_view import ROW
 
@@ -320,3 +321,125 @@ def test_the_decorator_says_how_it_is_used():
         context_menu({'Delete': 'not a function'})
     with pytest.raises(TypeError, match='above @gui'):
         context_menu({'Delete': print})(lambda input_value: None)
+
+
+# --- submenus: an option that is a dict of options ---------------------------------------------
+
+def moved(input_value, label):
+    PICKS.append(('moved', input_value, label))
+
+
+@context_menu({'Open': lambda: PICKS.append('open'),
+               'Move': {'Up': moved, 'Further': {'To the top': lambda: PICKS.append('top')}}})
+@gui(width=120, height=30)
+def branch(input_value, label=''):
+    RUNS.append('branch')
+
+
+@context_menu({'Around': {'Refresh': lambda: PICKS.append('refresh')}})
+@gui(width=300, height=100)
+def trunk(input_value):
+    branch('row', name='branch', label='first', left=10.0, top=10.0)
+
+
+def tree():
+    trunk(None, name='trunk', left=0.0, top=0.0)
+
+
+@pytest.fixture
+def nest():
+    PICKS.clear()
+    RUNS.clear()
+    host = Host(tree)
+    host.frame()
+    yield host
+    host.close()
+
+
+def submenus(host):
+    """The open submenus' nodes, outermost first."""
+    body = choice_view.options.__gui_definition__[0]
+    found = [node for node, record in host.cache.records.items() if record[2] is body]
+    return sorted(found, key=lambda node: host.cache.position(node)[0])
+
+
+def at_row(host, node, at):
+    x, y = host.cache.position(node)
+    return x + 10.0, y + at * ROW + ROW * 0.5
+
+
+def test_an_option_that_is_a_dict_opens_a_submenu_beside_its_row(nest):
+    right_click(nest, INNER)
+    assert labels(nest) == [['Open', 'Move'], ['Around']] and submenus(nest) == []
+    nest.frame(row(nest, 1))
+    nest.frame()
+    (found,) = submenus(nest)
+    x, y = nest.cache.position(menu(nest))
+    assert nest.cache.graph.parent(found) == menu(nest)
+    assert nest.cache.position(found) == (x + nest.cache.imgui_input.menu.width, y + ROW)
+    nest.frame(row(nest, 0))                    # the selection moves on: the submenu goes, the menu stays
+    nest.frame()
+    assert submenus(nest) == [] and menu(nest) is not None
+
+
+def test_a_pick_in_a_submenu_calls_it_for_its_view_and_closes_all(nest):
+    right_click(nest, INNER)
+    nest.frame(row(nest, 1))
+    nest.frame()
+    (found,) = submenus(nest)
+    nest.frame(at_row(nest, found, 0))
+    nest.click(*at_row(nest, found, 0))
+    nest.frame()
+    nest.frame()
+    assert PICKS == [('moved', 'row', 'first')]
+    assert submenus(nest) == [] and menu(nest) is None and nest.cache.imgui_input.menu is None
+
+
+def test_submenus_nest_and_an_outer_views_submenu_is_its_own(nest):
+    right_click(nest, INNER)
+    nest.frame(row(nest, 1))
+    nest.frame()
+    nest.frame(at_row(nest, submenus(nest)[0], 1))
+    nest.frame()
+    deep = submenus(nest)[1]
+    nest.frame(at_row(nest, deep, 0))
+    nest.click(*at_row(nest, deep, 0))
+    for _ in range(3):
+        nest.frame()
+    assert PICKS == ['top'] and menu(nest) is None
+    right_click(nest, INNER)
+    x, y = nest.cache.position(menu(nest))
+    nest.frame((x + 10.0, y + 2 * ROW + GAP + ROW * 0.5))       # the outer view's row, below the line
+    nest.frame()
+    (found,) = submenus(nest)
+    nest.frame(at_row(nest, found, 0))
+    nest.click(*at_row(nest, found, 0))
+    nest.frame()
+    nest.frame()
+    assert PICKS == ['top', 'refresh'] and menu(nest) is None
+
+
+def test_the_keyboard_opens_a_submenu_and_picks_in_it(nest):
+    right_click(nest, INNER)
+    nest.frame(keys=[(glfw.KEY_DOWN, 0)])
+    nest.frame(keys=[(glfw.KEY_DOWN, 0)])
+    nest.frame(keys=[(glfw.KEY_RIGHT, 0)])
+    nest.frame()
+    assert len(submenus(nest)) == 1
+    nest.frame(keys=[(glfw.KEY_LEFT, 0)])       # back to the menu
+    nest.frame()
+    assert submenus(nest) == [] and menu(nest) is not None
+    nest.frame(keys=[(glfw.KEY_ENTER, 0)])
+    nest.frame()
+    nest.frame(keys=[(glfw.KEY_DOWN, 0)])
+    nest.frame(keys=[(glfw.KEY_ENTER, 0)])
+    nest.frame()
+    nest.frame()
+    assert PICKS == [('moved', 'row', 'first')] and menu(nest) is None
+
+
+def test_a_submenu_is_checked_like_the_menu():
+    with pytest.raises(TypeError, match='label: function'):
+        context_menu({'More': {'Delete': 'not a function'}})
+    with pytest.raises(TypeError, match='dict of'):
+        context_menu({'More': {}})

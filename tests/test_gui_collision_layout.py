@@ -627,15 +627,15 @@ def test_rebuilt_layout_retires_the_cross_layouts_in_its_cells():
     finally:cache.close()
 
 
-def test_anchor_ties_only_the_edges_near_the_window():
-    """A view that fills its window but for 250 px on the right: three edges are tied and follow
-    the window's, the far right one is not."""
+def test_anchor_ties_a_filling_edge_to_the_window_and_keeps_a_fixed_size():
+    """A view that fills its window down to the bottom, 330 px wide with 250 px to its right: the
+    bottom edge follows the window's, the width is the caller's whatever the window does."""
     cache=RetainedGui(graphics=False); ids={}
 
     @cache.gui()
     def tiles(input_value):
         ids['tiles']=cache.current
-        cache.geometry.anchor(cache.current,100.)
+        cache.geometry.anchor(cache.current)
         with cache.geometry.declare(('a','b'),axis=0,key='main'):pass
         return False,input_value
 
@@ -653,6 +653,145 @@ def test_anchor_ties_only_the_edges_near_the_window():
         geometry.axes[0].solve(right,geometry.axes[0].position(right)+50,[left])
         geometry.apply();cache.flush()
         assert cache.graph.info(ids['tiles'])['rect']==(20,0,330,350)
+    finally:cache.close()
+
+
+def fixed_tiles(mins=60):
+    """Columns a | b in a view of a fixed 400 x 400 at (100, 100) of a 700 x 600 Melty window."""
+    cache=RetainedGui(graphics=False); ids={}; layouts={}
+
+    @cache.gui()
+    def tiles(input_value):
+        ids['tiles']=cache.current
+        cache.geometry.anchor(cache.current)
+        layouts['main']=cache.geometry.declare(('a','b'),axis=0,key='main',mins=mins)
+        with layouts['main']:pass
+        return False,input_value
+
+    @cache.gui(width=700,height=600)
+    def window(input_value):
+        ids['window']=cache.current
+        tiles(None,name='tiles',left=100.,top=100.,width=400.,height=400.)
+        return False,input_value
+
+    @cache.gui(width=1400,height=1000)
+    def root(input_value):
+        window(None,name='window',melty_window=True,initial={'left':50,'top':50})
+        return False,input_value
+    root(None);cache.flush()
+    return cache,root,ids,layouts
+
+
+def test_a_divider_moves_a_view_of_a_fixed_size_by_moving_its_window_edge():
+    """The view's size and place in its window are its caller's. To move its right edge the
+    solver moves its left one, and with that the window's left edge: the window is resized, the
+    view is not. Nothing springs back when the views run again."""
+    cache,root,ids,layouts=fixed_tiles()
+    try:
+        geometry=cache.geometry
+        assert geometry.frame_rect(ids['window'])[::2]==(50,700)
+        geometry.drag(layouts['main'],1,200);cache.flush()           # 140 to b's minimum, 60 more
+        geometry.end_gesture();cache.flush()
+        for node in (ids['window'],ids['tiles']):
+            cache.invalidate_id(node);root(None);cache.flush()
+        assert layouts['main'].sizes()==[340,60]
+        assert cache.graph.info(ids['tiles'])['rect']==(100,100,400,400)
+        assert geometry.frame_rect(ids['tiles'])[::2]==(210,400)
+        assert geometry.frame_rect(ids['window'])[::2]==(110,640)    # its left edge went along
+        geometry.drag(layouts['main'],1,-500,token=2);cache.flush()  # 280 to a's minimum, 220 more
+        assert layouts['main'].sizes()==[60,340]
+        assert geometry.frame_rect(ids['tiles'])[::2]==(-10,400)
+        assert geometry.frame_rect(ids['window'])[::2]==(-110,860)
+    finally:cache.close()
+
+
+def test_a_view_of_a_fixed_size_moves_the_os_window_edge_and_reverses():
+    """draw_tiles(left=100, top=100, width=400, height=400) in an OS window: a divider dragged
+    past the right tile's minimum moves the OS window's left edge, and back with the drag."""
+    cache=RetainedGui(graphics=False); ids={}; layouts={}
+
+    @cache.gui()
+    def tiles(input_value):
+        ids['tiles']=cache.current
+        cache.geometry.anchor(cache.current)
+        layouts['main']=cache.geometry.declare(('a','b'),axis=0,key='main',mins=60)
+        with layouts['main']:pass
+        return False,input_value
+
+    @cache.gui(width=900,height=700)
+    def root(input_value):
+        tiles(None,name='tiles',left=100.,top=100.,width=400.,height=400.)
+        return False,input_value
+    root(None);cache.flush()
+    try:
+        native=attach_native(cache,900,700)
+        root(None);cache.flush()
+        geometry=cache.geometry; graph=geometry.axes[0]
+        start=graph.values()
+        left,right=native.pairs[0]
+        assert (graph.position(left),graph.position(right))==(100,1000)
+        geometry.drag(layouts['main'],1,200,token=9)                 # 140 to b's minimum, 60 more
+        assert (graph.position(left),graph.position(right))==(160,1000)
+        assert geometry.frame_rect(ids['tiles'])[::2]==(260,400)
+        assert layouts['main'].sizes()==[340,60]
+        geometry.drag(layouts['main'],1,0,token=9)
+        assert graph.values()==start
+    finally:cache.close()
+
+
+def test_a_view_of_a_fixed_size_too_small_for_its_cells_is_still_laid_out():
+    cache,root,ids,layouts=fixed_tiles(mins=260)
+    try:
+        assert sum(layouts['main'].sizes())>=520
+    finally:cache.close()
+
+
+def test_a_wrapping_view_is_as_small_as_its_cells_and_stays_so():
+    """draw_tiles(width=None, height=FILL): the width is the least its columns can be solved
+    to, the height the window's. A divider cannot make it wider, so it moves the view and the
+    window's left edge; running again does not end the drag; another column widens it."""
+    from meltygui.core.rendering.gui_size import FILL
+    cache=RetainedGui(graphics=False); ids={}; layouts={}; model={'keys':('a','b','c')}
+
+    @cache.gui()
+    def tiles(input_value):
+        ids['tiles']=cache.current
+        cache.geometry.anchor(cache.current)
+        layouts['main']=cache.geometry.declare(model['keys'],axis=0,key='main',mins=60)
+        with layouts['main']:pass
+        return False,input_value
+
+    @cache.gui(width=700,height=600)
+    def window(input_value):
+        ids['window']=cache.current
+        tiles(None,name='tiles',left=100.,top=0.,width=None,height=FILL)
+        return False,input_value
+
+    @cache.gui(width=1400,height=1000)
+    def root(input_value):
+        window(None,name='window',melty_window=True,initial={'left':50,'top':50})
+        return False,input_value
+    root(None);cache.flush()
+    try:
+        geometry=cache.geometry
+        assert layouts['main'].sizes()==[60,60,60]
+        assert geometry.frame_rect(ids['tiles'])[2:]==(180,600)
+        geometry.pointer((210,300),down=True,pressed=True)            # the divider between a and b
+        geometry.pointer((250,300),down=True);cache.flush()
+        assert geometry.gesture is not None                           # the views ran again: still dragging
+        geometry.pointer((310,300),down=True);cache.flush()
+        geometry.pointer((310,300),released=True);cache.flush()
+        assert layouts['main'].sizes()==[60,60,60]
+        assert geometry.frame_rect(ids['tiles'])[::2]==(250,180)
+        assert geometry.frame_rect(ids['window'])[::2]==(150,600)     # its left edge went along
+        (left,right),(top,bottom)=geometry.windows[ids['window']]
+        geometry.axes[1].solve(bottom,geometry.axes[1].position(bottom)+80,[top])
+        geometry.apply();cache.flush()
+        assert geometry.frame_rect(ids['tiles'])[2:]==(180,680)       # the height fills
+        model['keys']=('a','b','c','d')
+        cache.invalidate_id(ids['tiles']);root(None);cache.flush()
+        assert layouts['main'].sizes()==[60,60,60,60]
+        assert geometry.frame_rect(ids['tiles'])[2]==240
     finally:cache.close()
 
 
