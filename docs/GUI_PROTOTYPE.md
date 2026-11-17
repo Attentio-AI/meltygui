@@ -184,6 +184,18 @@ absent/None default are injected; explicit `inject={'field': factory}` is also
 available. Caller-provided instances are borrowed rather than replacing the
 factory-owned instance. Existing serializer rules still govern the values.
 
+A parameter without a default is built by its annotation when nobody passes it
+(`count: int` is 0, `items: list[str]` a list, `clock: Clock` a `Clock`), once
+per view, through the same factory: `compile_plan` and `constructor` in
+[gui_prototype.py](../meltygui/core/rendering/gui_prototype.py). It is None
+without an annotation, or with one that builds nothing (`object`, `Any`, a
+union, an abstract class). What was built is kept while it is an instance of
+the annotation: an edited annotation, or an object the session brought back
+as None, is built again (`kind` in `invoke`, lib.rs). A type that needs
+arguments resolves to an `Ask`, and the view's body is replaced by `asking`
+until `draw_function` of that type has built one
+([function_view.py](../meltygui/view/function_view.py)).
+
 Use `no_save` for runtime-only parameters, callbacks or handles. Geometry is not
 globally excluded: `no_save=('left',)` excludes one coordinate, while
 `no_save=('left', 'top')` excludes both. Framework context, events and derived
@@ -528,16 +540,18 @@ Nothing passed is `ABSENT` (`inspect.Parameter.empty`), never None. `invoke`
 ([lib.rs](../native/gui_prototype/src/lib.rs)) then resolves the value in the
 loop every parameter resolves in, and a returned `(True, value)` is written as
 `draw_state.<name> = value` would be (`author`). A value the caller passed is
-read through the state and never copied to it: `NativeState.lent` marks its
-slot and `borrowed` finds the value where it lives, on the runtime's stack
+read through the state and never copied to it: `NativeState.value` is its
+slot (told by `RetainedGraph.lend` when the node is made, and by every run)
+and `borrowed` finds the value where it lives, on the runtime's stack
 while the view's body runs (its `Frame`), else in the graph's node (`input`,
 [retained.rs](../native/gui_prototype/src/retained.rs), reached through a weak
 pointer), which holds what the caller last passed, or the view's edit until
 the caller has answered it, for as long as the view is declared. The state so
 adds no reference to a passed model or tensor, there is nothing to release
-when a view retires, and what is saved does not change. An immediate view has
-no node: its passed value reads while its body runs and raises
-`AttributeError` otherwise. The graph holds no edit for a view
+when a view retires, and what is saved does not change. A view that is gone
+reads its own value again. An immediate view has no node: its passed value
+reads while its body runs and raises `AttributeError` otherwise
+(`NativeState.lent`: its last run was passed one). The graph holds no edit for a view
 that owns its value and has nothing to settle (`commit`,
 [retained.rs](../native/gui_prototype/src/retained.rs)); the view runs once
 more instead, to show it (`_propagate`). Tests:
@@ -554,7 +568,7 @@ objects internally. This preserves caller/default precedence and ownership; it
 is not a second persistence store. Generally, resolution is:
 
 ```text
-explicit caller argument > authored/initial state > decorator default > signature default
+explicit caller argument > authored/initial state > decorator default > injected or built by the type > signature default
 ```
 
 Current geometry and context are injected by the framework as needed. The
@@ -804,6 +818,7 @@ resolved in full.
 | Wake from native threads | [wake.rs](../native/gui_prototype/src/wake.rs), `waker` / `drain_wakes` / `close_wakes` / `park` in [glfw_utils.py](../meltygui/core/windowing/glfw_utils.py), `poke` in [window_api.py](../meltygui/core/windowing/window_api.py) |
 | Largest user so far | the [native editor](NATIVE_EDITOR.md): [editor_view.py](../meltygui/view/editor_view.py) |
 | Default views | [gui_any.py](../meltygui/core/rendering/gui_any.py) (`draw_any`, `is_default_for`), [keyed.py](../meltygui/core/rendering/keyed.py) (`Keyed`, `keyed_as`), [value_view.py](../meltygui/view/value_view.py), [dict_view.py](../meltygui/view/dict_view.py); tests [routing and rows](../tests/test_gui_any.py), [views](../tests/test_gui_any_view.py) |
+| Parameters built by their type, `draw_function` | `constructor`, `Ask`, `asking` in [gui_prototype.py](../meltygui/core/rendering/gui_prototype.py), `kind` in [lib.rs](../native/gui_prototype/src/lib.rs), [function_view.py](../meltygui/view/function_view.py); tests [built parameters](../tests/test_gui_value.py), [the function view](../tests/test_function_view.py); [example](../examples/gui_function.py) |
 | Session persistence | [app_session.py](../meltygui/core/runtime/app_session.py), [load_save_v2.py](../meltygui/core/conversion/load_save_v2.py) |
 | Contract tests | [a view follows its caller](../tests/test_gui_immediate.py), [the value parameter](../tests/test_gui_value.py), [identity](../tests/test_gui_identity.py), [persistence](../tests/test_gui_persistence.py), [positions](../tests/test_gui_position_api.py), [scroll/geometry](../tests/test_gui_scroll_geometry.py) |
 | Interactive and measured checks | [scroll lab](../examples/gui_scroll_lab.py), [benchmark](../tests/benchmark_gui_scrolling.py) |

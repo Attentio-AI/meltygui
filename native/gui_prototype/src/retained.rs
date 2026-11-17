@@ -270,7 +270,6 @@ impl RetainedGraph {
             let id = self.serial;
             self.identities.bind(py).set_item(&identity, id)?;
             let state=match state {Some(s)=>s,None=>Py::new(py,NativeState::py_new())?};
-            let lent = Rc::new(RefCell::new(input.clone_ref(py)));
             {
                 let mut state=state.borrow_mut(py);
                 if !supplied_state {
@@ -279,7 +278,6 @@ impl RetainedGraph {
                 }
                 if state.lookup("scroll_offset").is_none() {state.put("scroll_offset",Value::Point(0.,0.));}
                 if state.lookup("content_offset").is_none() {state.put("content_offset",Value::Point(0.,if portal {28.}else{0.}));}
-                state.record = Rc::downgrade(&lent);
             }
             self.geometry.attach(py,id,parent,state);
             self.dirty_set.insert(id);
@@ -292,7 +290,7 @@ impl RetainedGraph {
                     parent,
                     children: vec![],
                     declared: None,
-                    input: lent,
+                    input: Rc::new(RefCell::new(input.clone_ref(py))),
                     caller_input: input.clone_ref(py),
                     kwargs: kwargs.clone_ref(py),
                     // Never handed to a caller: a view that was passed nothing returns None until it ran.
@@ -652,10 +650,19 @@ impl RetainedGraph {
     fn settle_frames() -> u8 { SETTLE }
     fn in_scroll(&self, id:u64)->bool {self.nodes.get(&id).is_some_and(|n|n.in_scroll)}
     pub(crate) fn invalidate_node(&mut self, id: u64) { self.mark(id); }
-    /// The view runs with another state object than the one it was declared with: that one reads
-    /// a passed value from this node too.
-    fn lend(&self, py: Python<'_>, id: u64, state: Py<NativeState>) {
-        if let Some(n) = self.nodes.get(&id) { state.borrow_mut(py).record = Rc::downgrade(&n.input); }
+    /// Tie a view's state to its node: `draw_state.<name>`, the view's value, then reads what the
+    /// caller passes from here (`NativeState::borrowed`), from the declaration on. The bridge calls
+    /// it when the node is made, and when the view runs with another state object.
+    #[pyo3(signature = (id, state, name=None))]
+    fn lend(&self, py: Python<'_>, id: u64, state: Py<NativeState>, name: Option<&str>) {
+        if let Some(n) = self.nodes.get(&id) {
+            let mut state = state.borrow_mut(py);
+            state.record = Rc::downgrade(&n.input);
+            if let Some(name) = name {
+                let slot = state.shape.borrow_mut().slot(name);
+                state.value = Some(slot);
+            }
+        }
     }
     /// Make a node caller-bound: flush never runs it on its own (its body
     /// needs state only its caller sets up). It runs when its caller declares

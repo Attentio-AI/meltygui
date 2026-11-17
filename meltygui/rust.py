@@ -28,6 +28,7 @@ VIEWS = {
     'draw_dropdown': 'meltygui.view.choice_view',
     'draw_editor': 'meltygui.view.editor_view',
     'draw_float': 'meltygui.view.value_view',
+    'draw_function': 'meltygui.view.function_view',
     'draw_int': 'meltygui.view.value_view',
     'draw_none': 'meltygui.view.value_view',
     'draw_str': 'meltygui.view.value_view',

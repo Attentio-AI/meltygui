@@ -10,6 +10,7 @@ from meltygui.view.dict_view import draw_collection as draw_collection
 from meltygui.view.choice_view import draw_dropdown as draw_dropdown
 from meltygui.view.editor_view import draw_editor as draw_editor
 from meltygui.view.value_view import draw_float as draw_float
+from meltygui.view.function_view import draw_function as draw_function
 from meltygui.view.value_view import draw_int as draw_int
 from meltygui.view.value_view import draw_none as draw_none
 from meltygui.view.value_view import draw_str as draw_str

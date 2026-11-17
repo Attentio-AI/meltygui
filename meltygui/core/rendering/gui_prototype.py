@@ -2,6 +2,8 @@
 from contextvars import ContextVar
 from functools import wraps
 import inspect
+import types
+from typing import Any, get_origin
 
 from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.rendering.injected_state import parameter_annotations
@@ -23,7 +25,71 @@ FILLED = frozenset((
     'resizable', 'return_extras', 'window_pos', 'canvas'))
 
 
+# Lever: classes that are an annotation and build nothing (`constructor`).
+UNBUILT = frozenset((object, Any, type, type(None), types.UnionType, inspect.Parameter.empty))
+
 _window = ContextVar('prototype_gui_window', default=None)
+
+
+def constructor(annotation):
+    """The class that builds a parameter annotated `annotation` when nobody passes it: `int` gives 0,
+    `list[int]` a list, a class an instance of it. None where there is nothing to build: no
+    annotation, `object`, `Any`, a union, an abstract class or a protocol."""
+    kind = get_origin(annotation) or annotation
+    if not inspect.isclass(kind) or kind in UNBUILT or inspect.isabstract(kind) or getattr(kind, '_is_protocol', False):
+        return None
+    return kind
+
+
+def needs_arguments(function):
+    """Whether a call of `function` must pass something. A C type that keeps its signature to
+    itself (`int`, `dict`) is taken to need nothing."""
+    try:
+        parameters = inspect.signature(function).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(parameter.default is parameter.empty
+               and parameter.kind not in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD) for parameter in parameters)
+
+
+class Ask:
+    """What a parameter resolves to when nobody passed it and its type cannot be built without
+    arguments: the view asks the user for them (`asking`)."""
+    __slots__ = ('constructor',)
+
+    def __init__(self, constructor):
+        self.constructor = constructor
+
+
+def asking(func, asked, hidden):
+    """The body of a view whose parameters `asked` have a type that needs arguments. While one of
+    them is an `Ask`, the view shows `draw_function` of that type in its own place; what its button
+    builds is written to the view's state (`draw_state.<name>`), and the view's own body runs from
+    the next frame on. `hidden`: the names among `draw_state` and `cache` that are no parameters of
+    `func`; the plan added them for this."""
+    @wraps(func)
+    def body(**arguments):
+        draw_state = arguments['draw_state']
+        cache = arguments.get('cache')
+        for name in hidden:
+            del arguments[name]
+        waiting = False
+        for name in asked:
+            pending = arguments[name]
+            if pending.__class__ is Ask:
+                from meltygui.view.function_view import draw_function
+                built, _, form = draw_function(pending.constructor, name=name, return_extras=True)
+                if built:
+                    value = form.result
+                    del form.result                 # the view's from here on, not the form's too
+                    setattr(draw_state, name, value)
+                    if cache is not None:
+                        cache.wake_next(cache.current)      # a state write in a view's own run does not run it again
+                waiting = True
+        if waiting:
+            return False, None
+        return func(**arguments)
+    return body
 
 
 def positional(func):
@@ -64,7 +130,10 @@ def gui(func=None, *, glfw_window=False, **decoration):
     and the returned ``(changed, value)`` is about it. Returning None means
     unchanged. Passed nothing, it resolves like every parameter, from the view's
     state (``draw_state.<name> = value``, or a returned edit, which is the same
-    write), then the defaults. A first parameter the framework fills (``FILLED``:
+    write), then the defaults. A parameter without a default is built by its
+    annotation, once, and kept as state (``count: int`` starts at 0); a type that
+    needs arguments is asked for with ``draw_function`` in the view's place, and
+    a parameter without a type is None. A first parameter the framework fills (``FILLED``:
     ``width``, ``draw_state`` ...) is not a value. ``draw_state.<name>`` reads
     every parameter, a passed one included; a passed value is read through to
     the caller's, never copied to the state or saved. ``glfw_window=True`` hosts
@@ -161,13 +230,13 @@ def _bind_native(native, func=None, *, inject=None, events=(), state_id=None, no
         signature = inspect.signature(func)
         annotations = parameter_annotations(func)
         parameters = []
-        var_kwargs = False
+        asked = []
+        var_kwargs = any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
         first = positional(func)[1]
         for name, parameter in signature.parameters.items():
             if name == 'window_pos':
                 raise TypeError('@gui parameters use left and top, not window_pos')
             if parameter.kind is inspect.Parameter.VAR_KEYWORD:
-                var_kwargs = True
                 continue
             if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.VAR_POSITIONAL):
                 raise TypeError('@gui prototype accepts named parameters and **kwargs, not positional-only or *args')
@@ -177,11 +246,32 @@ def _bind_native(native, func=None, *, inject=None, events=(), state_id=None, no
                     and inspect.isclass(annotation) and issubclass(annotation, DictConversion)
                     and parameter.default in (None, inspect.Parameter.empty)):
                 factory = annotation
-            # A value need not be passed: without a default of its own it is None.
-            parameters.append((name, parameter.default is not inspect.Parameter.empty or name == first,
-                               None if parameter.default is inspect.Parameter.empty else parameter.default,
-                               factory))
-        return Renderer(native, func, decoration, parameters, list(events), var_kwargs, identity,
+            # No parameter needs to be passed. Without a default its type builds it, once per view
+            # (the factory; kept in the state like an injected one). A type that needs arguments is
+            # asked for (`asking`), and without a type the parameter is None. A name the framework
+            # fills is the framework's to supply.
+            default = parameter.default
+            kind = None
+            if default is inspect.Parameter.empty:
+                default = None
+                if factory is None and name not in FILLED:
+                    kind = constructor(annotation)
+                if kind is not None and needs_arguments(kind):
+                    default = Ask(kind)
+                    asked.append(name)
+                elif kind is not None:
+                    factory = kind
+            supplied = parameter.default is not inspect.Parameter.empty or name not in FILLED
+            parameters.append((name, supplied, default, factory, kind))
+        body = func
+        if asked:
+            # (`cache` has a default here: an immediate view outside a window has none, and runs every frame.)
+            hidden = ()
+            if not var_kwargs:
+                hidden = tuple(name for name in ('draw_state', 'cache') if name not in signature.parameters)
+            parameters.extend((name, name == 'cache', None, None, None) for name in hidden)
+            body = asking(func, tuple(asked), hidden)
+        return Renderer(native, body, decoration, parameters, list(events), var_kwargs, identity,
                         list(no_save) + list(events), first is not None)
 
     renderer = compile_plan()

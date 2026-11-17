@@ -18,6 +18,7 @@ from . import dropdown_view as dropdown_view
 from . import editor_view as editor_view
 from . import file_icon_view as file_icon_view
 from . import file_view as file_view
+from . import function_view as function_view
 from . import graph_cuda_view as graph_cuda_view
 from . import graph_view as graph_view
 from . import header_view as header_view

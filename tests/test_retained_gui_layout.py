@@ -861,3 +861,94 @@ def test_a_wrapping_window_keeps_measuring_after_the_layout_places_it(graphics):
         assert rect() == (90., 70., 40., 20.)
     finally:
         cache.close()
+
+
+def test_a_wrapping_axis_is_given_its_room_whatever_size_the_state_holds(graphics):
+    """A window declared with numbers and then moved holds those numbers as authored state (the layout
+    wrote them). The same view declared with None wraps: its body is given the room, not the held
+    size, so content larger than the held size is not cut to it."""
+    cache = RetainedGui()
+    content, ids, given, sizes = [350., 250.], {}, {}, {'width': 120, 'height': 100}
+
+    @cache.gui
+    def window(input_value: object, width, height, canvas, cache=None):
+        ids['window'] = cache.current
+        given['size'] = width, height
+        imgui.dummy(min(width, content[0]) if canvas.width is None else width,
+                    min(height, content[1]) if canvas.height is None else height)
+        return False, input_value
+
+    @cache.gui(width=400, height=300)
+    def root(input_value: object, cache=None):
+        ids['root'] = cache.current
+        window(None, name='held', melty_window=True, initial={'left': 20, 'top': 40}, **sizes)
+        return False, input_value
+
+    def frame():
+        cache.invalidate_id(ids['root'])
+        cache.invalidate_id(ids['window'])
+        root(None)
+        cache.flush()
+
+    rect = lambda: cache.graph.info(ids['window'])['rect']
+    try:
+        root(None)
+        cache.flush()
+        cache.graph.allocate(ids['window'], (30., 50., 120., 100.))     # the user moved it
+        cache.flush()
+        held = cache.graph.state(ids['window']).save_state()[2]
+        assert (held['width'], held['height']) == (120., 100.)
+        sizes.update(width=None, height=None)
+        frame()
+        assert given['size'] == (400., 300.)        # the root's room
+        assert rect() == (30., 50., 350., 250.)
+        content[:] = 60., 30.
+        frame()
+        assert rect() == (30., 50., 60., 30.)
+    finally:
+        cache.close()
+
+
+def test_none_for_left_or_top_follows_the_flow_over_a_held_position(graphics):
+    """A view that was a window holds the window's position. Not passed, it stands; `left=None` /
+    `top=None` on the call puts that axis back in the flow, each axis by itself."""
+    cache = RetainedGui()
+    ids, call = {}, {'melty_window': True, 'initial': {'left': 150, 'top': 120}}
+
+    @cache.gui(width=80, height=30)
+    def box(input_value: object, cache=None):
+        ids[input_value] = cache.current
+        return False, input_value
+
+    @cache.gui(width=400, height=300)
+    def root(input_value: object, cache=None):
+        ids['root'] = cache.current
+        box('first')
+        box('it', name='it', **call)
+        box('after')
+        return False, input_value
+
+    def rects(**passed):
+        call.clear()
+        call.update(passed)
+        cache.invalidate_id(ids['root'])
+        root(None)
+        cache.flush()
+        return cache.graph.info(ids['it'])['rect'][:2], cache.graph.info(ids['after'])['rect'][:2]
+
+    try:
+        root(None)
+        cache.flush()
+        flow = cache.graph.info(ids['after'])['rect'][:2]       # where a second view in the flow is
+        below = (flow[0], 2 * flow[1])
+        assert rects() == ((150., 120.), (0., 120. + flow[1]))  # held: the window's position
+        assert rects(left=None, top=None) == (flow, below)
+        assert rects(top=None) == ((150., flow[1]), below)
+        assert rects(left=None) == ((0., 120.), (0., 120. + flow[1]))
+        assert rects(left=7, top=9) == ((7., 9.), (0., 9. + flow[1]))
+        assert rects(left=None, top=None) == (flow, below)
+        assert rects() == ((150., 120.), (0., 120. + flow[1]))  # the held position was outranked, not lost
+        # A window follows the flow the same way.
+        assert rects(melty_window=True, left=None, top=None)[0] == flow
+    finally:
+        cache.close()

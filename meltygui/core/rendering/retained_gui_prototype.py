@@ -498,6 +498,9 @@ class RetainedGui:
                 arguments, _, _, w, h, auto_height, scrollable, extras, caller_keys = resolved
                 caller = {name: kwargs[name] for name in PLACED
                           if name in kwargs and (kwargs[name] is not None or name not in SIZED)}
+                # (Only where no cursor is read, without a host: a flowed axis starts at the parent's corner.)
+                for name in ('left', 'top'):
+                    if name in kwargs and kwargs[name] is None: caller[name] = 0.
                 w, h = _sized(func, state, kwargs.get('width', w), kwargs.get('height', h), auto_height)
                 if 'width' in caller: caller['width'] = w
                 if 'height' in caller: caller['height'] = h
@@ -558,7 +561,10 @@ class RetainedGui:
                     raise ValueError('height bounds must satisfy 0 <= min_height <= max_height <= 8192')
                 minimum, maximum = math.ceil(minimum), math.ceil(maximum)
                 allocation = geometry.allocation(parent) if not portal else None
-                reads_cursor = bool(graphics and (parent or self.auto_layout) and not portal)
+                # `left=None` / `top=None` on the call: that axis follows the flow, whatever position
+                # the state holds (a window's, once the view is no window). Not passed, the held one stands.
+                flowed = tuple(name for name in ('left', 'top') if name in raw and raw[name] is None)
+                reads_cursor = bool(graphics and (parent or self.auto_layout) and (not portal or flowed))
                 if reads_cursor:
                     x, y = imgui.get_cursor_screen_pos()
                 else:
@@ -617,10 +623,18 @@ class RetainedGui:
                     w = min(state.get('width', 0.) or wrap_width, wrap_width)
                 w, h = _sized(func, state, w, h, auto_height)
                 caller = {k: v for k, v in caller.items() if not (k in SIZED and v is None)}
+                # The flow cursor as a caller's position: it outranks the held one.
+                if 'left' in flowed: caller['left'] = float(x)
+                if 'top' in flowed: caller['top'] = float(y)
+                # A wrapping axis is the content's. As a caller's size it outranks what the state
+                # holds for it (a size the user dragged to, or the layout wrote, while the axis was
+                # a number), in the state and in what the body is given (`caller_keys`).
+                if wrap_width is not None: caller['width'] = w
+                if auto_height: caller['height'] = h
                 # The state holds the size the view is drawn at, not an unusable one the caller computed.
                 if 'width' in caller: caller['width'] = w
                 if 'height' in caller: caller['height'] = h
-                if popup and 'left' in caller and 'top' in caller:
+                if popup and 'left' in caller and 'top' in caller and not flowed:
                     caller['left'], caller['top'] = self._fit(parent, caller['left'], caller['top'], w, h)
                 if allocation is not None:
                     caller.update(width=w, height=h, left=x, top=y)
@@ -656,8 +670,8 @@ class RetainedGui:
                 if not reads_cursor:
                     flow_x = flow_y = None
                 else:
-                    if (left is not None or 'left' in caller) and automatic_width is None: flow_x = None
-                    if (top is not None or 'top' in caller) and automatic_height is None: flow_y = None
+                    if (left is not None or 'left' in caller) and automatic_width is None and 'left' not in flowed: flow_x = None
+                    if (top is not None or 'top' in caller) and automatic_height is None and 'top' not in flowed: flow_y = None
                 # Layout cells and portals re-resolve every declaration: their
                 # rectangle comes from the constraint solver, not these inputs.
                 if portal or allocation is not None:
@@ -698,6 +712,8 @@ class RetainedGui:
                 self.records[node] = binding.native, binding.renderer, func
                 self.states[node] = state
                 self.executor.attach(node, binding.call, func, binding.unique, state, caller_keys)
+                # `draw_state.<value>` reads what the caller passes from the node, never a copy.
+                graph.lend(node, state, first)
                 if listen is not None and 'event' not in parameters:
                     # It only paints: nothing but its arguments runs it.
                     self.inputs[node] = QUIET
@@ -713,7 +729,7 @@ class RetainedGui:
             if previous is None or previous[0] is not input_value or isinstance(input_value, (str, Path)):
                 self.associate(input_value, node)
             visible = flags & 8
-            if portal or geometry.cell_scope is not None or geometry.bindings:
+            if portal or geometry.cell_scope is not None or geometry.bindings or node in geometry.windows:
                 geometry.bind(node, parent, portal=portal)
                 # Rebinding a layout cell can invalidate this view.
                 dirty = graph.dirty(node)
@@ -877,7 +893,7 @@ class RetainedGui:
     def _state_replaced(self, node, state):
         binding = self.declarations[node]
         binding.state = self.states[node] = state
-        self.graph.lend(node, state)
+        self.graph.lend(node, state, positional(self.records[node][2])[1])
         # The remembered call was resolved against the previous state object.
         self.declared.forget(binding.handle)
         self.associate(state, node)

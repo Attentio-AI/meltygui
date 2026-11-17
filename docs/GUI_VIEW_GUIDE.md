@@ -75,8 +75,9 @@ own file only to show every pattern in one place.
 1. **Signature.** The first parameter is the view's value, under any name
    (`input_value` by convention), with the type it draws as annotation. A value
    passed by position goes to it, further ones to the next parameters, as in
-   Python: `draw_thing(model, 'Title')`. Every other parameter has a default,
-   and callers may pass any of them by name. A first parameter the framework
+   Python: `draw_thing(model, 'Title')`. Callers may pass any parameter by
+   name, and none has to be passed: one without a default is built by its
+   type, or is None without one (section 5). A first parameter the framework
    fills by name (rule 2, and `FILLED` in
    [gui_prototype.py](../meltygui/core/rendering/gui_prototype.py)) is not a
    value: such a view takes none.
@@ -159,6 +160,11 @@ own file only to show every pattern in one place.
   instead of raising.
 - A position that is not given follows ImGui's flow. Give both in a composed
   layout.
+- **`left=None` / `top=None` puts that axis in the flow**, each by itself,
+  whatever position the view holds. A view that was a window, or was given a
+  position once, keeps it while the call passes nothing; passing None is how
+  it returns to the flow. `left` / `top` numbers stay what they were: from
+  the parent's content corner, not from the flow position.
 - **The root** receives `width` and `height`: the space under the window's
   title bar. `top=0` is the first pixel below the bar, so a view that fills the
   rest from `top=T` gets `height=height - T`. No app knows the bar's height.
@@ -247,12 +253,46 @@ def options(input_value, choices=(), index=None, width=0.0, height=0.0, draw_sta
 - **A passed value is read through, never copied.** `draw_state.input_value`
   goes to the caller's own value, so the state does not keep a model or a
   tensor alive, does not save it, and does not fall back to it once the
-  caller passes nothing. It can be read for as long as the view is declared;
-  in an immediate view (`use_cache=False`) only while its body runs, and
-  `AttributeError` otherwise. (A passed keyword argument is still copied into
-  the state and saved, as of 2026-11-17.)
+  caller passes nothing. It can be read for as long as the view is declared,
+  also before its body has run; in an immediate view (`use_cache=False`) only
+  while its body runs, and `AttributeError` otherwise. A cached view that is
+  gone reads its own value again. A write while a value is passed
+  (`draw_state.input_value = x`) is kept underneath: the read still gives the
+  caller's, and the write shows once the caller passes nothing. (A passed
+  keyword argument is still copied into the state and saved, as of
+  2026-11-17.)
+- **A parameter nobody passes needs no default.** Its annotation builds it,
+  once per view, and it is state from then on, the value like any other
+  parameter:
+
+  ```python
+  @gui
+  def draw_thing(count: int, items: list[str], clock: Clock, note):
+      ...         # 0, [], Clock() and None; the same list and the same Clock on every run
+
+  draw_thing(name='thing')
+  ```
+
+  - A parameter without a type is None. So is one whose type builds nothing:
+    `object`, `Any`, `int | None`, an abstract class (`constructor` in
+    [gui_prototype.py](../meltygui/core/rendering/gui_prototype.py)).
+  - **A type that needs arguments is asked for.** Where `Camera(zoom)` cannot
+    be built from nothing, the view shows `draw_function(Camera)` in its own
+    place (section 12): the constructor's parameters and a button. What the
+    button builds is the view's state, and its body runs from then on. The
+    call returns `(False, None)` until then. A caller that passes a `Camera`
+    never sees the form.
+  - What is built is saved with the session as far as the session can save it
+    (numbers, text, lists, dicts, `DictConversion`). Any other object is built
+    again at the next launch, or asked for again.
+  - A type whose constructor raises fails the call, with a `TypeError` that
+    names the view and the parameter.
+  - Framework names (rule 2 of section 2) are the framework's to fill, not
+    built.
+
+  Worked example: [examples/gui_function.py](../examples/gui_function.py).
 - **The view's value is state like any other when nothing is passed**: its
-  default at first, then what the view wrote. A returned edit is that write,
+  default at first, or what its type built, then what the view wrote. A returned edit is that write,
   so a view can be prototyped with no model at all and given one later:
 
   ```python
@@ -612,6 +652,7 @@ What is there already:
 | Any value, nested dicts and lists, dataclasses | `meltygui.rust.draw_any(value, name=...)`; a view of your own for a type, a key name or a shape is `@is_default_for(...)` above `@gui` |
 | Code or long text | `draw_editor`, from `meltygui.view.editor_view` for now ([NATIVE_EDITOR.md](NATIVE_EDITOR.md#using-draw_editor)) |
 | A button | `draw_button` from `meltygui.rust`: `pressed, _ = draw_button('Run', name='run')` |
+| A function to call with arguments the user edits | `ran, _ = draw_function(fit, name='fit')` from `meltygui.rust`: its parameters as values (`draw_any` of a dict the view keeps, each starting at its default or what its type builds) and a button that calls it, in that run, so only for a call that returns at once. `ran` is true in the run of a call that returned; what it returned is the view's `result` (`ran, _, state = draw_function(fit, return_extras=True)`, then `state.result`); an exception is shown under the button. A class is called the same way and builds an instance ([function_view.py](../meltygui/view/function_view.py)) |
 | One of a few choices | `draw_dropdown(value, choices=CHOICES)` from `meltygui.rust`; `label=` names choices that are not text |
 | Tiles the user splits and joins from their corners, as in Blender | `draw_tiles(tree, name='tiles', views=VIEWS, width=width, height=height)` from `meltygui.rust`; `VIEWS` is a module tuple of `@gui` views of a tile's dict, and each tile picks one from a dropdown in its head; the tree is plain dicts; a divider drag runs only the resized tiles, and `draw_tiles` once at its end to write the sizes; an edge within 100 px of the window's is tied to it, so no cell goes around it ([tiles_view.py](../meltygui/view/tiles_view.py)) |
 | A popup of your own, a picker | Section 7; [examples/gui_popups.py](../examples/gui_popups.py) |

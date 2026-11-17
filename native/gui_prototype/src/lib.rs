@@ -151,11 +151,12 @@ pub(crate) struct NativeState {
     // inputs are unchanged, reconfiguring would write the same values again.
     resolved: Option<[Option<f64>; 8]>,
     excluded: HashSet<String>,
-    // The slot of the view's value while its caller passes it. The state keeps no reference to
-    // such a value: a read goes through to where it lives (`borrowed`), the frame of the running
-    // body (`frames`: the runtime's stack) or else the graph's record of the view (`record`,
-    // retained.rs).
-    lent: Option<usize>,
+    // The slot of the view's value (its first parameter), and whether its last run was passed one.
+    // A passed value is never copied to the state: a read of that slot goes to where the value
+    // lives (`borrowed`), the frame of the running body (`frames`: the runtime's stack) or else
+    // the graph's record of the view (`record`, retained.rs).
+    value: Option<usize>,
+    lent: bool,
     frames: Weak<RefCell<Vec<Frame>>>,
     record: Weak<RefCell<Py<PyAny>>>,
     renderer: u128,
@@ -177,7 +178,8 @@ impl NativeState {
             revision: 0,
             resolved: None,
             excluded: TRANSIENT_STATE.iter().map(|v| v.to_string()).collect(),
-            lent: None,
+            value: None,
+            lent: false,
             frames: Weak::new(),
             record: Weak::new(),
             renderer: 0,
@@ -196,8 +198,9 @@ impl NativeState {
             if let Some(value) = self.values.get_mut(*slot).and_then(Option::take) { state.put_slot(target, value); }
             if let Some(value) = self.owned.remove(slot) { state.owned.insert(target, value); }
             if let Some(value) = self.overrides.remove(slot) { state.overrides.insert(target, value); }
-            if self.lent == Some(*slot) { state.lent = Some(target); }
+            if self.value == Some(*slot) { state.value = Some(target); }
         }
+        state.lent = self.lent;
         state.frames = std::mem::take(&mut self.frames);
         state.record = std::mem::take(&mut self.record);
         state.excluded = std::mem::take(&mut self.excluded);
@@ -249,25 +252,26 @@ impl NativeState {
     /// (its `Frame`), else in the graph's record of the view, which is there as long as the view
     /// is declared. Nothing is copied to the state, so a tensor is free the moment its caller and
     /// its view let go of it. `me` is this state's own object, to find its frame.
-    /// None: `slot` is not such a value (or the caller stopped passing it): the state's own is read.
-    fn borrowed(&self, py: Python<'_>, slot: usize, me: usize) -> PyResult<Option<Py<PyAny>>> {
-        if self.lent != Some(slot) { return Ok(None); }
+    /// Ok(None): the state's own is the one to read (`slot` is not the view's value, nobody passes
+    /// it, or the cached view is gone). Err: an immediate view at rest that was passed its value
+    /// keeps nothing of it, and its own would be the wrong answer.
+    fn borrowed(&self, py: Python<'_>, slot: usize, me: usize) -> Result<Option<Py<PyAny>>, ()> {
+        if self.value != Some(slot) { return Ok(None); }
         if let Some(frames) = self.frames.upgrade() {
-            let value = frames.borrow().iter().rev().find(|frame| frame.state == me)
-                .and_then(|frame| frame.value.as_ref().map(|value| value.clone_ref(py)));
-            if value.is_some() { return Ok(value); }
+            if let Some(frame) = frames.borrow().iter().rev().find(|frame| frame.state == me) {
+                return Ok(frame.value.as_ref().map(|value| value.clone_ref(py)));
+            }
         }
-        let Some(input) = self.record.upgrade() else {
-            return Err(PyAttributeError::new_err(
-                "the view's value is its caller's: it is read while the view is declared (an immediate view: while it runs)"));
-        };
-        let value = input.borrow().clone_ref(py);
-        Ok((!value.bind(py).is(absent(py))).then_some(value))
+        if let Some(input) = self.record.upgrade() {
+            let value = input.borrow().clone_ref(py);
+            return Ok((!value.bind(py).is(absent(py))).then_some(value));
+        }
+        // (A record that ended is a cached view that retired; one never made is an immediate view.)
+        if self.lent && self.record.ptr_eq(&Weak::new()) { Err(()) } else { Ok(None) }
     }
     /// What `draw_state.<name>` reads: a passed value where it lives, every other field from its slot.
-    fn read(slf: &PyRef<'_, Self>, name: &str) -> PyResult<Option<Py<PyAny>>> {
+    fn read(slf: &PyRef<'_, Self>, slot: usize) -> Result<Option<Py<PyAny>>, ()> {
         let py = slf.py();
-        let Some(slot) = slf.shape.borrow().slots.get(name).copied() else { return Ok(None) };
         Ok(match slf.borrowed(py, slot, slf.as_ptr() as usize)? {
             Some(value) => Some(value),
             None => slf.at(slot).map(|value| value.to_py(py)),
@@ -356,7 +360,13 @@ impl NativeState {
         Ok(())
     }
     fn __getattr__(slf: PyRef<'_, Self>, name: &str) -> PyResult<Py<PyAny>> {
-        Self::read(&slf, name)?.ok_or_else(|| PyAttributeError::new_err(name.to_owned()))
+        let slot = slf.shape.borrow().slots.get(name).copied();
+        match slot.map(|slot| Self::read(&slf, slot)) {
+            Some(Ok(Some(value))) => Ok(value),
+            Some(Err(())) => Err(PyAttributeError::new_err(format!(
+                "{name} is passed by the caller of this immediate view, which keeps nothing of it between runs: read it while the view runs"))),
+            _ => Err(PyAttributeError::new_err(name.to_owned())),
+        }
     }
     fn __setattr__(&mut self, name: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
         if name=="window_pos" {return Err(PyAttributeError::new_err("use left and top for relative position"));}
@@ -377,14 +387,16 @@ impl NativeState {
     }
     #[pyo3(signature = (name, default=None))]
     fn get(slf: PyRef<'_, Self>, name: &str, default: Option<Py<PyAny>>) -> Py<PyAny> {
-        Self::read(&slf, name).ok().flatten().unwrap_or_else(|| default.unwrap_or_else(|| slf.py().None()))
+        let slot = slf.shape.borrow().slots.get(name).copied();
+        slot.and_then(|slot| Self::read(&slf, slot).ok().flatten())
+            .unwrap_or_else(|| default.unwrap_or_else(|| slf.py().None()))
     }
     fn as_dict(slf: PyRef<'_, Self>) -> PyResult<Py<PyDict>> {
         let py = slf.py();
         let result = PyDict::new(py);
-        for name in slf.shape.borrow().slots.keys() {
+        for (name, slot) in slf.shape.borrow().slots.iter() {
             // (A passed value that cannot be read now, in an immediate view at rest, is left out.)
-            if let Ok(Some(value)) = Self::read(&slf, name) {
+            if let Ok(Some(value)) = Self::read(&slf, *slot) {
                 result.set_item(name, value)?;
             }
         }
@@ -621,6 +633,9 @@ struct Parameter {
     slot: usize,
     default: Option<Py<PyAny>>,
     factory: Option<Py<PyAny>>,
+    // The class a value nobody passed is an instance of (`constructor`, gui_prototype.py): the
+    // parameter has that type and no default. Such a value is never None of the state's doing.
+    kind: Option<Py<PyAny>>,
 }
 
 // A retained capture supplies its frame context directly instead of through
@@ -724,6 +739,17 @@ pub(crate) struct Renderer {
 }
 
 impl Renderer {
+    /// The error of a type that could not build the parameter nobody passed, naming the view.
+    fn unbuilt(&self, py: Python<'_>, parameter: &Parameter, error: PyErr) -> PyErr {
+        if parameter.kind.is_none() { return error; }
+        let name = |object: &Py<PyAny>| object.bind(py).getattr(intern!(py, "__qualname__"))
+            .and_then(|name| name.extract::<String>()).unwrap_or_else(|_| "?".to_owned());
+        let raised = PyTypeError::new_err(format!(
+            "{}() was passed no {} and {}() could not build one: {}",
+            name(&self.func), parameter.name, name(parameter.factory.as_ref().unwrap()), error.value(py)));
+        raised.set_cause(py, Some(error));
+        raised
+    }
     fn invoke(
         &self,
         py: Python<'_>,
@@ -989,7 +1015,11 @@ impl Renderer {
             // value outranks it. The borrow ends before any later branch.
             let authored = if position || explicit.is_some() { None } else {
                 let ds = state.borrow(py);
-                ds.overrides.get(&parameter.slot).map(|v| v.to_py(py))
+                // (A None held for a typed parameter is an object the session could not save: the
+                // type supplies it again.)
+                ds.overrides.get(&parameter.slot)
+                    .filter(|v| parameter.kind.is_none() || !matches!(v, Value::None))
+                    .map(|v| v.to_py(py))
             };
             let value = if position {
                 args.get(key)?.unwrap().unbind()
@@ -1005,11 +1035,18 @@ impl Renderer {
                     .owned
                     .get(&parameter.slot)
                     .map(|v| v.clone_ref(py));
+                // What a type built is kept while it is one of that type: not after the annotation
+                // was edited, nor when the session brought it back as None.
+                let previous = match (&parameter.kind, previous) {
+                    (Some(kind), Some(value)) if !value.bind(py).is_instance(kind.bind(py))? => None,
+                    (_, previous) => previous,
+                };
                 if let Some(value) = previous {
                     value
                 } else {
                     // Never hold a Rust borrow while invoking arbitrary Python.
-                    let value = factory.bind(py).call0()?.unbind();
+                    let value = factory.bind(py).call0()
+                        .map_err(|error| self.unbuilt(py, parameter, error))?.unbind();
                     state
                         .borrow_mut(py)
                         .owned
@@ -1036,7 +1073,7 @@ impl Renderer {
             // so the state never keeps it alive.
             if parameter.name != "draw_state" && !automatic_size {
                 let mut ds = state.borrow_mut(py);
-                if first { ds.lent = passed.then_some(parameter.slot); }
+                if first { (ds.value, ds.lent) = (Some(parameter.slot), passed); }
                 if !(first && passed) {
                     ds.put_slot(parameter.slot, Value::field(&parameter.name, value.bind(py))?);
                 }
@@ -1159,6 +1196,8 @@ impl Renderer {
             let mut state = state.borrow_mut(py);
             if state.renderer == self.id {
                 state.excluded = TRANSIENT_STATE.iter().map(|v| v.to_string()).chain(self.excluded.iter().cloned()).collect();
+                // The edit may have changed which parameter is the value: the next run says.
+                (state.value, state.lent) = (None, false);
             }
         }
         self.parameters = replacement
@@ -1170,6 +1209,7 @@ impl Renderer {
                 slot: p.slot,
                 default: p.default.as_ref().map(|v| v.clone_ref(py)),
                 factory: p.factory.as_ref().map(|v| v.clone_ref(py)),
+                kind: p.kind.as_ref().map(|v| v.clone_ref(py)),
             })
             .collect();
         self.wants = replacement.wants;
@@ -1181,7 +1221,7 @@ impl Renderer {
         runtime: Py<Runtime>,
         func: Py<PyAny>,
         defaults: Py<PyDict>,
-        parameters: Vec<(String, bool, Py<PyAny>, Option<Py<PyAny>>)>,
+        parameters: Vec<(String, bool, Py<PyAny>, Option<Py<PyAny>>, Option<Py<PyAny>>)>,
         events: Vec<String>,
         var_kwargs: bool,
         identity: u128,
@@ -1192,7 +1232,7 @@ impl Renderer {
             let rt = runtime.borrow(py);
             let plan = parameters
                 .into_iter()
-                .map(|(name, has_default, default, factory)| {
+                .map(|(name, has_default, default, factory, kind)| {
                     let slot = rt.shape.borrow_mut().slot(&name);
                     Parameter {
                         key: PyString::intern(py, &name).unbind(),
@@ -1200,6 +1240,7 @@ impl Renderer {
                         slot,
                         default: has_default.then_some(default),
                         factory,
+                        kind,
                     }
                 })
                 .collect();
@@ -1275,6 +1316,9 @@ impl Renderer {
                 visit.call(value)?;
             }
             if let Some(value) = &param.factory {
+                visit.call(value)?;
+            }
+            if let Some(value) = &param.kind {
                 visit.call(value)?;
             }
         }

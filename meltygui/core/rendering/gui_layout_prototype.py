@@ -632,6 +632,12 @@ class GuiGeometry:
             self.bindings.pop(node, None)
         if portal:
             self.window(node)
+        elif node in self.windows:
+            # No window any more (`melty_window` was removed): its frame goes, or the layout would
+            # keep placing the view where the window was.
+            self._open_transactions()
+            self.windows.pop(node)
+            self.drop_frame(node)
 
     def moved(self):
         """The edges of each axis that are not where the last `apply` read them. A graph is asked
