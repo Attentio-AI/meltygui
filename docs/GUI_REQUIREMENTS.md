@@ -428,6 +428,18 @@ rust is finally fast enough"). Current numbers:
   grows by the new tile. Open: a wrapping tile view runs again on every frame
   its window's width changes, and the left edge pointer feedback (agent seat)
   was left alone as no obvious, clean fix was found. (11-17)
+- **The solver does not author a placed view's rectangle.** Lukas saw the OS
+  window fly off screen after changing `left` / `top` / `width` between runs
+  ("usually going from left=100 and top=100, then removing the parameters ...
+  The issues go away when I reset the draw_state"). Cause, from the session
+  of a stuck app: the collision solver placed the tile view with
+  `graph.allocate`, which authors `left`, `top`, `width` and `height`; the
+  session saved them, and authored fields outrank the flow position and the
+  fill size once the call no longer passes them (left 100 and width 500 held
+  against a call that asked to fill). A view `anchor` constrains is now
+  written without authoring (`GuiGeometry.put`), and an authored rectangle
+  from an older session is dropped the first time the view is anchored
+  (`disown`). A window keeps authoring: its geometry is the user's. (11-17)
 - **`draw_tiles` takes any dict.** "Have the tiles add id as necessary and not
   force the user to know how they work. Make sure a blank dict works by
   default. Simple nested dict structures should work by default as well.

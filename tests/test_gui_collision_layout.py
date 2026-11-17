@@ -795,6 +795,43 @@ def test_a_wrapping_view_is_as_small_as_its_cells_and_stays_so():
     finally:cache.close()
 
 
+def test_the_solver_does_not_author_the_place_of_a_view_it_constrains():
+    """A view `anchor` constrains is placed by its caller: what the solver gives it is not
+    saved as authored, and an authored rectangle a session kept from before is dropped. So a
+    `left` the call passes no longer is gone on the next run, not held against the flow."""
+    cache=RetainedGui(graphics=False); ids={}; model={'placed':{'left':100.,'top':40.}}
+
+    @cache.gui()
+    def tiles(input_value):
+        ids['tiles']=cache.current
+        cache.geometry.anchor(cache.current)
+        with cache.geometry.declare(('a','b'),axis=0,key='main'):pass
+        return False,input_value
+
+    @cache.gui(width=600,height=300)
+    def root(input_value):
+        ids['root']=cache.current
+        tiles(None,name='tiles',**model['placed'])
+        return False,input_value
+    try:
+        root(None);cache.flush()
+        geometry=cache.geometry
+        state=cache.graph.state(ids['tiles'])
+        (left,right),(top,bottom)=geometry.frames[ids['root']][1]
+        geometry.axes[0].solve(right,geometry.axes[0].position(right)+50,[left])
+        geometry.apply();cache.flush()
+        assert cache.graph.info(ids['tiles'])['rect']==(100,40,550,260)      # it fills: the solver widened it
+        assert not set(state.save_state()[2])&{'left','top','width','height'}
+        # What a session saved before: the solver's rectangle, authored. The call passes no place now.
+        for name,value in (('left',100.),('top',40.),('width',550.),('height',260.)):setattr(state,name,value)
+        geometry.release(ids['tiles'])
+        model['placed']={}
+        cache.invalidate_id(ids['root']);root(None);cache.flush()
+        assert cache.graph.info(ids['tiles'])['rect'][:2]==(0,0)
+        assert not set(state.save_state()[2])&{'left','top','width','height'}
+    finally:cache.close()
+
+
 def test_apply_places_only_the_cells_that_changed():
     """`GuiGeometry.apply` works out a cell's rectangle when one of its edges moved, and no
     other's: a committed view's own cell and its layout's cells are placed from the kept one."""

@@ -633,6 +633,8 @@ class GuiGeometry:
         if not stale:return
         for name in stale:delattr(state,name)
         state.configure(stale,stale,{})
+        # The call was remembered as resolved to the authored rectangle: resolve it again.
+        self.cache.declared.forget(self.cache.declarations[node].handle)
         graph.invalidate_node(graph.parent(node))
 
     def gap(self, node, axis):
