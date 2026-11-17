@@ -46,6 +46,7 @@ from meltygui.core.rendering.gui_layout_prototype import columns as columns
 from meltygui.core.rendering.gui_layout_prototype import rows as rows
 from meltygui.core.rendering.gui_prototype import gui as gui
 from meltygui.core.rendering.gui_prototype import os_window as os_window
+from meltygui.core.input.context_menu import context_menu as context_menu
 from meltygui.core.rendering.gui_module import gui_module as gui_module
 from meltygui.state.new_core_model import DrawState as DrawState
 from meltygui.core.core_render import render_func as render_func

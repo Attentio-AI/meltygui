@@ -344,6 +344,46 @@ rust is finally fast enough"). Current numbers:
     (section 3). `draw_state.parent`, which `@gui` does not have (the parent
     is in the cache by node, `graph.parent`): "Lets do the parent addition on
     its own later." (11-17)
+  - Built on his word "That sounds fine. Lets implement it", to the defaults
+    put to him: the options are a dict; of a menu and a view that uses the
+    right click itself the nearer takes it; the walk goes to the root; no
+    Inspect row; after a pick the option's view and its parents run again; of
+    immediate views only a window's root has a menu. And his one change: "find
+    a way to attach the popup to the correct node in the graph." (11-17)
+  - Built to those rows on 2026-11-17 (by Claude; **Lukas has not reviewed
+    it**). `meltygui.context_menu` ([context_menu.py](../meltygui/core/input/context_menu.py));
+    how to use it is section 7 of the guide, how it works
+    [GUI_PROTOTYPE.md](GUI_PROTOTYPE.md#context-menus), the example
+    [examples/gui_context_menu.py](../examples/gui_context_menu.py).
+    - The popup is a child of the innermost view that has options: that view
+      is run again, and a step after its body declares the menu with `popup=`.
+      Only an immediate root's menu has no view; the surface declares it.
+    - The one addition to the core is `AFTER` (gui_prototype.py): a step
+      after a view's body, for the views that have a row. A view without a
+      menu is bound and run as before; an app without one pays a truth test a
+      frame. Measured for views without a menu (16 alternating headless runs,
+      median): an immediate call 1011 to 1030 ns (ranges 993 to 1057 and 1001
+      to 1097), a retained rerun 3828 to 3806 ns, an unchanged child 1255 to
+      1257 ns, creating one 14668 to 14602 ns. The per-frame tests were not
+      measured.
+    - Decided while building, his to overrule: `MENUS` and `AFTER` are by
+      view name, so a source edit's options are read by live views; the menu
+      view is `meltygui.rust.draw_context_menu`, while `meltygui.draw_context_menu`
+      stays the `@render_func` inspector; a right click elsewhere while a menu
+      is open opens it there, and one inside the open menu does nothing; an
+      option that raises is printed and the menu closes; the hovered row is
+      drawn in the selection colour of `look` (its `on` did not show).
+    - Seen on an agent desktop (native Wayland, OpenGL): the example's three
+      sections with their lines at the pointer, the hovered row, a pick by
+      pointer (`Upper case`, `Delete`) and by the arrows and Enter, Escape,
+      the root's menu over empty space, a note in the scrolled list, and a
+      menu at the bottom edge moved up to stay on the surface. A right drag
+      and a press outside were checked by the tests only.
+    - Open: an immediate view other than the root has no menu, and the
+      root's options are given `cache` only; a decorator taken off by a
+      source edit leaves its options until restart; closing a menu opened
+      inside a popup that takes no keys closes that popup too, a defect of
+      the popup rules found on the way (`52bf7426ee1f`).
 - **Pointer shapes**: the text cursor stays through a selection drag; the
   editor's gutter shows the pointing hand. (11-11, 11-12)
 - **Tiles are `meltygui.rust.draw_tiles`**, a reusable view that works like
@@ -360,6 +400,17 @@ rust is finally fast enough"). Current numbers:
   then invoke its selected view function." The list is `views=`, which
   replaces `tile=`; the pick is kept in the tile's dict as the function's
   name. (11-15)
+- **`draw_tiles` takes any dict.** "Have the tiles add id as necessary and not
+  force the user to know how they work. Make sure a blank dict works by
+  default. Simple nested dict structures should work by default as well.
+  Assume horizontal splits if none provided. You can update the dict but it
+  should not be required to memorize a specific dict schema to call the
+  function." `{}` is one tile and `{'cells': [{}, {'cells': [{}, {}]}]}` a
+  tree; `mend` writes the ids, axes and a blank tile for an empty split into
+  the dict. A split with no axis is 'x' (side by side) at the root and the
+  other axis than its parent's below, or nesting would mean nothing. The ids
+  stay in the dict: a tile's position changes with every split and join, so it
+  cannot key the tile's view state. (11-17)
 - **`apply` places only the cells that changed.** "Lets make apply only look
   at cells whoes edges moved to start": writing the solved rectangles to the
   views (`GuiGeometry.apply`) ran once per executed body over every cell of

@@ -9,15 +9,21 @@ dict as the view's name. With one view there is no head; with none the tiles are
 Place it like any view. An edge within `REACH_EDGE` of the window's edge is tied to it: a divider
 pushed against it resizes the window, and the window takes the tiles along. No cell around it.
 
-The value is a tree of plain dicts, edited in place:
+The value is any dict, edited in place. {} is one tile; a dict with 'cells' is a split of them:
+
+    {}                                          # one tile
+    {'cells': [{}, {'cells': [{}, {}]}]}        # a tile beside two stacked ones
+
+`mend` fills in the rest on every run, so nothing below has to be written by the caller:
 
     split = {'id': 0, 'axis': 'x', 'cells': [node, ...], 'sizes': [pixels, ...]}
     tile  = {'id': 1, 'view': 'draw_scene'}     # and whatever its view keeps there
 
-The root is a split. Every `id` is unique in the tree; `sizes` may be left out (equal shares) and
-is written back on every run. A split never holds a split of its own axis (`tidy` keeps that).
-A view is handed its tile's dict, `id` included: an id it edits into one the tree has already is
-given a new one (`mend`).
+The root is a split (a root without 'cells' is wrapped in one). `id` is the tile's identity across
+splits and joins, unique in the tree: a missing or repeated one is replaced. `axis` is 'x' (side by
+side) at the root and the other one than the parent's below it. `sizes` are equal shares until a
+divider moves, and written back on every run. A split never holds a split of its own axis once it
+was edited (`tidy` keeps that). A view is handed its tile's dict, `id` included.
 
 Gestures, from the grips in three corners of a tile (the bottom left stays free):
 - A left drag into the tile splits it. The longer direction picks the axis, the new tile is a copy
@@ -90,23 +96,50 @@ def top(node):
 
 
 def mend(tree):
-    """Give every node whose id the tree has already a new one, above the highest. The ids are
-    the layout's keys, and a tile's view can edit the one in its dict (`draw_any` drags it).
-    Returns whether an id changed."""
+    """Make any dict a tree `place` can lay out, in place. A root that is no split ({} too) becomes
+    one around a tile that takes what it held. Then, for every node: an id that is missing, no int
+    or in the tree already becomes a new one above the highest (the ids are the layout's keys, and
+    a tile's view can edit the one in its dict: `draw_any` drags it); a split with no axis gets the
+    one its parent does not have, 'x' at the root; a split with no cells gets a blank tile.
+    Returns whether anything changed."""
+    changed = False
+    if 'cells' not in tree:
+        tile = dict(tree)
+        tree.clear()
+        tree['cells'] = [tile]
+        changed = True
     seen = set()
-    twice = []
-    nodes = [tree]
+    fresh = []
+    nodes = [(tree, 'x')]
     while nodes:
-        node = nodes.pop()
-        if node['id'] in seen:
-            twice.append(node)
-        seen.add(node['id'])
-        nodes.extend(node.get('cells', ()))
-    spare = max(seen)
-    for node in twice:
+        node, axis = nodes.pop()
+        if type(node.get('id')) is int and node['id'] not in seen:
+            seen.add(node['id'])
+        else:
+            fresh.append(node)
+        if 'cells' not in node:
+            continue
+        cells = node['cells']
+        if not isinstance(cells, list):
+            cells = node['cells'] = list(cells) if isinstance(cells, tuple) else []
+            changed = True
+        if not cells:
+            cells.append({})
+            changed = True
+        if node.get('axis') not in AXES:
+            node['axis'] = axis
+            changed = True
+        other = 'y' if node['axis'] == 'x' else 'x'
+        for at, cell in enumerate(cells):
+            if not isinstance(cell, dict):
+                cell = cells[at] = {}
+                changed = True
+            nodes.append((cell, other))
+    spare = max(seen, default=-1)
+    for node in fresh:
         spare += 1
         node['id'] = spare
-    return bool(twice)
+    return changed or bool(fresh)
 
 
 def split(tree, parent, index, axis, at, span, before):
@@ -447,8 +480,8 @@ def place(node, views, hand, layouts):
     axis = AXES[node['axis']]
     cells = node['cells']
     sizes = node.get('sizes')
-    if sizes is not None and len(sizes) != len(cells):
-        sizes = None
+    if not isinstance(sizes, (list, tuple)) or len(sizes) != len(cells):
+        sizes = None                                # equal shares
     make = rows
     if axis == 0:
         make = columns
@@ -472,11 +505,11 @@ def place(node, views, hand, layouts):
 
 
 @gui(listen=(), no_save=('hand',))
-def draw_tiles(input_value: dict, views=(blank,), hand=None, left=0.0, top=0.0, draw_state=None, cache=None):
+def draw_tiles(input_value: dict, views=(blank,), hand=None, draw_state=None, cache=None):
     """The tree of tiles over the whole view. `views` are the `@gui` views a tile can show, each
     given the tile's dict: keep them in a module constant. Returns (True, tree) when a tile was
     split or joined, another view was picked, a tile's view changed its dict, the sizes of a
-    split are new, or a repeated id was replaced."""
+    split are new, or `mend` completed the tree."""
     if hand is None:                # the corner drag in progress, shared with every grip
         hand = Hand()
         draw_state.hand = hand

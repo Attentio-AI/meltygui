@@ -456,7 +456,8 @@ is in, a right drag resizes it.
   rows do.
 - Nothing takes the right drag. An action on the right button is
   `event.right_mouse_clicked()`, on its release. A view that asks only about
-  the right button leaves the left drag to the window.
+  the right button leaves the left drag to the window. A menu of options on
+  the right click is `@context_menu` (section 7).
 
 **ImGui widgets.** Views that ship in `meltygui/` use none: they draw with
 the draw list and take input from `event`, and new views should do the same.
@@ -497,6 +498,51 @@ def dropdown(input_value, choices=(), width=0.0, height=0.0, event=None):
   value it returned (section 14).
 
 Rules and nesting: [Temporary popups](GUI_PROTOTYPE.md#temporary-popups).
+
+**A context menu** is `@context_menu({label: function})` above `@gui`. Nothing
+else is written: no event, no popup call, no open flag.
+
+```python
+from meltygui import context_menu, gui
+
+def delete(input_value, items):         # the note's key, and the dict its list passed it
+    del items[input_value]
+
+@context_menu({'Delete': delete, 'Say hello': lambda: print('hello')})
+@gui(height=ROW)
+def note(input_value: str, items: dict = None, width=0.0, height=0.0):
+    ...
+
+@context_menu({'Add a note': add})
+@gui(scroll=True)
+def notes(input_value: dict, width=0.0, height=0.0):
+    for at, key in enumerate(input_value):
+        note(key, key=key, items=input_value, left=0.0, top=at * ROW, width=width, height=ROW)
+```
+
+- A right click shows the options of the view under the pointer, then those of
+  each view around it, innermost first, a line between two views' options: a
+  note's `Delete`, then the list's `Add a note`. So give each thing that has
+  options of its own a view of its own.
+- **An option's function is given what it names** of its view's parameters:
+  the value (`input_value`, also when the caller passed it), any other
+  parameter (`items`), `draw_state`, `cache`. One that takes nothing is just
+  called. A name the view does not have keeps the function's default, and is
+  an error without one. To reach something of the view around it, pass it
+  down as an argument (`items=` above).
+- After a pick the option's view and the views around it run again, so an
+  option may change the model in place. Keep the dict of options a module
+  constant, as written above the view.
+- It opens on the release of the button: a right drag still resizes. The
+  pointer or the arrows and Enter pick; a press outside or Escape closes it.
+- Of a view that uses the right click itself (`event.right_mouse_clicked()`)
+  and a view with a menu, the one nearer to the pointer takes the click.
+- A view without a menu costs nothing for the ones that have one.
+- An immediate view (`use_cache=False`) has no menu, except the root of a
+  window: its options are the last section. Its functions get `cache` only.
+
+Worked example: [examples/gui_context_menu.py](../examples/gui_context_menu.py).
+How it works: [Context menus](GUI_PROTOTYPE.md#context-menus).
 
 ## 8. Lists and scrolling
 
@@ -654,8 +700,9 @@ What is there already:
 | A button | `draw_button` from `meltygui.rust`: `pressed, _ = draw_button('Run', name='run')` |
 | A function to call with arguments the user edits | `ran, _ = draw_function(fit, name='fit')` from `meltygui.rust`: its parameters as values (`draw_any` of a dict the view keeps, each starting at its default or what its type builds) and a button that calls it, in that run, so only for a call that returns at once. `ran` is true in the run of a call that returned; what it returned is the view's `result` (`ran, _, state = draw_function(fit, return_extras=True)`, then `state.result`); an exception is shown under the button. A class is called the same way and builds an instance ([function_view.py](../meltygui/view/function_view.py)) |
 | One of a few choices | `draw_dropdown(value, choices=CHOICES)` from `meltygui.rust`; `label=` names choices that are not text |
-| Tiles the user splits and joins from their corners, as in Blender | `draw_tiles(tree, name='tiles', views=VIEWS, width=width, height=height)` from `meltygui.rust`; `VIEWS` is a module tuple of `@gui` views of a tile's dict, and each tile picks one from a dropdown in its head; the tree is plain dicts; a divider drag runs only the resized tiles, and `draw_tiles` once at its end to write the sizes; an edge within 100 px of the window's is tied to it, so no cell goes around it ([tiles_view.py](../meltygui/view/tiles_view.py)) |
+| Tiles the user splits and joins from their corners, as in Blender | `draw_tiles(tree, name='tiles', views=VIEWS, width=width, height=height)` from `meltygui.rust`; `VIEWS` is a module tuple of `@gui` views of a tile's dict, and each tile picks one from a dropdown in its head; the tree is plain dicts and may start as `{}` or bare nested `{'cells': [{}, {}]}` (ids, axes and sizes are filled in); a divider drag runs only the resized tiles, and `draw_tiles` once at its end to write the sizes; an edge within 100 px of the window's is tied to it, so no cell goes around it ([tiles_view.py](../meltygui/view/tiles_view.py)) |
 | A popup of your own, a picker | Section 7; [examples/gui_popups.py](../examples/gui_popups.py) |
+| A right click menu on a view | `@context_menu({label: function})` from `meltygui`, above `@gui` (section 7) |
 | A whole standalone ImGui app as one view | `gui_module('app.py')` ([gui_module.py](../meltygui/core/rendering/gui_module.py)) |
 
 ## 13. Style and finishing

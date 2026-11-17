@@ -10,6 +10,7 @@ from . import choice_view as choice_view
 from . import code_view as code_view
 from . import collection_view as collection_view
 from . import color_view as color_view
+from . import context_menu_view as context_menu_view
 from . import control_view as control_view
 from . import decoration_view as decoration_view
 from . import diagnostic_view as diagnostic_view

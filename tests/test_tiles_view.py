@@ -117,3 +117,26 @@ def test_a_tile_shows_the_view_it_names_and_the_first_one_otherwise():
     assert chosen({'id': 1}, views) is blank
     assert chosen({'id': 1, 'view': 'renamed'}, views) is blank
     assert title(draw_big_scene) == 'Big scene' and title(blank) == 'Blank'
+
+
+def test_mend_completes_a_blank_dict_and_a_nested_one():
+    root = {}
+    assert mend(root)
+    assert root == {'id': 0, 'axis': 'x', 'cells': [{'id': 1}]}
+    assert not mend(root)                                        # nothing left to correct
+    kept = {'view': 'draw_notes', 'text': 'hi'}                  # a tile at the root keeps what it held
+    assert mend(kept) and kept['cells'] == [{'view': 'draw_notes', 'text': 'hi', 'id': 1}]
+    stack = {'cells': [{}, {}]}
+    nested = {'cells': [{'note': 'a'}, stack, {'axis': 'x', 'cells': ()}, None]}
+    assert mend(nested) and not mend(nested)
+    assert nested['axis'] == 'x' and stack['axis'] == 'y'        # side by side, then the other axis
+    assert nested['cells'][0]['note'] == 'a' and nested['cells'][1] is stack
+    assert nested['cells'][2]['cells'] == [{'id': nested['cells'][2]['cells'][0]['id']}]
+    found = [nested['id'], nested['cells'][2]['id'], stack['id'], *(leaf for cell in ids(nested) for leaf in (cell if isinstance(cell, list) else [cell]))]
+    assert sorted(found) == list(range(8))
+
+
+def test_mend_replaces_an_id_that_is_no_int_and_keeps_the_others():
+    root = {'id': 'root', 'cells': [{'id': 7}, {'id': None}, {'id': [1]}]}
+    assert mend(root)
+    assert ids(root)[0] == 7 and sorted([root['id'], *ids(root)[1:]]) == [8, 9, 10]

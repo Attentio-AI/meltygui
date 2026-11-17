@@ -401,6 +401,41 @@ press just handled a frame pays two truth tests. Measurements:
 rules are the module text of [focus.py](../meltygui/core/input/focus.py), the
 tests [test_gui_focus.py](../tests/test_gui_focus.py).
 
+### Context menus
+
+`@context_menu({label: function})` above `@gui` gives a view a right click
+menu ([context_menu.py](../meltygui/core/input/context_menu.py)). It is a
+decorator of its own and no argument of `@gui`; how to use it is
+[section 7 of the guide](GUI_VIEW_GUIDE.md#7-popups).
+
+| | |
+| --- | --- |
+| The decorator | Writes the view's options into `MENUS` and a step into `AFTER` (gui_prototype.py), both by view name, and hands the view back as it was. Rows are by name so that a source edit's new options are the ones live views read. |
+| A right click | The router (`ImGuiInput.right_click`) tells a click from a drag by the pointer's travel (`CLICK_PIXELS`), on the release. `click` walks from the hit view up its parents and gathers their options, innermost first; an immediate root's come last (`ImGuiInput.root`). |
+| Whose popup | The innermost view that has options. It is run again, and after its body its `AFTER` step declares `draw_context_menu` with `popup=`: the menu is a child of the view it was opened on. It is placed from that view's corner, goes when the view goes, and on a view inside a popup it is below that popup, which stays open with it. With only an immediate root's options the surface declares it, with no parent. |
+| The menu | `meltygui.rust.draw_context_menu` ([context_menu_view.py](../meltygui/view/context_menu_view.py)), an ordinary popup view: the popup rules above apply (a press outside, Escape, the keyboard, staying on the surface). |
+| A pick | `call` fills the function's parameters by name from the state of the option's view (which reads every parameter, a passed value included), plus `draw_state` and `cache`, and calls it. An exception is printed and the app goes on. Then that view and its parents are invalidated, and the menu closes. |
+| Nearest wins | A view that asked about the right button, between the pointer and the nearest view with a menu, keeps the click and no menu opens. When the menu is nearer, that view is not told the press (`deliver`). |
+
+`AFTER` is the one thing added to the core for it: a step that runs after a
+view's body, inside its execution, for the views that have a row. The plan
+wraps only those bodies (`followed`, beside `asking`), so a view without a
+menu is bound and run as before. With no `@context_menu` in the app a frame
+pays one truth test of `MENUS`; with some, the router looks at the right
+button once a frame, and a view that has a menu pays its wrapped body and one
+test of `ImGuiInput.menu` in each of its runs. Measured for views without a
+menu, 16 alternating headless runs before and after (median, range): an
+immediate call 1011 (993 to 1057) to 1030 (1001 to 1097) ns, a retained child
+that reruns 3828 to 3806 ns, declaring an unchanged child 1255 to 1257 ns,
+creating one 14668 to 14602 ns. The per-frame tests were not measured.
+Tests: [test_gui_context_menu.py](../tests/test_gui_context_menu.py).
+
+Limits: an immediate view other than the root has no menu. A decorator taken
+off by a source edit leaves its options until the app restarts (a row is only
+ever replaced). Closing a menu that was opened inside a popup which takes no
+keys closes that popup too: a defect of the popup rules, not of the menu
+(`52bf7426ee1f`).
+
 ### Default views: `draw_any`
 
 `draw_any` draws a value with the view registered for it and is called like that view. A value
@@ -815,6 +850,7 @@ resolved in full.
 | Window/input/layout integration | [gui_window_prototype.py](../meltygui/core/rendering/gui_window_prototype.py), [gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py), [gui_layout_prototype.py](../meltygui/core/rendering/gui_layout_prototype.py) |
 | Input events (`event`) | [event.py](../meltygui/core/input/event.py) (the vocabulary), `deliver` in [gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py) (the routing), `run_node` in [executor.rs](../native/gui_prototype/src/executor.rs) (injection and clearing); [tests](../tests/test_gui_event.py) |
 | Keyboard focus and temporary popups | [focus.py](../meltygui/core/input/focus.py); the `popup` branch and `_fit` in [retained_gui_prototype.py](../meltygui/core/rendering/retained_gui_prototype.py); [example](../examples/gui_popups.py), [tests](../tests/test_gui_focus.py) |
+| Context menus (`@context_menu`) | [context_menu.py](../meltygui/core/input/context_menu.py) (the decorator, the walk, whose popup it is), `right_click` in [gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py), `AFTER` / `followed` in [gui_prototype.py](../meltygui/core/rendering/gui_prototype.py), [context_menu_view.py](../meltygui/view/context_menu_view.py) (the menu, the arguments of a pick); [examples/gui_context_menu.py](../examples/gui_context_menu.py), [test_gui_context_menu.py](../tests/test_gui_context_menu.py) |
 | Wake from native threads | [wake.rs](../native/gui_prototype/src/wake.rs), `waker` / `drain_wakes` / `close_wakes` / `park` in [glfw_utils.py](../meltygui/core/windowing/glfw_utils.py), `poke` in [window_api.py](../meltygui/core/windowing/window_api.py) |
 | Largest user so far | the [native editor](NATIVE_EDITOR.md): [editor_view.py](../meltygui/view/editor_view.py) |
 | Default views | [gui_any.py](../meltygui/core/rendering/gui_any.py) (`draw_any`, `is_default_for`), [keyed.py](../meltygui/core/rendering/keyed.py) (`Keyed`, `keyed_as`), [value_view.py](../meltygui/view/value_view.py), [dict_view.py](../meltygui/view/dict_view.py); tests [routing and rows](../tests/test_gui_any.py), [views](../tests/test_gui_any_view.py) |

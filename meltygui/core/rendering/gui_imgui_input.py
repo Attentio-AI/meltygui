@@ -42,6 +42,7 @@ for it.
 from collections import namedtuple
 import time
 
+from meltygui.core.input import context_menu
 from meltygui.core.input.event import FOCUS, HOVER, KEYS, LEFT, MOVE, OUTSIDE, QUIET, SCROLL, TOUCH, WHEEL
 
 # One touch contact: kind is 'down', 'move' or 'up'; contact tells fingers apart.
@@ -85,6 +86,12 @@ class ImGuiInput:
         # Each button's last press, (time, x, y, clicks): what makes the next one a double or triple click.
         self.presses = [(0.0, 0.0, 0.0, 0)] * BUTTONS
         self.touches = []
+        # Context menus (core/input/context_menu.py): the open one, the name of the window's root
+        # view when that is immediate (its options are the outermost), and the right press that may
+        # become a click: where it began and how far the pointer has gone from there.
+        self.menu = None
+        self.root = None
+        self.right = None
 
     def character(self, codepoint):
         self.characters.append(codepoint)
@@ -156,6 +163,22 @@ class ImGuiInput:
         self.presses[button] = (now, position[0], position[1], clicks)
         return clicks
 
+    def right_click(self, position, buttons):
+        """Open the context menu of the views under a right click (core/input/context_menu.py). A
+        click is a press released within CLICK_PIXELS of where it began: told on the release, since
+        a right press may be the start of a resize."""
+        if buttons[1]:
+            if self.right is None:
+                self.right = (position[0], position[1], 0.0)
+            else:
+                x, y, travel = self.right
+                self.right = (x, y, max(travel, abs(position[0] - x) + abs(position[1] - y)))
+        elif self.right is not None:
+            travel = self.right[2]
+            self.right = None
+            if travel <= CLICK_PIXELS:
+                context_menu.click(self.cache, self.hit(position), position)
+
     def keyboard(self, node, has):
         """`node` gained (`has`) or lost the keyboard (core/input/focus.py): its Event says so."""
         event = self.cache.inputs.get(node)
@@ -184,6 +207,9 @@ class ImGuiInput:
             target = self.hit(position)
             if pressed and self.grab is None:
                 self.grab = self.taker(target, position, pressed[0])
+                if (self.grab is not None and pressed[0] == 1 and context_menu.MENUS
+                        and context_menu.nearer(cache, target, self.grab)):
+                    self.grab = None        # a view with a menu is nearer than the one that asked: the click is the menu's
             if 0 in pressed:
                 cache.focus.take(self.owner(target, KEYS))
             if scrolled:
@@ -325,6 +351,8 @@ class ImGuiInput:
                 focus.escape(self.keys)
         if inputs:
             self.deliver(position, buttons, old, wheel, modifiers, scrolled)
+        if context_menu.MENUS:
+            self.right_click(position, buttons)
         if self.keys:
             self.keys.clear()
         # During a wheel gesture keep cached content frozen. Settle hover once

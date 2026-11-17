@@ -28,6 +28,12 @@ FILLED = frozenset((
 # Lever: classes that are an annotation and build nothing (`constructor`).
 UNBUILT = frozenset((object, Any, type, type(None), types.UnionType, inspect.Parameter.empty))
 
+# Lever: what runs after a view's body, while the view is still the one executing, by view name
+# (`_renderer_name`). It is how a feature with a decorator of its own adds to a view without being
+# part of `@gui`: `@context_menu` (core/input/context_menu.py) declares its popup here, as a child of
+# the view. A view with no row here runs the body it always did (`followed`).
+AFTER = {}
+
 _window = ContextVar('prototype_gui_window', default=None)
 
 
@@ -90,6 +96,24 @@ def asking(func, asked, hidden):
             return False, None
         return func(**arguments)
     return body
+
+
+def followed(body, after, hidden):
+    """The body of a view with a row in `AFTER`: `after(cache)` runs once the body has returned, so
+    what it declares is a child of the view. An immediate view outside a window has no cache and is
+    skipped; under a window it is called too, with the window's cache, and is not the view on
+    `cache.stack`: the step has to tell (`attached`, core/input/context_menu.py).
+    `hidden`: `cache` is no parameter of the body; the plan added it for this."""
+    @wraps(body)
+    def run(**arguments):
+        cache = arguments.get('cache')
+        if hidden:
+            del arguments['cache']
+        result = body(**arguments)
+        if cache is not None:
+            after(cache)
+        return result
+    return run
 
 
 def positional(func):
@@ -264,13 +288,18 @@ def _bind_native(native, func=None, *, inject=None, events=(), state_id=None, no
             supplied = parameter.default is not inspect.Parameter.empty or name not in FILLED
             parameters.append((name, supplied, default, factory, kind))
         body = func
-        if asked:
+        after = AFTER.get(_renderer_name(func))
+        hidden = ()
+        if (asked or after is not None) and not var_kwargs:
             # (`cache` has a default here: an immediate view outside a window has none, and runs every frame.)
-            hidden = ()
-            if not var_kwargs:
-                hidden = tuple(name for name in ('draw_state', 'cache') if name not in signature.parameters)
+            wanted = ('draw_state', 'cache') if asked else ('cache',)
+            hidden = tuple(name for name in wanted if name not in signature.parameters)
             parameters.extend((name, name == 'cache', None, None, None) for name in hidden)
+        if asked:
             body = asking(func, tuple(asked), hidden)
+        if after is not None:
+            # (`asking` takes the hidden names off before the view's own body; else `followed` does.)
+            body = followed(body, after, 'cache' in hidden and not asked)
         return Renderer(native, body, decoration, parameters, list(events), var_kwargs, identity,
                         list(no_save) + list(events), first is not None)
 

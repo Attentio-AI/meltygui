@@ -281,7 +281,12 @@ class GuiGeometry:
     def walls(self,axis,node):
         if self.native is not None:
             return self.native.walls(axis)
-        return list(self.bounds(self._frame_owner(node))[axis])
+        owner=self._frame_owner(node)
+        while owner in self.anchored:               # its edges push its window's: what holds that holds
+            owner=self._frame_owner(self.holder(owner))
+            if self.cache.graph.parent(owner):
+                owner=self._frame_owner(self.holder(owner))
+        return list(self.bounds(owner)[axis])
 
     def frame_rect(self,node):
         pairs=self.frames[node][1]
@@ -563,17 +568,24 @@ class GuiGeometry:
             graph.solve(edge, max(low,min(high,graph.position(edge))), [near,far])
         return layout
 
-    def anchor(self, node, reach):
-        """Tie each edge of `node`'s frame that lies within `reach` of its window's edge to that
-        edge, at the gap it has now. A tied edge and the window's move each other like the two
-        sides of a cell: a divider pushed against it resizes the window, and the window resized
-        takes the view along. Call it from the view's body before it declares rows or columns.
-        A view in a layout cell is tied to the cell already."""
+    def holder(self, node):
+        """The window a view is in: its nearest window ancestor, or the root view."""
+        graph=self.cache.graph
+        window=node
+        while graph.parent(window) and (window==node or not graph.is_portal(window)):
+            window=graph.parent(window)
+        return window
+
+    def anchor(self, node):
+        """Tie each edge of `node`'s frame to the same edge of its window, at the gap it has now,
+        however wide. A tied edge and the window's move each other like the two sides of a fixed
+        cell: a divider pushed against the view's edge pushes the window's, and the window
+        resized takes the view along. Call it from the view's body before it declares rows or
+        columns. A view in a layout cell is tied to the cell already; an edge outside the window
+        is left free."""
         graph=self.cache.graph
         if node in self.bindings or graph.is_portal(node):return
-        window=node
-        while graph.parent(window) and not graph.is_portal(window):
-            window=graph.parent(window)
+        window=self.holder(node)
         if window==node:return
         outer,inner=self.bounds(window),self.bounds(node)
         serial=self.frames[node][0]
@@ -581,8 +593,8 @@ class GuiGeometry:
             cells=[]
             near=axis.position(c)-axis.position(a)
             far=axis.position(b)-axis.position(d)
-            if 0.<=near<=reach:cells.append((a,c,near,near))
-            if 0.<=far<=reach:cells.append((d,b,far,far))
+            if near>=0.:cells.append((a,c,near,near))
+            if far>=0.:cells.append((d,b,far,far))
             axis.replace_cells(serial,cells)
         if node not in self.anchored:
             above={node}
@@ -1032,15 +1044,15 @@ def columns(keys, *, key='columns', sizes=None, mins=None, maxes=None, fixed=Non
     return window.cache.geometry.declare(keys,axis=0,key=key,sizes=sizes,mins=mins,maxes=maxes,fixed=fixed,padding=padding)
 
 
-def anchor(reach=100.):
-    """Tie the running view's edges to its window's where they are within `reach` pixels of
-    them (`GuiGeometry.anchor`): what a view that fills a window calls before its rows or
-    columns, so that no caller has to wrap it in a cell."""
+def anchor():
+    """Tie the running view's edges to its window's, at the gaps they have (`GuiGeometry.anchor`):
+    what a view with rows or columns that is in no cell calls before them, so that a divider
+    pushed against its edge pushes the window's and no caller has to wrap it in a cell."""
     from meltygui.core.rendering.gui_prototype import _window
     window=_window.get()
     if window is None:raise RuntimeError('anchor requires a @gui window')
     cache=window.cache
-    cache.geometry.anchor(cache.current,reach)
+    cache.geometry.anchor(cache.current)
 
 
 def rows(keys, *, key='rows', sizes=None, mins=None, maxes=None, fixed=None, padding=4.):

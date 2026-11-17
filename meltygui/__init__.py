@@ -40,6 +40,7 @@ _LAZY_EXPORTS = {
     'rows': ('meltygui.core.rendering.gui_layout_prototype', 'rows'),
     'gui': ('meltygui.core.rendering.gui_prototype', 'gui'),
     'os_window': ('meltygui.core.rendering.gui_prototype', 'os_window'),
+    'context_menu': ('meltygui.core.input.context_menu', 'context_menu'),
     'gui_module': ('meltygui.core.rendering.gui_module', 'gui_module'),
     'DrawState': ('meltygui.state.new_core_model', 'DrawState'),
     'render_func': ('meltygui.core.core_render', 'render_func'),

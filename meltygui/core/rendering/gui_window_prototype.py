@@ -1,4 +1,5 @@
 """Private @glfw_window adapter for the opt-in native @gui experiment."""
+from meltygui.core.input import context_menu
 from meltygui.core.rendering.gui_prototype import _bind_native, _new_native, _window, _renderer_name, ABSENT
 from meltygui.core.rendering.retained_gui_prototype import RetainedGui
 
@@ -67,6 +68,11 @@ class _GuiWindow:
         from meltygui.core.runtime.app import _state
         func, options = view.__gui_definition__
         scope = (_state['app_id'], _renderer_name(func, options.get('state_id')))
+        router = self.cache.imgui_input
+        if router.root is None:
+            # An immediate root is no view of the graph: the router adds its context menu by name.
+            # (A cached root is found like any view: '' names no menu.)
+            router.root = '' if options.get('use_cache', True) else _renderer_name(func)
         self.native.begin_frame(scope=scope, width=width, cache=self.cache)
         try:
             if self.cache.inputs or self.cache.focus.stack:
@@ -87,6 +93,9 @@ class _GuiWindow:
                 arguments['width'],arguments['height']=max(1.,width),max(1.,height-top)
             with self.cache.frame():
                 result = view(value, **arguments)
+                if self.cache.imgui_input.menu is not None:
+                    # The menu of an immediate root is no view's popup: the surface declares it.
+                    context_menu.show(self.cache, 0)
             self.cache.flush()
             if self.cache.graphics:
                 # Resolve ownership from this frame's actual ImGui items,
