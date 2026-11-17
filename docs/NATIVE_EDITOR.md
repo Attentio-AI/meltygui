@@ -22,6 +22,8 @@ only Linux with OpenGL has been built and run ([platforms](#platforms-and-packag
 .venv/bin/python tools/build_gui_prototype.py   # the `@gui` host crate, likewise
 .venv/bin/python examples/gui_editor.py [file.py]
 .venv/bin/python examples/gui_editor_roster.py  # tints, lookups and Ctrl+B across files
+.venv/bin/python examples/gui_source.py                # `Source(Toggles)`: it edits the repository's own files
+.venv/bin/python examples/gui_source_side_by_side.py   # `Source(text, path)` beside `Source(thing)`, on a scratch copy
 ```
 
 `gui_editor.py` has a toolbar for what needs a caller (run with live values, a
@@ -41,6 +43,10 @@ Editor (editor/editor.py)              one session: caret, rows, marks, what the
 Source (model/source_model.py)         the text, its version, its splices; facts by line
   native/source (Rust)                 chunks, lexer, bindings, lint, tables, the reading thread
   Tree, Branch (model/tree_model.py)   `source.tree`: the code as keys and values, for `draw_any`
+Scope (model/source_scope_model.py)    `Source(Toggles)`: the code of a class, a function, a module
+  File (model/source_file_model.py)    a Source whose text is a file's: one per path
+    native/source/src/file.rs          the io thread: load, write behind, follow the disk
+  Fixed (model/source_version_model.py)  the code at launch or at a git commit, read only
 Analysis (model/editor_model.py)       what only the running process knows: compile, imports, signatures
 Roster (model/roster_model.py)         the project's symbols across files, in Rust
 Spelling (model/spell_model.py)        spell check as a decoration
@@ -65,6 +71,9 @@ Spelling (model/spell_model.py)        spell check as a decoration
 | `editor/find.py` | Search: `Find` (the find bar's field, the current hit, next and previous), `Search` (what a caller reads) | `Find.typed`, `LONGEST` |
 | `model/source_model.py` | `Source` | a fact is a method here plus one in `lib.rs` |
 | `model/tree_model.py` | `Source.tree`: `Tree`, `Branch`, `Code` ([below](#sourcetree-the-code-as-keys-and-values)) | `spell`, `QUIET`, `INLINE` |
+| `model/source_scope_model.py` | `Scope`: what `Source(thing)` returns, the interface ([below](#sourcething-the-code-is-the-file)) | `where`, `at=` |
+| `model/source_file_model.py` | `File`, `opened(path)`, `FILES`: the one text of a file, the io under the interface | `framing`; the disk levers are in `file.rs` |
+| `model/source_version_model.py` | `Fixed`, `version(path, at)`, `capture`: launch and git versions | `LARGEST`, `SLACK`, `version` |
 | `model/editor_model.py` | `Analysis` worker | `QUIET`, `SLOW`, `LARGE`, `LONG` |
 | `model/roster_model.py` | `Roster`, `project(path)` | |
 | `model/spell_model.py` | `Spelling` | `QUIET`, `SLICE` |
@@ -168,11 +177,161 @@ version of it.
   (the module's names) and `signatures(specs)` (what calls reach outside the
   text).
 
+`Source(text, path)` is a text of its own: the caller reads the file and
+writes it. `Source(thing)` is the code of a class, a function or a module, with
+the file io done for the caller ([next section](#sourcething-the-code-is-the-file)).
+
 Decisions behind it (Lukas, 2026-11-11): Rust is a dependency everywhere, iOS
 included. The boundary is fact tables, never a syntax tree, so the parser can be
 replaced; it is home-built and tolerant. Real syntax errors stay CPython's
 `compile`, off the render thread. Views take plain values. For stacked
 decorators the nearest one's tint wins.
+
+## `Source(thing)`: the code is the file
+
+A prototype (2026-11-17, by Claude; **Lukas has not reviewed it**), beside
+`Source(text, path)`, which is unchanged. What Lukas asked for is in
+[GUI requirements, section 11](GUI_REQUIREMENTS.md#11-the-editor-and-source).
+
+```python
+toggles = Source(Toggles)              # a class, a function, a method, a module, or a Path
+draw_any(toggles.tree)                 # a class's body, a function's parameters and locals, a module's names
+toggles.tree['show_fps'] = False       # the file on disk says so: nothing to save
+toggles.text                           # its source; set it and the file changes
+draw_editor(toggles.file, ...)         # the whole file's `Source` (a `File`): sessions, facts, the tree
+
+Source(Toggles, at='launch')           # the code as it was when the app started
+Source(Toggles, at='HEAD~1')           # at a git commit; both read only
+```
+
+`examples/gui_source.py` is the usage code as Lukas wrote it;
+`examples/gui_source_side_by_side.py` shows both forms on one scratch file.
+
+Two things are kept apart, as he asked: the interface and what makes it fast.
+
+**The interface** (`Scope`, source_scope_model.py). `Source(thing)` is the
+code: no load, no save, no dirty flag, no pending text.
+
+- **One text per file.** A scope is a light handle: the file's text (`File`,
+  one per real path, in `source_file_model.FILES`) and the key path of the
+  thing in that file's tree (`where`). `Source(Toggles)` and `Source` of the
+  module that defines `Toggles` are the same text, the same reading and the same
+  `Branch` objects, so an edit through one shows in the other.
+- **What can be passed.** A module is its file. A class or function is the path
+  of its `__qualname__` (`Knobs.scale`; a nested function under its parent's
+  `locals`). A decorated function is the function it wraps (`__wrapped__`), a
+  bound method its function, a property its getter. Where a name is defined
+  twice, the last definition. Something without a Python source file (built in,
+  typed at a prompt, a `partial`) raises `TypeError`.
+- **`scope.tree`** is the `Branch` at that path. A scope whose code is gone (the
+  class was renamed in the file) is empty and comes back when the code does.
+- **A str is still a text.** `Source('x = 1\n', path)` is what it was; only a
+  first argument that is no str takes the new path (`Source.__new__`).
+  `Source(thing)` returns a `Scope`, which is not an instance of `Source`: pass
+  `scope.file` where a `Source` is wanted (`draw_editor`).
+- **Versions** are `at=`: `'disk'` (the default), `'launch'`, or a git revision.
+  A version that is not the file is a `Fixed`: a write to it is ignored.
+
+**What makes it fast** (`File`, source_file_model.py, and
+`native/source/src/file.rs`). One Rust thread, `melty-file`, does the io of
+every file and never holds the interpreter lock. It keeps its own copy of each
+text's chunk list, which an edit follows by the chunks it replaced.
+
+- **Load.** The constructor reads nothing. The io thread reads the file, cuts
+  it into chunks and reads its facts with the tree. A view never waits: it draws
+  what is there (an empty tree on the first frame) and the io thread wakes the
+  frame loop through the C wake handle when the text and its reading arrived.
+  Code outside a frame that asks for `.tree` or `.text` waits for the io thread.
+- **Write.** Every splice follows to the file: the whole text to
+  `<name>.<pid>.tmp` beside it, renamed over it, no fsync, the file's mode
+  kept. There is no timer. Edits made while one write runs are one write of the
+  newest text. The compiled copies in `__pycache__` are removed after each
+  write, since Python tells a stale one by second and size and a dragged digit
+  keeps both. At exit the last write is waited for.
+- **Follow.** One inotify instance watches the folders of the open files
+  (close after write, and rename onto). A changed file is read on the io
+  thread and compared with its copy from both ends; what differs crosses as one
+  splice, which every session and tree follows like any edit. A write of our
+  own is known by the stamp taken as it was written (mtime, size, inode), never
+  by its text.
+- **The file wins.** Before a write the file's stamp must be the one last read
+  or written. When it is not, the file is read instead and the text takes it,
+  over an edit that was not written yet.
+- **Line endings and a UTF-8 byte order mark stay** as the file has them. A
+  file that is no UTF-8 is shown and never written; a read-only file is said
+  on stderr and left alone (`file.error`).
+
+**Versions** (source_version_model.py). `at='launch'` reads the working state
+kept when the first `Source(thing)` of a repository was made: a git tree written
+from a copy of the index with its objects in a temp folder (`capture`), nothing
+in the repository. A file unchanged since (ctime) is read from disk. `at=<a
+revision>` is `git cat-file blob <revision>:<path>`. Git runs on a Python
+thread through `posix_spawn`.
+
+### Cost of `Source(thing)`
+
+Measured 2026-11-17, one process, headless, lines of 85 characters, medians
+(`File` is the text behind `Source(thing)`):
+
+| On the render thread | 1,000 lines | 10,000 lines | 100,000 lines |
+| --- | --- | --- | --- |
+| `str` slice of one line | 57 ns | 64 ns | 64 ns |
+| one line of a `Source` / of a `File` | 114 / 112 ns | 124 / 124 ns | 130 / 115 ns |
+| `str` slice of 32 lines | 106 ns | 116 ns | 114 ns |
+| 32 lines of a `Source` / of a `File` | 345 / 364 ns | 380 / 365 ns | 390 / 389 ns |
+| `source.text` (a copy each time) | 5.9 us | 57 us | 1.24 ms |
+| `file.text` (one str kept per version) | 126 ns | 127 ns | 126 ns |
+| `file.arrive()` when nothing came (one flag) | 47 ns | 48 ns | 49 ns |
+| `tree[key]` of a `Source` / of a `File` | 553 / 612 ns | 543 / 615 ns | 548 / 618 ns |
+| one character replaced in a `str` | 3.2 us | 35 us | 0.65 ms |
+| `splice` of one character, no tree: `Source` / `File` | 5.7 / 6.4 us | 5.7 / 6.3 us | 5.6 / 6.4 us |
+| the same with a tree (each asks for a reading) | 9.5 / 12.4 us | 10.9 / 11.6 us | 26.2 / 25.1 us |
+| `tree[key] = value`: `Source` / `File` | 13.3 / 17.1 us | 12.8 / 15.5 us | 29.7 / 30.6 us |
+
+| Off the render thread | 1,000 lines | 10,000 lines | 100,000 lines |
+| --- | --- | --- | --- |
+| an edit until it is in the file | 0.10 ms | 0.24 ms | 3.0 ms |
+| the same while the disk wrote back 1 GB of earlier runs | 0.5 ms | 6 ms | 51 ms |
+| written during a 3 s drag (an edit a frame, 360 edits) | 31 MB | 306 MB | 3,060 MB |
+
+An edit through a `File` costs the render thread 0.6 to 0.8 us more than one
+through a `Source` (the chunk handed to the io thread), a tree write 1 to 4 us
+more. **Every edit is one write of the whole file**: a write is faster than a
+frame, so edits rarely pile up, and a drag in a file of 8.5 MB writes 1 GB a
+second to the page cache. The lever for that, if it is wanted, is a pause
+between two writes of one file in `work` (file.rs), in proportion to what the
+last write took. Launch of `examples/gui_source.py` against the same file
+without its three sources, and frame times while a value is dragged, are in the
+[requirements row](GUI_REQUIREMENTS.md#11-the-editor-and-source).
+
+### Not there yet
+
+- **The verbatim usage code shows only its first tree.** A view called without a
+  size fills its parent, so `draw_any(toggles_source.tree)` takes the window and
+  the two calls after it have no room. Three plain dicts drawn the same way
+  behave the same: it is the layout rule, not `Source`. With a `height=` on
+  each call all three show.
+- **'running'**, the code being executed, is not built (`at='running'` raises).
+  Nothing records the text a module was compiled from. The one place every
+  hotswap passes is `_announce_hotswap` (`code/file_converters.py`), which
+  would have to be given the file and the source; a function or class swap
+  knows only its span, which has to be spliced into the text kept for the file.
+  No hotswap runs in a plain `@os_window` app today.
+- **Another worktree** is `Source(Path(...))` of the file there; there is no
+  spelling that maps a class to its file in another worktree.
+- **No conflict view.** An edit lost to a file that changed under it is not
+  offered back. A change from outside that arrives while every frame makes an
+  edit (a drag) waits for a frame without one when the file is large.
+- **A file's text is kept for the process**: nothing closes a `File`.
+- The launch capture starts with the first `Source(thing)`, not with the app.
+  A file ignored by git, or over `LARGEST` (1 MB) when it differed from the
+  index, has no launch version once it changed; a file outside a repository has
+  none.
+- A definition under an `if` or `try` is not found by its qualified name; the
+  decorators above a definition are not part of `scope.text`.
+- Linux only for following the disk (`watch` in file.rs); elsewhere changes by
+  other programs are not seen.
+- The legacy stack does not know about it: see Known gaps.
 
 ## `Source.tree`: the code as keys and values
 
@@ -218,7 +377,10 @@ once typing rests.
   retained view sees that its rows changed; open branches are kept by their
   paths. Branches held from before stay good and answer from the text as it is.
 - **A write replaces one value's text** (`Tree.put`): the entry's span, brought
-  forward over the splices made since its reading. The tree answers the value
+  forward over the splices made since its reading. A key that is a statement (a
+  class, a function, its `parameters` and `locals`, a block) raises `TypeError`:
+  a write never replaces a header. A list or dict that was written is answered
+  by its `Branch`, so a write to one of its items reaches the text too. The tree answers the value
   written until the reading of that text lands, so a drag does not snap back. A
   str is quoted like the literal it replaces, a float is written without float
   noise, a `Code` as it is (and is answered as `Code` from then on, so a field
@@ -610,7 +772,7 @@ Run modules one at a time; a whole-suite run segfaults in
 
 | Module | Tests | Needs |
 | --- | --- | --- |
-| `test_source.py` | 100 | |
+| `test_source.py` | 105 | |
 | `test_editor_document.py` | 38 | |
 | `test_editor_keys.py` | 16 | |
 | `test_roster.py` | 13 | |
@@ -621,8 +783,12 @@ Run modules one at a time; a whole-suite run segfaults in
 | `test_breakpoint_model.py` | 8 | |
 | `test_spell_model.py` | 6 | |
 | `test_icon_picker.py` | 7 | |
-| `test_source_tree.py` | 15 | |
+| `test_source_tree.py` | 19 | |
+| `test_source_file.py` | 17 | |
+| `test_source_scope.py` | 7 | |
+| `test_source_version.py` | 4 | git |
 | `test_source_tree_view.py` | 8 | a desktop (GL) |
+| `test_source_file_view.py` | 4 | a desktop (GL) |
 | `test_editor_view.py` | 40 | a desktop (GL) |
 | `test_gui_readers.py` | 2 | a desktop (GL) |
 | `test_editor_hints_view.py` | 8 | a desktop (GL) |
@@ -639,13 +805,31 @@ steps made within two frames into one undo.
 
 ## Known gaps
 
-- **Open bugs in `Source`** (review of 2026-11-11, not fixed): a store panic on
-  deleting from a block boundary to the text's end, a silent death of the
-  reading thread on a very long non-ASCII token, `Already borrowed` between
-  inline readings and the spelling worker, an older reading replacing a newer
-  one, and lint false alarms on Python 3.12 type parameters, 3.12 f-strings and
-  3.14 t-strings. Each with its cause and a reproduction in
+- **Open bugs in `Source`**: a panic of the reading thread is still told to
+  nobody, and the lint has false alarms on Python 3.12 type parameters, 3.12
+  f-strings and 3.14 t-strings. Fixed on 2026-11-17, each with a test: the store
+  panic on deleting from a block boundary to the text's end, the long non-ASCII
+  token that killed the reading thread, `Already borrowed` between inline
+  readings and another thread, an older reading replacing a newer one. Causes
+  and reproductions are in
   [the crate's README](../native/source/README.md#known-bugs).
+- **Open bugs in `Source.tree` writes** (found 2026-11-17, not fixed): a string
+  continued with a backslash has the span of its first line, so a write to it
+  corrupts the next line; `spell` writes a NumPy scalar as its repr
+  (`np.int64(3)`); `Tree.spot` reads the whole text again on the calling thread
+  when an edit from outside touched the value's ends (21.5 ms at 100,000
+  lines), which a write to an item of a list just written in a text over
+  `INLINE` characters also runs into.
+- **`Source(thing)` and the legacy stack disagree.** Unsaved text of the legacy
+  editor lives in `PendingSave`, and `model/roster_model.py` and
+  `editor/lookup.py` read `PendingSave.current_file_text`. They do not see a
+  `File`'s text until it is on disk, and a `File` does not see a pending save
+  until it is written. Pending spans flushed at exit are written over what a
+  `File` wrote. `@save(to_code=True)` leaves a field alone, and says so, when
+  the file's value changed during the run, which a write through a `File` is.
+  In the studio (`Melty.init`) every write through a `File` is also an event
+  for `FileWatch`: the file is read again there and its listeners run. A plain
+  `@os_window` app starts no watcher and no hotswap.
 - The roster does not propagate tints to locals, has no write-through for
   setting a tint, no worlds for merge panes, does not notice files created or
   deleted after `gather`, and does not list uses through an alias.

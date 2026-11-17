@@ -253,6 +253,14 @@ impl Chunk {
     }
 }
 
+/// The length of the token `text[start .. end]` as `Tok::len` holds it: cut at what a `u16`
+/// counts, and there at a whole character, so the token is text wherever it is sliced.
+fn reach(text: &str, start: usize, end: usize) -> u16 {
+    let mut end = end.min(start + u16::MAX as usize);
+    while !text.is_char_boundary(end) { end -= 1; }
+    (end - start) as u16
+}
+
 /// Lex one line (`text[from .. to]`) entered in string state `open`: push
 /// its tokens and return (the entering string closed here, the string open
 /// at the line's end). The one string model of the editor: a triple quoted
@@ -263,7 +271,7 @@ fn lex(text: &str, from: usize, to: usize, line: u8, mut open: u8, toks: &mut Ve
     let bytes = &text.as_bytes()[from..to];
     macro_rules! push {
         ($start:expr, $end:expr, $kind:expr) => {
-            toks.push(Tok { start: (from + $start) as u32, len: ($end - $start).min(u16::MAX as usize) as u16, line, kind: $kind })
+            toks.push(Tok { start: (from + $start) as u32, len: reach(text, from + $start, from + $end), line, kind: $kind })
         };
     }
     // A string's text is one token; an f-string's goes through `fstring` (its fields are code).
@@ -391,7 +399,7 @@ fn field(bytes: &[u8], open: usize, end: usize, nest: u8) -> (usize, Option<usiz
 fn fstring(text: &str, line: u8, start: usize, body: usize, inner: usize, end: usize, raw: bool, nest: u8, toks: &mut Vec<Tok>) {
     let bytes = text.as_bytes();
     let push = |from: usize, to: usize, kind: u8, toks: &mut Vec<Tok>| {
-        if to > from { toks.push(Tok { start: from as u32, len: (to - from).min(u16::MAX as usize) as u16, line, kind }); }
+        if to > from { toks.push(Tok { start: from as u32, len: reach(text, from, to), line, kind }); }
     };
     let (mut at, mut literal) = (body, start);
     while at < inner {

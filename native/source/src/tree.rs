@@ -166,9 +166,10 @@ impl Part {
 
     fn find(&self, row: u32, key: &Key) -> Option<u32> {
         let fits = |&id: &u32| self.entries.get(id as usize).is_some_and(|entry| id != 0 && entry.parent == row && entry.key == *key);
-        let found = self.named.get(&mix(row as u64, key.hash())).copied().filter(fits);
+        // Every key is in the map under its hash: one that is not there is no key (no scan for a miss).
+        let found = self.named.get(&mix(row as u64, key.hash())).copied()?;
         // (Two keys of one hash: the one that came second is looked for among its siblings.)
-        found.or_else(|| (0..self.count(row)).filter_map(|at| self.child(row, at)).find(fits))
+        Some(found).filter(fits).or_else(|| (0..self.count(row)).filter_map(|at| self.child(row, at)).find(fits))
     }
 }
 
@@ -315,8 +316,9 @@ impl Tree {
     pub fn find(&self, node: u64, key: &Key) -> Option<u64> {
         if node == 0 {
             let fits = |&found: &u64| self.entry(found).is_some_and(|entry| entry.parent == 0 && entry.key == *key);
-            let found = self.named.get(&key.hash()).copied().filter(fits);
-            return found.or_else(|| (0..self.tops as usize).filter_map(|at| self.child(0, at)).find(fits));
+            // Every key is in the map under its hash: one that is not there is no key (no scan for a miss).
+            let found = self.named.get(&key.hash()).copied()?;
+            return Some(found).filter(fits).or_else(|| (0..self.tops as usize).filter_map(|at| self.child(0, at)).find(fits));
         }
         let (unit, row) = self.part(node)?;
         unit.part.find(row, key).map(|row| node >> 32 << 32 | row as u64)

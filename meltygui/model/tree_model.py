@@ -50,6 +50,7 @@ from meltygui.model import _source_native
 KINDS = tuple(_source_native.TREE_KINDS)
 LEAF = _source_native.TREE_LEAF            # kinds from here on are values, those below have entries
 CODE, BLANK = KINDS.index('code'), KINDS.index('empty')
+VALUE = KINDS.index('call')                # kinds from here on are a value's text, which a write replaces
 # Lever: seconds the text must rest before an edit someone else made is read into the tree.
 QUIET = 0.15
 # Lever: texts up to this many characters are read on the calling thread when the tree is first asked for.
@@ -160,6 +161,12 @@ def nested(value):
 BRACKETS = {list: '[]', tuple: '()', dict: '{}', set: '{}', frozenset: '{}'}
 
 
+def keys_of(name):
+    """The key path, from the module's tree down, of what is defined under the qualified name
+    `name` (`Knobs.scale`, `outer.<locals>.inner`): a function's own names are its `locals`."""
+    return tuple('locals' if part == '<locals>' else part for part in name.split('.'))
+
+
 class Keys:
     """The keys of a branch in text order, read where they are asked for: `len`, an index, `.index`,
     iteration. It follows the text like its branch."""
@@ -256,7 +263,8 @@ class Branch:
         tree.note()
         if tree.pending:
             write = tree.pending.get((self.path, key))
-            if write is not None:
+            # (A list or dict written is answered by its Branch: a write to an item of it has to reach the text.)
+            if write is not None and write[0].__class__ not in BRACKETS:
                 return write[0]
         found = tree.source.native.tree_item(node, key) if node >= 0 else None
         if found is None:
@@ -299,6 +307,13 @@ class Branch:
             return self[key]
         except KeyError:
             return default
+
+    def down(self, keys):
+        """The branch under the path `keys`, or None where the code has no branch there."""
+        found = self
+        for key in keys:
+            found = found.get(key) if isinstance(found, Branch) else None
+        return found if isinstance(found, Branch) else None
 
     def found(self):
         """(kind, source text) of its entry, or None when the text has it no longer."""
@@ -359,6 +374,24 @@ class Tree:
         self.coded = set()
         self.readers = None        # `Readers`: the views that read the tree
         self.wakers = {}           # (cache id, node) -> (handle, token): how the reading thread wakes each of them
+
+    def under(self, keys):
+        """The branch at the path `keys` from the module down, whether the text has it now or not
+        (one it has not is empty): what a scope of the code is read through
+        (model/source_scope_model.py). Where a name is given more than once (`name`,
+        `name#1`) the last one is meant: the definition that stands."""
+        branch = self.top
+        for key in keys:
+            twin = 1
+            while f'{key}#{twin}' in branch:
+                twin += 1
+            if twin > 1:
+                key = f'{key}#{twin - 1}'
+            kid = branch.kids.get(key)
+            if kid is None:
+                kid = branch.kids[key] = Branch(self, branch, key)
+            branch = kid
+        return branch
 
     # --- reading ---------------------------------------------------------
     def ask(self, now=False):
@@ -494,8 +527,12 @@ class Tree:
         """Write `value` in place of the value under `key` of `branch`: one splice of the source, which
         every editor on it follows. The tree answers `value` there until that text is read."""
         source, native = self.source, self.source.native
+        if source.fixed:
+            return                 # a version of the code that is not the file: a write is ignored
         entry, low, high = self.spot(branch, key)
         kind, _ = native.tree_text(entry)
+        if kind < VALUE:
+            raise TypeError(f'{key!r} of {branch!r} is a {KINDS[kind]}: a write replaces a value, never a statement\'s header')
         old = native.slice(low, high)
         if type(value) in BRACKETS:
             text = wrap(value, *self.margin(branch, key))
@@ -511,3 +548,5 @@ class Tree:
             self.writing = False
         self.pending[(branch.path, key)] = (value, source.head, low, low + len(text))
         (self.coded.add if isinstance(value, Code) else self.coded.discard)((branch.path, key))
+        if type(value) in BRACKETS and native.size <= INLINE:
+            self.read()            # its items are entries: have them here (a long text is read on its thread)

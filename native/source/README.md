@@ -24,7 +24,7 @@ restart it after a build.
 
 `cargo test --no-default-features` compiles the crate without libpython; it holds
 no Rust unit tests. The tests are Python (`tests/test_source.py`,
-`tests/test_roster.py`) and most are differential: the legacy Python
+`tests/test_roster.py`, `tests/test_source_file.py` for `file.rs`) and most are differential: the legacy Python
 implementation is the oracle.
 
 ## Layout
@@ -40,6 +40,7 @@ implementation is the oracle.
 | `tree.rs` | The text as a tree of keys and values, what `Source.tree` reads and writes: a part per top-level statement (a flat table of its entries), shared between readings while the statement's text is where it was. | `Grower::simple`, `compound`, `fill`; `AHEAD`, `MISSES` |
 | `rows.rs` | A session's fold layers, collapsed state and line to row mapping; `Hits` for search. Edits are followed in place. | `Rows::set`, `follow`, `land` |
 | `roster.rs` | The project roster: one table per file, a module index, the files that define a name and the files that use it; its own thread. | `Ask`, `Index::install` |
+| `file.rs` | A text kept in step with its file, what `Source(thing)` stands on (`meltygui/model/source_file_model.py`): one io thread without the interpreter that loads, writes behind every edit (temp name, rename, no fsync) and takes the changes of other programs (inotify) as one splice. | `write`, `Stamp`, `pull`, `watch::MASK` |
 | `lib.rs` | The Python classes (`Source`, `Rows`, `Hits`, `Roster`, `Needs`), the reading thread, the wake handles, the exit hook. | |
 
 Each file's header says how to change it. Read it first.
@@ -102,10 +103,16 @@ ends a scope nor opens one (32 of 770 files).
 
 ## Known bugs
 
-Found in the review of 2026-11-11, each reproduced against the built library,
-none fixed yet. Fix each with a regression test.
+Found in the review of 2026-11-11, each reproduced against the built library.
+Fix each with a regression test. Fixed on 2026-11-17, with tests in
+`tests/test_source.py` that fail on the crate as it was: 1 (`Store::splice`
+truncates its sums to the chunks that are left), the cause of 2 (`scan.rs`,
+`reach`: a token ends on a character), 3 for `ask(now=True)` and `read` (both
+let go of `self` before the interpreter), and 4 (`Desk::keep`). Open: a panic
+of the reading thread is still told to nobody (2), the store queries still take
+`&mut self` (3), and 5.
 
-1. **Deleting from a block boundary to the text's end panics the store.**
+1. **Deleting from a block boundary to the text's end panicked the store.**
    `Store::splice` (`store.rs`, the three `truncate(a + 1)` at its end) leaves
    `char0` / `line0` / `entry` one entry longer than `chunks` when the edit
    removes the last chunks and `a > 0`. The next `place`, `blocks`, `line` or
@@ -174,6 +181,11 @@ Smaller, from the same review:
 
 ## Known gaps
 
+- **`file.rs`.** Following the disk is built for Linux (inotify) only. A panic
+  inside a task poisons that file's lock: its io stops and says so once. A
+  change from outside computed for an older text than the render thread has is
+  asked for again (`recheck`), so one that lands while every frame edits a large
+  file waits for a frame without an edit. Nothing closes a file or its watch.
 - **A tree part is a whole top-level statement.** An edit inside a class or a
   function grows the tree of all of it again, on the reading thread, before the
   reading is handed over: 0.2 ms more in a file of small statements, 4.3 ms more

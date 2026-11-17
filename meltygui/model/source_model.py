@@ -30,6 +30,12 @@ these events, never by a call from a frame.
 `source.tree` is the code as a mapping of keys and values that is read and
 written like a dict, and drawn by `draw_any` (model/tree_model.py).
 
+    source = Source(Toggles)                  # anything that is no text: the code of a class, a function or a module
+
+is the code of that thing: the file it is written in, read, written and
+followed on disk with nothing more to call (model/source_scope_model.py is
+that interface, model/source_file_model.py the io under it).
+
 Facts: fold ranges, `defs` (is class, name, line, last line, indent, parent
 index), the bindings of every scope, the names used and the calls made
 (`names`, `bound`, `bindings`, `references`, `calls`, asked by line) and `hits` (line, column, end column) of `term`; `read` returns the
@@ -65,6 +71,18 @@ LOG = 512
 
 
 class Source:
+    # A text nobody may change: a version of the code that is not the file (model/source_version_model.py).
+    fixed = False
+
+    def __new__(cls, text='', path=None, version=0, **how):
+        """`Source(text, path)` is a text of its own. Anything else passed first (a class, a
+        function, a module, a `Path`) gives the code of that thing: a `Scope` on the file it is
+        written in (model/source_scope_model.py), which takes `how`."""
+        if cls is not Source or text is None or isinstance(text, str):
+            return object.__new__(cls)
+        from meltygui.model.source_scope_model import Scope
+        return Scope(text, **how)
+
     def __init__(self, text='', path=None, version=0):
         self.path = path
         self.native = Native(text, version)
@@ -89,8 +107,19 @@ class Source:
 
     @property
     def text(self):
-        """The whole text as one string: a copy, for where all of it is needed."""
+        """The whole text as one string: a copy, for where all of it is needed.
+        Set it and what differs is spliced (`put`)."""
         return self.native.text()
+
+    @text.setter
+    def text(self, text):
+        self.put(text)
+
+    def put(self, text, by=None):
+        """Make the text `text`: what differs between the two, compared from both ends in
+        Rust, is one `splice`. Returns it, or None when the text says so already."""
+        found = self.native.differ(text)
+        return None if found is None else self.splice(*found, by=by)
 
     @property
     def tree(self):
@@ -123,17 +152,22 @@ class Source:
         moved over it (editor/history.py). Returns the `Splice`."""
         gone = min(high, self.native.size) - low
         change = Splice(*self.native.splice(low, high, new, version))
-        self.log.append((self.native.version, change, low, gone, len(new), by))
+        self.record(change, low, gone, len(new), by)
+        return change
+
+    def record(self, change, low, gone, came, by=None):
+        """The text was spliced, here or by its file (model/source_file_model.py): `gone`
+        characters from `low` became `came`. Log it and tell everyone who follows the text."""
+        self.log.append((self.native.version, change, low, gone, came, by))
         if len(self.log) > LOG * 2:
             self.base = self.log[LOG - 1][0]
             del self.log[:LOG]
         if by is None and 'meltygui.editor.history' in sys.modules:
-            sys.modules['meltygui.editor.history'].rebase(self, low, low + gone, len(new))
+            sys.modules['meltygui.editor.history'].rebase(self, low, low + gone, came)
         for session in self.each():
             if session is not by and session.wake is not None:
                 session.wake()
         self.tell()
-        return change
 
     def tell(self):
         """The text or the landed reading moved on: the models on it hear of it (any thread)."""

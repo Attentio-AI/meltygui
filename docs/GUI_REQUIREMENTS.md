@@ -627,6 +627,76 @@ rust is finally fast enough"). Current numbers:
   `draw_any(function_source.tree)`, `draw_any(module_source.tree)` (this
   replaces `draw_any(source)` in the row of the same day above).
   (2026-11-17)
+- **Built to the 2026-11-17 rows above** (by Claude; **Lukas has not reviewed
+  it**). `Source(thing)` beside `Source(text, path)`, which is unchanged: a first
+  argument that is no str gives a `Scope` (model/source_scope_model.py), a
+  handle on the one text of its file (`File`, model/source_file_model.py) and
+  the key path of the class, function or module in its tree. One Rust thread
+  without the interpreter (native/source/src/file.rs) loads the file, writes
+  the whole text behind every edit (temp name, rename, no fsync) and takes the
+  changes of other programs from inotify as one splice. No save, no dirty flag,
+  no pending text, no timer. `examples/gui_source.py` is the usage code
+  verbatim; `examples/gui_source_side_by_side.py` shows both forms on one
+  scratch file. How it works and what is missing:
+  [native editor](NATIVE_EDITOR.md#sourcething-the-code-is-the-file).
+  Decided while building, his to overrule:
+  - `Source(thing)` returns a `Scope`, which is no `Source`; `scope.file` is the
+    whole file's `Source` for `draw_editor`, `scope.text` the definition's
+    lines (settable).
+  - The owner of path to text is a module table (`source_file_model.FILES`),
+    not `Melty.files`: importing `core.melty` where `Source(Toggles)` stands
+    costs 14 ms on the main thread before the first frame.
+  - The constructor reads nothing. A view draws an empty tree until the io
+    thread woke the frame loop with the text; code outside a frame that asks
+    for `.tree` or `.text` waits for it.
+  - The file wins: an edit made on a text the file has left behind is dropped
+    when the file's change arrives, with no conflict shown.
+  - A write to a version that is not the file is ignored; to a statement's key
+    (`tree['Knobs'] = 1`) it raises `TypeError`.
+  - Versions are spelled `at=`: `Source(Toggles, at='launch')`,
+    `at='HEAD~1'`, `at='disk'` (the default). One word to rename, in
+    `Scope.__init__`.
+  - The launch state is captured when the first `Source(thing)` of a repository
+    is made (at import for the usage code), not by the app's boot; files over
+    1 MB that differ from the index are left out.
+  - A decorated function is the function it wraps, a property its getter, a
+    name defined twice its last definition; something without a Python file
+    raises `TypeError`.
+  - The compiled copies in `__pycache__` are removed after every write.
+  - Every edit is one write of the whole file, as fast as the disk takes them:
+    a drag in a file of 8.5 MB writes 1 GB a second. A pause between writes
+    in the io layer would bound it; none is built.
+
+  Measured (medians; details in the native editor document): reading a line 112
+  to 124 ns against 57 to 64 ns for a `str` slice and 114 to 130 ns for a
+  `Source`; a one character edit 6.3 to 6.4 us on the render thread at any
+  size (`Source`: 5.6 to 5.7 us; a `str`: 3.2 us to 0.65 ms); the file written
+  0.10, 0.24 and 3.0 ms later at 1,000, 10,000 and 100,000 lines. Frames while
+  a value is dragged in `draw_any(source.tree)`, a real window on a reserved
+  desktop, the render thread's time a frame: at 1,000 lines median 3.3 and 4.2
+  ms, worst 7.2 and 6.3 ms, none of 702 over 8.33 ms (`Source(text)`: median
+  3.4, one of 381 over, 9.4 ms); at 100,000 lines median 3.3 to 3.9 ms and 15
+  of 1,665 frames over 8.33 ms in four runs, worst 10.7 ms (`Source(text)`: 2 of
+  638 in two runs, worst 10.1 ms). Whether the writer causes the difference at
+  100,000 lines is not attributed. Launch of the usage code, first frame
+  presented, interleaved: 295 to 318 ms (median 304, six launches) against 273
+  to 329 ms (median 303, seven) for the same file without the three sources;
+  the three constructors take 1.1 to 1.4 ms of it on the main thread. The
+  launch capture takes 116 to 119 ms on its thread in this repository and
+  writes 440 KB to a temp folder.
+  Found on the way: the verbatim usage code shows only its first tree, since a
+  view without a size fills its parent (three plain dicts do the same); fixed
+  in `Source`: a store panic, a reading thread that died on a long non-ASCII
+  token, `Already borrowed`, an older reading replacing a newer one, and a scan
+  of every key for one that is missing (3.4 ms to 0.8 us among 100,000 names).
+  **Not built**: the code being executed (`at='running'` raises: nothing keeps
+  the text a module was compiled from, and no hotswap runs in an `@os_window`
+  app), a class's file in another worktree, a conflict view, closing a file.
+  The legacy stack (`PendingSave`, the roster, `@save(to_code=True)`) does not
+  know about it. Tests: [test_source_file.py](../tests/test_source_file.py),
+  [test_source_scope.py](../tests/test_source_scope.py),
+  [test_source_version.py](../tests/test_source_version.py),
+  [test_source_file_view.py](../tests/test_source_file_view.py). (2026-11-17)
 - **Cross file symbols**: one roster per project, owned by Melty's shared
   runtime and injected. Python says which files belong and pushes current
   text; a Rust thread reads and indexes. (11-11, approved)

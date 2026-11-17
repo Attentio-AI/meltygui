@@ -52,7 +52,7 @@ impl Chunk {
 }
 
 /// Cut `text` into chunks of `LINES` lines; up to twice that stay one chunk.
-fn chunks(text: &str) -> Vec<Arc<Chunk>> {
+pub(crate) fn chunks(text: &str) -> Vec<Arc<Chunk>> {
     let mut cuts = vec![0];
     let mut lines = 0;
     for (at, _) in text.match_indices('\n') {
@@ -82,7 +82,11 @@ pub struct Store {
 
 impl Store {
     pub fn new(text: &str) -> Store {
-        let mut chunks = chunks(text);
+        Store::holding(chunks(text))
+    }
+
+    /// A store of chunks cut elsewhere (`chunks`): a file read on its own thread (`file.rs`).
+    pub fn holding(mut chunks: Vec<Arc<Chunk>>) -> Store {
         if chunks.is_empty() { chunks.push(Chunk::new("")); }
         let chars = chunks.iter().map(|chunk| chunk.chars as usize).sum();
         let breaks = chunks.iter().map(|chunk| chunk.breaks as usize).sum();
@@ -107,7 +111,9 @@ impl Store {
     }
 
     /// Put `new` in place of characters `low .. high`; the chunks rewritten get `stamp`.
-    pub fn splice(&mut self, low: usize, high: usize, new: &str, stamp: u64) {
+    /// Returns (first chunk replaced, how many were, how many stand there now): what
+    /// whoever keeps a copy of the chunk list follows the edit by (`file.rs`).
+    pub fn splice(&mut self, low: usize, high: usize, new: &str, stamp: u64) -> (usize, usize, usize) {
         let low = low.min(self.chars);
         let high = high.clamp(low, self.chars);
         let a = self.chunk(low);
@@ -148,12 +154,16 @@ impl Store {
             keys.push(self.serial);
         }
         keys.truncate(fresh.len());
-        self.stamps.splice(a..=b, vec![stamp; fresh.len()]);
+        let came = fresh.len();
+        self.stamps.splice(a..=b, vec![stamp; came]);
         self.keys.splice(a..=b, keys);
         self.chunks.splice(a..=b, fresh);
-        self.char0.truncate(a + 1);
-        self.line0.truncate(a + 1);
-        self.entry.truncate(a + 1);
+        // (An edit that took the text's last chunks leaves fewer than `a + 1`: the sums never outrun the chunks.)
+        let kept = (a + 1).min(self.chunks.len());
+        self.char0.truncate(kept);
+        self.line0.truncate(kept);
+        self.entry.truncate(kept);
+        (a, b + 1 - a, came)
     }
 
     /// (chunk, line in it) of line `line` (the last chunk for lines past the end).

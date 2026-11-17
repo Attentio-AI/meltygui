@@ -12,6 +12,7 @@ from pathlib import Path
 import os
 import sys
 import tempfile
+import types
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
@@ -87,3 +88,12 @@ def debug_log_path(name):
     """Where a diagnostics trail (`tail -f` while reproducing) is written: the
     system temp folder, /tmp on Linux and %TEMP% on Windows."""
     return os.path.join(tempfile.gettempdir(), name)
+
+
+def module_file(thing):
+    """The file of the module that defines `thing` (a class, a function; a module is its own),
+    or None when it has none (typed at a prompt, built in). What `@save` keeps a class beside
+    (app_save.py) and `Source(thing)` reads the code of (model/source_scope_model.py)."""
+    module = thing if isinstance(thing, types.ModuleType) else sys.modules.get(getattr(thing, '__module__', None))
+    path = getattr(module, '__file__', None)
+    return os.path.abspath(path) if path else None

@@ -361,3 +361,47 @@ def test_a_list_or_dict_too_long_for_its_line_is_written_over_several(source):
     assert tree['Knobs']['label'].plain()['cells'][2] == {'id': 2, 'note': 'x' * 30}
     assert tree['Knobs']['scale']['locals']['if##0']['z'].plain() == list(range(60))
     assert wrap({'a': {3, 1, 2}}) == "{'a': {1, 2, 3}}" and wrap(()) == '()' and wrap((1,), column=WIDTH) == '(\n    1,\n)'
+
+
+def test_a_write_replaces_a_value_never_a_statement(source):
+    tree = source.tree
+    for branch, key in ((tree, 'Knobs'), (tree['Knobs'], 'scale'), (tree['Knobs']['scale'], 'parameters'),
+                        (tree['Knobs']['scale'], 'locals'), (tree['Knobs']['scale']['locals'], 'if##0')):
+        with pytest.raises(TypeError, match='never a statement'):
+            branch[key] = 1
+    assert source.text == TEXT and source.head == 0
+    tree['THING'] = Code('Thing(3)')                    # a call is a value: its text is replaced
+    tree['NAMES'] = ['x']
+    assert 'THING = Thing(3)\n' in source.text and "NAMES = ['x']\n" in source.text
+
+
+def test_an_item_of_a_list_just_written_is_written_to_the_text(source):
+    tree = source.tree
+    tree['NAMES'] = [7, 8, 9]
+    assert isinstance(tree['NAMES'], Branch) and tree['NAMES'].plain() == [7, 8, 9]
+    tree['NAMES'][0] = 100
+    tree['OPTS'] = {'a': {'b': 1}}
+    tree['OPTS']['a']['b'] = 2
+    assert 'NAMES = [100, 8, 9]\n' in source.text and "OPTS = {'a': {'b': 2}}\n" in source.text
+    assert settled(source)['NAMES'].plain() == [100, 8, 9]
+    # A text too long to read where it is written: the list is answered once its thread read it, and written through then too.
+    long = Source('SIZES = [1, 2, 3]\n' + ''.join(f'value{at} = {at}\n' for at in range(6000)))
+    tree = settled(long)
+    tree['SIZES'] = [7, 8, 9]
+    tree['SIZES'][0] = 100
+    assert long.text.startswith('SIZES = [100, 8, 9]\n') and settled(long)['SIZES'].plain() == [100, 8, 9]
+    long.close()
+
+
+def test_a_key_the_code_has_not_costs_no_look_at_the_others():
+    import time
+    source = Source(''.join(f'name_{at} = {at}\n' for at in range(50000)))
+    source.tree                                         # a text this long is read on its thread
+    tree = settled(source)
+    started = time.perf_counter()
+    for at in range(200):
+        assert f'missing_{at}' not in tree and tree.get(f'name_{at}#1') is None
+    spent = time.perf_counter() - started
+    assert spent < .05, spent                           # (it was 1.7 ms a miss among 50,000 names)
+    assert tree['name_49999'] == 49999 and 'name_0' in tree
+    source.close()

@@ -1571,3 +1571,60 @@ def test_the_attributes_read_per_statement_are_those_of_the_whole_text():
         assert each(text, running) == want, path
         told += len(want)
     assert told > 3, told
+
+
+def test_deleting_from_a_block_boundary_to_the_end_keeps_the_store_whole():
+    text = ''.join(f'line {at}\n' for at in range(200))
+    source = Source(text)
+    native = source.native
+    native.place(len(text))                             # the sums run to the last chunk
+    source.splice(native.start(64), len(text), '')
+    assert native.place(native.size) == (64, 0) and source.text == text[:native.size] and native.lines == 65
+    source.splice(native.size, native.size, 'tail')
+    assert source.text.endswith('line 63\ntail') and native.blocks(0, 99)[-1][1] + native.blocks(0, 99)[-1][2] == 65
+    source.close()
+
+
+def test_a_token_longer_than_its_length_field_ends_on_a_character():
+    source = Source('x = 1\n' + 'é' * 40000 + 'a = f(1)\n')
+    source.lint = True
+    source.ask()
+    source.settle()
+    assert source.land() and source.version == 0        # the reading thread lived
+    source.close()
+
+
+def test_an_older_reading_does_not_replace_a_newer_one():
+    source = Source('a = 1\n' * 20000)
+    source.ask()                                        # the thread starts on this text
+    source.splice(0, 0, 'b = 2\n')
+    source.ask(now=True)                                # the newer text, read here meanwhile
+    source.settle()
+    assert source.land() and source.version == source.head == 1
+    assert not source.land()
+    source.close()
+
+
+def test_the_text_is_asked_from_another_thread_while_a_reading_is_made_here():
+    import threading
+    source = Source('value = 1\n' * 60000)
+    failed, done = [], threading.Event()
+
+    def worker():                                       # as the spelling worker does (`Spelling.check`)
+        while not done.is_set():
+            try:
+                source.native.texts(100, 32)
+                source.native.place(5000)
+            except RuntimeError as error:               # "Already borrowed"
+                failed.append(error)
+                return
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    for _ in range(6):
+        source.ask(now=True)                            # lets the interpreter go while it reads
+        source.read()
+    done.set()
+    thread.join()
+    assert not failed and source.land()
+    source.close()

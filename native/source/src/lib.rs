@@ -29,6 +29,7 @@ pub mod bind;
 pub mod call;
 pub mod colour;
 pub mod facts;
+pub mod file;
 pub mod roster;
 pub mod rows;
 pub mod scan;
@@ -112,6 +113,14 @@ struct Desk {
     serial: u64,
     /// The project roster the source's readings go to, and the file it is there (`Source::join`).
     roster: Option<(Arc<roster::Shared>, String)>,
+}
+
+impl Desk {
+    /// A reading arrived: the one of the newer text stays. A thread may end on an older text
+    /// after a newer one was read elsewhere (`ask` with `now`, the file's first reading).
+    fn keep(&mut self, found: Found) {
+        if self.found.as_ref().map_or(true, |held| held.facts.version <= found.facts.version) { self.found = Some(found); }
+    }
 }
 
 #[derive(Default)]
@@ -233,7 +242,7 @@ fn work(shared: Arc<Shared>) {
             }
         };
         let (found, wake) = read(job, &shared);
-        shared.desk.lock().unwrap().found = Some(found);
+        shared.desk.lock().unwrap().keep(found);
         // Nothing here touches the interpreter: a wake is a token queued for the frame loop.
         for waker in &wake { unsafe { (waker.wake)(waker.data, waker.token) } }
         drop(wake);
@@ -291,6 +300,9 @@ pub struct Source {
     shared: Arc<Shared>,
     /// The newest reading that arrived.
     pub(crate) landed: Option<Found>,
+    /// The file the text is kept in step with (`file.rs`), and whether its text is here yet.
+    file: Option<Arc<file::File>>,
+    loaded: bool,
 }
 
 impl Source {
@@ -307,6 +319,18 @@ impl Source {
               }),
               sites, tree, grown: if tree { self.shared.grown.lock().unwrap().clone() } else { None },
               due: Instant::now() + Duration::from_secs_f64(rest.max(0.0)) }
+    }
+
+    /// Put `new` in place of characters `low .. high` (`splice`). The text's file follows by the
+    /// chunks replaced; `disk`: the edit is the file's own change, so there is nothing to write.
+    fn edit(&mut self, low: usize, high: usize, new: &str, version: u64, disk: Option<file::Stamp>) -> (usize, usize, usize, usize, usize, usize) {
+        let ((line, column), (last, old)) = (self.store.place(low), self.store.place(high.max(low)));
+        let came = new.bytes().filter(|&byte| byte == b'\n').count();
+        let tail = new.rfind('\n').map_or(column + new.chars().count(), |at| new[at + 1..].chars().count());
+        let (at, gone, fresh) = self.store.splice(low, high, new, version);
+        self.version = version;
+        if let Some(file) = &self.file { file.edited(version, at, gone, self.store.chunks[at..at + fresh].to_vec(), disk); }
+        (line, column, last - line, old, came, tail)
     }
 }
 
@@ -330,7 +354,84 @@ impl Source {
         let mut live = LIVE.lock().unwrap();
         live.retain(|other| other.strong_count() > 0);
         live.push(Arc::downgrade(&shared));
-        Ok(Source { store, version, shared, landed: None })
+        Ok(Source { store, version, shared, landed: None, file: None, loaded: false })
+    }
+
+    /// Keep the text in step with the file at `path` (resolved by the caller) from here on
+    /// (`file.rs`): the io thread loads it and reads its facts with the tree, every edit follows
+    /// to the file, and a change by another program comes back through `arrive`. Nothing is
+    /// read on the calling thread. Without a path the text is what `fill` gives, and no file.
+    /// `stale`: files removed after every write (the compiled copies of a Python source).
+    /// For an empty source, once.
+    #[pyo3(signature = (path=None, stale=vec![]))]
+    fn open(&mut self, path: Option<std::path::PathBuf>, stale: Vec<std::path::PathBuf>) -> PyResult<()> {
+        if self.file.is_some() || self.store.chars != 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err("a file is opened once, by a source without text"));
+        }
+        self.file = Some(file::File::open(path, stale, self.shared.clone()));
+        Ok(())
+    }
+
+    /// The text of a source opened without a path, from any thread: its bytes, or `error`,
+    /// why there are none. It arrives like a file's (`arrive`).
+    #[pyo3(signature = (bytes, error=None))]
+    fn fill(&self, bytes: &[u8], error: Option<String>) {
+        if let Some(file) = &self.file { file.fill(bytes.to_vec(), error); }
+    }
+
+    /// Take what came from the text's file, on the render thread. None when nothing did, which
+    /// costs one flag. Else (splice, error): the splice it made of the text as `splice` returns
+    /// it, then the offset it starts at, the characters gone and the characters come (None: only
+    /// an error); why the file is not written (None: it is). A change computed for an older
+    /// text than this one is asked for again and arrives later.
+    #[allow(clippy::type_complexity)]
+    fn arrive(&mut self) -> Option<(Option<(usize, usize, usize, usize, usize, usize, usize, usize, usize)>, Option<String>)> {
+        let file = self.file.as_ref().filter(|file| file.waiting.load(Ordering::Acquire))?.clone();
+        let (arrival, error) = file.take();
+        let change = match arrival {
+            Some(file::Arrival::Loaded(chunks)) => {
+                self.store = Store::holding(chunks);
+                self.version += 1;
+                self.loaded = true;
+                let last = &self.store.chunks[self.store.chunks.len() - 1].text;
+                let tail = last.rfind('\n').map_or(&last[..], |at| &last[at + 1..]).chars().count();
+                Some((0, 0, 0, 0, self.store.breaks, tail, 0, 0, self.store.chars))
+            }
+            Some(file::Arrival::Changed { version, low, high, text, stamp }) if version == self.version => {
+                let (line, column, gone, old, came, tail) = self.edit(low, high, &text, version + 1, Some(stamp));
+                Some((line, column, gone, old, came, tail, low, high - low, text.chars().count()))
+            }
+            Some(file::Arrival::Changed { .. }) => {
+                file.recheck();
+                None
+            }
+            None => None,
+        };
+        Some((change, error))
+    }
+
+    /// Wait until the file's text arrived and, with `reading`, its first reading (`open`).
+    /// For code outside a frame: the interpreter is let go meanwhile.
+    fn wait(slf: PyRef<'_, Self>, py: Python<'_>, reading: bool) {
+        let Some(file) = slf.file.clone() else { return };
+        drop(slf);
+        py.allow_threads(move || file.wait(reading));
+    }
+
+    /// Have the io thread wake `(handle, token)` (`_gui_native.Wakes.handle()`) whenever
+    /// something arrives from the file. Returns whether something waits already.
+    fn heed(&self, handle: &Bound<'_, PyCapsule>, token: u64) -> PyResult<bool> {
+        let waker = Waker::new(handle, token)?;
+        Ok(self.file.as_ref().is_some_and(|file| file.heed(waker)))
+    }
+
+    /// What turns the text into `text`: (low, high, new), characters `low .. high` become
+    /// `new`. None when it is the text already. One comparison of bytes from both ends:
+    /// what a whole text is set by (`Source.put`).
+    fn differ(&self, text: &Bound<'_, PyString>) -> PyResult<Option<(usize, usize, String)>> {
+        let bytes = utf8(text)?;
+        let new = decoded(&bytes);
+        Ok(file::differ(&self.store.chunks, new).map(|(low, high, from, to)| (low, high, new[from..to].to_string())))
     }
 
     /// Put `new` in place of characters `low .. high`; the text is then at
@@ -340,15 +441,11 @@ impl Source {
     /// column `new`.
     #[pyo3(signature = (low, high, new, version=None))]
     fn splice(&mut self, low: usize, high: usize, new: &Bound<'_, PyString>, version: Option<u64>) -> PyResult<(usize, usize, usize, usize, usize, usize)> {
-        let version = version.unwrap_or(self.version + 1);
+        if self.file.is_some() && !self.loaded {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err("the file's text is not here yet: `arrive` first"));
+        }
         let bytes = utf8(new)?;
-        let new = decoded(&bytes);
-        let ((line, column), (last, old)) = (self.store.place(low), self.store.place(high.max(low)));
-        let came = new.bytes().filter(|&byte| byte == b'\n').count();
-        let tail = new.rfind('\n').map_or(column + new.chars().count(), |at| new[at + 1..].chars().count());
-        self.store.splice(low, high, new, version);
-        self.version = version;
-        Ok((line, column, last - line, old, came, tail))
+        Ok(self.edit(low, high, decoded(&bytes), version.unwrap_or(self.version + 1), None))
     }
 
     #[getter]
@@ -475,7 +572,7 @@ impl Source {
     /// values on the reading thread (`tree_shape` and the `tree_` answers).
     #[pyo3(signature = (wake=None, term=None, blocks=true, rest=0.0, rows=None, now=false, lint=false, sites=None, sessions=vec![], tree=false))]
     #[allow(clippy::too_many_arguments)]
-    fn ask(&self, py: Python<'_>, wake: Option<Vec<(Bound<'_, PyCapsule>, u64)>>, term: Option<String>, blocks: bool, rest: f64,
+    fn ask(slf: PyRef<'_, Self>, py: Python<'_>, wake: Option<Vec<(Bound<'_, PyCapsule>, u64)>>, term: Option<String>, blocks: bool, rest: f64,
            rows: Option<PyRef<'_, Rows>>, now: bool, lint: bool, sites: Option<Vec<Vec<String>>>,
            sessions: Vec<(String, PyRef<'_, Rows>)>, tree: bool) -> PyResult<()> {
         if EXITING.load(Ordering::Relaxed) { return Ok(()); }
@@ -485,23 +582,26 @@ impl Source {
             all.push(rows);
         }
         let wake = if now { vec![] } else { wake.unwrap_or_default().iter().map(|(handle, token)| Waker::new(handle, *token)).collect::<PyResult<_>>()? };
-        let job = self.job(terms, blocks, all, wake, rest, lint, sites, tree);
+        let job = slf.job(terms, blocks, all, wake, rest, lint, sites, tree);
+        let shared = slf.shared.clone();
+        // (Not borrowed while the interpreter is let go: another thread may ask the text meanwhile.)
+        drop(slf);
         if now {
-            let shared = self.shared.clone();
             let found = py.allow_threads(|| read(job, &shared).0);
-            let mut desk = self.shared.desk.lock().unwrap();
-            (desk.job, desk.found) = (None, Some(found));
+            let mut desk = shared.desk.lock().unwrap();
+            desk.job = None;
+            desk.keep(found);
             return Ok(());
         }
-        let mut desk = self.shared.desk.lock().unwrap();
+        let mut desk = shared.desk.lock().unwrap();
         desk.job = Some(job);
         desk.closed = false;
         if !desk.running {
             desk.running = true;
-            let shared = self.shared.clone();
+            let shared = shared.clone();
             std::thread::Builder::new().name("melty-source".into()).spawn(move || work(shared)).unwrap();
         }
-        self.shared.bell.notify_all();
+        shared.bell.notify_all();
         Ok(())
     }
 
@@ -810,9 +910,11 @@ impl Source {
     /// where the legacy fold scanner would have read a continued statement
     /// as a new one.
     #[pyo3(signature = (term=None, blocks=true))]
-    fn read<'py>(&self, py: Python<'py>, term: Option<String>, blocks: bool) -> PyResult<Bound<'py, PyAny>> {
-        let job = self.job(term.into_iter().collect(), blocks, vec![], vec![], 0.0, false, None, false);
-        let shared = self.shared.clone();
+    fn read<'py>(slf: PyRef<'py, Self>, py: Python<'py>, term: Option<String>, blocks: bool) -> PyResult<Bound<'py, PyAny>> {
+        let job = slf.job(term.into_iter().collect(), blocks, vec![], vec![], 0.0, false, None, false);
+        let shared = slf.shared.clone();
+        // (Not borrowed while the interpreter is let go: another thread may ask the text meanwhile.)
+        drop(slf);
         let found = py.allow_threads(|| read(job, &shared).0);
         let facts = &found.facts;
         let (names, defaults) = (PyList::empty(py), PyList::empty(py));
@@ -855,11 +957,20 @@ fn close(py: Python<'_>) {
     EXITING.store(true, Ordering::Relaxed);
     let live: Vec<Arc<Shared>> = LIVE.lock().unwrap().iter().filter_map(Weak::upgrade).collect();
     py.allow_threads(move || {
+        // What was edited last is in its file before the process goes.
+        file::flush();
         for shared in live {
             shared.end();
             shared.join();
         }
     });
+}
+
+/// Wait until every edit made so far of a text with a file is in that file (tests, measurements;
+/// the exit hook does the same).
+#[pyfunction]
+fn flush(py: Python<'_>) {
+    py.allow_threads(file::flush);
 }
 
 /// The colour runs of `line`, which starts in string state `state`
@@ -891,6 +1002,7 @@ fn _source_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("TREE_KINDS", tree::KINDS.to_vec())?;
     module.add("TREE_LEAF", tree::INT)?;
     module.add_function(wrap_pyfunction!(runs, module)?)?;
+    module.add_function(wrap_pyfunction!(flush, module)?)?;
     module.add_function(wrap_pyfunction!(builtins, module)?)?;
     module.add_function(wrap_pyfunction!(known, module)?)?;
     module.add_class::<Source>()?;

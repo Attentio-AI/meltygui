@@ -64,6 +64,7 @@ import sys
 import time
 
 from meltygui.core.runtime.app import _embedded_app_state
+from meltygui.core.runtime.paths import module_file
 
 _kept = {}            # 'module.Class' -> Pickled or Coded, in decoration order
 
@@ -96,12 +97,6 @@ def keep(cls, file, to_code):
             raise ValueError(f'Another class is saved in {path}: give {cls.__qualname__} a file of its own, @save("name.pkl")')
         _kept[key] = Pickled(cls, path)
     return cls
-
-
-def module_file(cls):
-    """The file of the module that defines `cls`, or None when it has none (typed at a prompt)."""
-    path = getattr(sys.modules.get(cls.__module__), '__file__', None)
-    return os.path.abspath(path) if path else None
 
 
 def named(cls, file=None):
@@ -241,7 +236,7 @@ class Coded:
         if not changed:
             return notes
         from meltygui.model.source_model import Source
-        from meltygui.model.tree_model import Branch, Code, wrap
+        from meltygui.model.tree_model import Code, keys_of, wrap
         with open(self.path, 'rb') as file:
             data = file.read()
         source = Source(data.decode('utf-8'), self.path)
@@ -253,11 +248,10 @@ class Coded:
                 top = source.tree
             wrote = {}
             for label, text in changed.items():
-                *path, name = f'{self.cls.__qualname__}.{label}'.split('.')
-                body = top
-                for part in path:
-                    body = body.get(part) if isinstance(body, Branch) else None
-                if not isinstance(body, Branch) or name not in body or f'{name}#1' in body:
+                # (Where a class stands in its file's tree is the lookup `Source(cls)` uses: tree_model.py, `keys_of`.)
+                *path, name = keys_of(f'{self.cls.__qualname__}.{label}')
+                body = top.down(path)
+                if body is None or name not in body or f'{name}#1' in body:
                     notes.append(f'{label} needs one plain assignment at the top of its class')
                     continue
                 now = read(body[name])
