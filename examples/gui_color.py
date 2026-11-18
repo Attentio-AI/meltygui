@@ -8,10 +8,11 @@ What to look at:
   `Paint.fill` has alpha, `Paint.glow` starts outside sRGB and above white.
 - The picker beside them is the same view, called without `popup=`: it edits `Paint.fill` too, so
   a drag in either shows in the other.
-- In the picker: the square is sRGB, the strip right of it reaches the edge of P3, the band above
-  both reaches 10,000 nits. Drag from the square into either.
+- In the picker (`selector=meltygui.SRGB_PLUS`): the square is sRGB, the strip right of it reaches the
+  edge of P3, the band above both reaches 32 times white. Drag from the square into either. The
+  chips open the default, `meltygui.HDR`: one P3 square under the band, the sRGB part outlined.
 """
-from meltygui import gui, os_window, imgui, save
+from meltygui import SRGB_PLUS, gui, os_window, imgui, save
 from meltygui.hdr_color import p3, pack_color
 from meltygui.rust import draw_color, draw_color_picker
 from meltygui.view.color_picker_view import extent
@@ -43,5 +44,5 @@ def app(width=None, height=None):
     changed, Paint.fill = draw_color(Paint.fill, name='fill', left=PAD + LABEL, top=PAD, width=CHIP)
     label('Glow', name='glow label', left=PAD, top=PAD + ROW + PAD)
     changed, Paint.glow = draw_color(Paint.glow, name='glow', left=PAD + LABEL, top=PAD + ROW + PAD, width=CHIP)
-    changed, Paint.fill = draw_color_picker(Paint.fill, name='fill picker', left=width - ACROSS - PAD, top=PAD,
-                                            width=ACROSS, height=DOWN)
+    changed, Paint.fill = draw_color_picker(Paint.fill, name='fill picker', selector=SRGB_PLUS,
+                                            left=width - ACROSS - PAD, top=PAD, width=ACROSS, height=DOWN)

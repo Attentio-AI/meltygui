@@ -42,6 +42,13 @@ from __future__ import annotations
 
 import math
 
+# The pickers a colour can be chosen with (`selector=` of draw_color_picker,
+# view/color_picker_view.py): which of the displayable colours the field lays
+# out. Public as meltygui.SRGB, meltygui.SRGB_PLUS and meltygui.HDR.
+SRGB = 'srgb'           # the classic sRGB square
+SRGB_PLUS = 'srgb+'     # that square, with P3 right of it and HDR above both
+HDR = 'hdr'             # one Display P3 square with HDR above it, the sRGB part outlined
+
 # ---------------------------------------------------------------------------
 # The curve (extended sRGB) and primaries
 # ---------------------------------------------------------------------------

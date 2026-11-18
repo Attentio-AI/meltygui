@@ -118,6 +118,8 @@ rust is finally fast enough"). Current numbers:
 | A window has an absolute minimum size of 1 by 1 px, "so that this can't happen": `examples/gui_todo.py` raised `size must be finite and nonnegative` once the compositor made its window lower than the title bar (and again at every launch, from the saved size). The root's size is floored where it is handed out (`surface_frame.py` `Melty.root_fill`, `gui_window_prototype.py` `draw`, `gui_native_collision.py` `commit`), a Melty window's in its solver cell (`GuiGeometry.window`). A declared `min_width` / `min_height` above 1 still applies. | 11-15 |
 | The title bar's height is never in app code. "I don't like sprinkling strip everywhere": a title bar wrapper "that leaves the inner view clean". The host puts the root's space under the bar (`title_bar` in `gui_window_prototype.py`): `top=0` is below it, `height` is what is left. | 11-13 |
 | "I want all @gui functions to automatically be visible as part of the external interface", and "meltygui.view should be visible". A module-level `@gui` function named `draw_<thing>` is published as `meltygui.rust.draw_thing` with no hand-written row; `meltygui.view.<module>` loads on request. The IDE completes from generated stubs (`.pyi`): "it doesn't need to run all the time", one file at the repository root, `stubs.py`, regenerates them and the `VIEWS` table of `meltygui/rust.py`. | 11-16 |
+| "I would like @gui functions to have better parameter hints in intellj and other IDEs (only testing intellj)", and "I'd like it to include the framework parameters as well". Built by Claude, **Lukas has not reviewed it, and it was not looked at in IntelliJ**: `stubs.py` writes each published view into `meltygui/rust.pyi` as a `def` with its own parameters and then the 20 names a call carries for the framework (`FRAMEWORK` in `stubs.py`: `FILLED` of gui_prototype.py without the 7 a body is injected with and the 2 a call rejects), with the view's docstring. Decided while building, his to overrule: a parameter after the view's first framework name is shown by name only; the return type is a plain `tuple` (`return_extras=True` returns three); Go to Declaration from `meltygui.rust.draw_x` now lands on the stub, not the view's source; a `@gui` function that is not published (an app's own, or a view imported from its module) has the hints it had before. | 11-18 |
+| The parameter popup keeps the types: "You can put the types back, more info the better". Its one wrapped line "sucks", and IntelliJ has no setting for it, so the layout is a plugin's: "Lets make a intellj plugin instead. We have one in meltymeta, could add features to that." Built by Claude in `~/Desktop/melty-meta/intellij-plugin` (`hints/CallHints.java`, Melty File Tints 1.3.0; its README has the rules): a long Python signature is shown as the positional parameters in wrapped rows, then the by-name ones (for a view, `FRAMEWORK`) in four columns, types dimmed, the one being typed bold. It reads only the signature, so it knows nothing of meltygui. Seen in an isolated IntelliJ 2023.2 on a copy of `rust.pyi`; **Lukas has not reviewed it**. | 11-18 |
 
 ## 4. How every view behaves
 
@@ -849,6 +851,111 @@ working example.
   widget implementation for future views", built by following the view guide
   closely.
 - **No text brightness clamp** (2026-11-18; section 4).
+- **The picker's field is to scale with `nits`** (2026-11-18): "I'd like the
+  nits argument to scale reduce the height of the hdr quadrants, max height
+  is 10,000 nits, so the colors are to scale. I should be able to go down to
+  0 nits, and have the srgb section get shorter and shorter." Built the same
+  day (`scale` in color_picker_view.py): a stop is the same pixels in every
+  picker, the band is `BAND` high at 10,000 nits and gone at the desktop's
+  white; under white the sRGB square is cut from above at the value whose
+  brightest channel shows `nits`, down to no field at 0. `nits` over 10,000
+  is 10,000. This replaces "the band's top is `nits=`, turned into stops"
+  below: the band no longer keeps its height.
+- **The hue bar shows the most vivid colour of each hue** (2026-11-18): "update
+  the hue bar to use the most vivid hue available, p3 hue", the far corner of
+  the P3 quadrant on the square's top row. Built the same day (`vivid` in
+  color_picker_view.py; 24 segments, lever `SHADES`). The bar still selects
+  the sRGB hue of the square.
+- **Brightness, white and nits: how it fits together** (2026-11-18, from the
+  review of `~/Desktop/hyprland-hdr`; the compositor facts are read from its
+  patch, the Apple ones are not run on a device).
+  - A Melty colour is a multiple of the desktop's SDR white. Nits exist only
+    as `value x white nits`, and are what the picker's labels show.
+  - On the Hyprland fork the brightness slider is `exposure`, one linear gain
+    on every source before tone mapping: `emitted = content nits x
+    brightness`. Ratios to white hold at every slider position, and
+    10,000-nit content still reaches the panel's peak from `peak / 10,000`
+    brightness up. Lukas keeps this model ("Everything scales with the
+    brightness slider"); moving the slider to SDR white instead was
+    considered and dropped, since PQ content that does not follow the
+    reported white would not dim, or would be dimmed twice.
+  - Melty reads white from the compositor's preferred image description
+    (`wp_color_management_v1`, the `luminances` event:
+    `wayland_color.query_preferred`). The fork reports `sdr_max_luminance`
+    there, without the brightness factor, so Melty's nits are nits at 100%
+    brightness. Other compositors may report something else; without colour
+    management the fallback is `Toggles.HDR.pq_reference_nits`, a guess.
+  - The fork's HDR gain (`hdrbrightness`) multiplies every PQ source, Melty's
+    surface included, so any value but 1 puts Melty's white above the
+    desktop's. Lukas set it to 1. Measured then with the fork's capture
+    plugin on an agent desktop (SDR white 377 nits, brightness 100%): Melty
+    white 379.4 nits, `white(4.0)` 1,497.5 (1,508 expected), grey 0.5 80.3
+    (80.7 expected).
+  - "I want 10k nits to be the max brightness value on the color picker,
+    everywhere." Colours brighter than the display can show clip to a white
+    blob in the band, whose edge is that display's maximum: he wants that
+    kept, as it shows where the panel ends.
+  - Apple (for when `@gui` has a Metal path; iOS host only today, no macOS
+    extended range path): the layer is extended linear sRGB, 1.0 is SDR
+    white, and the system clips above the current headroom while the layer
+    carries no tone-mapping metadata, so the blob and its edge work and
+    follow the brightness slider. Apple reports the headroom as a multiple
+    of white (`UIScreen.currentEDRHeadroom` / `potentialEDRHeadroom`,
+    `NSScreen.maximumExtendedDynamicRangeColorComponentValue`) and, as far
+    as known, no nits of white. Plan: one "nits of white" function (the
+    picker's `white()`): the compositor's value on Wayland; on Apple `panel
+    peak / current headroom` from a per-model peak table while the panel is
+    the limit, the brightness fraction times the model's SDR maximum when
+    the headroom is at its cap, a default otherwise. Where white is an
+    estimate the caption leads with the multiple and marks nits as
+    approximate, and the picker runs again when the headroom changes. A
+    wrong estimate moves only the labels and the band's height; stored
+    colours and the blob's edge do not depend on it.
+  - Open, his to decide then: on Apple the band stretches as brightness
+    changes (10,000 nits is more stops above a dimmer white); the
+    alternative is to fix white at the model's full-brightness value.
+- **The picker's maximum is a multiple of white, not nits** (2026-11-18): "I
+  think we move to relative nits for the max display. Change it to the
+  multiple, that will be more universally compatible." This replaces
+  `nits=` and "10k nits ... everywhere" above. Built the same day:
+  `headroom=` on `draw_color_picker` and `draw_color`, the brightest colour
+  shown as a multiple of white in linear light, 0.0 to `PEAK`; `scale` and
+  `extent` take it and no longer read the desktop's white, so the field has
+  one shape on every display. Decided while building, his to overrule: the
+  name `headroom`; `PEAK = 32.0` (five stops), which is 10,000 nits at a
+  white of 312 nits, about 12,000 at the 377 of his desktop that day and
+  about 8,000 at 250; the caption reads `8.0x  3016 nits  P3`, the multiple
+  first and the nits from `white()`, which is a reading on the fork and a
+  guess elsewhere. For scale, estimated and not measured: 10,000 nits is
+  about 10 times the white of a recent Pro iPhone at full brightness (about
+  1,000 nits), about 5 times its outdoor boost (about 2,000), and Apple
+  grants far less headroom than that at full brightness.
+- **The three pickers of `@render_func` are a `selector=`, not tabs**
+  (2026-11-18): `draw_color_picker(..., selector=meltygui.SRGB)`,
+  `meltygui.SRGB_PLUS`, `meltygui.HDR`; "Make hdr the default". Built the same
+  day: the constants are in hdr_color.py and public on `meltygui`; each
+  selector is a row of six plain functions in `SELECTORS`
+  (color_picker_view.py), and `field`, `bar`, `scale` and `extent` take the
+  selector. `HDR` is the old Wide tab (one P3 square, P3 hue bar, the sRGB
+  part outlined), `SRGB_PLUS` what the picker was until now, `SRGB` the
+  classic square, which has no band whatever the headroom. Decided while
+  building, his to overrule: every field is the same width, so `HDR` and
+  `SRGB` stretch their square over the strip's room too; a colour outside
+  what a selector lays out is shown at its edge and left as it is until the
+  field is used; grey keeps the bar's hue under a saturation of 1e-4
+  (`FAINT`), since the P3 conversion gives white a saturation of 1e-16 and a
+  hue of its own. Seen on an agent desktop, the three side by side on one
+  colour: a drag in one moves the markers of the others. Open: those others
+  run twice a frame during the drag, as any view does that is passed the
+  object another view returned (`64c314dbf1f5`, a framework gap, not worked
+  around).
+- **A view upgrades the default constructed value of its type**
+  (2026-11-18): `draw_color_picker()` with nothing passed crashed on the `()`
+  its `tuple` annotation built. "If you support a type the view should
+  support upgrading the default constructed value of that type." In the
+  guide, section 5. Built the same day: a colour with fewer than three
+  channels is filled up from `START` (white) and returned as an edit, in the
+  picker and in the chip.
 - Built to the first row on 2026-11-18 (by Claude; **Lukas has not reviewed
   it**): `meltygui.rust.draw_color` (a chip that opens the picker as a
   `popup=`) and `meltygui.rust.draw_color_picker`
