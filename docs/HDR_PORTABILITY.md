@@ -60,6 +60,12 @@ Used only by `DYNAMIC_PERCEPTUAL`. Every row is this fork's.
 - The fork's highlight desaturation, roll-off and chroma boost. They were
   off. With any of them on, colours near the panel's peak are not what the
   dynamic field says.
+- The fork's Keep and Glow modes (the dock's "Draw HDR"). Keep fits a colour
+  brighter than the panel to the panel's limit with its channel ratios kept;
+  Glow does the same at the end of the frame and spreads a halo of the
+  colour around what was over the limit (monitor rules `glow_*`). Either
+  way a colour past the limit is shown at the limit, not at what the
+  dynamic field says, and under Glow its neighbours are lit by it.
 - The fork's HDR gain (`hdrbrightness`). It multiplies every PQ surface,
   Melty's included, so it must be 1 or Melty's white is not the desktop's.
 - The compositor's tone map. Melty declares the output's own maximum, so it
