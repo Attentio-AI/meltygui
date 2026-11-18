@@ -25,6 +25,8 @@ VIEWS = {
     'draw_bool': 'meltygui.view.value_view',
     'draw_button': 'meltygui.view.button_view',
     'draw_collection': 'meltygui.view.dict_view',
+    'draw_color': 'meltygui.view.color_picker_view',
+    'draw_color_picker': 'meltygui.view.color_picker_view',
     'draw_context_menu': 'meltygui.view.context_menu_view',
     'draw_dropdown': 'meltygui.view.choice_view',
     'draw_editor': 'meltygui.view.editor_view',

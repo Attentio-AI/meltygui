@@ -19,8 +19,9 @@ modules load on the thread, and the code-editing stack (libcst: hotswap, the
 inputs tab, code views) loads with the first code edit.
 tests/test_startup_imports.py keeps it that way.
 Every decoration registers its function; the loop starts when the main
-module's top level finishes (a trace hook on that frame's return — atexit
-is too late: threading is already shut down), or explicitly with ``run()``.
+module's top level finishes (sys.monitoring on that code's return, so it
+also starts under a debugger — atexit is too late: threading is already
+shut down), or explicitly with ``run()``.
 An app whose first frame used the code stack last time (a code editor: the
 warm-start hint) gets it on the thread too. ``run`` joins the thread, builds
 the fonts and session (``_init_melty``), a Surface per window, and enters the
@@ -631,20 +632,56 @@ def _draw_root(fn, name, value=None, **kwargs):
     return fn(value, **root_view_kwargs(name or fn.__name__, **kwargs))
 
 
+# Lever: the sys.monitoring tool slots the implicit start may take (the first free one;
+# 0-2 and 5 are the debugger's, coverage's, the profiler's and the optimizer's).
+_START_TOOLS = (3, 4)
+
+
+def _main_frame():
+    """The main module's top level frame under the caller, or None when it is not on the stack."""
+    frame = sys._getframe(2)
+    while frame is not None and not (frame.f_globals.get('__name__') == '__main__'
+                                     and frame.f_code.co_name == '<module>'):
+        frame = frame.f_back
+    return frame
+
+
 def _hook_main_return():
     """Start the loop when the main module's top level returns, so a script
-    is just decorated functions. A local trace function on that frame sees
-    its 'return' event (tracing has to be enabled globally for local trace
-    functions to fire; the global one declines every other frame, and line
-    events are off, so the cost is one call per function call until the
-    module ends). Declines when a debugger already traces; ``run()`` then
-    has to be called explicitly."""
-    if sys.gettrace() is not None:
+    is just decorated functions. sys.monitoring watches that one code object
+    for its return: it costs nothing elsewhere and works beside a debugger's
+    tracer. An exception leaving the module is not a return and starts nothing.
+    Python 3.11, or no free tool slot: `_trace_main_return`."""
+    frame = _main_frame()
+    if frame is None:
         return
-    frame = sys._getframe(1)
-    while frame is not None and frame.f_globals.get('__name__') != '__main__':
-        frame = frame.f_back
-    if frame is None or frame.f_code.co_name != '<module>':
+    monitoring = getattr(sys, 'monitoring', None)
+    tool = next((tool for tool in _START_TOOLS if monitoring.get_tool(tool) is None), None) if monitoring else None
+    if tool is None:
+        return _trace_main_return(frame)
+    code = frame.f_code
+
+    def returned(returning, offset, value):
+        if returning is not code or sys._getframe(1) is not frame:
+            return
+        _unhook_main_return()
+        # A monitoring callback suppresses monitoring and tracing while it runs:
+        # call_tracing gives the loop both back, so breakpoints in views work.
+        sys.call_tracing(run, ())
+
+    monitoring.use_tool_id(tool, 'meltygui-start')
+    monitoring.register_callback(tool, monitoring.events.PY_RETURN, returned)
+    monitoring.set_local_events(tool, code, monitoring.events.PY_RETURN)
+    _state['start_tool'] = (tool, code)
+
+
+def _trace_main_return(frame):
+    """The same start through a local trace function on the main frame (tracing
+    has to be enabled globally for it to fire; the global one declines every
+    other frame, and line events are off, so the cost is one call per function
+    call until the module ends). Declines when a debugger already traces;
+    ``run()`` then has to be called explicitly."""
+    if sys.gettrace() is not None:
         return
     state = {'failed': False}
 
@@ -656,9 +693,7 @@ def _hook_main_return():
             fr.f_trace = None
             _state['hooked'] = False
             if not state['failed']:
-                # The implicit loop starts inside a trace callback. Python
-                # otherwise suppresses sys.monitoring for its entire lifetime,
-                # including breakpoints in the app's render callbacks.
+                # Tracing is suppressed inside a trace callback: call_tracing gives it back.
                 sys.call_tracing(run, ())
         return local
 
@@ -670,14 +705,21 @@ def _hook_main_return():
 
 # --- the loop -----------------------------------------------------------------------
 def _unhook_main_return():
-    """Drop the implicit-start trace hook. It needs GLOBAL tracing on to
-    fire its local 'return' hook, and global tracing costs a callback per
-    Python call — fine for the moment between the decorators and the
-    module's return, ruinous for a whole session: a script that calls
-    run() itself never returns from its module while the loop runs, and
-    every frame ran under the tracer (draw_text 26 ms for an empty line,
-    the chat window at 7 fps, 09-12)."""
+    """Drop the implicit start hook: the loop is starting, by the hook or by ``run()``.
+    The trace fallback must not outlive this: global tracing costs a callback
+    per Python call, and a script that calls run() itself never returns from
+    its module while the loop runs (draw_text 26 ms for an empty line, the
+    chat window at 7 fps, 09-12)."""
     if not _state.get('hooked'):
+        return
+    _state['hooked'] = False
+    started = _state.pop('start_tool', None)
+    if started is not None:
+        tool, code = started
+        monitoring = sys.monitoring
+        monitoring.set_local_events(tool, code, 0)
+        monitoring.register_callback(tool, monitoring.events.PY_RETURN, None)
+        monitoring.free_tool_id(tool)
         return
     if sys.gettrace() is not _state.get('tracer'):
         return                      # a debugger's tracer, not ours: leave it
@@ -687,7 +729,6 @@ def _unhook_main_return():
         if frame.f_globals.get('__name__') == '__main__' and frame.f_code.co_name == '<module>':
             frame.f_trace = None
         frame = frame.f_back
-    _state['hooked'] = False
 
 
 def _process_events(timeout=None):

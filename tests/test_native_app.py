@@ -828,3 +828,25 @@ def test_tab_frame_drops_previous_window_input(native, monkeypatch):
     assert native.snapshots[-1] == ([], [])
     surface.frame(frame_info(1), [dict(kind='text', text='new text')])
     assert native.snapshots[-1][0] == ['new text']
+
+
+def test_implicit_start_runs_under_a_debugger_tracer(tmp_path):
+    """A debugger's sys.settrace must not stop the loop from starting when the main module ends."""
+    import subprocess
+    import sys
+    script = tmp_path / 'main.py'
+    script.write_text(
+        'import sys\n'
+        'tracer = lambda frame, event, arg: None\n'
+        'sys.settrace(tracer)\n'
+        'from meltygui.core.runtime import app\n'
+        'def run():\n'
+        '    app._unhook_main_return()\n'
+        '    print("started", sys.gettrace() is tracer, sys.monitoring.get_tool(app._START_TOOLS[0]))\n'
+        'app.run = run\n'
+        '@app.glfw_window(name="Traced", app_id="traced-start-test")\n'
+        'def main():\n'
+        '    pass\n')
+    result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, close_fds=False,
+                            env={**__import__('os').environ, 'XDG_CONFIG_HOME': str(tmp_path)})
+    assert 'started True None' in result.stdout, result.stdout + result.stderr

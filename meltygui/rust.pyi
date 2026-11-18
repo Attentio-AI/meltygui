@@ -7,6 +7,8 @@ from meltygui.core.rendering.keyed import keyed_as as keyed_as
 from meltygui.view.value_view import draw_bool as draw_bool
 from meltygui.view.button_view import draw_button as draw_button
 from meltygui.view.dict_view import draw_collection as draw_collection
+from meltygui.view.color_picker_view import draw_color as draw_color
+from meltygui.view.color_picker_view import draw_color_picker as draw_color_picker
 from meltygui.view.context_menu_view import draw_context_menu as draw_context_menu
 from meltygui.view.choice_view import draw_dropdown as draw_dropdown
 from meltygui.view.editor_view import draw_editor as draw_editor

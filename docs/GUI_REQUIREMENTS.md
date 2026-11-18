@@ -149,6 +149,11 @@ rust is finally fast enough"). Current numbers:
 - **Sub pixel text hinting**, as the Python renderer has, for ImGui text and
   the editor. Asked for on 11-12; the assistant reported it done that day
   (`Toggles.Fonts.subpixel`).
+- **No text brightness clamp.** `@gui` officially supports very bright text:
+  "No text clamp, new @gui to officially support very bright text." The
+  `@render_func` renderer caps glyph pixels at `Toggles.HDR.text_max_stops`
+  (`melty_clamp_text`); the Rust raster has no such cap and is not to get
+  one. (2026-11-18)
 
 ## 5. Identity
 
@@ -710,7 +715,8 @@ rust is finally fast enough"). Current numbers:
   icon with a small window above the line, not inline while typing; teal spell
   underlines suited to code; red argument names; symbol colours and parameter
   hints in suggestions; inline bools flip on a double click; a clean `@gui`
-  colour picker to 2000 nits.
+  colour picker to 2000 nits (`e151bec592c4`; built on 2026-11-18 to the
+  wider request in section 17).
 
 ## 12. Module views (`gui_module`)
 
@@ -833,6 +839,53 @@ working example.
 - **iOS**: the retained host has no Metal path yet. (11-11)
 - **`Source` bugs** documented in `native/source/README.md`, to be worked
   through later. (11-11)
+
+## 17. Colour and HDR
+
+- **The main `@gui` colour picker** (2026-11-18): "we need the full p3 color
+  range. I'd like brightness values up to 10k nits, which is an expansion
+  relative to @render_func. Please keep the srgb square and show the extended
+  range in the quadrants outside the srgb square." It is to be "an example
+  widget implementation for future views", built by following the view guide
+  closely.
+- **No text brightness clamp** (2026-11-18; section 4).
+- Built to the first row on 2026-11-18 (by Claude; **Lukas has not reviewed
+  it**): `meltygui.rust.draw_color` (a chip that opens the picker as a
+  `popup=`) and `meltygui.rust.draw_color_picker`
+  ([color_picker_view.py](../meltygui/view/color_picker_view.py), example
+  [gui_color.py](../examples/gui_color.py), tests
+  [test_color_picker_view.py](../tests/test_color_picker_view.py)). One
+  picking area and no tabs: the sRGB square bottom left, the P3 quadrant
+  right of it, the HDR quadrants above both, one drag across all of it. The
+  layout and its maths are the `@render_func` picker's sRGB+ tab
+  (`hdr_color.srgb_plus_linear`, `srgb_extension_coords`), reused.
+  - Decided while building, his to overrule: the band's top is `nits=` on
+    the call (10,000), turned into stops above the desktop's white
+    (`wayland_color`: 40 times white at 250 nits); the hue bar is sRGB hue;
+    the channels are `draw_float` rows of extended sRGB, alpha held to 0..1;
+    the text under them is a hex code inside sRGB and nits with the gamut
+    outside; the legacy delete button (returning None to unset a tint) and
+    the view offset rows are not carried over; `draw_color` is not
+    registered with `draw_any` for tuples.
+  - The field's picture is an fp16 texture its view owns (`Picture`, ended
+    with `cache.on_retire`): 1.7 ms to bake per hue change, measured; a
+    colour outside sRGB costs 2.4 to 2.8 ms to locate when it is typed or
+    passed in, nothing while the field is dragged.
+  - Seen on an agent desktop (native Wayland, OpenGL; screenshots are SDR,
+    so the band was seen clipped and its brightness on an HDR output was
+    not): the picker inline, in a floating window and as a popup; drags in
+    the square, into the P3 quadrant and the band (4359 nits P3 read back),
+    the hue bar (also under grey, which stays grey), a channel drag, alpha
+    with the chip's checker; a relaunch kept the colours; a drag on the
+    picker's empty space moved its window. With a print in each body:
+    nothing runs at idle, a field drag runs the field, the picker and the
+    chips of that colour, not the hue bar.
+  - Open: a picker opened as a popup runs twice a frame while it is dragged,
+    as the picker of `gui_popups.py` does (`7d0919d13f93`, a framework gap,
+    not worked around); a chip's own colour goes through a vertex colour, so
+    it clips at `Toggles.HDR.vertex_range` (64 times white) where the field
+    does not; the band's range is read when the picker runs, so a change of
+    the desktop's white shows at its next run; no Metal path.
 
 ## Sources
 

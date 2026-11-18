@@ -9,6 +9,7 @@ from . import chat_view as chat_view
 from . import choice_view as choice_view
 from . import code_view as code_view
 from . import collection_view as collection_view
+from . import color_picker_view as color_picker_view
 from . import color_view as color_view
 from . import context_menu_view as context_menu_view
 from . import control_view as control_view

@@ -66,7 +66,9 @@ focus owner from inside a view. What a view needs comes through its
 parameters.
 
 Most views are not the app's: a control or a view of a kind of value serves
-every app, and is a public view of the library (section 12). The app keeps its
+every app, and is a public view of the library (section 12). The reference for
+such a widget is [color_picker_view.py](../meltygui/view/color_picker_view.py):
+a public view composed of small parts, each with one gesture. The app keeps its
 root, its model and what only it needs. The example keeps its controls in its
 own file only to show every pattern in one place.
 
@@ -671,6 +673,13 @@ def uptime(input_value: Clock, started=False, draw_state=None, cache=None):
   here).
 - What a feature starts (a thread, a process) it also stops, at its own
   action and at exit.
+- **A GPU resource is owned by the view that draws it.** Declare a parameter
+  typed with a small class that holds it (`picture: Picture`, built once per
+  view, section 5), list it in `no_save=`, and end it with
+  `cache.on_retire(cache.current, picture.close)`: the callback runs on the
+  render thread when the view is retired or the window closes. `field` in
+  [color_picker_view.py](../meltygui/view/color_picker_view.py) keeps an fp16
+  texture this way and bakes it again only when its hue changes.
 
 ## 12. Public views: publish what you build, use what exists
 
@@ -711,6 +720,7 @@ What is there already:
 | A function to call with arguments the user edits | `ran, _ = draw_function(fit, name='fit')` from `meltygui.rust`: its parameters as values (`draw_any` of a dict the view keeps, each starting at its default or what its type builds) and a button that calls it, in that run, so only for a call that returns at once. `ran` is true in the run of a call that returned; what it returned is the view's `result` (`ran, _, state = draw_function(fit, return_extras=True)`, then `state.result`); an exception is shown under the button. A class is called the same way and builds an instance ([function_view.py](../meltygui/view/function_view.py)) |
 | One of a few choices | `draw_dropdown(value, choices=CHOICES)` from `meltygui.rust`. `CHOICES` is a sequence of the choices (`label=` names those that are not text) or a dict `{label: choice}`; in a dict a value that is a dict is a submenu, to any depth, and the value is the leaf picked ([choice_view.py](../meltygui/view/choice_view.py)) |
 | Tiles the user splits and joins from their corners, as in Blender | `draw_tiles(tree, name='tiles', views=VIEWS, width=width, height=height)` from `meltygui.rust`; `VIEWS` is a module tuple of `@gui` views of a tile's dict, and each tile picks one from a dropdown in its head; the tree is plain dicts and may start as `{}` or bare nested `{'cells': [{}, {}]}` (ids, axes and sizes are filled in); a divider drag runs only the resized tiles, and `draw_tiles` once at its end to write the sizes; no cell goes around it: where it ends on the window's edge a divider pushed against that edge resizes the window, and given a `width` / `height` elsewhere it keeps them and the push moves the window's left / top edge; `width=None` / `height=None` wraps it to its tiles' minimums ([tiles_view.py](../meltygui/view/tiles_view.py)) |
+| A colour to edit | `changed, tint = draw_color(tint, name='tint', width=60.0)` from `meltygui.rust`: a chip, and a press opens the picker under it. `draw_color_picker(tint, ...)` is the picker by itself, sized by `extent(len(tint))` of its file. A colour is an extended sRGB `(r, g, b)` or `(r, g, b, a)`, tuple or list: the picker covers Display P3 and, above white, up to `nits=` (10,000) ([color_picker_view.py](../meltygui/view/color_picker_view.py), [examples/gui_color.py](../examples/gui_color.py)) |
 | A popup of your own, a picker | Section 7; [examples/gui_popups.py](../examples/gui_popups.py) |
 | A right click menu on a view | `@context_menu({label: function})` from `meltygui`, above `@gui` (section 7) |
 | A whole standalone ImGui app as one view | `gui_module('app.py')` ([gui_module.py](../meltygui/core/rendering/gui_module.py)) |
