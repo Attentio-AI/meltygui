@@ -33,7 +33,9 @@ from meltygui.core.runtime.app import checkpoint
 from meltygui.core.runtime.app_save import save
 from meltygui.core.rendering.gui_size import FILL
 from meltygui.core.rendering.gui_size import WRAP
+from meltygui.hdr_color import DYNAMIC_PERCEPTUAL
 from meltygui.hdr_color import HDR
+from meltygui.hdr_color import PERCEPTUAL
 from meltygui.hdr_color import SRGB
 from meltygui.hdr_color import SRGB_PLUS
 
@@ -97,7 +99,7 @@ def __getattr__(name):
 _PUBLIC_NAMES = [
     'Style', 'boot', 'embedded_imports', 'glfw_window', 'run', 'pressed',
     'content_size', 'mark', 'persisted', 'save', 'after_first_frame', 'checkpoint',
-    'toggles', 'window_api', 'imgui', 'rust', 'FILL', 'WRAP', 'HDR', 'SRGB', 'SRGB_PLUS',
+    'toggles', 'window_api', 'imgui', 'rust', 'FILL', 'WRAP', 'DYNAMIC_PERCEPTUAL', 'HDR', 'PERCEPTUAL', 'SRGB', 'SRGB_PLUS',
 ]
 
 

@@ -72,6 +72,7 @@ _CONN = globals().get("_CONN") or {
 for _key, _default in (("feedback", None), ("preferred_reference", None), ("preferred_luminances", None),
                        ("preferred_dirty", False),
                        ("preferred_query_failed", None), ("info_luminances", None), ("info_done", False),
+                       ("info_primaries", None), ("preferred_primaries", None),
                        ("synced_reference", None)):
     _STATE.setdefault(_key, _default)
 
@@ -238,6 +239,11 @@ def _on_info_luminances(data, proxy, min_lum, max_lum, reference):
     _STATE["info_luminances"] = (int(min_lum) / 10000.0, float(max_lum), float(reference))
 
 
+def _on_info_primaries(data, proxy, *xy):
+    # red, green, blue and white as CIE xy, each times a million
+    _STATE["info_primaries"] = tuple(int(value) / 1000000.0 for value in xy)
+
+
 def _on_info_done(data, proxy):
     _STATE["info_done"] = True
 
@@ -272,7 +278,7 @@ def _build_listeners():
                                          (_UINT2_CB, _on_preferred_changed)])
     # wp_image_description_info_v1 events, in table order (see _build_interfaces)
     _CONN["info_listener"] = _table([
-        (_VOID_CB, _on_info_done), (_ICC_CB, _on_info_icc), (_INT8_CB, _on_info_ignore),
+        (_VOID_CB, _on_info_done), (_ICC_CB, _on_info_icc), (_INT8_CB, _on_info_primaries),
         (_UINT_CB, _on_info_ignore), (_UINT_CB, _on_info_ignore), (_UINT_CB, _on_info_ignore),
         (_UINT3_CB, _on_info_luminances), (_INT8_CB, _on_info_ignore), (_UINT2_CB, _on_info_ignore),
         (_UINT_CB, _on_info_ignore), (_UINT_CB, _on_info_ignore),
@@ -499,7 +505,7 @@ def query_preferred() -> float | None:
         return None
     ver, display = _CONN["manager_version"], _STATE["display"]
     ifaces = _CONN["ifaces"]
-    _STATE.update(ready=None, failed=None, identity=None, info_luminances=None, info_done=False)
+    _STATE.update(ready=None, failed=None, identity=None, info_luminances=None, info_primaries=None, info_done=False)
     desc = wl.wl_proxy_marshal_flags(_STATE["feedback"], 2, ctypes.addressof(ifaces["desc"]), ver, 0,
                                      ctypes.c_void_p(None))
     if not desc:
@@ -531,6 +537,7 @@ def query_preferred() -> float | None:
             return None
         _STATE["preferred_reference"] = float(lums[2])
         _STATE["preferred_luminances"] = (float(lums[0]), float(lums[1]), float(lums[2]))
+        _STATE["preferred_primaries"] = _STATE["info_primaries"]
         _STATE["preferred_query_failed"] = None
         return _STATE["preferred_reference"]
     finally:
@@ -544,6 +551,12 @@ def query_preferred() -> float | None:
 def preferred_reference():
     """The compositor's reference white for this surface in nits, or None."""
     return _STATE["preferred_reference"]
+
+
+def preferred_primaries():
+    """The output's primaries as the compositor describes them for this surface: (red x, y,
+    green x, y, blue x, y, white x, y), or None when it gave none."""
+    return _STATE["preferred_primaries"]
 
 
 def preferred_query_failed():

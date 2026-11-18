@@ -42,7 +42,9 @@ from meltygui.core.runtime.app import checkpoint as checkpoint
 from meltygui.core.runtime.app_save import save as save
 from meltygui.core.rendering.gui_size import FILL as FILL
 from meltygui.core.rendering.gui_size import WRAP as WRAP
+from meltygui.hdr_color import DYNAMIC_PERCEPTUAL as DYNAMIC_PERCEPTUAL
 from meltygui.hdr_color import HDR as HDR
+from meltygui.hdr_color import PERCEPTUAL as PERCEPTUAL
 from meltygui.hdr_color import SRGB as SRGB
 from meltygui.hdr_color import SRGB_PLUS as SRGB_PLUS
 from meltygui.core.rendering.gui_layout_prototype import columns as columns

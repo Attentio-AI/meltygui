@@ -48,6 +48,8 @@ import math
 SRGB = 'srgb'           # the classic sRGB square
 SRGB_PLUS = 'srgb+'     # that square, with P3 right of it and HDR above both
 HDR = 'hdr'             # one Display P3 square with HDR above it, the sRGB part outlined
+PERCEPTUAL = 'perceptual'  # Oklch: lightness up and chroma across in equal perceived steps, Oklch hue
+DYNAMIC_PERCEPTUAL = 'dynamic perceptual'  # JzCzhz, of the nits the panel emits: its shape follows the brightness
 
 # ---------------------------------------------------------------------------
 # The curve (extended sRGB) and primaries
@@ -100,6 +102,18 @@ _P3_TO_XYZ = ((0.4865709, 0.2656677, 0.1982173),
               (0.0000000, 0.0451134, 1.0439444))
 
 SRGB_TO_P3 = _mat_mul(_mat_inv(_P3_TO_XYZ), _SRGB_TO_XYZ)
+BT2020_XY = (0.708, 0.292, 0.170, 0.797, 0.131, 0.046, 0.3127, 0.3290)     # red, green, blue, white as CIE xy
+
+
+def srgb_to_primaries(xy):
+    """The 3x3 matrix from linear sRGB to linear RGB on the primaries `xy` (red x, y, green x,
+    y, blue x, y, white x, y): what a display's own channels are."""
+    columns = [(xy[at] / xy[at + 1], 1.0, (1.0 - xy[at] - xy[at + 1]) / xy[at + 1]) for at in (0, 2, 4)]
+    shape = tuple(tuple(columns[col][row] for col in range(3)) for row in range(3))
+    white = (xy[6] / xy[7], 1.0, (1.0 - xy[6] - xy[7]) / xy[7])
+    gains = _mat_mul_vec(_mat_inv(shape), white)
+    to_xyz = tuple(tuple(shape[row][col] * gains[col] for col in range(3)) for row in range(3))
+    return _mat_mul(_mat_inv(to_xyz), _SRGB_TO_XYZ)
 P3_TO_SRGB = _mat_mul(_mat_inv(_SRGB_TO_XYZ), _P3_TO_XYZ)
 
 
@@ -183,6 +197,170 @@ def oklab_max_chroma(lightness: float, hue: float, peak: float = 1.0,
         else:
             hi = mid
     return lo
+
+
+def fits_box(rgb, peak: float):
+    """Which colours of an (..., 3) array lie in the box [0, peak]³. A channel
+    may be under 0 by a thousandth of the colour's brightest one, which is
+    rounding; a fixed allowance would let every dark colour through, whatever
+    its hue, once the values are small (a display turned far up)."""
+    return above_zero(rgb) & (rgb.max(-1) <= peak * (1.0 + 1e-4))
+
+
+def above_zero(rgb):
+    """The lower half of fits_box: no channel under 0, but for rounding."""
+    import numpy as np
+    return rgb.min(-1) >= -1e-3 * np.maximum(rgb.max(-1), 0.0) - 1e-9
+
+
+def oklch_field_linear(hue: float, rows: int, cols: int, lightness: float, chroma: float, peak: float = 1.0):
+    """One Oklch hue (radians) as a (rows, cols, 4) float32 array of LINEAR
+    scRGB: lightness `lightness` at the top row down to 0, chroma 0 at the
+    left column up to `chroma`. Alpha is 1 where the colour fits the
+    DISPLAY-P3 box [0, peak]³ and 0 outside it; a texel outside carries the
+    colour of its row's edge, so a filtered edge has no fringe. Also returns
+    the (rows, cols) bool mask of the texels inside the sRGB box."""
+    import numpy as np
+    light = (lightness * (1.0 - (np.arange(rows, dtype=np.float32) + 0.5) / rows))[:, None]
+    far = (chroma * (np.arange(cols, dtype=np.float32) + 0.5) / cols)[None, :]
+    lab = np.empty((rows, cols, 3), dtype=np.float32)
+    lab[..., 0] = light
+    lab[..., 1] = far * math.cos(hue)
+    lab[..., 2] = far * math.sin(hue)
+    lms = lab @ np.asarray(_OKLAB_M2_INV, dtype=np.float32).T
+    linear = (lms * lms * lms) @ np.asarray(_OKLAB_M1_INV, dtype=np.float32).T
+    wide = linear @ np.asarray(SRGB_TO_P3, dtype=np.float32).T
+    inside = fits_box(wide, peak)
+    narrow = fits_box(linear, peak)
+    # The gamut is one run from chroma 0 along a row: its length is the edge.
+    edge = np.maximum(inside.sum(1) - 1, 0)
+    last = np.take_along_axis(linear, edge[:, None, None].repeat(3, 2), 1)
+    out = np.empty((rows, cols, 4), dtype=np.float32)
+    out[..., :3] = np.where(inside[..., None], linear, last)
+    out[..., 3] = inside
+    return out, narrow
+
+
+# ---------------------------------------------------------------------------
+# Jzazbz: the perceptual space of ABSOLUTE light
+# ---------------------------------------------------------------------------
+# Safdar et al. 2017. Unlike Oklab it takes nits, not multiples of white: its
+# lightness Jz runs on a PQ curve (0 at black, about 1 at 10,000 nits), so
+# how a colour sits in it depends on how bright the display shows white.
+# `white` below is the nits of a colour of 1.0. JzCzhz is its polar form:
+# chroma Cz = hypot(az, bz), hue hz = atan2(bz, az).
+
+_JZ_B, _JZ_G, _JZ_D, _JZ_D0 = 1.15, 0.66, -0.56, 1.6295499532821566e-11
+_JZ_N, _JZ_P = 2610.0 / 16384.0, 1.7 * 2523.0 / 32.0
+_JZ_C1, _JZ_C2, _JZ_C3 = 3424.0 / 4096.0, 2413.0 / 128.0, 2392.0 / 128.0
+_JZ_LMS = ((0.41478972, 0.579999, 0.0146480),
+           (-0.2015100, 1.120649, 0.0531008),
+           (-0.0166008, 0.264800, 0.6684799))
+_JZ_IAB = ((0.5, 0.5, 0.0),
+           (3.524000, -4.066708, 0.542708),
+           (0.199076, 1.096799, -1.295875))
+# XYZ' is XYZ with X and Y sheared (the paper's b and g): one matrix each way.
+_JZ_SHEAR = ((_JZ_B, 0.0, 1.0 - _JZ_B), (1.0 - _JZ_G, _JZ_G, 0.0), (0.0, 0.0, 1.0))
+_JZ_FROM_SRGB = _mat_mul(_JZ_LMS, _mat_mul(_JZ_SHEAR, _SRGB_TO_XYZ))      # linear sRGB (nits) -> LMS
+_JZ_TO_SRGB = _mat_inv(_JZ_FROM_SRGB)
+_JZ_IAB_INV = _mat_inv(_JZ_IAB)
+
+
+def _jz_pq(nits: float) -> float:
+    y = (max(nits, 0.0) / 10000.0) ** _JZ_N
+    return ((_JZ_C1 + _JZ_C2 * y) / (1.0 + _JZ_C3 * y)) ** _JZ_P
+
+
+def _jz_pq_inverse(code: float) -> float:
+    y = max(code, 0.0) ** (1.0 / _JZ_P)
+    return 10000.0 * (max(y - _JZ_C1, 0.0) / (_JZ_C2 - _JZ_C3 * y)) ** (1.0 / _JZ_N)
+
+
+def linear_to_jzazbz(rgb, white: float):
+    """Linear sRGB (extended, 1.0 = `white` nits) → ``(Jz, az, bz)``."""
+    lms = _mat_mul_vec(_JZ_FROM_SRGB, tuple(c * white for c in rgb))
+    iz, az, bz = _mat_mul_vec(_JZ_IAB, tuple(_jz_pq(c) for c in lms))
+    return (1.0 + _JZ_D) * iz / (1.0 + _JZ_D * iz) - _JZ_D0, az, bz
+
+
+def jzazbz_to_linear(jab, white: float):
+    """``(Jz, az, bz)`` → linear sRGB (extended, 1.0 = `white` nits)."""
+    jz = jab[0] + _JZ_D0
+    iz = jz / (1.0 + _JZ_D - _JZ_D * jz)
+    lms = tuple(_jz_pq_inverse(c) for c in _mat_mul_vec(_JZ_IAB_INV, (iz, jab[1], jab[2])))
+    return tuple(c / white for c in _mat_mul_vec(_JZ_TO_SRGB, lms))
+
+
+def jzczhz_max_chroma(lightness: float, hue: float, white: float, peak: float = 1.0, steps: int = 24) -> float:
+    """The largest Cz at ``(Jz, hz)`` whose colour fits the DISPLAY-P3 box
+    ``[0, peak]³`` when 1.0 is `white` nits. Bisection, as oklab_max_chroma."""
+    ca, sa = math.cos(hue), math.sin(hue)
+
+    def fits(chroma):
+        p3_rgb = linear_srgb_to_p3(jzazbz_to_linear((lightness, chroma * ca, chroma * sa), white))
+        return all(-1e-6 <= c <= peak + 1e-6 for c in p3_rgb)
+
+    if not fits(0.0):
+        return 0.0
+    lo, hi = 0.0, 1.0
+    for _ in range(steps):
+        mid = (lo + hi) * 0.5
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def jzczhz_nits(lightness, chroma, hue: float):
+    """Arrays of Jz and Cz (broadcast against each other) at one hue (radians)
+    → (nits, over): the light as linear sRGB in NITS, shape (..., 3), and
+    the bool mask of what lies past the PQ ceiling and is no light at all."""
+    import numpy as np
+    light = np.asarray(lightness, dtype=np.float32) + np.float32(_JZ_D0)
+    far = np.asarray(chroma, dtype=np.float32)
+    iab = np.empty(np.broadcast(light, far).shape + (3,), dtype=np.float32)
+    iab[..., 0] = light / (1.0 + _JZ_D - _JZ_D * light)
+    iab[..., 1] = far * math.cos(hue)
+    iab[..., 2] = far * math.sin(hue)
+    code = np.maximum(iab @ np.asarray(_JZ_IAB_INV, dtype=np.float32).T, 0.0) ** np.float32(1.0 / _JZ_P)
+    over = (code >= _JZ_C2 / _JZ_C3 * 0.999).any(-1)
+    code = np.minimum(code, np.float32(_JZ_C2 / _JZ_C3 * 0.999))
+    lms = np.float32(10000.0) * (np.maximum(code - _JZ_C1, 0.0) / (_JZ_C2 - _JZ_C3 * code)) ** np.float32(1.0 / _JZ_N)
+    return lms @ np.asarray(_JZ_TO_SRGB, dtype=np.float32).T, over
+
+
+def jzczhz_field_linear(hue: float, rows: int, cols: int, lightness: float, chroma: float, white: float,
+                        peak: float = 1.0, ask=None, ceiling=None):
+    """oklch_field_linear in JzCzhz: lightness Jz `lightness` at the top row
+    down to 0, chroma Cz 0 at the left column up to `chroma`, for a display
+    whose 1.0 is `white` nits. Returns the same (pixels, sRGB mask).
+    `ask(nits)` turns the light a texel stands for into the value to send
+    for it (1.0 = white); without one that is `nits / white`, which is right
+    for a display that emits what it is sent. `ceiling` is the most nits
+    the hardware has in a P3 channel: a texel's light over it is outside."""
+    import numpy as np
+    light = (lightness * (1.0 - (np.arange(rows, dtype=np.float32) + 0.5) / rows))[:, None]
+    far = (chroma * (np.arange(cols, dtype=np.float32) + 0.5) / cols)[None, :]
+    nits, over = jzczhz_nits(light, far, hue)
+    if ask is None:
+        linear = nits / np.float32(white)
+    else:
+        linear = ask(nits).astype(np.float32, copy=False)
+    # A gamut's floor is light that exists, whatever is sent for it: it is tested on the light
+    # itself, so it does not move with the display. Its ceiling is the most that can be sent.
+    to_p3 = np.asarray(SRGB_TO_P3, dtype=np.float32).T
+    real = ~over & (linear.max(-1) <= peak * (1.0 + 1e-4))
+    inside = real & above_zero(nits @ to_p3) & ((linear @ to_p3).max(-1) <= peak * (1.0 + 1e-4))
+    narrow = real & above_zero(nits)
+    if ceiling is not None:
+        inside &= (nits @ to_p3).max(-1) <= ceiling * (1.0 + 1e-4)
+    edge = np.maximum(inside.sum(1) - 1, 0)
+    last = np.take_along_axis(linear, edge[:, None, None].repeat(3, 2), 1)
+    out = np.empty((rows, cols, 4), dtype=np.float32)
+    out[..., :3] = np.where(inside[..., None], linear, last)
+    out[..., 3] = inside
+    return out, narrow
 
 
 # ---------------------------------------------------------------------------

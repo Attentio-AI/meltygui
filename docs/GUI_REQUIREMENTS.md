@@ -949,6 +949,247 @@ working example.
   run twice a frame during the drag, as any view does that is passed the
   object another view returned (`64c314dbf1f5`, a framework gap, not worked
   around).
+- **A perceptually uniform picker, `meltygui.PERCEPTUAL`** (2026-11-18). Of a
+  field whose saturation keeps its scale across hues, with an irregular right
+  edge: "I think that would be more ideal", for "brightness, saturation, and
+  hue to be uniform perceptually". On the proposal of an Oklch field as a
+  fourth selector: "Yeah lets do it, call it PERCEPTUAL though put oklch in
+  the comment." Built the same day (the `perceptual_` functions in
+  color_picker_view.py, `oklch_field_linear` in hdr_color.py):
+  - Lightness up and chroma across, each linear in Oklch and on one scale for
+    every hue; the hue bar is Oklch hue, each hue drawn at the most chroma P3
+    has for it. The picture is transparent outside P3, sRGB is outlined, and
+    a line marks white.
+  - Turning the hue leaves the marker in place: the spot keeps the chroma
+    asked for, and the colour returned is cut to what the hue reaches.
+  - Decided while building, his to overrule: the field is as high as the
+    other selectors' at the same headroom and spreads lightness evenly over
+    it, so white sits at `1 / cbrt(headroom)` of the height (31% at 32 times
+    white); the chroma axis ends at `REACH` (0.4) times the top lightness;
+    `HDR` stays the default; the channel rows stay R, G, B.
+  - To carry it, a selector's functions now take the field's `Room`
+    (`scale`) and pixels from the field's corner, and return the lines to
+    draw over their picture; `field` no longer knows about squares and bands.
+  - The caption's multiple is now the brightest Display P3 channel, not the
+    brightest sRGB one, which read above the headroom for wide colours.
+  - Measured: 2.5 ms to bake the field per hue change at full resolution
+    (lever `GRAIN`), about 3 ms once for the bar's 25 colours. Seen on an
+    agent desktop beside the `HDR` picker on one colour, and at a headroom
+    of 1.0.
+  - Limits: Oklab is not an HDR appearance model (a fair match above white,
+    no Hunt effect); the two axes are each uniform but not to one scale with
+    each other.
+- **Lines over a field must show on any colour** (2026-11-18): "The lines
+  are kind of hard to see, grey doesn't show up well." Each line is now drawn
+  twice, a wide dark one under a near-white one (`UNDER`, `SEAM`).
+- **`meltygui.DYNAMIC_PERCEPTUAL`, an experiment** (2026-11-18): "add a new
+  tag called DYNAMIC_PERCEPTUAL that changes the shape of the colors based on
+  the actual emitted pixel brightness. This would need to know the current sdr
+  white level. I'm curious what that would look like, how the plot would
+  change shape as I dial my brightness up and down." Built the same day (by
+  Claude; **Lukas has not reviewed it**):
+  - The space is JzCzhz (Jzazbz, Safdar 2017, in hdr_color.py): perceptual
+    lightness and chroma of absolute nits, where Oklch is relative to white.
+    Jz of white is 0.167 at 100 nits and 0.989 at 10,000.
+  - The axes stand still: the top is `headroom` times white at full
+    brightness, at most 10,000 nits, and the right edge a fixed chroma
+    (`DYNAMIC_REACH`). What P3 reaches is drawn from the nits emitted now,
+    so turning the brightness down shrinks the shape and lowers the white
+    line. Computed for a white of 400 nits and a headroom of 32: at 10%
+    brightness 17% of the field is reachable and the shape ends 55% below
+    the top; at 25%, 28% and 36%; at 50%, 41% and 16%; at 100%, 57% and it
+    reaches the top.
+  - Where the brightness comes from: `Display` (model/display_model.py) asks
+    the Hyprland fork's request socket for `sdrMaxLuminance` and `exposure`
+    (`j/monitors`). The compositor sends no event for a change, so a thread
+    asks ten times a second while such a picker is on screen and wakes it
+    (`cache.wake`); the picker ends the thread when it retires or the
+    selector changes. Anywhere else there is no reading and the picker uses
+    the caption's white at a brightness of 1.
+  - For it, a selector's `locate` and `color` take the field's `Room`, which
+    now carries the display's white (`full`, `white`).
+  - Seen on an agent desktop beside the Oklch picker (the reading then: white
+    400 nits, brightness 1.51). **Not seen**: the shape following a live
+    brightness change, since that means moving his display's brightness; the
+    thread's wake is covered by a test with made up readings.
+  - Limits: above 100% brightness the shape is cut at the top of the axes;
+    the hue bar's colours are found at a nominal 203 nits; the bake is at
+    1.5 px a texel (2 ms; 4.4 ms at full resolution).
+- **A pixel of the dynamic field keeps its light** (2026-11-18). After trying
+  `DYNAMIC_PERCEPTUAL`: "If this is working perfectly, youd expect the pixels
+  to stay the exact same brightness and color as you turn up the brightness.
+  They almost do! I see the colors shift around a little ... The dark region
+  gets stretched as the brightness goes up. New goal for this: Pixels keep
+  their color exactly as brightness slides up. Black edge shifts and reveals
+  more available colors." Built the same day (by Claude; **Lukas has not
+  reviewed it**, and it was not seen on the panel):
+  - Cause, read from the fork's `hyprland-shadow-tone.patch`: its output pass
+    reshapes the finished frame below the emitted SDR white (`shadow_gamma`,
+    2.3 then: each channel sRGB-encoded and shown through a pure power curve)
+    and takes `black_offset` (0.33 nits then) off with a soft toe. That
+    white is `sdr_max_luminance x exposure`, so the same light asked for
+    comes out differently at each brightness. The first build divided by the
+    brightness only.
+  - Now a place in the field is a light in nits, and the picture, a pick,
+    `locate` and `color` all go through what the display does to a value
+    (`sent` / `seen` in color_picker_view.py; `ask` / `emit` in
+    model/display_model.py, the shader's stages and their inverse, the
+    offset through a table made once). The stages are per channel of the
+    output, so they are undone in the panel's primaries: the preferred image
+    description's (`wayland_color.preferred_primaries`, new), else BT.2020.
+  - Checked by test, not by eye: one spot at brightness 0.24, 0.5, 1.0 and
+    1.5 gives four different colour values and the same emitted nits to
+    0.2%; `emit(ask(x))` is `x` to 1e-4 from 0.0001 to 2,000 nits. The
+    stages are not in a capture or a screenshot, so only the panel shows
+    the result.
+  - The thread now asks every 8 ms for a second after a reading that
+    differed (every 100 ms otherwise), so a dragged slider is followed
+    within about a frame; the compositor applies a new brightness at once
+    and the picker a frame or more later, so a flicker during the drag
+    itself remains.
+  - Measured with the stages on: 3.3 ms to bake the field (1.5 px a texel),
+    0.08 ms a pick. `field` is passed the picker's `Room`, kept as one
+    object while it says the same.
+  - Open: the caption's nits are still those at full brightness; highlight
+    desaturation, roll-off and chroma boost of the fork are not undone (they
+    were off); `shadow_gamma` and `black_offset` are read from the first
+    monitor that reports them.
+- **The picker takes the standard sizes** (2026-11-18): "Lets have the picker
+  support the standard width=None, width=1e8, width=500, height=None, etc type
+  parameters. Lets use all the space we have available. Wrap should wrap
+  around the shape, put the hue bar right next to the edge of the available
+  colors, so narrower for cyan." Built the same day:
+  - No size on the decorator any more: nothing passed fills, a number is
+    pixels, `None` wraps, each axis alone. The field takes all the room the
+    channels leave; the selectors still work in their own pixels and `field`
+    scales the pointer, the marker and the lines to its size.
+  - Wrapped, the picker is the field's own size (`extent`), and as wide as
+    the hue's colours: a selector's new `span(hue, room)` says what share of
+    its field has colour (read from a coarse field, 0.1 ms), the field shows
+    that part of its picture and the hue bar stands at its edge. The scale
+    across stays the same for every hue. `HDR`, `SRGB_PLUS` and `SRGB` are
+    colour from edge to edge and wrap to `ACROSS`.
+  - Decided while building, his to overrule: only a wrapping width follows
+    the shape, a given or filling width keeps the whole field, so the marker
+    stays put when the hue turns; a wrapped picker is at least `LEAST` (150)
+    wide so that a channel's number fits, with the bar still at the shape's
+    edge; a hue turned in a wrapped picker lays the field out at once and
+    the bar and the box on the next run (`cache.wake_next`).
+  - Seen on an agent desktop: a wrapped Oklch picker on cyan with the bar at
+    the shape's edge, the same after turning its hue to green (wider), a
+    wrapped dynamic one, and one filling 690 by 620 with a pick in its field.
+  - Open: a field far larger than its own size is its picture stretched, so
+    the gamut's edge shows steps (the bake stays at the field's own size to
+    keep its time).
+- **`hardware_max=` and `sdr_white_max=` on the picker** (2026-11-18): "add an
+  optional hardware_max parameter, in case the hardware max nit brightness is
+  known. When supplied, colors above that level won't be drawn. Lets also
+  have a supplied sdr_white_max = parameter so that can be manually supplied
+  as well when it isn't auto determinable." Built the same day, on
+  `draw_color_picker` and `draw_color`, both in nits:
+  - `sdr_white_max` is SDR white at full brightness. Passed, it wins over
+    what the display says (the compositor's reading, else the toggle): the
+    caption's nits and the dynamic selector's axes use it.
+  - `hardware_max` becomes a multiple of white (`Room.limit`): over the
+    white as emitted now for the dynamic selector, over white at full
+    brightness for the others, which do not follow the brightness. A baked
+    texel whose brightest P3 channel is over it is made clear (`within`),
+    in every selector.
+  - Decided while building, his to overrule: only drawing is cut, a press in
+    the cleared part still picks that colour; the lines over the field stay.
+  - Seen on an agent desktop with `hardware_max=1000, sdr_white_max=250`: the
+    band of `HDR` and `SRGB_PLUS` ends at 4 times white, the Oklch shape is
+    cut there, and a pick reads "1.5x  367 nits".
+  - Open: the sRGB outline and the white line are still drawn over the part
+    that is cut.
+- **The picker's field is never distorted** (2026-11-18): "We should make the
+  width adjustable but maintain the perceptually correct aspect ratio. Don't
+  distort the shape, make it as large as possible within the provided rect."
+  And on a first build that let a wrapping height grow with the width:
+  "Sorry no, not quite. Melty rules apply. Wrap means wrap, not fill height.
+  Wrap height should go down to a fixed minimum for the picker." Built the
+  same day; this replaces "the field takes all the room the channels leave"
+  and "only a wrapping width follows the shape" in the row on standard sizes:
+  - Each selector has an `aspect(room)`, the width over height of its whole
+    field. For `PERCEPTUAL` and `DYNAMIC_PERCEPTUAL` a step of chroma is as
+    long as a step of lightness (their spaces are Euclidean), so the Oklch
+    field is 0.4 as wide as it is high; `HDR`, `SRGB_PLUS` and `SRGB` have no
+    measure of their own and keep the proportions they were drawn for.
+  - The field shows the part of its width that has colours for the hue
+    (`span`) on every size now, and `fit` makes that shape as large as the
+    room lets it be. A height that wraps is the field's own (`scale`), the
+    picker's fixed least, whatever the width; a width that wraps is as wide
+    as the shape is at its height; a size that was given is fitted into,
+    with the hue bar at the field's edge and the rest of the box empty.
+  - Follows from it, his to overrule: the perceptual fields are narrow at
+    their own height (about 100 px across the whole chroma axis, less for
+    the hue's part of it), so a wrapped picker is `LEAST` wide with the
+    field in its left part; with a size given, the field's scale changes
+    with the hue, since a hue that reaches less far is shown larger.
+  - Seen on an agent desktop, one green in five pickers: wrapped; 420 wide
+    with a wrapping height (the field stays at its own height); 420 by 270
+    (shrunk whole); 220 by 640 (as large as the width allows); and `HDR` in
+    230 by 640 with its own proportions.
+- **The dynamic picker at 1,000% brightness** (2026-11-18). Two photos with
+  the camera's exposure locked, at 9% and at 1,000%: "The perceptual match is
+  pretty good! Not quite perfect, I suspect there are quirks in my hyprland
+  patch that make this happen. This is an extreme case 1000% brightness, but
+  I'd like to handle it as a way of really perfecting my whole hdr workflow."
+  Found and fixed the same day (by Claude; **not seen on the panel since**):
+  - A defect of the picker, not of the patch: the gamut test allowed a
+    channel to be under 0 by a fixed amount of the value sent. At 1,000% the
+    values are a tenth of what they are at 100%, so that amount was about 13
+    nits and every dark colour passed, whatever its hue: the red strip along
+    the bottom of the 1,000% photo, and the lower part of its shape being
+    wider than at 9%. The allowance is now a thousandth of the colour's own
+    brightest channel (`above_zero`, hdr_color.py), and a gamut's floor is
+    tested on the light itself, so the shape below the top edge is the same
+    at 9%, 100% and 1,000% (test: under 1% of texels differ).
+  - The shadow stages were undone in the wrong primaries. The panel
+    (HDMI-A-2) mirrors a headless desktop; the stages run in the panel's
+    output pass, in its EDID primaries under `hdredid` (red 0.681, 0.305;
+    green 0.272, 0.666; blue 0.155, 0.056), while the window is told the
+    desktop's, BT.2020. `Display.read` now asks for all monitors, takes the
+    real panel's rule and reads its primaries from the EDID in
+    /sys/class/drm. Computed for a pale yellow at 300 nits the old error was
+    under 0.2% in chroma at every brightness, since sRGB encoding followed by
+    a power of 2.3 is close to linear away from black: correct now, but not
+    what the photos show.
+  - What remains, in the order I would look: (1) Melty presents through an
+    8-bit PQ swapchain on this driver (scene_target.py), with no dither. A
+    step of one code is 3.7% of light at 9% and 100% brightness and 4.8% to
+    5.4% at 1,000%, per channel, so a colour can be a few percent off in each
+    channel, differently at each brightness. (2) The panel itself at 1,000%:
+    nearly the whole desktop is asked for more than its peak, and what it
+    then does (brightness limiting, local dimming, its own tone curve) is
+    not in any of this. (3) Nothing else was found in the patch's path for
+    such a surface with desaturation, roll-off and chroma boost off; above
+    the panel's peak a colour clips per channel, which `hardware_max` hides.
+- **The hue bar stands at the picker's right edge** (2026-11-18): "The hue
+  picker should stay fixed to the right edge btw. It follows the shape when
+  wrapped because the right edge follows the shape." Built the same day; it
+  replaces "the hue bar at the field's edge" in the rows above. A wrapped
+  picker narrower than `LEAST` keeps that width for its numbers, so there the
+  bar is at the edge of that box and not against the shape.
+- **The dynamic field's hardware line must not move with the brightness**
+  (2026-11-18): "Little bug, the max nit line creeps down as brightness climbs
+  past 100%". Cause: `hardware_max` was applied to the value sent for a
+  light. Under the compositor's shadow stages that value is larger than the
+  light over white (they darken everything below the emitted white, so it is
+  asked for brighter), and more of the range lies below white the further
+  the brightness is turned up. The dynamic selector now cuts on the light
+  itself, in nits (`ceiling` of `jzczhz_field_linear`); the other selectors
+  cut in their own `bake` (`shorn`), where the value is the light.
+- **Lines of equal nits are tilted in a perceptual field, and that is
+  expected** (2026-11-18, asked of the compositor's false colour at 1,000
+  nits and of the `hardware_max` edge: "diagonal rather than straight for
+  hues other than golden yellow"). The field's height is perceptual
+  lightness (Jz), which is not luminance. Computed in Jzazbz, the lightness
+  at which a colour reaches 1,000 nits, from grey to a chroma of 0.10: by
+  luminance (the false colour) red +4.0%, orange +1.3%, yellow -1.7%, green
+  -4.9%, cyan -4.6%, blue +0.6%, magenta +6.6%; by the brightest P3 channel
+  (`hardware_max`) red -19%, orange -14%, yellow -3.7%, green -12%, cyan
+  -12%, blue -24%, magenta -15%. Both are flattest at yellow.
 - **A view upgrades the default constructed value of its type**
   (2026-11-18): `draw_color_picker()` with nothing passed crashed on the `()`
   its `tuple` annotation built. "If you support a type the view should
