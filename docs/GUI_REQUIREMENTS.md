@@ -1197,6 +1197,64 @@ working example.
   there anything we could change about my patched hyprland to make it more
   standard or is it fine as is?" In [HDR_PORTABILITY.md](HDR_PORTABILITY.md).
   Of the dynamic picker before that: "Happy with it now."
+- **Where the dynamic field ends at low brightness** (2026-11-18). Lukas, of
+  the black mask that slides down as the brightness is turned down: "the
+  behavior makes sense for every computer other than my hyprland port ... For
+  my case no such clamp exists, we should show all the colors up to hardware
+  max regardless of the brightness. We can send 10k nit pixels to the
+  compositor and they will be rendered at the hardware max line even at low
+  brightness." **Not built as asked, and put back to him**: a clamp does
+  exist on this desktop, in Melty's own output. Melty presents PQ, which ends
+  at 10,000 nits where 1.0 is SDR white at full brightness
+  (`melty_pq_encode` clamps there, scene_target.py), and the compositor
+  applies the brightness after decoding it. So the most the panel can be
+  made to emit is `10,000 x brightness` nits: 300 at 3%, 1,400 at 14%, the
+  panel's 2,500 only from 25% up. Drawing the field above that would show
+  every colour there as the clipped one. Changed the same day: the dynamic
+  field's top was `headroom` times the emitted white (12,800 nits times the
+  brightness at a headroom of 32 and a white of 400), which drew a band that
+  cannot be sent; it is now the lower of that and Melty's signal (`most`).
+  What would lift the clamp: a surface that is not PQ (extended linear
+  float), which this driver's 8 bit swapchain does not offer.
+- **Melty does not clamp** (2026-11-18). On being shown that the dynamic
+  field's sliding edge was Melty's own PQ output ending at 10,000 nits
+  before the brightness: "Melty should not clamp. Lets make whatever changes
+  are necessary to remove a melty side clamp." Built the same day (by Claude;
+  **Lukas has not reviewed it, and it was not seen on the panel**):
+  - Melty now presents its fp16 scene as half-float buffers tagged extended
+    linear, where it can: `Toggles.HDR.output` "auto" prefers it, "linear"
+    asks for it, "pq" and "srgb" are as before. The compositor's rule for
+    such a surface (the fork's) is that 1.0 is SDR white, with no ceiling,
+    and the brightness is applied after. Nothing is quantised to 8 bits or
+    cut at 10,000 nits on Melty's side any more.
+  - How: this driver has no float EGL window config, but exports a GL
+    texture as a dmabuf (`AB4H`). scene_target keeps three such textures a
+    window (`CHAIN`), copies the scene into a free one, and native_wayland
+    attaches it to the wl_surface itself (`float_buffer`, `swap_buffers`).
+    A window made for this has no EGL window, only a pbuffer: the driver's
+    EGL window puts explicit sync on the surface, and a buffer of ours is
+    then a protocol error (found on the first try). `float_abandon` gives
+    it an EGL window, for good, when the mode is changed or a buffer cannot
+    be made.
+  - Measured on an agent desktop with the fork's capture plugin (SDR white
+    506 nits, brightness 0.34): Melty white 172.0 nits (172.04 expected; it
+    was 0.6% off through 8 bit PQ), grey 0.5 37.1 (36.8), `white(4)` 680
+    (688; the step is the vertex colour's), and `white(40)` **6,950 nits,
+    where PQ would have ended at 3,400**. Seen there too: a window resized
+    by a right drag, the colour picker dragged, a window switched to "pq"
+    while it ran (it went on drawing), and clean closes.
+  - The dynamic picker follows: its field shows everything up to `headroom`
+    times white at full brightness, and up to `hardware_max` where that is
+    passed, at any brightness. Only a window that presents PQ still shrinks
+    from the top (`Room.carry`, `bounds`; this replaces `most` of the row
+    above). Melty's own screenshots read a float window's frame from the
+    scene (`scene_target.read_presented`), since it has no back buffer.
+  - Open: three float buffers are 24 bytes a pixel, three times the 8 bit
+    window's; the drawing is finished (`glFinish`) before every hand over,
+    as nothing else waits for the GPU on a dmabuf; frame pacing read the
+    same in the overlay (8 to 9 ms to screen) but was not measured; not run
+    with several OS windows, on another compositor or on the panel; the
+    packed vertex colour still has 255 steps and ends at 64 times white.
 - **A view upgrades the default constructed value of its type**
   (2026-11-18): `draw_color_picker()` with nothing passed crashed on the `()`
   its `tuple` annotation built. "If you support a type the view should

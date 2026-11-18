@@ -292,8 +292,9 @@ def test_jzazbz_is_absolute_and_returns_what_it_was_given():
 
 def test_the_dynamic_field_grows_with_the_brightness_on_axes_that_stand_still():
     kind = SELECTORS[DYNAMIC_PERCEPTUAL]
-    dim = scale(PEAK, DYNAMIC_PERCEPTUAL, 400.0, 100.0)                  # the slider at 25%
-    bright = scale(PEAK, DYNAMIC_PERCEPTUAL, 400.0, 400.0)
+    # (Through PQ: `carry`. A float output shows the same field at every brightness.)
+    dim = scale(PEAK, DYNAMIC_PERCEPTUAL, 400.0, 100.0, carry=25.0)      # the slider at 25%
+    bright = scale(PEAK, DYNAMIC_PERCEPTUAL, 400.0, 400.0, carry=25.0)
     shown = [kind.bake(0.4, room) for room in (dim, bright)]
     assert shown[0][0][..., 3].mean() < shown[1][0][..., 3].mean()      # less of the field is reachable when dim
     white_rows = [lines[1][0][1] for pixels, lines in shown]
@@ -506,3 +507,28 @@ def test_the_hardware_line_of_the_dynamic_field_stays_put_as_the_brightness_clim
     assert max(tops) - min(tops) <= 1, tops
     limited = scale(PEAK, HDR, limit=4.0)
     assert SELECTORS[HDR].bake(0.0, limited)[0][0, 0, 3] == 0.0     # the other selectors cut in their own bake
+
+
+def test_the_dynamic_field_ends_where_the_windows_output_does():
+    """Through PQ, which ends at 10,000 nits before the display's brightness is applied, the most
+    that can leave the panel at 3% is 300 nits: the field shrinks from the top. A float output has
+    no such end, and the field shows everything up to the headroom at any brightness."""
+    kind = SELECTORS[DYNAMIC_PERCEPTUAL]
+    top_light = hdr_color.linear_to_jzazbz((1.0, 1.0, 1.0), min(PEAK * 400.0, 10000.0))[0]
+
+    def first_light(room):
+        mask = kind.bake(0.25, room)[0][..., 3] > 0.5
+        first = int(mask[:, 0].argmax())                            # the first row drawn in the grey column
+        return top_light * (1.0 - (first + 0.5) / mask.shape[0])    # its Jz
+
+    for gain in (0.03, 0.14, 1.0):
+        through_pq = scale(PEAK, DYNAMIC_PERCEPTUAL, 400.0, 400.0 * gain, carry=10000.0 / 400.0)
+        most = hdr_color.linear_to_jzazbz((1.0, 1.0, 1.0), 10000.0 * gain)[0]
+        assert first_light(through_pq) == pytest.approx(most, abs=0.01)
+        floating = scale(PEAK, DYNAMIC_PERCEPTUAL, 400.0, 400.0 * gain)
+        assert first_light(floating) == pytest.approx(top_light, abs=0.01)      # the whole field, at 3% too
+    # ... and with the hardware's limit told, up to that at any brightness.
+    for gain in (0.03, 1.0):
+        white = 400.0 * gain
+        limited = scale(PEAK, DYNAMIC_PERCEPTUAL, 400.0, white, limit=2500.0 / white)
+        assert first_light(limited) == pytest.approx(hdr_color.linear_to_jzazbz((1.0, 1.0, 1.0), 2500.0)[0], abs=0.01)

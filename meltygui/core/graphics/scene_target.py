@@ -11,9 +11,13 @@ scene while a frame is open.
 `present()` is the last GL work before the swap: it binds the real default
 framebuffer and encodes the scene for the swapchain — `Toggles.HDR.output`
 "srgb" for an untagged SDR window, "pq" (BT.2020 + ST 2084) for a surface
-tagged PQ. The swapchain is 8-bit on this driver (NVIDIA egl-wayland offers
-no 10-bit / fp16 window configs), so the encode is where HDR is quantized;
-an fp16 dmabuf swapchain replaces this pass with a copy.
+tagged PQ, "linear" for one tagged extended linear. The EGL window is 8-bit
+on this driver (NVIDIA egl-wayland offers no 10-bit / fp16 window configs),
+so for "srgb" and "pq" the encode is where HDR is quantized, and PQ ends at
+10,000 nits. "linear" does not go through that window: the scene is copied
+into a half-float dmabuf the compositor is handed as it is (`_float_target`,
+native_wayland `float_buffer`), so nothing is quantized or clamped here.
+Levers: `CHAIN`, `SPARE`.
 
 Module-level GL state survives hotswap (`globals().get`), like titlebar.py.
 """
@@ -30,6 +34,93 @@ from meltygui.core.graphics.shader_func import shader_func
 _STATE = globals().get("_STATE", {
     "fbo": 0, "tex": None, "rbo": None, "size": (0, 0), "active": False, "gl": None,
 })
+
+CHAIN = 3       # float buffers a window cycles through: one on screen, one handed over, one to draw
+SPARE = 6       # ... and at most this many when the compositor is slow to give them back
+
+
+def _float_backend():
+    """The window backend when it can present half-float buffers, else None."""
+    from meltygui.core.windowing import window_api
+    backend = window_api._state['backend']
+    if backend is None or not getattr(backend, 'native', None) or not backend.float_ready():
+        return None
+    return backend
+
+
+def float_possible() -> bool:
+    """Whether "linear" output can be presented in the current window (wayland_color asks before
+    it tags the surface): the backend can, and the window was made for it (native_wayland)."""
+    backend = _float_backend()
+    if backend is None or _STATE.get("float_failed"):
+        return False
+    return bool(getattr(backend.get_current_context(), "float", False))
+
+
+def float_fail():
+    """Float presentation is not to be tried again for this surface (its tag could not be set)."""
+    _STATE["float_failed"] = True
+
+
+def _float_drop():
+    """Delete this surface's float buffers (its context current)."""
+    backend = _float_backend()
+    for link in _STATE.get("chain") or ():
+        if backend is not None:
+            backend.float_free(link["record"])
+        gl.glDeleteFramebuffers(1, [link["fbo"]])
+        gl.glDeleteTextures([link["tex"]])
+    _STATE["chain"] = []
+
+
+def _float_link(backend, window, width, height):
+    """One more float buffer for `window`: a texture, the framebuffer that draws into it and the
+    wl_buffer on its storage. None when the driver or the compositor will not have it."""
+    tex = int(gl.glGenTextures(1))
+    gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
+    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA16F, width, height, 0, gl.GL_RGBA, gl.GL_HALF_FLOAT, None)
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
+    gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+    fbo = int(gl.glGenFramebuffers(1))
+    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo)
+    gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, tex, 0)
+    complete = gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) == gl.GL_FRAMEBUFFER_COMPLETE
+    record = backend.float_buffer(window, tex, width, height) if complete else None
+    if record is None:
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        gl.glDeleteFramebuffers(1, [fbo])
+        gl.glDeleteTextures([tex])
+        return None
+    return {"tex": tex, "fbo": fbo, "record": record}
+
+
+def _float_target(width: int, height: int):
+    """(backend, window, link) of a float buffer the compositor is not reading, sized for this
+    frame, or None: then the frame goes through the EGL window as before."""
+    backend = _float_backend()
+    if backend is None:
+        return None
+    window = backend.get_current_context()
+    if window is None or not getattr(window, "surface", None):
+        return None
+    if _STATE.get("chain_size") != (width, height):
+        _float_drop()
+        _STATE["chain_size"] = (width, height)
+    chain = _STATE.setdefault("chain", [])
+    for link in chain:
+        if not link["record"].busy:
+            return backend, window, link
+    if len(chain) >= SPARE:
+        return None
+    link = _float_link(backend, window, width, height)
+    if link is None:
+        # Not here after all (the compositor does not take this driver's buffers): stop asking, and
+        # wayland_color goes back to PQ at its next sync.
+        _STATE["float_failed"] = True
+        return None
+    chain.append(link)
+    return backend, window, link
 
 
 def active() -> bool:
@@ -106,7 +197,8 @@ in vec2 uv;
 out vec4 FragColor;
 """ + GLSL_ENCODE + """
 void main() {
-    vec4 c = texture(scene, uv);
+    // A dmabuf's first row is the top one, a GL texture's the bottom one: the float copy is flipped.
+    vec4 c = texture(scene, pq_output == 2 ? vec2(uv.x, 1.0 - uv.y) : uv);
     // The scene is premultiplied in LINEAR light; the swapchain is
     // premultiplied in ENCODED (electrical) values — what Wayland assumes
     // without a wp_color_representation alpha mode, so the compositor
@@ -120,6 +212,12 @@ void main() {
     float a = clamp(c.a, 0.0, 1.0);
     vec3 rgb = a > 0.0 ? c.rgb / a : vec3(0.0);
     vec3 encoded;
+    if (pq_output == 2) {
+        // Extended linear, half float: the scene as it is. Premultiplied in linear light, which
+        // is what the values are, so nothing is divided out and nothing is clamped.
+        FragColor = c;
+        return;
+    }
     if (pq_output == 1) {
         // Linear scRGB -> BT.2020 -> PQ. reference_nits is what 1.0 shows
         // as (the desktop's SDR reference), so SDR content matches an
@@ -153,16 +251,36 @@ def present(width: int, height: int) -> bool:
     _STATE["active"] = False
     if _STATE["gl"] is None:
         _STATE["gl"] = GLState()
-    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+    import meltygui.core.graphics.wayland_color as wayland_color
+    # Extended linear once the surface carries that tag: the scene goes into a float buffer of
+    # its own instead of the EGL window's 8 bit one, and swap_buffers hands that over.
+    floating = None
+    if wayland_color.applied() == "linear":
+        floating = _float_target(int(width), int(height))
+    if floating is None:
+        # This frame goes through an EGL window. One made for float buffers has none: it gets
+        # one now, and presents that way from here on (another output mode, or float failed).
+        backend = _float_backend()
+        window = backend.get_current_context() if backend is not None else None
+        if getattr(window, "float", False) and (wayland_color.resolved_output() != "linear" or _STATE.get("float_failed")):
+            _float_drop()
+            backend.float_abandon(window)
+    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, floating[2]["fbo"] if floating else 0)
     gl.glViewport(0, 0, int(width), int(height))
     gl.glDisable(gl.GL_SCISSOR_TEST)
     gl.glDisable(gl.GL_DEPTH_TEST)
     gl.glDisable(gl.GL_STENCIL_TEST)
     gl.glDisable(gl.GL_BLEND)
     gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
+    if floating:
+        backend, window, link = floating
+        _present_pass(_STATE["gl"], scene=_STATE["tex"], pq_output=2, reference_nits=1.0)
+        gl.glBindVertexArray(0)
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        backend.float_commit(window, link["record"])
+        return True
     # PQ only once the surface actually carries the tag (wayland_color.sync):
     # an untagged app is sRGB to the compositor, whatever the toggle says.
-    import meltygui.core.graphics.wayland_color as wayland_color
     pq = wayland_color.resolved_output() == "pq" and (wayland_color.applied() == "pq" or not wayland_color.available())
     # 1.0 = the desktop's SDR white: the reference the applied PQ tag carries
     # (wayland_color.desired_reference - the compositor's preferred
@@ -174,7 +292,29 @@ def present(width: int, height: int) -> bool:
     return True
 
 
+def read_presented(x: int, y: int, width: int, height: int):
+    """What a screenshot reads from the back buffer, for a window that has none (it presents float
+    buffers): the rect of the scene as 8 bit sRGB, premultiplied, rows bottom up, as a
+    (height, width, 4) uint8 array. None for every other window: read GL_BACK."""
+    backend = _float_backend()
+    window = backend.get_current_context() if backend is not None else None
+    if not getattr(window, "float", False) or not _STATE["fbo"]:
+        return None
+    import numpy as np
+    gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, int(_STATE["fbo"]))
+    gl.glReadBuffer(gl.GL_COLOR_ATTACHMENT0)
+    data = gl.glReadPixels(int(x), int(y), int(width), int(height), gl.GL_RGBA, gl.GL_FLOAT)
+    gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, 0)
+    pixels = np.frombuffer(data, dtype=np.float32) if isinstance(data, bytes) else np.asarray(data, dtype=np.float32)
+    pixels = pixels.reshape(int(height), int(width), 4)
+    alpha = np.clip(pixels[..., 3:], 0.0, 1.0)
+    straight = np.clip(np.where(alpha > 0.0, pixels[..., :3] / np.maximum(alpha, 1e-6), 0.0), 0.0, 1.0)
+    encoded = np.where(straight <= 0.0031308, straight * 12.92, 1.055 * straight ** (1.0 / 2.4) - 0.055)
+    return (np.concatenate([encoded * alpha, alpha], -1) * 255.0 + 0.5).astype(np.uint8)
+
+
 def shutdown() -> None:
     if is_gl_thread():
         _release()
+        _float_drop()
     _STATE["active"] = False

@@ -338,7 +338,8 @@ def jzczhz_field_linear(hue: float, rows: int, cols: int, lightness: float, chro
     `ask(nits)` turns the light a texel stands for into the value to send
     for it (1.0 = white); without one that is `nits / white`, which is right
     for a display that emits what it is sent. `ceiling` is the most nits
-    the hardware has in a P3 channel: a texel's light over it is outside."""
+    the field shows in a P3 channel (the hardware's, the headroom's): a
+    texel's light over it is outside, whatever could be sent for it."""
     import numpy as np
     light = (lightness * (1.0 - (np.arange(rows, dtype=np.float32) + 0.5) / rows))[:, None]
     far = (chroma * (np.arange(cols, dtype=np.float32) + 0.5) / cols)[None, :]
@@ -351,10 +352,10 @@ def jzczhz_field_linear(hue: float, rows: int, cols: int, lightness: float, chro
     # itself, so it does not move with the display. Its ceiling is the most that can be sent.
     to_p3 = np.asarray(SRGB_TO_P3, dtype=np.float32).T
     real = ~over & (linear.max(-1) <= peak * (1.0 + 1e-4))
+    if ceiling is not None:
+        real &= (nits @ to_p3).max(-1) <= ceiling * (1.0 + 1e-4)
     inside = real & above_zero(nits @ to_p3) & ((linear @ to_p3).max(-1) <= peak * (1.0 + 1e-4))
     narrow = real & above_zero(nits)
-    if ceiling is not None:
-        inside &= (nits @ to_p3).max(-1) <= ceiling * (1.0 + 1e-4)
     edge = np.maximum(inside.sum(1) - 1, 0)
     last = np.take_along_axis(linear, edge[:, None, None].repeat(3, 2), 1)
     out = np.empty((rows, cols, 4), dtype=np.float32)

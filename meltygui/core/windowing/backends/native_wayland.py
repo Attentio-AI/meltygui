@@ -35,6 +35,23 @@ from meltygui.core.windowing.backends.wayland_protocol import U
 from meltygui.core.windowing.backends.wayland_protocol import I
 
 
+# Float presentation (`Backend.float_ready`, `float_buffer`, `float_commit`): the frame is handed to
+# the compositor as a half-float dmabuf instead of through the 8 bit EGL window, so nothing is
+# quantised or clamped on the way (scene_target.present draws into it). This driver has no float
+# window config, but exports a GL texture as a dmabuf.
+# A window that presents this way has NO EGL window on its wl_surface, only a pbuffer for its
+# context: the driver's EGL window puts explicit sync on the surface (wp_linux_drm_syncobj), and
+# from then on a commit of any buffer of ours is a protocol error ("Missing acquire timeline").
+# So it is decided when the window is made (`wants_float`), and `float_abandon` gives a window its
+# EGL window after all, for good, when float presentation turns out not to work for it.
+FLOAT_FORMAT = 0x48344241       # 'AB4H': DRM_FORMAT_ABGR16161616F, what GL_RGBA16F exports as
+
+
+def wants_float():
+    """Whether new windows are to present float buffers: Toggles.HDR.output is "auto" or "linear"."""
+    from meltygui.core.runtime.toggles import Toggles
+    return Toggles.HDR.output in ('auto', 'linear')
+
 # Levers of frame pacing (`Backend.pace`).
 # True: start each frame late (step 2 of `pace`), so that it is handed to the compositor `GUARD`
 # seconds before the refresh it is meant for. Input is then that much fresher on screen.
@@ -112,6 +129,8 @@ class NativeWindow:
         self.decoration = None
         self.decoration_mode = 0
         self.egl_window = self.egl_surface = self.context = None
+        self.float = False          # presents float buffers: no EGL window on its surface
+        self.float_pending = None   # the float buffer drawn for the frame being handed over (swap_buffers)
         self.configured = self.closed = self.destroyed = False
         self.visible = bool(hints.get(codes.VISIBLE, True))
         self.focused = self.hovered = self.maximized = self.iconified = False
@@ -168,6 +187,9 @@ class Backend:
         self.wake_reader.setblocking(False)
         self.wake_writer.setblocking(False)
         self.presentation = None
+        self.dmabuf = None         # zwp_linux_dmabuf_v1, where the compositor has it
+        self.dmabuf_formats = set()        # (format, modifier) pairs it takes
+        self.float_buffers = {}    # wl_buffer proxy -> its record (float_buffer)
         self.clock = time.CLOCK_MONOTONIC
         self.feedbacks = {}        # presentation feedback proxy -> (window, when its frame's input was read)
         self.callbacks_due = {}    # frame callback proxy -> window
@@ -217,6 +239,11 @@ class Backend:
         if 'wp_presentation' in self.globals:
             self.presentation = self.bind('wp_presentation')
             self.listen(self.presentation, [([U], self.clock_id)])
+        if 'zwp_linux_dmabuf_v1' in self.globals and self.globals['zwp_linux_dmabuf_v1'][1] >= 3:
+            # Version 3: the formats arrive as events at once (4 and up send a table to map instead).
+            self.dmabuf = self.bind('zwp_linux_dmabuf_v1', 3)
+            self.listen(self.dmabuf, [([U], lambda code: None),
+                                      ([U, U, U], lambda code, high, low: self.dmabuf_formats.add((code, (high << 32) | low)))])
         self.check(native.roundtrip(self.display))
         self.init_egl()
         return True
@@ -282,7 +309,9 @@ class Backend:
             'eglCreateWindowSurface': (P, P, P, P, P),
             'eglCreatePbufferSurface': (P, P, P, ctypes.POINTER(I)),
             'eglMakeCurrent': (U, P, P, P, P), 'eglSwapBuffers': (U, P, P), 'eglSwapInterval': (U, P, I),
-            'eglDestroySurface': (U, P, P), 'eglDestroyContext': (U, P, P), 'eglTerminate': (U, P)}
+            'eglDestroySurface': (U, P, P), 'eglDestroyContext': (U, P, P), 'eglTerminate': (U, P),
+            'eglGetProcAddress': (P, ctypes.c_char_p), 'eglQueryString': (ctypes.c_char_p, P, I),
+            'eglCreateImage': (P, P, P, U, P, P), 'eglDestroyImage': (U, P, P)}
         self.egl = SimpleNamespace(**{name: function(library, name, *signature)
                                       for name, signature in signatures.items()})
         self.egl_display = self.egl.eglGetPlatformDisplay(0x31D8, self.display, None)
@@ -298,6 +327,14 @@ class Backend:
                                                1, ctypes.byref(count)), 'eglChooseConfig')
         if not count.value:
             raise RuntimeError('No native EGL OpenGL RGBA8/stencil8 config')
+        # Exporting a texture as a dmabuf (float presentation): an extension, so by address.
+        self.export_query = self.export = None
+        if b'EGL_MESA_image_dma_buf_export' in (self.egl.eglQueryString(self.egl_display, 0x3055) or b''):
+            address = self.egl.eglGetProcAddress(b'eglExportDMABUFImageQueryMESA')
+            self.export_query = ctypes.CFUNCTYPE(U, P, P, ctypes.POINTER(I), ctypes.POINTER(I),
+                                                 ctypes.POINTER(ctypes.c_uint64))(address)
+            address = self.egl.eglGetProcAddress(b'eglExportDMABUFImageMESA')
+            self.export = ctypes.CFUNCTYPE(U, P, P, ctypes.POINTER(I), ctypes.POINTER(I), ctypes.POINTER(I))(address)
         library = ctypes.CDLL('libwayland-egl.so.1')
         self.finish = function(ctypes.CDLL('libOpenGL.so.0'), 'glFinish', None)
         self.egl_window_create = function(library, 'wl_egl_window_create', P, P, I, I)
@@ -330,10 +367,13 @@ class Backend:
                 native.request(window.surface, 6)
                 while not window.configured:
                     self.check(native.dispatch(self.display))
-                window.egl_window = self.egl_window_create(window.surface, *self.get_framebuffer_size(window))
-                if not window.egl_window:
-                    raise RuntimeError('wl_egl_window_create failed')
-                window.egl_surface = self.egl.eglCreateWindowSurface(self.egl_display, self.config, window.egl_window, None)
+                window.float = self.float_ready() and 'wp_color_manager_v1' in self.globals and wants_float()
+                if window.float:
+                    # Its frames are buffers of its own (float_buffer): the context only needs a surface.
+                    attributes = (I * 5)(0x3057, 1, 0x3056, 1, 0x3038)
+                    window.egl_surface = self.egl.eglCreatePbufferSurface(self.egl_display, self.config, attributes)
+                else:
+                    self.egl_window_for(window)
             else:
                 attributes = (I * 5)(0x3057, width, 0x3056, height, 0x3038)
                 window.egl_surface = self.egl.eglCreatePbufferSurface(self.egl_display, self.config, attributes)
@@ -360,6 +400,8 @@ class Backend:
         window.configured = True
         if window.egl_window:
             self.egl_window_resize(window.egl_window, *self.get_framebuffer_size(window), 0, 0)
+        if window.egl_window or window.float:
+            # (A float window has no EGL window to resize: its next buffer is made at the new size.)
             window.emit('window_size', window.width, window.height)
             window.emit('framebuffer_size', *self.get_framebuffer_size(window))
 
@@ -387,7 +429,86 @@ class Backend:
             self.native.request(window.surface, 8, I(scale))
             if window.egl_window:
                 self.egl_window_resize(window.egl_window, *self.get_framebuffer_size(window), 0, 0)
+            if window.egl_window or window.float:
                 window.emit('framebuffer_size', *self.get_framebuffer_size(window))
+
+    def egl_window_for(self, window):
+        """The EGL window on `window`'s surface: where its frames go unless it presents float buffers."""
+        window.egl_window = self.egl_window_create(window.surface, *self.get_framebuffer_size(window))
+        if not window.egl_window:
+            raise RuntimeError('wl_egl_window_create failed')
+        window.egl_surface = self.egl.eglCreateWindowSurface(self.egl_display, self.config, window.egl_window, None)
+
+    # --- float presentation ---------------------------------------------------
+    def float_abandon(self, window):
+        """Float presentation does not work for this window after all (the compositor will not
+        have the buffers, or the output mode asks for another): give it an EGL window, for good."""
+        if not window.float:
+            return
+        window.float = False
+        window.float_pending = None
+        pbuffer = window.egl_surface
+        self.egl_window_for(window)
+        self.egl_check(window.egl_surface, 'create EGL surface')
+        if self.get_current_context() is window:
+            self.current.window = None
+            self.make_context_current(window)
+        self.egl.eglDestroySurface(self.egl_display, pbuffer)
+
+    def float_ready(self):
+        """Whether a frame can be handed over as a half-float dmabuf: the compositor takes them and
+        the driver exports them. (That the compositor takes this driver's modifier is seen when
+        the first buffer is made: `float_buffer` returns None otherwise.)"""
+        return self.dmabuf is not None and self.export is not None and \
+            any(code == FLOAT_FORMAT for code, modifier in self.dmabuf_formats)
+
+    def float_buffer(self, window, texture, width, height):
+        """A wl_buffer on the storage of the GL_RGBA16F `texture` (current context), or None when
+        the driver or the compositor will not have it. The record says whether the compositor
+        still reads it (`busy`): draw into it only when it does not. Free it with `float_free`."""
+        native = self.native
+        image = self.egl.eglCreateImage(self.egl_display, window.context, 0x30B1, P(int(texture)), None)
+        if not image:
+            return None
+        code, planes, modifier = I(), I(), ctypes.c_uint64()
+        descriptor, stride, offset = I(-1), I(), I()
+        exported = self.export_query(self.egl_display, image, ctypes.byref(code), ctypes.byref(planes),
+                                     ctypes.byref(modifier)) and planes.value == 1 and \
+            self.export(self.egl_display, image, ctypes.byref(descriptor), ctypes.byref(stride), ctypes.byref(offset))
+        if not exported or (code.value & 0xFFFFFFFF, modifier.value) not in self.dmabuf_formats:
+            if descriptor.value >= 0:
+                os.close(descriptor.value)
+            self.egl.eglDestroyImage(self.egl_display, image)
+            return None
+        params = native.request(self.dmabuf, 1, P(), interface='zwp_linux_buffer_params_v1')
+        native.request(params, 1, I(descriptor.value), U(0), U(offset.value), U(stride.value),
+                       U(modifier.value >> 32), U(modifier.value & 0xFFFFFFFF))
+        proxy = native.request(params, 3, P(), I(int(width)), I(int(height)), U(FLOAT_FORMAT), U(0),
+                               interface='wl_buffer')
+        native.request(params, 0, destroy=True)
+        os.close(descriptor.value)          # the compositor has its own reference now
+        record = SimpleNamespace(proxy=proxy, image=image, busy=False, dead=False)
+        self.float_buffers[proxy] = record
+
+        def released():
+            record.busy = False
+            if record.dead:
+                self.float_free(record)
+        self.listen(proxy, [([], released)])
+        return record
+
+    def float_commit(self, window, record):
+        """The frame drawn into `record` is the one `swap_buffers` hands over."""
+        window.float_pending = record
+
+    def float_free(self, record):
+        """Let go of a buffer; while the compositor still reads it, when it says it no longer does."""
+        if record.busy:
+            record.dead = True
+            return
+        if self.float_buffers.pop(record.proxy, None) is not None:
+            self.native.request(record.proxy, 0, destroy=True)
+            self.egl.eglDestroyImage(self.egl_display, record.image)
 
     def make_context_current(self, window):
         if self.get_current_context() is window:
@@ -420,6 +541,20 @@ class Backend:
             if self.sampled:
                 now = time.clock_gettime(self.clock)
                 window.costs = (window.costs + [(now, now - self.sampled)])[-COSTS:]
+        record, window.float_pending = window.float_pending, None
+        if record is not None and window.surface:
+            # A float frame: attach its buffer and commit. Nothing waits for the GPU on a dmabuf (the
+            # EGL window's swap does), so the drawing is finished here before the compositor reads it.
+            self.finish()
+            native = self.native
+            record.busy = True
+            native.request(window.surface, 1, P(record.proxy), I(0), I(0))
+            native.request(window.surface, 9, I(0), I(0), I(0x7FFFFFFF), I(0x7FFFFFFF))
+            native.request(window.surface, 6)
+            native.flush(self.display)
+            return
+        if window.float:
+            return      # no frame was drawn for it (scene_target.present found no buffer free): keep the last
         self.egl_check(self.egl.eglSwapBuffers(self.egl_display, window.egl_surface), 'eglSwapBuffers')
 
     def pace(self, drawing=lambda: True):

@@ -1506,10 +1506,14 @@ class Toggles:
         vertex_octaves = 12.0
         # Presentation encode of the linear scRGB scene into the 8-bit
         # swapchain AND the surface's colour tag (wayland_color.py):
-        # "auto" — PQ whenever the compositor offers colour management (the
-        # Hyprland HDR session), sRGB otherwise (GNOME); "pq" — BT.2020 +
-        # ST 2084, surface tagged PQ; "srgb" — SDR, untagged: everything
-        # clips to the sRGB gamut and to white. Read live.
+        # "auto" — extended linear where the compositor and the driver allow
+        # it, else PQ whenever the compositor offers colour management (the
+        # Hyprland HDR session), sRGB otherwise (GNOME); "linear" — the
+        # scene handed over as half-float buffers tagged extended linear:
+        # not quantized, and no ceiling (PQ ends at 10,000 nits before the
+        # desktop's brightness is applied); "pq" — BT.2020 + ST 2084 through
+        # the 8 bit window, surface tagged PQ; "srgb" — SDR, untagged:
+        # everything clips to the sRGB gamut and to white. Read live.
         # [tint=(0.62, 0.36, 0.52)]
         output = "auto"
         # Under the "pq" encode a colour of 1.0 is shown at the desktop's

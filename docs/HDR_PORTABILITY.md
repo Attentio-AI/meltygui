@@ -29,10 +29,13 @@ The decisions behind the picker are in
 
 | Assumption | Where | On another system |
 | --- | --- | --- |
-| The compositor speaks `wp_color_management_v1`, and Melty tags its surface BT.2020 PQ | [wayland_color.py](../meltygui/core/graphics/wayland_color.py), `Toggles.HDR.output` | Without the protocol Melty presents sRGB and everything above white clips |
+| The compositor speaks `wp_color_management_v1`. Melty tags its surface extended linear (sRGB primaries) where it can present float buffers, else BT.2020 PQ | [wayland_color.py](../meltygui/core/graphics/wayland_color.py), `Toggles.HDR.output` ("auto", "linear", "pq", "srgb") | Without the protocol Melty presents sRGB and everything above white clips |
 | The preferred image description's reference luminance is the user's SDR white | `wayland_color.query_preferred`, `desired_reference` | True on this fork, which patches it to `sdr_max_luminance`; stock Hyprland reports a fixed default there. Other compositors: see section 4 |
 | That reference does not include the brightness slider | the fork's `clientImageDescription` | Melty's nits are therefore "nits at 100% brightness" |
-| The swapchain is 8 bit, so the PQ encode is where HDR is quantised, with no dither | [scene_target.py](../meltygui/core/graphics/scene_target.py) (NVIDIA egl-wayland offers no 10 bit or float window config) | A step of one code is 3.7% of light near 300 nits, about 5% at a tenth of that. A 10 bit or float surface removes it |
+| The EGL window is 8 bit on this driver (no 10 bit or float window config), so Melty presents half-float dmabufs of its own instead | [scene_target.py](../meltygui/core/graphics/scene_target.py) `_float_target`, native_wayland `float_buffer` (`EGL_MESA_image_dma_buf_export`, `zwp_linux_dmabuf_v1`, format `AB4H`) | Needs the driver to export a float texture and the compositor to take that format and modifier. Else the 8 bit PQ path: a step of one code is 3.7% of light near 300 nits, and no dither |
+| An extended linear surface's 1.0 is the desktop's SDR white, with no ceiling | the fork's `linearSDRWhite` (Renderer.cpp); upstream Hyprland treats 1.0 as 80 nits | On a compositor that does not map it so, Melty's white would not be the desktop's: use `Toggles.HDR.output = "pq"` there |
+| A window that presents float buffers has no EGL window | native_wayland `wants_float`, `float_abandon` | NVIDIA's EGL window puts explicit sync on the surface, after which a buffer of Melty's own is a protocol error. So it is decided when the window is made; going back to PQ gives it an EGL window for good |
+| Through PQ, Melty's output ends at 10,000 nits, before the compositor's brightness | `melty_pq_encode`, `Room.carry` in the picker | The most that can be emitted is `10,000 x brightness` nits. Only when the float path is not available |
 | Without a reading, white is 250 nits | `Toggles.HDR.pq_reference_nits` | A guess; `sdr_white_max=` on the picker overrides it |
 | A vertex colour carries at most 64 times white | `Toggles.HDR.vertex_range` | Chips and swatches clip there; the picker's field is a texture and does not |
 

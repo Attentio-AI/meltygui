@@ -105,7 +105,7 @@ def white():
     return wayland_color.reference_nits() or wayland_color.desired_reference()
 
 
-Room = namedtuple('Room', 'band square stops top headroom full white tone panel limit')
+Room = namedtuple('Room', 'band square stops top headroom full white tone panel limit carry')
 
 
 def primaries(display):
@@ -118,7 +118,7 @@ def primaries(display):
     return forth, hdr_color._mat_inv(forth)
 
 
-def scale(headroom, selector=HDR, full=0.0, white=0.0, tone=None, panel=None, limit=0.0):
+def scale(headroom, selector=HDR, full=0.0, white=0.0, tone=None, panel=None, limit=0.0, carry=0.0):
     """The field of a picker whose brightest row is `headroom` times white (0.0 to `PEAK`, in
     linear light), to one scale for every picker and every display: a `Room`. `band` is the
     height of the HDR part, `BAND` at `PEAK` and a stop the same pixels in all of them; `stops` is
@@ -129,7 +129,9 @@ def scale(headroom, selector=HDR, full=0.0, white=0.0, tone=None, panel=None, li
     only `DYNAMIC_PERCEPTUAL` is given: `full` and `white` are the nits of a colour of 1.0 at full
     brightness and now, `tone` the compositor's shadow stages (display_model.py) and `panel` the
     matrices from linear sRGB to the panel's own channels and back. `limit` is every selector's:
-    the multiple of white past which the hardware has no light, so nothing is drawn (0.0: unknown)."""
+    the multiple of white past which the hardware has no light, so nothing is drawn (0.0: unknown).
+    `carry` is the most the window's output can carry, as a multiple of white (0.0: no end, a float
+    output; PQ ends at 10,000 nits)."""
     headroom = min(max(headroom, 0.0), PEAK)
     if selector == SRGB:
         headroom = min(headroom, 1.0)
@@ -137,8 +139,8 @@ def scale(headroom, selector=HDR, full=0.0, white=0.0, tone=None, panel=None, li
     if headroom > 1.0:
         stops = math.log2(headroom)
         band = float(round(BAND * stops / math.log2(PEAK)))
-        return Room(band, SQUARE, stops, top, headroom, full, white, tone, panel, limit)
-    return Room(0.0, float(round(SQUARE * top)), 0.0, top, headroom, full, white, tone, panel, limit)
+        return Room(band, SQUARE, stops, top, headroom, full, white, tone, panel, limit, carry)
+    return Room(0.0, float(round(SQUARE * top)), 0.0, top, headroom, full, white, tone, panel, limit, carry)
 
 
 def extent(channels, headroom=PEAK, selector=HDR):
@@ -433,20 +435,45 @@ def crest(room):
     return hdr_color.linear_to_jzazbz((1.0, 1.0, 1.0), nits)[0]
 
 
-def brink(lightness, hue, room, peak):
-    """The most chroma the panel can emit at this lightness and hue: where the value to send
-    leaves the P3 box [0, peak]. Two passes of `EDGE` samples along the row, the second between
-    the last one inside and the first one outside."""
+BOUNDLESS = 1e9                 # a value to send that no output is asked to carry
+
+
+def bounds(room, headroom):
+    """(send, light) of the dynamic field: the most that can be sent, as a multiple of white, and
+    the most light in nits it shows.
+
+    The light is `headroom` times white AT FULL BRIGHTNESS, and the hardware's limit where that
+    is known: it does not follow the brightness, since a display turned down can still be sent
+    more. What can be sent ends only where the window's output does (`room.carry`): a float
+    output has no end, PQ ends at 10,000 nits before the display's brightness is applied, which
+    is what makes a PQ window's field shrink from the top as the brightness goes down."""
+    send = BOUNDLESS
+    if room.carry > 0.0:
+        send = room.carry
+    light = headroom * room.full
+    if room.limit > 0.0:
+        light = min(light, room.limit * room.white)
+    return send, light
+
+
+def brink(lightness, hue, room, headroom):
+    """The most chroma the panel can emit at this lightness and hue, within `bounds`. Two passes
+    of `EDGE` samples along the row, the second between the last one inside and the first one
+    outside."""
     import numpy as np
     to_p3 = np.asarray(hdr_color.SRGB_TO_P3).T
+    send, light = bounds(room, headroom)
     low = 0.0
     high = DYNAMIC_REACH
     for _ in range(2):
         chromas = np.linspace(low, high, EDGE)
         nits, over = hdr_color.jzczhz_nits(lightness, chromas, hue * TURN)
-        # The floor on the light itself, the ceiling on what is sent for it (jzczhz_field_linear).
-        wide = sent(nits, room) @ to_p3
-        inside = hdr_color.above_zero(nits @ to_p3) & (wide.max(-1) <= peak * (1.0 + 1e-4)) & ~over
+        # The floor and the ceiling on the light itself, and on what is sent for it where the
+        # output ends (jzczhz_field_linear).
+        emitted = nits @ to_p3
+        inside = hdr_color.above_zero(emitted) & (emitted.max(-1) <= light * (1.0 + 1e-4)) & ~over
+        if send < BOUNDLESS:
+            inside &= (sent(nits, room) @ to_p3).max(-1) <= send * (1.0 + 1e-4)
         if not inside[0]:
             return low
         if inside.all():
@@ -461,13 +488,11 @@ def dynamic_bake(hue, room):
     rows = max(int((room.band + room.square) / DYNAMIC_GRAIN), 1)
     cols = int(ACROSS / DYNAMIC_GRAIN)
     top = crest(room)
-    # The hardware's limit is on the light it emits, not on the value sent for it (the two differ
-    # under the compositor's stages, more the further the brightness is turned up): in nits here.
-    ceiling = None
-    if room.limit > 0.0:
-        ceiling = room.limit * room.white
-    pixels, narrow = hdr_color.jzczhz_field_linear(hue * TURN, rows, cols, top, DYNAMIC_REACH, room.white,
-                                                   room.headroom, lambda nits: sent(nits, room), ceiling)
+    # The limits are on the light a place stands for, in nits, not on the value sent for it (the
+    # two differ under the compositor's stages, more the further the brightness is turned up).
+    send, light = bounds(room, room.headroom)
+    pixels, narrow = hdr_color.jzczhz_field_linear(hue * TURN, rows, cols, top, DYNAMIC_REACH, room.white, send,
+                                                   lambda nits: sent(nits, room), light)
     reach = narrow.sum(1)
     outline = [(reach[row] / cols, (row + 0.5) / rows) for row in range(0, rows, 3)]
     lines = (outline,)
@@ -509,8 +534,9 @@ def dynamic_color(hue, spot, room):
 
 def dynamic_span(hue, room):
     rows, cols = SURVEY
-    pixels, narrow = hdr_color.jzczhz_field_linear(hue * TURN, rows, cols, crest(room), DYNAMIC_REACH, room.white,
-                                                   room.headroom, lambda nits: sent(nits, room))
+    send, light = bounds(room, room.headroom)
+    pixels, narrow = hdr_color.jzczhz_field_linear(hue * TURN, rows, cols, crest(room), DYNAMIC_REACH, room.white, send,
+                                                   lambda nits: sent(nits, room), light)
     return min((float(pixels[..., 3].sum(1).max()) + 1.0) / cols, 1.0)
 
 
@@ -791,7 +817,14 @@ def draw_color_picker(input_value: tuple, display: Display, selector=HDR, headro
     limit = 0.0
     if hardware_max is not None:
         limit = hardware_max / max(now_white, TINY)
-    found = scale(headroom, selector, full, emitted, tone, panel, limit)
+    carry = 0.0
+    if selector == DYNAMIC_PERCEPTUAL:
+        # Where this window's own output ends. PQ carries 10,000 nits, counted where 1.0 is the
+        # white Melty encodes with; a float output (scene_target) carries anything.
+        from meltygui.core.graphics import wayland_color
+        if wayland_color.applied() == 'pq':
+            carry = CEILING / max(white(), TINY)
+    found = scale(headroom, selector, full, emitted, tone, panel, limit, carry)
     if found != room:
         room = found
         draw_state.room = room

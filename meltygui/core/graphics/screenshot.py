@@ -360,8 +360,12 @@ def _capture_points(window, left, top, w, h, name):
     y_bottom = fb_h - (y_top + ph)  # GL origin is bottom-left
 
     gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
-    gl.glReadBuffer(gl.GL_BACK)
-    data = gl.glReadPixels(x0, y_bottom, pw, ph, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE)
+    # A window that presents float buffers has no back buffer: its frame is read from the scene.
+    import meltygui.core.graphics.scene_target as scene_target
+    data = scene_target.read_presented(x0, y_bottom, pw, ph)
+    if data is None:
+        gl.glReadBuffer(gl.GL_BACK)
+        data = gl.glReadPixels(x0, y_bottom, pw, ph, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE)
 
     if isinstance(data, bytes):
         arr = np.frombuffer(data, dtype=np.uint8)

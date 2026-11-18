@@ -609,7 +609,17 @@ def sync(window=None) -> str | None:
     _STATE["wanted"] = wanted
     _STATE["synced_reference"] = lums
     try:
-        if wanted == "pq":
+        if wanted == "linear":
+            # Extended linear on sRGB primaries, what Melty's scene is: 1.0 is the desktop's SDR
+            # white by the compositor's own rule, so no luminances are declared and none clamp.
+            if create_description(PRIMARIES_SRGB, TF_EXT_LINEAR) and set_surface_description():
+                _STATE["applied"] = "linear"
+            else:
+                print(f"wayland_color: extended linear tag not applied: {last_error()}")
+                import meltygui.core.graphics.scene_target as scene_target
+                scene_target.float_fail()       # this surface presents PQ from the next frame on
+                _STATE["wanted"] = None
+        elif wanted == "pq":
             if create_description(PRIMARIES_BT2020, TF_ST2084_PQ, reference_nits=lums[2],
                                   max_nits=lums[1], min_nits=lums[0]) \
                     and set_surface_description():
@@ -631,9 +641,20 @@ def resolved_output() -> str:
     colour management, sRGB otherwise."""
     from meltygui.core.runtime.toggles import Toggles
     mode = Toggles.HDR.output
+    if mode in ("auto", "linear") and available() and linear_possible():
+        return "linear"
     if mode == "auto":
         return "pq" if available() else "srgb"
-    return "pq" if mode == "pq" else "srgb"
+    return "pq" if mode in ("pq", "linear") else "srgb"
+
+
+def linear_possible() -> bool:
+    """Whether a surface can be extended linear here: the compositor knows the transfer function
+    and sRGB primaries, and the frame can be handed over as a half-float buffer (scene_target)."""
+    if TF_EXT_LINEAR not in _CONN["supported_tf"] or PRIMARIES_SRGB not in _CONN["supported_primaries"]:
+        return False
+    import meltygui.core.graphics.scene_target as scene_target
+    return scene_target.float_possible()
 
 
 def attach_window(window) -> bool:

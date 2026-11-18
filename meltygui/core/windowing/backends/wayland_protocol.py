@@ -53,14 +53,16 @@ class Native:
                             'wl_data_source')}
         self.keepalive = []
         directory = Path(__file__).with_name('protocols')
-        nodes = [node for filename in ('xdg-shell.xml', 'xdg-decoration-unstable-v1.xml', 'presentation-time.xml')
+        nodes = [node for filename in ('xdg-shell.xml', 'xdg-decoration-unstable-v1.xml', 'presentation-time.xml',
+                                       'linux-dmabuf-v1.xml')
                  for node in ET.parse(directory / filename).getroot().findall('interface')]
         for node in nodes:
             self.interfaces[node.get('name')] = Interface()
         for node in nodes:
             interface = self.interfaces[node.get('name')]
             interface.name = node.get('name').encode()
-            interface.version = 1  # All our xdg objects negotiate v1.
+            # All our xdg objects negotiate v1; the dmabuf ones 3, where modifiers are announced.
+            interface.version = 3 if 'dmabuf' in node.get('name') or 'buffer_params' in node.get('name') else 1
             for kind, count_field, messages_field in [('request', 'method_count', 'methods'),
                                                        ('event', 'event_count', 'events')]:
                 messages = []
