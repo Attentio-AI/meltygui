@@ -24,6 +24,9 @@ that window is the desktop's (BT.2020), not the panel's. So `read` takes the set
 monitor that is a real output (it has an EDID under /sys/class/drm) and keeps that panel's
 `primaries`: the EDID's under the compositor's `hdredid` preset, BT.2020 under `hdr`.
 
+Everything here is that one compositor's: docs/HDR_PORTABILITY.md lists what is assumed and what
+another system would need.
+
 The compositor sends no event for a brightness change, so `watch` asks from a thread of its own:
 every `PAUSE` seconds, and every `QUICK` seconds for `LINGER` seconds after a reading that
 differed, so a slider being dragged is followed closely. One request is about 0.1 ms and never

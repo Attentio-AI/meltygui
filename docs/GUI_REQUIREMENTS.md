@@ -1190,6 +1190,13 @@ working example.
   -4.9%, cyan -4.6%, blue +0.6%, magenta +6.6%; by the brightest P3 channel
   (`hardware_max`) red -19%, orange -14%, yellow -3.7%, green -12%, cyan
   -12%, blue -24%, magenta -15%. Both are flattest at yellow.
+- **What the HDR path assumes about this desktop is written down**
+  (2026-11-18): "Can you document all of the hard coded assumptions made for
+  my specific hyprland setup? what would need to change for this color picker
+  to work on mac os or a different hdr compatible linux distribution? Is
+  there anything we could change about my patched hyprland to make it more
+  standard or is it fine as is?" In [HDR_PORTABILITY.md](HDR_PORTABILITY.md).
+  Of the dynamic picker before that: "Happy with it now."
 - **A view upgrades the default constructed value of its type**
   (2026-11-18): `draw_color_picker()` with nothing passed crashed on the `()`
   its `tuple` annotation built. "If you support a type the view should
