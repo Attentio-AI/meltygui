@@ -346,3 +346,22 @@ def test_an_event_keeps_its_states_through_clear():
     event.clear()
     assert event.is_hovered() and event.is_focused() and event.is_left_mouse_held()
     assert not event.left_mouse_down() and not event.left_mouse_clicked() and event.text() == ''
+
+
+def test_file_drop_reaches_nearest_requesting_view_once(stage):
+    @stage.gui(width=100, height=40)
+    def child(event=None):
+        stage.runs.append(('child', event.left_mouse_down()))
+
+    @stage.gui(width=150, height=80)
+    def receiver(event=None):
+        stage.runs.append(('files', event.dropped_files()))
+        child(name='child', left=0, top=0)
+
+    stage.mount(lambda: receiver(name='receiver', left=10, top=10))
+    stage.cache.imgui_input.drop((25, 25), ('/tmp/a b.png',))
+    assert stage.step()['files'] == ('/tmp/a b.png',)
+    stage.cache.imgui_input.drop((300, 300), ('/tmp/outside',))
+    assert 'files' not in stage.step()
+    stage.cache.imgui_input.drop((25, 25), ('/tmp/second',))
+    assert stage.step()['files'] == ('/tmp/second',)

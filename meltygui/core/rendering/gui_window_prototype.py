@@ -11,6 +11,7 @@ class _GuiWindow:
         self.native = _new_native(graphics=graphics, identities=self.cache.identities)
         self.bindings = {}
         self.closed = False
+        self.drop_window = None
         self.input_backend = None
         # The size the host gave the last frame: a different one is a window resize (`draw`).
         self.size = None
@@ -58,12 +59,25 @@ class _GuiWindow:
         arguments.setdefault('height', height)
         self.cache.request_frame = surface.request_frame
         self.title_bar()
+        self.content_origin = Melty.frame_origin
         if self.cache.graphics and self.input_backend is None:
             self.input_backend = surface.impl
             # The host's colour pipeline (hdr_color.py): without it a packed
             # colour's 7 bit alpha reads as more than half opaque.
             self.cache.melty_colors()
             self.input_backend.gui_character_callback = self.cache.imgui_input.character
+            from meltygui.core.windowing import window_api
+            if window_api.backend_name() != 'ios':
+                window = surface.window
+                def dropped(window, paths):
+                    position = window.drop_position if window_api.is_native_window(window) else window_api.get_cursor_pos(window)
+                    x, y = position
+                    left, top = self.content_origin
+                    self.cache.imgui_input.drop((x - left, y - top), paths)
+                    if self.previous_drop:
+                        self.previous_drop(window, paths)
+                self.drop_window = window
+                self.previous_drop = window_api.set_drop_callback(window, dropped)
         token = _window.set(self)
         from meltygui.core.runtime.app import _state
         func, options = view.__gui_definition__
@@ -117,6 +131,10 @@ class _GuiWindow:
             if self.input_backend is not None:
                 self.input_backend.gui_character_callback = None
                 self.input_backend = None
+            if self.drop_window is not None:
+                from meltygui.core.windowing import window_api
+                window_api.set_drop_callback(self.drop_window, self.previous_drop)
+                self.drop_window = None
             self.cache.close()
             self.cache.request_frame = None
             self.native.clear()
@@ -126,6 +144,8 @@ class _GuiWindow:
 
 def draw_gui_surface(surface, view, view_kwargs):
     if getattr(surface, '_gui_prototype', None) is None:
-        surface._gui_prototype = _GuiWindow(
-            state_registry=surface.session.draw_state_registry if surface.session is not None else None)
+        registry = None
+        if surface.session is not None and getattr(view, '__gui_persist_views__', True):
+            registry = surface.session.draw_state_registry
+        surface._gui_prototype = _GuiWindow(state_registry=registry)
     return surface._gui_prototype.draw(surface, view, view_kwargs)

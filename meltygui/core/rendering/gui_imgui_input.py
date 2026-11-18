@@ -43,7 +43,7 @@ from collections import namedtuple
 import time
 
 from meltygui.core.input import context_menu
-from meltygui.core.input.event import FOCUS, HOVER, KEYS, LEFT, MOVE, OUTSIDE, QUIET, SCROLL, TOUCH, WHEEL
+from meltygui.core.input.event import FILES, FOCUS, HOVER, KEYS, LEFT, MOVE, OUTSIDE, QUIET, SCROLL, TOUCH, WHEEL
 
 # One touch contact: kind is 'down', 'move' or 'up'; contact tells fingers apart.
 Touch = namedtuple('Touch', 'kind contact x y')
@@ -103,6 +103,15 @@ class ImGuiInput:
         self.keys.append((key, mods))
         if self.cache.request_frame:
             self.cache.request_frame()
+
+    def drop(self, position, paths):
+        """Route a file-manager drop to the nearest ancestor that requested files."""
+        node = self.owner(self.hit(position), FILES)
+        if node is not None:
+            event = self.cache.inputs[node]
+            event.x, event.y = self.local(node, position)
+            event.files = (*event.files, *paths)
+            self.wake(node)
 
     def touch(self, kind, contact, x, y):
         """Host sink for one touch contact, in surface coordinates."""

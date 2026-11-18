@@ -161,6 +161,7 @@ class Backend:
         self.clipboard_text = None
         self.selection = self.data_source = None
         self.offers = {}
+        self.drag_offer = self.drag_window = None
         self.cursor_theme = self.cursor_surface = None
         self.custom_cursor_buffers = []
         self.cursor_scale = 1
@@ -205,11 +206,12 @@ class Backend:
         self.seat = self.bind('wl_seat', 5)
         self.listen(self.seat, [([U], self.capabilities), ([ctypes.c_char_p], lambda name: None)])
         if 'wl_data_device_manager' in self.globals:
+            self.offer_table = native.shared([([ctypes.c_char_p], self.offer_type)], self.fail)
             self.data_manager = self.bind('wl_data_device_manager')
             self.data_device = native.request(self.data_manager, 1, P(), P(self.seat), interface='wl_data_device')
             self.listen(self.data_device, [([P], self.data_offer),
-                ([U, P, I, I, P], lambda *args: None), ([], lambda: None),
-                ([U, I, I], lambda *args: None), ([], lambda: None), ([P], self.select_offer)])
+                ([U, P, I, I, P], self.drag_enter), ([], self.drag_leave),
+                ([U, I, I], self.drag_motion), ([], self.drag_drop), ([P], self.select_offer)])
         # A frame callback and a presentation feedback are made per frame: one listener table for each kind.
         self.frame_table = native.shared([([U], self.frame_done)], self.fail)
         self.feedback_table = native.shared([([P], lambda proxy, output: None), ([U] * 7, self.presented),
@@ -827,7 +829,56 @@ class Backend:
 
     def data_offer(self, offer):
         self.offers[offer] = []
-        self.listen(offer, [([ctypes.c_char_p], lambda mime: self.offers[offer].append(mime))])
+        self.native.listen(offer, self.offer_table, None)
+
+    def offer_type(self, offer, mime):
+        self.offers[offer].append(mime)
+
+    def drag_enter(self, serial, surface, x, y, offer):
+        self.drag_leave()
+        self.drag_offer = offer
+        self.drag_window = self.by_surface.get(surface)
+        self.drag_motion(0, x, y)
+        if offer:
+            accepts = self.drag_window and self.drag_window.callbacks.get('drop') and b'text/uri-list' in self.offers.get(offer, ())
+            self.native.request(offer, 0, U(serial), ctypes.c_char_p(b'text/uri-list' if accepts else None))
+
+    def drag_motion(self, stamp, x, y):
+        self.drag_position = (x / 256, y / 256)
+
+    def drag_leave(self):
+        if self.drag_offer:
+            self.native.request(self.drag_offer, 2, destroy=True)
+            self.offers.pop(self.drag_offer, None)
+        self.drag_offer = self.drag_window = None
+
+    def drag_drop(self):
+        offer, window = self.drag_offer, self.drag_window
+        if not window or not window.callbacks.get('drop') or b'text/uri-list' not in self.offers.get(offer, ()):
+            self.drag_leave()
+            return
+        position = self.drag_position
+        reader, writer = os.pipe2(os.O_CLOEXEC)
+        try:
+            self.native.request(offer, 1, ctypes.c_char_p(b'text/uri-list'), I(writer))
+            self.native.flush(self.display)
+        finally:
+            os.close(writer)
+            self.drag_leave()
+
+        def received(paths):
+            if paths and not window.destroyed:
+                window.drop_position = position
+                window.emit('drop', paths)
+
+        def read():
+            from meltygui.core.windowing.backends.wayland_files import read_paths
+            from meltygui.core.windowing.glfw_utils import ask
+            paths = read_paths(reader)
+            if paths:
+                ask(lambda: received(paths))
+
+        threading.Thread(target=read, daemon=True, name='wayland-file-drop').start()
 
     def select_offer(self, offer):
         previous = self.selection

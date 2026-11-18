@@ -467,6 +467,10 @@ usable yet inside a cached view: `imgui.combo`, ImGui popups and tooltips
 (bug `c3582148b768`) and `begin_child` (bug `fb94b9e2eed2`, it can abort the
 app). A dropdown is section 7, a scrolling area section 8.
 
+Desktop file drops arrive through `event.dropped_files()` as local paths, on the innermost view that asks for them. The native Wayland host reads the URI list off the render thread. GLFW uses its normal file-drop callback.
+
+For a window displaying ephemeral or account-scoped content, `@os_window(persist_views=False)` keeps its retained view state in memory. Window geometry still uses the normal app session.
+
 ## 7. Popups
 
 A list under a button, a picker, a menu: an ordinary view called with

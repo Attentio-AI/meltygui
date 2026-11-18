@@ -198,7 +198,9 @@ def gui(func=None, *, glfw_window=False, **decoration):
         host_options = {name: decoration.pop(name) for name, parameter in
                         inspect.signature(host_window).parameters.items()
                         if parameter.kind is inspect.Parameter.KEYWORD_ONLY and name in decoration}
+        persist_views = decoration.pop('persist_views', True)
         view = gui(func, **decoration)
+        view.__gui_persist_views__ = persist_views
         return host_window(view, **host_options, **{
             name: value for name, value in decoration.items()
             if name not in ('use_cache', 'live', 'inject', 'events', 'state_id', 'no_save')})

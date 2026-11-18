@@ -48,6 +48,7 @@ SCROLL = 128
 KEYS = 256                       # key presses and typed text: the view can have the keyboard
 FOCUS = 512
 TOUCH = 1024
+FILES = 2048
 # Nothing happened: shared by every Event, never appended to.
 NONE = ()
 
@@ -56,7 +57,7 @@ class Event:
     __slots__ = ('asked', 'area', 'x', 'y', 'dx', 'dy', 'total_dx', 'total_dy', 'clicks', 'ctrl', 'shift', 'alt',
                  'over', 'keyboard', 'held', 'start_x', 'start_y', 'travel',
                  'downs', 'ups', 'taps', 'drags', 'rests', 'moves', 'wheel_x', 'wheel_y', 'scrolls',
-                 'pressed', 'typed', 'gained', 'lost', 'contacts')
+                 'pressed', 'typed', 'gained', 'lost', 'contacts', 'files')
 
     def __init__(self):
         self.asked = 0              # the bits above this view's body asked about, on any run
@@ -94,6 +95,7 @@ class Event:
         self.typed = ''
         self.gained = False
         self.lost = False
+        self.files = NONE
         self.contacts = NONE        # [Touch]
 
     def clear(self):
@@ -114,6 +116,7 @@ class Event:
         self.typed = ''
         self.gained = False
         self.lost = False
+        self.files = NONE
         self.contacts = NONE
 
     def reach(self, left, top, right, bottom):
@@ -250,6 +253,11 @@ class Event:
         """A scroll view under the pointer, this one or one inside it, was scrolled by the wheel."""
         self.asked |= SCROLL
         return self.scrolls
+
+    def dropped_files(self):
+        """Local paths from a desktop file drop over this view, once, in source order."""
+        self.asked |= FILES
+        return self.files
 
     def touches(self):
         """The touch contacts over the view as `Touch(kind, contact, x, y)`, from hosts that report them."""

@@ -163,3 +163,19 @@ def test_root_is_never_under_one_pixel(monkeypatch):
     window.draw(surface, root, {})
     assert sizes[0] == (400., 250.) and sizes[1:] == [(40., 1.), (40., 1.)]
     window.close()
+
+
+def test_private_window_keeps_view_registry_out_of_session(monkeypatch):
+    import meltygui.core.rendering.gui_window_prototype as module
+    registry = {}
+    found = []
+    monkeypatch.setattr(module, '_GuiWindow', lambda state_registry: SimpleNamespace(
+        draw=lambda *args: found.append(state_registry)))
+    def view():
+        pass
+    for remember in (True, False):
+        surface = SimpleNamespace(session=SimpleNamespace(draw_state_registry=registry))
+        view.__gui_persist_views__ = remember
+        module.draw_gui_surface(surface, view, {})
+    assert found[0] is registry
+    assert found[1] is None
