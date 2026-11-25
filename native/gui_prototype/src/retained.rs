@@ -16,6 +16,8 @@ use crate::{absent, NativeState, Value};
 /// again and what it passes is shown: a view follows its caller, as an
 /// immediate mode widget does, within this many frames.
 const SETTLE: u8 = 3;
+/// Lever: pixels under which an allocated rectangle is the one a view already has (`allocate`).
+const NOISE: f64 = 1e-6;
 
 struct Node {
     identity: Py<PyAny>,
@@ -817,7 +819,10 @@ impl RetainedGraph {
     fn allocate(&mut self,py:Python<'_>,id:u64,rect:(f64,f64,f64,f64))->PyResult<bool> {
         if ![rect.0,rect.1,rect.2,rect.3].iter().all(|v|v.is_finite()) || rect.2<=0. || rect.3<0. {return Err(PyRuntimeError::new_err("invalid layout allocation"));}
         if !self.nodes.contains_key(&id) {return Err(PyRuntimeError::new_err("retired layout child"));}
-        if self.geometry.rect(py,id)==rect {return Ok(false);}
+        // A layout frame is two edges on the surface, so its size comes back with float noise
+        // (266.72 as 266.72000000000116): closer than `NOISE` is the place the view has.
+        let had=self.geometry.rect(py,id);
+        if [had.0-rect.0,had.1-rect.1,had.2-rect.2,had.3-rect.3].iter().all(|gap|gap.abs()<NOISE) {return Ok(false);}
         // An axis that is as large as the view's content is not the layout's to set: a window that
         // wraps keeps measuring after it was moved (its place is allocated, its size is not).
         let node=&self.nodes[&id];

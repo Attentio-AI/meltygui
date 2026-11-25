@@ -582,3 +582,21 @@ def test_a_pointer_move_in_a_frame_that_resizes_the_window_runs_the_root_once():
     assert frame(50.0, 130.0) is None and runs[4:] == [130.0]
     assert frame(50.0, 130.0, right=False) is None and runs[5:] == [130.0]  # the release, once
     cache.close()
+
+
+def test_float_noise_in_an_allocation_is_no_new_place():
+    """A layout frame's size is the difference of two edges on the surface: 266.72 comes back as
+    266.72000000000116. Allocating that must not run the view again (a dropdown's list did, twice in
+    the frame it opened: bug 4bb98dbe87c9)."""
+    cache = RetainedGui(graphics=False)
+    g = cache.graph
+    try:
+        node = g.declare(0, 1, 'list', None, {}, (0.0, 24.0, 266.72, 88.0), True)
+        g.begin(node)
+        g.commit(node, (False, None), False)
+        assert not g.dirty(node)
+        assert g.allocate(node, (0.0, 24.0, 41881.28 + 266.72 - 41881.28, 88.0)) is False
+        assert not g.dirty(node)
+        assert g.allocate(node, (0.0, 24.0, 267.0, 88.0)) is True       # a real move still is one
+    finally:
+        cache.close()

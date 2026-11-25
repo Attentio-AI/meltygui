@@ -800,7 +800,6 @@ did not check.
 | The view that opened a popup is not run again with the pick (`9ed33b19b8e3`) | Draw after the popup call, from its return |
 | A view is not run again when its caller passes back the edit it returned: an ImGui button or checkbox that drew before the edit stays stale until the pointer moves (`90293f1fa9dd`). A view that was passed nothing is run again | Draw after handling the input, or `cache.wake_next(cache.current)` in the run that returns the edit |
 | A pick in a popup opened from a popup (a submenu) runs the outer popup and its caller twice in that frame (`1bd0b2d648ed`) | Nothing: the value is right, the double render mark shows for a second |
-| A dropdown that is a row of `draw_collection` runs its list twice in the frame it opens (`4bb98dbe87c9`) | Nothing: the list is right, the double render mark shows for a second |
 | A left drag on an OS window's body does not move it unless the root holds a `columns` / `rows` layout (`78d4ccd04ec6`) | Drag the title bar |
 | A view larger than 8192 px raises (`c3b99fd82886`) | Child views in a scroll view |
 | The wheel carries no modifiers and a scroll view takes it first (`c1cc6c3481b5`) | No Ctrl+wheel zoom yet |
