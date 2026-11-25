@@ -9,13 +9,12 @@ from . import chat_view as chat_view
 from . import choice_view as choice_view
 from . import code_view as code_view
 from . import collection_view as collection_view
-from . import color_picker_view as color_picker_view
 from . import color_view as color_view
+from . import common as common
 from . import context_menu_view as context_menu_view
 from . import control_view as control_view
 from . import decoration_view as decoration_view
 from . import diagnostic_view as diagnostic_view
-from . import dict_view as dict_view
 from . import dropdown_view as dropdown_view
 from . import editor_view as editor_view
 from . import file_icon_view as file_icon_view
@@ -43,7 +42,6 @@ from . import texture_view as texture_view
 from . import tile_view as tile_view
 from . import tiles_view as tiles_view
 from . import trace_view as trace_view
-from . import value_view as value_view
 from . import voxel_cuda_view as voxel_cuda_view
 from . import voxel_view as voxel_view
 from . import window_view as window_view

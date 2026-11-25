@@ -145,7 +145,7 @@ def test_decoration_definition_hotswaps_in_place():
     original = chat_decoration_view._color
     original_value = original((.2, .3, .4))
     stamp_module_baseline(chat_decoration_view, source)
-    edited = source.replace('return pack_color(*tint[:3], alpha)', 'return pack_color(*tint[:3], alpha * 0.5)')
+    edited = source.replace('return (*tint[:3], alpha)', 'return (*tint[:3], alpha * 0.5)')
     try:
         assert _recompile_module(chat_decoration_view, edited, chat_decoration_view.__file__) is None
         assert chat_decoration_view._color is original

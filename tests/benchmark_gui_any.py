@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import meltygui.core.windowing.window_constants as glfw  # noqa: E402
 from editor_host import Host  # noqa: E402
 from meltygui.core.rendering.gui_any import draw_any  # noqa: E402
-from meltygui.view.dict_view import ROW, Tree  # noqa: E402
+from meltygui.view.common.dict_view import ROW, Tree  # noqa: E402
 
 WIDE, TALL = 600., 560.
 FIELD = 300.            # an x inside the value column

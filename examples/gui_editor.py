@@ -27,7 +27,6 @@ from meltygui.model.source_model import Source
 from meltygui.state.editor_state import EditorState
 from meltygui.view.editor_view import draw_editor
 from meltygui.editor.inline import inline
-from meltygui.hdr_color import pack_color
 
 if len(sys.argv) > 1:
     PATH = Path(sys.argv[1])
@@ -87,7 +86,7 @@ model = Model()
 def lamp(input_value, width=0., height=0.):
     """Live booleans show as a lamp: one small function adds an inline widget."""
     dl = imgui.get_window_draw_list()
-    color = pack_color(.35, .85, .45) if input_value else pack_color(.85, .35, .35)
+    color = (.35, .85, .45) if input_value else (.85, .35, .35)
     dl.add_circle_filled(height * .5, height * .5, height * .3, color)
     dl.add_text(height, 2, color, 'on' if input_value else 'off')
 

@@ -5,7 +5,6 @@ import meltygui_imgui as imgui
 from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.rendering.core_decoration import no_save_exclude
 from meltygui import gui
-from meltygui.hdr_color import pack_color
 
 
 @no_save_exclude('calls', 'ids')
@@ -21,20 +20,20 @@ class RetainedDemo(DictConversion):
 
 
 # Local demo palette. Change these to distinguish retained texture boundaries.
-white = pack_color(.94, .96, 1., 1.)
-muted = pack_color(.65, .77, .86, 1.)
+white = (.94, .96, 1., 1.)
+muted = (.65, .77, .86, 1.)
 
 def text(x, y, label, color=white):
     imgui.get_window_draw_list().add_text(x, y, color, label)
 
 def background(draw_state, color):
     imgui.get_window_draw_list().add_rect_filled(0, 0, draw_state.width, draw_state.height,
-                                                pack_color(*color))
+                                                color)
 
 def control(cache, draw_state, key, label, x, y, width=110):
     hovered = draw_state.get('hover') == key
     color = (.30, .43, .55, 1.) if hovered else (.20, .31, .40, 1.)
-    imgui.get_window_draw_list().add_rect_filled(x, y, x + width, y + 30, pack_color(*color), 4)
+    imgui.get_window_draw_list().add_rect_filled(x, y, x + width, y + 30, color, 4)
     text(x + 9, y + 6, label)
     cache.region(key, (x, y, width, 30))
 

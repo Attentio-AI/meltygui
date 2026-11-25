@@ -9,7 +9,6 @@ from meltygui.core.core_render import render_func
 from meltygui.core.graphics.gl_state import GLState
 from meltygui.core.graphics.shader_func import shader_func
 from meltygui.core.rendering.core_decoration import Core
-from meltygui.hdr_color import pack_color
 from meltygui.model.texture_model import ImageTexture, texture_filter_target
 from meltygui.state.new_core_model import ZoomState
 from meltygui.state.texture_state import TextureViewState
@@ -76,7 +75,7 @@ def draw_texture_overlay(draw_state, draw_list):
             sr, sb = min(image_left + x1 * sx, clip_right - 3), min(image_top + y1 * sy, clip_bottom)
             if sr > sl and sb > st:
                 draw_list.add_image(state.bright_texture_id, (sl, st), (sr, sb), uv(sl, st), uv(sr, sb))
-                draw_list.add_rect(sl, st, sr, sb, pack_color(1.0, 1.0, 1.0, 0.9), 0.0, 0, 1.0)
+                draw_list.add_rect(sl, st, sr, sb, (1.0, 1.0, 1.0, 0.9), 0.0, 0, 1.0)
     finally:
         draw_list.pop_clip_rect()
     if state.show_info:
@@ -235,7 +234,7 @@ def draw_texture(input_value: numpy.uint32 | ImageTexture, hovered, scroll_y_cha
     _texture_state.bright_texture_id = bright
     _texture_state.width, _texture_state.height = width, height
     _texture_state.zoom_state = zoom_state
-    _texture_state.color = pack_color(*color, 1.0)
+    _texture_state.color = (*color, 1.0)
     _texture_state.flip_y, _texture_state.dim_outside = flip_y, dim_outside
     _texture_state.show_info = show_info
     _texture_state.line_height = imgui.get_text_line_height()

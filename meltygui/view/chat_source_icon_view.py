@@ -6,7 +6,6 @@ from PIL import Image
 
 import meltygui_imgui as imgui
 import meltygui.core.windowing.window_api as window_api
-from meltygui.hdr_color import pack_color
 
 # The marks ship with the chat package (their license is beside them).
 ICONS = Path(__file__).parent.parent / 'chat' / 'assets' / 'source-icons'
@@ -44,5 +43,5 @@ def draw_source_icon(provider, x, y, size, tint):
                 GL.glBindTexture(GL.GL_TEXTURE_2D, previous)
         _textures[key] = texture
     imgui.get_window_draw_list().add_image(
-        texture, (x, y), (x + size, y + size), col=pack_color(*tint[:3], 1.0))
+        texture, (x, y), (x + size, y + size), col=(*tint[:3], 1.0))
     return True

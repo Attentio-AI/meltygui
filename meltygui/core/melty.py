@@ -14,7 +14,6 @@ from meltygui.core.runtime.paths import debug_log_path
 import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
 import meltygui.hdr_color as hdr_color
-from meltygui.hdr_color import pack_color
 from meltygui_imgui.core import _DrawList
 
 from meltygui.core.diagnostics.notifications import draw_notifications
@@ -1954,13 +1953,13 @@ class Melty:
             ring = note.radius * (0.30 + 0.70 * progress)
             # bloom: a wide, faint HDR ring under the crisp one
             overlay.add_circle(x, y, ring,
-                               pack_color(lr, lg, lb, 0.22 * alpha),
+                               (lr, lg, lb, 0.22 * alpha),
                                32, note.thickness * 3.0)
             overlay.add_circle(x, y, ring,
-                               pack_color(lr, lg, lb, 0.85 * alpha),
+                               (lr, lg, lb, 0.85 * alpha),
                                32, note.thickness)
             overlay.add_circle(x, y, ring * 0.55,
-                               pack_color(lr, lg, lb, 0.40 * alpha),
+                               (lr, lg, lb, 0.40 * alpha),
                                32, max(1.0, note.thickness * 0.6))
             return
         if kind == "cursor":
@@ -1982,8 +1981,8 @@ class Melty:
                                         x + ox + 7.2 * scale, y + oy + 18.9 * scale,
                                         color)
             shadow = 1.4 * scale
-            _pieces(shadow, shadow, pack_color(0.0, 0.0, 0.0, 0.45 * alpha))
-            _pieces(0.0, 0.0, pack_color(r, g, b, 0.95 * alpha))
+            _pieces(shadow, shadow, (0.0, 0.0, 0.0, 0.45 * alpha))
+            _pieces(0.0, 0.0, (r, g, b, 0.95 * alpha))
 
     @classmethod
     def overlay_channel_for(cls, ds) -> int:
@@ -3413,11 +3412,11 @@ class Melty:
         try:
             if height <= 30:
                 draw_list.add_rect_filled(x, y, x + width, y + height,
-                                          pack_color(*rgb, Tint.select_bg_alpha),
+                                          (*rgb, Tint.select_bg_alpha),
                                           rounding=rounding)
             if outline:
                 draw_list.add_rect(x, y, x + width, y + height,
-                                   pack_color(*rgb, Tint.select_outline_alpha),
+                                   (*rgb, Tint.select_outline_alpha),
                                    rounding=rounding, thickness=Tint.select_outline_thickness)
         finally:
             draw_list.pop_clip_rect()
@@ -3680,15 +3679,13 @@ class Melty:
         grad = rgb2 is not None and tuple(rgb2[:3]) != tuple(rgb[:3])
         if rgb2 is None:
             rgb2 = rgb
-        fill = pack_color(*rgb, alpha)
+        fill = (*rgb, alpha)
         dl_flags = overlay_dl.flags
         overlay_dl.flags = dl_flags & ~imgui.DRAW_LIST_ANTI_ALIASED_FILL
         try:
             for i in range(segments):
                 if grad:
-                    fill = pack_color(
-                        *Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments),
-                        alpha)
+                    fill = (*Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments), alpha)
                 overlay_dl.add_triangle_filled(a[i][0], a[i][1], b[i][0], b[i][1],
                                                a[i + 1][0], a[i + 1][1], fill)
                 overlay_dl.add_triangle_filled(b[i][0], b[i][1], b[i + 1][0], b[i + 1][1],
@@ -3725,13 +3722,13 @@ class Melty:
                 for i in range(segments):
                     seg_rgb = Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments)
                     for pts, e_alpha in ((a, side_alpha[0]), (b, side_alpha[1])):
-                        edge = pack_color(*seg_rgb, e_alpha)
+                        edge = (*seg_rgb, e_alpha)
                         overlay_dl.add_polyline([pts[i], pts[i + 1]], edge,
                                                 flags=imgui.DRAW_NONE,
                                                 thickness=Swoosh.ribbon_edge_thickness)
             else:
                 for pts, e_alpha in ((a, side_alpha[0]), (b, side_alpha[1])):
-                    edge = pack_color(*rgb, e_alpha)
+                    edge = (*rgb, e_alpha)
                     overlay_dl.add_polyline(pts, edge, flags=imgui.DRAW_NONE,
                                             thickness=Swoosh.ribbon_edge_thickness)
         return True
@@ -3879,7 +3876,7 @@ class Melty:
         if rgb2 is None:
             rgb2 = rgb
         alpha = Swoosh.alpha * mouse_fade
-        col = pack_color(*rgb, alpha)
+        col = (*rgb, alpha)
         segments = max(2, int(Swoosh.segments))
         end_hw = Swoosh.end_thickness
         mid_hw = Swoosh.mid_thickness
@@ -3919,9 +3916,7 @@ class Melty:
             if grad:
                 # Remember t=0 is the parent end, t=1 the child end, so the gradient
                 # blends parent color -> child color along its length.
-                col = pack_color(
-                    *Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments),
-                    alpha)
+                col = (*Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments), alpha)
             l0, l1 = left[i], left[i + 1]
             r0, r1 = right[i], right[i + 1]
             overlay_dl.add_triangle_filled(l0[0], l0[1], r0[0], r0[1], l1[0], l1[1], col)
@@ -3935,9 +3930,7 @@ class Melty:
         if Swoosh.aa_width > 0.0:
             if grad:
                 for i in range(segments):
-                    seg_col = pack_color(
-                        *Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments),
-                        alpha)
+                    seg_col = (*Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments), alpha)
                     overlay_dl.add_polyline([left[i], left[i + 1]], seg_col,
                                             flags=imgui.DRAW_NONE, thickness=Swoosh.aa_width)
                     overlay_dl.add_polyline([right[i], right[i + 1]], seg_col,
@@ -3950,9 +3943,9 @@ class Melty:
         # read as dots rather than chopped-off edges - each in its own endcap color.
         cap_r = end_hw * Swoosh.cap_scale
         overlay_dl.add_circle_filled(x0, y0, cap_r,
-                                     pack_color(*rgb, alpha))
+                                     (*rgb, alpha))
         overlay_dl.add_circle_filled(x1, y1, cap_r,
-                                     pack_color(*rgb2, alpha))
+                                     (*rgb2, alpha))
 
     @classmethod
     def is_wrapped(cls):
@@ -4080,7 +4073,7 @@ class Melty:
 
         if Toggles.debug_z_depth:
             draw_list = imgui.get_overlay_draw_list()
-            draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 40, pack_color(1, 0, 0, 1),
+            draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 40, (1, 0, 0, 1),
                                f"Layer {draw_state.layer} "
                                f"Depth {draw_state.depth} "
                                f"zpos {draw_state.z_pos} "
@@ -4089,7 +4082,7 @@ class Melty:
                                f"Melty.z_pos {cls.z_pos} "
                                f"Melty.depth {cls.depth}")
 
-            draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 20, pack_color(1, 1, 0, 1),
+            draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 20, (1, 1, 0, 1),
                                f"kwargs['active_layer'] {kwargs['active_layer']} "
                                )
 
@@ -4381,7 +4374,7 @@ class Melty:
             draw_state = list(cls.selected)[-1] if len(cls.selected) > 0 else None
             if draw_state is not None:
                 draw_list = imgui.get_overlay_draw_list()
-                draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 40, pack_color(1, 0, 0, 1),
+                draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 40, (1, 0, 0, 1),
                                    f"Layer {draw_state.layer} "
                                    f"Depth {draw_state.depth} "
                                    f"zpos {draw_state.z_pos} "
@@ -4650,8 +4643,8 @@ class Melty:
                         # live tint is gone by this post-draw highlight code).
                         parent_tint = offset_ds.current_tint or (draw_state._kwargs.get("tint", (1, 1, 1))[:3], 1.0)
                         highlight_rgb = Melty._highlight_rgb(parent_tint)
-                        outline_col = pack_color(*highlight_rgb, Tint.highlight_outline_alpha)
-                        bg_col = pack_color(*highlight_rgb, Tint.highlight_bg_alpha)
+                        outline_col = (*highlight_rgb, Tint.highlight_outline_alpha)
+                        bg_col = (*highlight_rgb, Tint.highlight_bg_alpha)
 
                         # Parent view: faint fill + matching highlight outline,
                         # clipped to the parent's own clip rect so the highlight
@@ -4728,8 +4721,7 @@ class Melty:
                         child_tint = draw_state.current_tint
                     child_rgb = (Melty._highlight_rgb(tuple(child_tint[:3]))
                                  if child_tint else highlight_rgb)
-                    child_outline_col = pack_color(
-                        *child_rgb, Tint.highlight_outline_alpha)
+                    child_outline_col = (*child_rgb, Tint.highlight_outline_alpha)
 
                     overlay_dl.channels_set_current(Melty.overlay_channel_for(draw_state))
 
@@ -4931,14 +4923,14 @@ class Melty:
                 if clip is not None:
                     overlay.push_clip_rect(clip[0], clip[1], clip[2], clip[3], True)
                 overlay.add_rect_filled(x0, y0, x1, y1,
-                                        pack_color(fr, fg, fb, 0.25 * alpha),
+                                        (fr, fg, fb, 0.25 * alpha),
                                         rounding=note.rounding)
                 # bloom halo: a wider, softer outline under the crisp one
                 overlay.add_rect(x0, y0, x1, y1,
-                                 pack_color(lr, lg, lb, 0.28 * alpha),
+                                 (lr, lg, lb, 0.28 * alpha),
                                  rounding=note.rounding, thickness=note.thickness * 3.0)
                 overlay.add_rect(x0, y0, x1, y1,
-                                 pack_color(lr, lg, lb, 0.9 * alpha),
+                                 (lr, lg, lb, 0.9 * alpha),
                                  rounding=note.rounding, thickness=note.thickness)
                 if clip is not None:
                     overlay.pop_clip_rect()
@@ -4964,20 +4956,20 @@ class Melty:
                 x0, y0 = ds.abs_left, ds.abs_top
                 x1, y1 = x0 + ds.width, y0 + ds.height
                 band = min(heat_band, ds.width * 0.5, ds.height * 0.5)
-                edge = pack_color(r, g, b, heat_fill_alpha * fade)
-                clear = pack_color(r, g, b, 0.0)
+                edge = (r, g, b, heat_fill_alpha * fade)
+                clear = (r, g, b, 0.0)
                 # Top and bottom bands span the full width; the side bands
                 # fill between them, so corners get one gradient, not two.
                 overlay.add_rect_filled_multicolor(x0, y0, x1, y0 + band, edge, edge, clear, clear)
                 overlay.add_rect_filled_multicolor(x0, y1 - band, x1, y1, clear, clear, edge, edge)
                 overlay.add_rect_filled_multicolor(x0, y0 + band, x0 + band, y1 - band, edge, clear, clear, edge)
                 overlay.add_rect_filled_multicolor(x1 - band, y0 + band, x1, y1 - band, clear, edge, edge, clear)
-                overlay.add_rect(x0, y0, x1, y1, pack_color(r, g, b, heat_edge_alpha * fade), thickness=1.0)
+                overlay.add_rect(x0, y0, x1, y1, (r, g, b, heat_edge_alpha * fade), thickness=1.0)
                 label = f"{render.ms:.1f} ms"
                 text_size = imgui.calc_text_size(label)
                 overlay.add_rect_filled(x0, y0, x0 + text_size.x + 4, y0 + text_size.y,
-                                        pack_color(0.0, 0.0, 0.0, 0.6 * fade))
-                overlay.add_text(x0 + 2, y0, pack_color(r * 0.5 + 0.5, g * 0.5 + 0.5, b * 0.5 + 0.5, fade), label)
+                                        (0.0, 0.0, 0.0, 0.6 * fade))
+                overlay.add_text(x0 + 2, y0, (r * 0.5 + 0.5, g * 0.5 + 0.5, b * 0.5 + 0.5, fade), label)
 
         if Toggles.InvalidateTracker.enable:
             for key, note in InvalidateTracker.invalidations.items():
@@ -4998,15 +4990,14 @@ class Melty:
                 overlay.add_rect_filled(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1],
                                         invalidation_rect[0] + ds.width,
                                         invalidation_rect[1] + text_size.y,
-                                        pack_color(*color[:3], alpha_from_frame_past * alpha_from_note))
+                                        (*color[:3], alpha_from_frame_past * alpha_from_note))
 
-                overlay.add_text(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1], pack_color(*(0,0,0),
-                                                                                                           alpha_from_frame_past * alpha_from_note),
+                overlay.add_text(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1], (*(0,0,0), alpha_from_frame_past * alpha_from_note),
                                  f"{note.name} |{note.reason}")
 
                 if Toggles.InvalidateTracker.draw_rect:
                     overlay.add_rect(invalidation_rect[0], invalidation_rect[1], invalidation_rect[2], invalidation_rect[3],
-                                        pack_color(*color[:3], alpha_from_frame_past / 2.0 * alpha_from_note), thickness=1.0)
+                                        (*color[:3], alpha_from_frame_past / 2.0 * alpha_from_note), thickness=1.0)
 
 
 
@@ -5021,24 +5012,23 @@ class Melty:
 
                     invalidation_rect = note.rect
 
-                    overlay.add_text(invalidation_rect[0], invalidation_rect[1] - 15, pack_color(*color,
-                                                                                                               alpha_from_frame_past),
+                    overlay.add_text(invalidation_rect[0], invalidation_rect[1] - 15, (*color, alpha_from_frame_past),
                                      f"{note.name} |{note.reason}")
 
 
                     overlay.add_rect(invalidation_rect[0], invalidation_rect[1], invalidation_rect[2], invalidation_rect[3],
-                                     pack_color(*color, alpha_from_frame_past), thickness=1.0)
+                                     (*color, alpha_from_frame_past), thickness=1.0)
 
         if Toggles.show_filled_tiles:
             # Mirror the InvalidateTracker overlay loop, but for tiles whose
             # filled_bbox now covers their full area - a transparent green
             # wash so you can see at a glance which views the scroll-driven
             # invalidation has stopped touching.
-            fill_col = pack_color(0.0, 1.0, 0.2, 0.18)
-            edge_col = pack_color(0.0, 1.0, 0.2, 0.55)
+            fill_col = (0.0, 1.0, 0.2, 0.18)
+            edge_col = (0.0, 1.0, 0.2, 0.55)
 
-            fill_col_fill = pack_color(1.0, 1.0, 0.2, 0.18)
-            edge_col_fill = pack_color(1.0, 1.0, 0.2, 0.55)
+            fill_col_fill = (1.0, 1.0, 0.2, 0.18)
+            edge_col_fill = (1.0, 1.0, 0.2, 0.55)
             for tile in cls.cache._tiles.values():
                 ds = tile.draw_state
                 if ds is None or ds.width is None or ds.height is None:

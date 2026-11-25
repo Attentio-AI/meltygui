@@ -5,7 +5,6 @@ from meltygui.code.libcst_conversion import Comment
 from meltygui.code.libcst_conversion import SymbolUsage
 from meltygui.code.libcst_conversion import UsageRef
 from meltygui.core.styling.fonts import Font
-from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
 from meltygui.model.code_model import UsagePickerModel
 from meltygui.core.rendering.modes import Modes
@@ -616,11 +615,11 @@ def draw_jump_to(input_value: Address, unique, width=30, error_msg=None,
     rounding = 4.0
     top_corners = imgui.DRAW_ROUND_CORNERS_TOP
     if msg:
-        fill_col = pack_color(70 / 255, 30 / 255, 40 / 255, 235 / 255)    # dark red-tinted fill
-        line_col = pack_color(150 / 255, 60 / 255, 70 / 255, 1.0)         # red outline
+        fill_col = (70 / 255, 30 / 255, 40 / 255, 235 / 255)    # dark red-tinted fill
+        line_col = (150 / 255, 60 / 255, 70 / 255, 1.0)         # red outline
     else:
-        fill_col = pack_color(44 / 255, 52 / 255, 62 / 255, 230 / 255)
-        line_col = pack_color(66 / 255, 78 / 255, 90 / 255, 1.0)
+        fill_col = (44 / 255, 52 / 255, 62 / 255, 230 / 255)
+        line_col = (66 / 255, 78 / 255, 90 / 255, 1.0)
     draw_list.add_rect_filled(x0, y0, x1, y1, fill_col, rounding, top_corners)
     draw_list.add_rect(x0, y0, x1, y1, line_col, rounding, top_corners)
 
@@ -1304,7 +1303,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     if hovered and inline_text is None:
         dl: _DrawList = imgui.get_window_draw_list()
         dl.add_rect(x, y + 2, x + w, y + h - 3,
-                    pack_color(*base, 0.9 if open_now else 0.6),
+                    (*base, 0.9 if open_now else 0.6),
                     rounding=corner_radius)
     imgui.dummy(w, h)
 
@@ -1732,7 +1731,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         _cw = getattr(draw_state, "content_width", 800.0)
         _rdl.add_rect_filled(
             origin_x - 4.0, _ry, origin_x + _cw, _ry + line_px,
-            pack_color(*_ml_col))
+            _ml_col)
         if _ml_msg:
             # Same treatment as the editor's parse-error box (text_editor's
             # draw_text): a wrapped, capped-width box sitting flush ABOVE the
@@ -1750,10 +1749,10 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                 _by1 = _by0 + _ts.y + 2 * _pad_y
             _rdl.add_rect_filled(
                 _bx0, _by0, _bx1, _by1,
-                pack_color(0.275, 0.118, 0.157, 0.922), 4.0)
+                (0.275, 0.118, 0.157, 0.922), 4.0)
             _rdl.add_rect(
                 _bx0, _by0, _bx1, _by1,
-                pack_color(0.588, 0.235, 0.275, 1.0), 4.0)
+                (0.588, 0.235, 0.275, 1.0), 4.0)
             _save_cursor = imgui.get_cursor_screen_pos()
             imgui.set_cursor_screen_pos((_bx0 + _pad_x, _by0 + _pad_y))
             imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + _max_w)
@@ -2445,7 +2444,7 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
     bar_bottom = imgui.get_item_rect_max().y
     imgui.get_window_draw_list().add_rect_filled(
         bar_left, bar_top + 1.0, bar_left + bar_width, bar_bottom - 1.0,
-        pack_color(*name_color[:3], alpha * bar_alpha), bar_width / 2)
+        (*name_color[:3], alpha * bar_alpha), bar_width / 2)
 
     if changed:
         return True, value

@@ -4,7 +4,6 @@ import weakref
 from meltygui.core.layout import edge_constraints
 
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 
 import meltygui.core.input.mouse_cursor as mouse_cursor
 from meltygui.core.windowing.glfw_utils import request_render
@@ -1810,7 +1809,7 @@ class ColumnLayout:
                 self.top,
                 self.win_x + self._band_right(),
                 self._band_bottom(),
-                pack_color(*band_color),
+                band_color,
                 rounding=radius)
             draw_list.channels_set_current(Core.melty.get_channel())
 
@@ -2165,7 +2164,7 @@ class RowLayout:
                 self.win_y + self._band_top(),
                 self.right,
                 self.win_y + self._band_bottom(),
-                pack_color(*band_color),
+                band_color,
                 rounding=radius)
             draw_list.channels_set_current(Core.melty.get_channel())
 

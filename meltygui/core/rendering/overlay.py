@@ -18,7 +18,6 @@ from meltygui.core.melty import Melty
 from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.rendering.core_decoration import no_save
 from meltygui.core.runtime.toggles import Tint, Toggles
-from meltygui.hdr_color import pack_color
 
 # Render-thread CPU time attributes work to the callback, excluding pauses
 # imposed by the scheduler or other threads. No individual view exemptions.
@@ -252,7 +251,7 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
             if state.error is not None:
                 discard_geometry(draw_list, vertex_start)
         if state.error is not None and foreground:
-            color = pack_color(*Tint.dd_text(draw_state.current_tint), 1.0)
+            color = (*Tint.dd_text(draw_state.current_tint), 1.0)
             left, right = draw_state.abs_left, draw_state.abs_left + draw_state.width
             if clip is not None:
                 left, right = max(left, clip[0]), min(right, clip[2])
@@ -302,11 +301,11 @@ def _run_overlay(draw_state, option, state_key, *, foreground=True):
                 error_list.add_rect_filled(text_left - 4, text_top - 4,
                                            min(right, text_left + text_width + 4),
                                            min(bottom, text_top + text_height + 4),
-                                           pack_color(0.0, 0.0, 0.0, 0.9 * warning_alpha))
+                                           (0.0, 0.0, 0.0, 0.9 * warning_alpha))
                 error_list.add_text(text_left, text_top,
-                                    pack_color(1.0, 0.0, 0.0, warning_alpha), wrapped)
+                                    (1.0, 0.0, 0.0, warning_alpha), wrapped)
             else:
-                color = pack_color(*Tint.dd_text(draw_state.current_tint), 1.0)
+                color = (*Tint.dd_text(draw_state.current_tint), 1.0)
                 left, right = draw_state.abs_left, draw_state.abs_left + draw_state.width
                 if clip is not None:
                     left, right = max(left, clip[0]), min(right, clip[2])

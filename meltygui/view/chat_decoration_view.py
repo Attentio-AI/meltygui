@@ -2,7 +2,6 @@
 from functools import lru_cache
 import colorsys
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 from meltygui.core.runtime.toggles import Tint, Toggles
 from meltygui.core.cache.tile_marks import add_shadow
 from meltygui.view.decoration_view import draw_bg
@@ -35,7 +34,7 @@ def _running_dot(x, y, tint, *, ui_scale=1.0, channel=None):
 
 
 def _color(tint, alpha=1):
-    return pack_color(*tint[:3], alpha)
+    return (*tint[:3], alpha)
 
 
 def _button(draw_state, key, label, x, y, width, tint, enabled=True, height=None,

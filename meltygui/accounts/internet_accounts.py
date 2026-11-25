@@ -45,7 +45,6 @@ import time
 from pathlib import Path
 
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 
 from meltygui.core.melty import Melty
 from meltygui.chat.backends import chat_backend
@@ -1308,7 +1307,7 @@ def _mix(style_manager, tint, value, factor, saturation):
 
 
 def _color_u32(color, alpha=1.0):
-    return pack_color(color[0], color[1], color[2], alpha)
+    return (color[0], color[1], color[2], alpha)
 
 
 def _wrap_usage_label(text, max_width):

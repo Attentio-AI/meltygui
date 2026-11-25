@@ -27,7 +27,7 @@ import meltygui_imgui as imgui
 import meltygui.core.windowing.window_constants as glfw
 from meltygui.core.input import mouse_cursor
 from meltygui.core.rendering.gui_prototype import gui
-from meltygui.view.value_view import PAD, ROUND, ROW, SLATE, box, look
+from meltygui.view.common.value_view import PAD, ROUND, ROW, SLATE, box, look
 
 TINT = SLATE                    # the tint the box's and the list's colours are made from
 GAP = 2.0                       # between the box and the list

@@ -63,7 +63,7 @@ def test_expensive_callback_keeps_rendering_with_red_warning(setup, monkeypatch,
         getattr(overlay, option)(ds)
         assert ds.misc[state_key].error is None
         assert draw_list.add_text.call_args.args == (
-            26, 84, overlay.pack_color(1.0, 0.0, 0.0, 1.0),
+            26, 84, (1.0, 0.0, 0.0, 1.0),
             f'[01:08:00] {option}: 0.600 ms CPU exceeds 0.5 ms CPU budget')
     draw_list.add_text.reset_mock()
     monkeypatch.setattr(overlay.time, 'monotonic', lambda: 5.0)
@@ -509,11 +509,11 @@ def test_budget_warning_fades_and_new_overrun_resets_age(setup, monkeypatch):
     overlay.draw_overlay(ds)
     monkeypatch.setattr(overlay.time, 'monotonic', lambda: 2.5)
     overlay.draw_overlay(ds)
-    assert draw_list.add_text.call_args.args[2] == overlay.pack_color(1, 0, 0, .5)
+    assert draw_list.add_text.call_args.args[2] == (1, 0, 0, .5)
     assert draw_list.add_text.call_args.args[-1].startswith('[01:08:00]')
     monkeypatch.setattr(overlay.time, 'strftime', lambda fmt: '01:08:03')
     overlay.draw_overlay(ds)
-    assert draw_list.add_text.call_args.args[2] == overlay.pack_color(1, 0, 0, 1)
+    assert draw_list.add_text.call_args.args[2] == (1, 0, 0, 1)
     assert draw_list.add_text.call_args.args[-1].startswith('[01:08:03]')
     monkeypatch.setattr(overlay.time, 'monotonic', lambda: 7.5)
     draw_list.add_text.reset_mock()

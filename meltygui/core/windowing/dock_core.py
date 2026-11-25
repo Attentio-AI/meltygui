@@ -20,7 +20,6 @@ import ctypes
 import struct
 
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 
 from meltygui.core.melty import Melty
 from meltygui.core.runtime.toggles import Toggles
@@ -106,7 +105,7 @@ def _mix(style_manager, tint, value, factor, saturation):
 
 
 def _color_u32(color, alpha=1.0):
-    return pack_color(color[0], color[1], color[2], alpha)
+    return (color[0], color[1], color[2], alpha)
 
 
 def _floor_value(rgb, min_value):

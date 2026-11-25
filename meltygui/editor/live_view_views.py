@@ -38,7 +38,6 @@ import time
 import weakref
 
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 from meltygui_imgui.core import _DrawList
 
 from meltygui.state.new_core_model import Anchor
@@ -419,11 +418,10 @@ def _paint_value_pill_body(inline_text, span_x, text_y, span_width,
     draw_list: _DrawList = imgui.get_window_draw_list()
     draw_list.add_rect_filled(
         box_x, box_y, box_x + box_width, box_y + box_height,
-        pack_color(fill_rgb[0], fill_rgb[1], fill_rgb[2], 0.97),
+        (fill_rgb[0], fill_rgb[1], fill_rgb[2], 0.97),
         rounding=corner_radius)
     draw_list.add_text(text_x, text_y,
-                       pack_color(text_rgb[0], text_rgb[1],
-                                                text_rgb[2], 0.97),
+                       (text_rgb[0], text_rgb[1], text_rgb[2], 0.97),
                        inline_text)
     if swatch is not None and len(inline_text) >= swatch[1] + len(_SWATCH_HOLE):
         rgba, hole_index = swatch
@@ -435,11 +433,11 @@ def _paint_value_pill_body(inline_text, span_x, text_y, span_width,
         chip_mid = chip_x + side * 0.5
         draw_list.add_rect_filled(
             chip_x, chip_y, chip_mid, chip_y + side,
-            pack_color(rgba[0], rgba[1], rgba[2], 1.0),
+            (rgba[0], rgba[1], rgba[2], 1.0),
             rounding=2.0, flags=imgui.DRAW_ROUND_CORNERS_LEFT)
         draw_list.add_rect_filled(
             chip_mid, chip_y, chip_x + side, chip_y + side,
-            pack_color(rgba[0], rgba[1], rgba[2], rgba[3]),
+            (rgba[0], rgba[1], rgba[2], rgba[3]),
             rounding=2.0, flags=imgui.DRAW_ROUND_CORNERS_RIGHT)
 
 

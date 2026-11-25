@@ -35,7 +35,6 @@ import types
 
 import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 
 from meltygui.core.melty import Melty
 from meltygui.core.runtime.toggles import Toggles

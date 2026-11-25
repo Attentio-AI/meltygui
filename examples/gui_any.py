@@ -10,7 +10,6 @@ by shape (three floats).
 import sys
 
 from meltygui import gui, os_window, imgui
-from meltygui.hdr_color import pack_color
 from meltygui.rust import Shaped, draw_any, is_default_for
 
 EXTRA = int(sys.argv[1]) if len(sys.argv) > 1 else 0
@@ -36,8 +35,8 @@ DATA.update({f'item {at}': (at * .5 if at % 3 == 0 else at if at % 3 == 1 else f
 def swatch(input_value: tuple, width=0., height=0.):
     """A colour as a swatch and its three numbers."""
     draw_list = imgui.get_window_draw_list()
-    draw_list.add_rect_filled(0., 1., height * 2, height - 1., pack_color(*input_value), 4.)
-    draw_list.add_text(height * 2 + 8, (height - imgui.get_text_line_height()) * .5, pack_color(.7, .74, .8),
+    draw_list.add_rect_filled(0., 1., height * 2, height - 1., input_value, 4.)
+    draw_list.add_text(height * 2 + 8, (height - imgui.get_text_line_height()) * .5, (.7, .74, .8),
                        '  '.join(f'{part:.2f}' for part in input_value))
 
 

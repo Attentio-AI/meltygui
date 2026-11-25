@@ -5,7 +5,6 @@ import meltygui
 from meltygui import imgui, render_func
 from meltygui.core.runtime.toggles import Tint
 from meltygui.core.windowing.glfw_utils import request_render
-from meltygui.hdr_color import pack_color
 
 
 def draw_clock(draw_state, draw_list):
@@ -13,7 +12,7 @@ def draw_clock(draw_state, draw_list):
     # changing position is captured in the body's tile.
     x = draw_state._abs_left() + 12
     y = draw_state._abs_top() + draw_state.header_height + 12
-    color = pack_color(*Tint.dd_text(draw_state.current_tint), 1.0)
+    color = (*Tint.dd_text(draw_state.current_tint), 1.0)
     draw_list.add_text(x, y, color, f'Live overlay: {time.monotonic():.2f}')
 
 
@@ -22,7 +21,7 @@ def draw_clock(draw_state, draw_list):
 def draw_cached_panel(input_value: str, draw_state=None):
     imgui.get_window_draw_list().add_text(
         draw_state.abs_left + 12, draw_state.abs_top + 70,
-        pack_color(*Tint.dd_text(draw_state.current_tint), 1.0), input_value)
+        (*Tint.dd_text(draw_state.current_tint), 1.0), input_value)
     return False, input_value
 
 

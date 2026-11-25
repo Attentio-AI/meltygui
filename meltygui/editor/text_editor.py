@@ -8,7 +8,6 @@ import time
 from meltygui.core.runtime.paths import debug_log_path
 import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 from meltygui.hdr_color import unpack_color
 from meltygui.hdr_color import scale_alpha
 
@@ -43,7 +42,7 @@ def _hex(h):
     r = int(h[1:3], 16)
     g = int(h[3:5], 16)
     b = int(h[5:7], 16)
-    return pack_color(r / 255.0, g / 255.0, b / 255.0, 1.0)
+    return (r / 255.0, g / 255.0, b / 255.0, 1.0)
 
 
 COLORS = {
@@ -1225,8 +1224,8 @@ def _draw_fim_ghost(ds, ghost, text, origin_x, origin_y, line_px, vcols=None):
     when more is buffered beyond this chunk. A pending request with no
     complete line yet shows a single dim ellipsis."""
     dl = imgui.get_window_draw_list()
-    col = pack_color(0.66, 0.70, 0.78, 0.55)
-    hint = pack_color(0.66, 0.70, 0.78, 0.32)
+    col = (0.66, 0.70, 0.78, 0.55)
+    hint = (0.66, 0.70, 0.78, 0.32)
     x, y = _char_pos_to_xy(text, ds.text_cursor_pos, origin_x, origin_y, line_px, vcols=vcols)
     if not ghost.text:
         dl.add_text(x + 2, y, hint, "…")
@@ -1267,10 +1266,10 @@ def _draw_signature_hint(ds, draw_state, text, origin_x, origin_y, line_px, vcol
     if params:
         active = max(0, min(active, len(params) - 1))   # extra args ride the last (*args)
 
-    name_col = pack_color(0.55, 0.78, 1.0, 1.0)
-    dim = pack_color(0.72, 0.76, 0.84, 1.0)
-    acc = pack_color(1.0, 0.84, 0.42, 1.0)
-    type_col = pack_color(0.55, 0.72, 0.55, 1.0)   # dim green for the type
+    name_col = (0.55, 0.78, 1.0, 1.0)
+    dim = (0.72, 0.76, 0.84, 1.0)
+    acc = (1.0, 0.84, 0.42, 1.0)
+    type_col = (0.55, 0.72, 0.55, 1.0)   # dim green for the type
 
     # Lay out out with their x-offsets (so we can clip to the active one).
     segs = []          # (string, color, x_offset, is_active)
@@ -1304,8 +1303,8 @@ def _draw_signature_hint(ds, draw_state, text, origin_x, origin_y, line_px, vcol
     pad = 7
     x0 = base_x - pad
     x1 = min(clip[2] - 2, base_x + total + pad)   # overflow clips on the right
-    bg = pack_color(0.11, 0.12, 0.15, 0.97)
-    border = pack_color(0.30, 0.33, 0.42, 0.9)
+    bg = (0.11, 0.12, 0.15, 0.97)
+    border = (0.30, 0.33, 0.42, 0.9)
     dl = imgui.get_window_draw_list()
     dl.add_rect_filled(x0, hy - 3, x1, hy + th + 3, bg, rounding=4)
     dl.add_rect(x0, hy - 3, x1, hy + th + 3, border, rounding=4)
@@ -4605,7 +4604,7 @@ def _mix_packed(packed, rgb, k):
     r += (rgb[0] - r) * k
     g += (rgb[1] - g) * k
     b += (rgb[2] - b) * k
-    out = pack_color(r, g, b, a)
+    out = (r, g, b, a)
     if len(_GLYPH_MIX_CACHE) > 4096:
         _GLYPH_MIX_CACHE.clear()
     _GLYPH_MIX_CACHE[key] = out
@@ -5854,7 +5853,7 @@ def _usage_wash_color(n_targets):
     tweak to usage_tint shows immediately."""
     from meltygui.core.runtime.toggles import Toggles
     r, g, b, a = Toggles.TextEditor.usage_tint(n_targets)
-    return pack_color(r, g, b, max(0.0, min(1.0, a)))
+    return (r, g, b, max(0.0, min(1.0, a)))
 
 
 def _is_icon_char(c):

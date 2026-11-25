@@ -9,7 +9,7 @@ import pytest
 import meltygui.core.windowing.window_constants as glfw
 from editor_host import Host
 from meltygui.view.choice_view import GAP, draw_dropdown, entries, extent, options, shown, submenu
-from meltygui.view.value_view import ROW
+from meltygui.view.common.value_view import ROW
 
 FLAT = ('Small', 'Medium', 'Large')
 DEEP = {'Tiny': 0}

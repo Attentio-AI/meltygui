@@ -1,4 +1,4 @@
-"""Colours: `draw_color` and `draw_color_picker` (meltygui/view/color_picker_view.py).
+"""Colours: `draw_color` and `draw_color_picker` (meltygui/view/common/color_picker_view.py).
 
     .venv/bin/python examples/gui_color.py
 
@@ -13,16 +13,16 @@ What to look at:
   chips open the default, `meltygui.HDR`: one P3 square under the band, the sRGB part outlined.
 """
 from meltygui import SRGB_PLUS, gui, os_window, imgui, save
-from meltygui.hdr_color import p3, pack_color
+from meltygui.hdr_color import p3
 from meltygui.rust import draw_color, draw_color_picker
-from meltygui.view.color_picker_view import extent
+from meltygui.view.common.color_picker_view import extent
 
 # Levers: sizes in logical pixels, colours.
 PAD = 12.0
 ROW = 22.0                              # height of a chip and its label
 LABEL = 60.0                            # room for a label left of its chip
 CHIP = 70.0                             # width of a chip
-TEXT = pack_color(0.92, 0.94, 0.96)
+TEXT = (0.92, 0.94, 0.96)
 ACROSS, DOWN = extent(4)                # the size of the picker of a colour with alpha
 
 

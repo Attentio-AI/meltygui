@@ -16,15 +16,14 @@ option may change the model in place.
 The notes are `Notes` (Notes.pkl beside this file: try it on a copy in a folder of its own).
 """
 from meltygui import context_menu, gui, os_window, imgui, save
-from meltygui.hdr_color import pack_color
 
 # Levers: sizes in logical pixels, colours as r, g, b.
 PAD = 8.0
 ROW = 26.0                              # height of one note
 HEAD = 30.0                             # the hint above the list
-FACE = pack_color(0.17, 0.20, 0.25)     # a note
-HOT = pack_color(0.24, 0.29, 0.37)      # the note under the pointer
-TEXT = pack_color(0.92, 0.94, 0.96)
+FACE = (0.17, 0.20, 0.25)     # a note
+HOT = (0.24, 0.29, 0.37)      # the note under the pointer
+TEXT = (0.92, 0.94, 0.96)
 
 
 @save

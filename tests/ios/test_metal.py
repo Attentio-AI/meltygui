@@ -306,7 +306,6 @@ class MetalPixels(unittest.TestCase):
         cache.cleanup()
 
     def test_real_imgui_buffers_text_and_scene_filters(self):
-        from meltygui.hdr_color import pack_color
         from meltygui.core.runtime.toggles import Toggles
         from meltygui.core.graphics.metal_tiles import MetalTileBackend
         from meltygui.core.cache.tile_cache import TileCacheMasked
@@ -314,7 +313,7 @@ class MetalPixels(unittest.TestCase):
         r.begin_scene(64,48,(.05,.05,.05,1))
         r.draw_backgrounds([], (.05,.05,.05,1))
         self.imgui.new_frame()
-        self.imgui.get_background_draw_list().add_text(2,2,pack_color(1,1,1,1),"Metal")
+        self.imgui.get_background_draw_list().add_text(2,2,(1, 1, 1, 1),"Metal")
         r.begin_frame_split()
         self.imgui.render()
         r.render_except_overlay(self.imgui.get_draw_data())

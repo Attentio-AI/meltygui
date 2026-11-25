@@ -10,7 +10,7 @@
 `draw_any` is called like the view it picks: it takes that view's arguments
 and returns its `(changed, value)`. A value that is read by keys (a dict, a
 list, a dataclass: core/rendering/keyed.py) goes to `draw_collection`
-(view/dict_view.py), which draws every item of it the same way.
+(view/common/dict_view.py), which draws every item of it the same way.
 
 What `@is_default_for` takes, and which registration wins (`default_for`,
 most specific first):
@@ -42,7 +42,7 @@ from meltygui.core.rendering.keyed import DERIVED, Keyed, keyed
 from meltygui.core.rendering.shaped import Shaped, best_match
 
 # The modules of the built in views: to add one, list its module here and register its views there.
-BUILT_IN = ('meltygui.view.value_view', 'meltygui.view.dict_view')
+BUILT_IN = ('meltygui.view.common.value_view', 'meltygui.view.common.dict_view')
 NAMES = {}         # name -> view
 SHAPES = {}        # Shaped -> view
 TYPES = {}         # type -> view

@@ -66,7 +66,6 @@ from pathlib import Path
 import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
 
-from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
 from meltygui.core.rendering.core_decoration import Core
 from meltygui.core.runtime.toggles import Toggles
@@ -125,7 +124,7 @@ def row_tint_bg():
         memo_key = (tuple(tint[:3]), boost)
         bg = bg_memo.get(memo_key)
         if bg is None:
-            bg = bg_memo[memo_key] = pack_color(*row_rgb(tint, boost), 1.0)
+            bg = bg_memo[memo_key] = (*row_rgb(tint, boost), 1.0)
         return bg
     row_bg.rgb = row_rgb
     return row_bg
@@ -148,9 +147,7 @@ def tinted_text(base, tint, mix=0.3):
         tint_lum = max(r, g, b, 1e-6)
         scale = base_lum / tint_lum
         r, g, b = min(1.0, r * scale), min(1.0, g * scale), min(1.0, b * scale)
-        col = _TEXT_TINT_MEMO[key] = pack_color(
-            base[0] + (r - base[0]) * mix, base[1] + (g - base[1]) * mix,
-            base[2] + (b - base[2]) * mix, base[3])
+        col = _TEXT_TINT_MEMO[key] = (base[0] + (r - base[0]) * mix, base[1] + (g - base[1]) * mix, base[2] + (b - base[2]) * mix, base[3])
     return col
 
 
@@ -183,8 +180,8 @@ def tint_control(draw_state, key, tint, x, y, size, text_y, hovered, default_tin
     write = setter
     # [tint=(0.55, 0.72, 0.95)]
     brush_icon = f"\uf1fc"
-    brush_col = pack_color(*brush_color, 1.0) if brush_color is not None else pack_color(1.0, 1.0, 1.0, 0.22)
-    brush_hover_col = brush_col if brush_color is not None else pack_color(1.0, 1.0, 1.0, 0.9)
+    brush_col = (*brush_color, 1.0) if brush_color is not None else (1.0, 1.0, 1.0, 0.22)
+    brush_hover_col = brush_col if brush_color is not None else (1.0, 1.0, 1.0, 0.9)
     from meltygui.view.collection_view import draw_tuple_fast
 
     view_id = f"tint_{key}"

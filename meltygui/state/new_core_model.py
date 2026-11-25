@@ -4,7 +4,6 @@ from enum import Enum
 
 import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 
 from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.runtime.toggles import shadow_depth_at
@@ -2065,8 +2064,8 @@ class DrawState(DictConversion):
 
         draw_list = imgui.get_overlay_draw_list()
         draw_list.add_rect(self.left, self.top, self.left + self.width, self.top + self.height,
-                           pack_color(*tint[:3], 1.0) if tint is not None else
-                           pack_color(1, 1, 1, 1),
+                           (*tint[:3], 1.0) if tint is not None else
+                           (1, 1, 1, 1),
                            rounding=rounding, thickness=1)
 
         if Core.melty.channels_split:
@@ -2222,18 +2221,15 @@ class DrawState(DictConversion):
             overlay.add_rect_filled(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1],
                                     invalidation_rect[0] + ds.width,
                                     invalidation_rect[1] + text_size.y,
-                                    pack_color(*color[:3],
-                                                             1))
+                                    (*color[:3], 1))
 
             overlay.add_text(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1],
-                             pack_color(*(0, 0, 0),
-                                                      1),
+                             (*(0, 0, 0), 1),
                              text)
 
             overlay.add_rect(invalidation_rect[0], invalidation_rect[1], invalidation_rect[2],
                              invalidation_rect[3],
-                             pack_color(*color[:3],
-                                                      1),
+                             (*color[:3], 1),
                              thickness=1.0)
 
     def register_parameter_actions(self, wanted_params, kwargs, event_rects, closable):

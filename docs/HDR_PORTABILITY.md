@@ -1,7 +1,7 @@
 # HDR and the colour picker: what is assumed about the display
 
 What Melty's HDR path and the `@gui` colour picker
-([color_picker_view.py](../meltygui/view/color_picker_view.py)) take for
+([color_picker_view.py](../meltygui/view/common/color_picker_view.py)) take for
 granted about Lukas's desktop, a patched Hyprland 0.56.2
 (`~/Desktop/hyprland-hdr`), and what another system would need. Written
 2026-11-18 by Claude from the code and the compositor's patches. The Hyprland

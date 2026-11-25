@@ -13,7 +13,7 @@ import meltygui_imgui as imgui
 
 from meltygui.core.input import mouse_cursor
 from meltygui.core.rendering.gui_prototype import gui
-from meltygui.view.value_view import PAD, ROW, SLATE, box, look
+from meltygui.view.common.value_view import PAD, ROW, SLATE, box, look
 
 TINT = SLATE                    # the tint a button's colours are made from
 

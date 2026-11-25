@@ -7,7 +7,7 @@ import pytest
 import meltygui_imgui as imgui
 from editor_host import Host
 from meltygui.view.button_view import draw_button
-from meltygui.view.value_view import PAD, ROW
+from meltygui.view.common.value_view import PAD, ROW
 
 LEFT, TOP = 10.0, 10.0
 

@@ -1,7 +1,6 @@
 """Reusable palette selection and preview functions."""
 import meltygui_imgui as imgui
 from meltygui.core.core_render import render_func
-from meltygui.hdr_color import pack_color
 from meltygui.model.lut_model import Lut
 from meltygui.view.header_view import draw_header
 
@@ -36,7 +35,7 @@ def draw_luts(input_value: dict, draw_state=None):
         x, y = imgui.get_cursor_screen_pos()
         for s in range(segs):
             i = min(n - 1, int(s * (n - 1) / max(1, segs - 1))) * 3
-            col = pack_color(lut[i], lut[i + 1], lut[i + 2], 1.0)
+            col = (lut[i], lut[i + 1], lut[i + 2], 1.0)
             draw_list.add_rect_filled(x + bar_w * s / segs, y,
                                       x + bar_w * (s + 1) / segs, y + bar_h, col)
         imgui.dummy(bar_w, bar_h)

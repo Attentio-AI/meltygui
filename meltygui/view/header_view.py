@@ -1,5 +1,4 @@
 """Header view functions and supporting definitions."""
-from meltygui.hdr_color import pack_color
 from meltygui.hdr_color import style_color
 from meltygui.core.melty import Melty
 from meltygui.core.melty import add_to_collection
@@ -303,7 +302,7 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
                     requested_tint=button_tint)
                 bg = clamp(bg[0], bg[1], bg[2], 0.0, max_bg_brightness)
                 dl.add_rect_filled(x, y, x + w, y + h,
-                                   pack_color(bg[0], bg[1], bg[2], alpha),
+                                   (bg[0], bg[1], bg[2], alpha),
                                    rounding=rounding)
         # text_color: use this exact rgb for the label instead of the theme-mix
         # pipeline below — that pipeline only lets text_value/text_saturation
@@ -337,7 +336,7 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
             dl.push_clip_rect(*text_clip_rect, True)
         try:
             dl.add_text(tx + 2.0 * scale, y + (h - ts.y) * 0.5 - scale,
-                        pack_color(tc[0], tc[1], tc[2], 1.0), text)
+                        (tc[0], tc[1], tc[2], 1.0), text)
         finally:
             if text_clip_rect is not None:
                 dl.pop_clip_rect()
@@ -733,7 +732,7 @@ def draw_header(input_value=None, name="", key=None, meltygui=None, parent_show_
                                       current=kwargs.get("search_current", False))
                 if Melty.channels_split:
                     draw_list.channels_set_current(Melty.get_channel())
-            packed_name_color = pack_color(*name_color[:3], 1.0)
+            packed_name_color = (*name_color[:3], 1.0)
             draw_list.add_text(cursor_pos[0], cursor_pos[1], packed_name_color, clipped_name)
             imgui.dummy(text_width, imgui.get_frame_height())
             pop_style_var(1)
@@ -846,7 +845,7 @@ def draw_header_end(input_value=None, name="", show_close=True, key=None, meltyg
             button_x, row_top = imgui.get_cursor_screen_pos()
             icon_x = button_x - redraw_pad_x - slot_width + (slot_width - icon_width) / 2
             icon_y = row_top + (button_height - icon_height) / 2
-            redraw_color = pack_color(1, 1, 1, redraw_alpha)
+            redraw_color = (1, 1, 1, redraw_alpha)
             imgui.get_window_draw_list().add_text(icon_x, icon_y, redraw_color, redraw_icon)
         if show_close:
             if flat_button(f"{close_icon}##{unique}", draw_state,

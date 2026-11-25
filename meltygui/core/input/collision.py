@@ -1,5 +1,4 @@
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 from meltygui_imgui.core import _DrawList
 
 
@@ -27,7 +26,7 @@ class Collisions:
             draw_list: _DrawList = imgui.get_overlay_draw_list()
             # draw_list.add_rect(upper_left_x=obj.abs_left, upper_left_y=obj.abs_top,
             #                      lower_right_x=obj.abs_left + obj.width, lower_right_y=obj.abs_top + obj.height,
-            #                      col=pack_color(1, 0, 0, 0.5), thickness=1.0)
+            #                      col=(1, 0, 0, 0.5), thickness=1.0)
 
 
 

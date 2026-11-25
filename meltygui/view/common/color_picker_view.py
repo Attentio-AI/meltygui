@@ -50,13 +50,15 @@ import meltygui_imgui as imgui
 
 from meltygui import hdr_color
 from meltygui.core.input import mouse_cursor
+from meltygui.core.rendering.gui_any import is_default_for
 from meltygui.core.rendering.gui_prototype import gui
-from meltygui.hdr_color import DYNAMIC_PERCEPTUAL, HDR, PERCEPTUAL, SRGB, SRGB_PLUS, pack_color
+from meltygui.core.rendering.shaped import Shaped
+from meltygui.hdr_color import DYNAMIC_PERCEPTUAL, HDR, PERCEPTUAL, SRGB, SRGB_PLUS
 from meltygui.model.color_model import _srgb_plus_marker
 from meltygui.model.color_model import _srgb_plus_pick
 from meltygui.model import display_model
 from meltygui.model.display_model import Display
-from meltygui.view.value_view import PAD, ROUND, ROW, SLATE, box, draw_float, look
+from meltygui.view.common.value_view import PAD, ROUND, ROW, SLATE, box, draw_float, look
 
 # Levers: sizes in logical pixels.
 PEAK = 32.0                     # the brightest colour a picker can show, in multiples of white: 5 stops
@@ -88,13 +90,13 @@ CHANNELS = 'RGBA'
 START = (1.0, 1.0, 1.0)         # the channels a colour that has fewer than three is filled up with
 TINT = SLATE                    # the tint the boxes' colours are made from
 # Levers: colours.
-SEAM = pack_color(1.0, 1.0, 1.0, 0.9)           # the lines over a field: the seams of its parts, the edge of sRGB
-UNDER = pack_color(0.0, 0.0, 0.0, 0.55)         # the wider line under each, which shows it on a bright part
+SEAM = (1.0, 1.0, 1.0, 0.9)           # the lines over a field: the seams of its parts, the edge of sRGB
+UNDER = (0.0, 0.0, 0.0, 0.55)         # the wider line under each, which shows it on a bright part
 SEAM_WIDTH = 1.0
 UNDER_WIDTH = 3.0
-LIGHT = pack_color(1.0, 1.0, 1.0)               # the markers, and a chip's light checker squares
-DARK = pack_color(0.0, 0.0, 0.0)                # the markers' outer ring
-GREY = pack_color(0.6, 0.6, 0.6)                # a chip's dark checker squares
+LIGHT = (1.0, 1.0, 1.0)               # the markers, and a chip's light checker squares
+DARK = (0.0, 0.0, 0.0)                # the markers' outer ring
+GREY = (0.6, 0.6, 0.6)                # a chip's dark checker squares
 SHADES = 24                     # segments of the hue bar; more follow the P3 edge more closely
 
 
@@ -241,7 +243,7 @@ def srgb_color(hue, spot, room=None):
 
 
 def srgb_shade(hue):
-    return pack_color(*colorsys.hsv_to_rgb(hue, 1.0, 1.0))
+    return colorsys.hsv_to_rgb(hue, 1.0, 1.0)
 
 
 # `SRGB_PLUS`: that square, P3 right of it, HDR above both. A spot is (saturation, depth, value,
@@ -277,7 +279,7 @@ def plus_color(hue, spot, room=None):
 
 def plus_shade(hue):
     """Full saturation and value at the edge of P3: the far corner of the square's top row."""
-    return pack_color(*hdr_color.extended_from_srgb_extension(hue, 1.0, 1.0, 1.0))
+    return hdr_color.extended_from_srgb_extension(hue, 1.0, 1.0, 1.0)
 
 
 # `HDR`: one Display P3 square under the band. A spot is (saturation, value, exposure).
@@ -319,7 +321,7 @@ def hdr_color_of(hue, spot, room=None):
 
 
 def hdr_shade(hue):
-    return pack_color(*hdr_color.extended_from_p3_hsv(hue, 1.0, 1.0))
+    return hdr_color.extended_from_p3_hsv(hue, 1.0, 1.0)
 
 
 # `PERCEPTUAL`: Oklch. A spot is (chroma, lightness): the chroma asked for, which `perceptual_color`
@@ -398,7 +400,7 @@ def perceptual_shade(hue):
         row = int(reach.argmax())
         linear = pixels[row, max(int(reach[row]) - 1, 0), :3]
         found = VIVID[hue] = tuple(hdr_color.linear_to_srgb(float(channel)) for channel in linear)
-    return pack_color(*found)
+    return found
 
 
 # `DYNAMIC_PERCEPTUAL`: JzCzhz, of emitted nits. A spot is (chroma Cz, lightness Jz) of the light
@@ -557,7 +559,7 @@ def dynamic_shade(hue):
         row = int(reach.argmax())
         linear = pixels[row, max(int(reach[row]) - 1, 0), :3]
         found = DYNAMIC_VIVID[hue] = tuple(hdr_color.linear_to_srgb(float(channel)) for channel in linear)
-    return pack_color(*found)
+    return found
 
 
 SELECTORS = {
@@ -640,7 +642,7 @@ def chip(draw_list, left, top, right, bottom, color, outline):
                 y = top + row * CHECK
                 draw_list.add_rect_filled(x, y, x + CHECK, y + CHECK, GREY)
         draw_list.pop_clip_rect()
-    draw_list.add_rect_filled(left, top, right, bottom, pack_color(color[0], color[1], color[2], alpha), ROUND)
+    draw_list.add_rect_filled(left, top, right, bottom, (color[0], color[1], color[2], alpha), ROUND)
     draw_list.add_rect(left + 0.5, top + 0.5, right - 0.5, bottom - 0.5, outline, ROUND, 0, 1.0)
 
 
@@ -755,6 +757,7 @@ def bar(input_value: float, selector=HDR, width=0.0, height=0.0, event=None):
 
 
 # --- the public views --------------------------------------------------------
+@is_default_for(Shaped(tuple, (3,), float))
 @gui(listen=(), no_save=('display', 'watching', 'room'))
 def draw_color_picker(input_value: tuple, display: Display, selector=HDR, headroom=PEAK, hardware_max=None,
                       sdr_white_max=None, hue=0.0, spot=None, shown=None, watching=False, room=None, width=0.0,
@@ -915,6 +918,7 @@ def draw_color_picker(input_value: tuple, display: Display, selector=HDR, headro
     return True, type(input_value)(color)
 
 
+@is_default_for(Shaped(tuple, (3,), float))
 @gui(cursor=mouse_cursor.HAND, height=ROW)
 def draw_color(input_value: tuple, selector=HDR, headroom=PEAK, hardware_max=None, sdr_white_max=None, width=0.0,
                height=0.0, event=None):

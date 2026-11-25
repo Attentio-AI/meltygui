@@ -11,7 +11,6 @@ from meltygui.core.rendering.modes import Modes
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.render_funcs import RenderFuncs
 from collections import defaultdict
-from meltygui.hdr_color import pack_color
 from meltygui.hdr_color import with_alpha
 from meltygui.core.melty import Melty
 from meltygui.state.file_state import FileExplorerState
@@ -200,7 +199,7 @@ def draw_changed_file_header(path, tint, draw_state, view_id, width, height=23.0
             if shadow_offset is None or shadow_offset:
                 add_shadow((x, y, width, height), offset=1.0 if shadow_offset is None else shadow_offset, corner_radius=4.0)
             dl.add_rect_filled(x, y, x + width, y + height,
-                              pack_color(*wash[:3], 1.0), rounding=4.0)
+                              (*wash[:3], 1.0), rounding=4.0)
         clicked = flat_button("", draw_state, view_id=view_id, width=width, height=height,
             color=tuple(tint[:3]), factor=0.1, tint_value=brightness, saturation=saturation,
             max_bg_brightness=maximum, alpha=alpha, shadow_offset=shadow, event="left_mouse_down")
@@ -214,12 +213,12 @@ def draw_changed_file_header(path, tint, draw_state, view_id, width, height=23.0
     label = _ellipsize((prefix + "  " if prefix else "") + Path(path).name, max(0, width - inset * 2 - reserve))
     label_size = imgui.calc_text_size(label)
     dl.add_text(x + inset + Melty.px(2), y + (height - label_size.y) * 0.5 - Melty.px(1),
-                pack_color(*text_color[:3], 1.0), label)
+                (*text_color[:3], 1.0), label)
     if counts:
         left, top = x + width - inset - size.x, y + (height - size.y) * 0.5
-        dl.add_text(left, top, pack_color(*Tint.change_count(added=True), 1.0), f"+{added}")
+        dl.add_text(left, top, (*Tint.change_count(added=True), 1.0), f"+{added}")
         dl.add_text(left + imgui.calc_text_size(f"+{added} ").x, top,
-                    pack_color(*Tint.change_count(added=False), 1.0), f"-{removed}")
+                    (*Tint.change_count(added=False), 1.0), f"-{removed}")
     return clicked
 
 
@@ -342,9 +341,9 @@ def paint_breadcrumbs(draw_state, path, click=None, crumb_height=24.0, left_pad=
     # [tint=(0.55, 0.72, 0.95)]
     crumb_separator = "  /  "
     text_rgba = (0.92, 0.92, 0.92, 1.0)
-    text_col = pack_color(*text_rgba)
-    dim_col = pack_color(0.6, 0.63, 0.68, 1.0)
-    crumb_hover_col = pack_color(1.0, 1.0, 1.0, 0.12)
+    text_col = text_rgba
+    dim_col = (0.6, 0.63, 0.68, 1.0)
+    crumb_hover_col = (1.0, 1.0, 1.0, 0.12)
 
     px = Melty.px
     pad, crumb_h = px(left_pad), px(crumb_height)
@@ -520,7 +519,7 @@ def draw_breadcrumbs(input_value: str, draw_state, width=None, crumb_height=24.0
     x0, y0 = imgui.get_cursor_screen_pos()
     cx = x0 + pad
     separator_y = y0 + (crumb_h - imgui.get_font_size()) * 0.5
-    dim_col = pack_color(*dim_rgb, 1.0)
+    dim_col = (*dim_rgb, 1.0)
     picked = None
     for i in range(first, len(parts)):
         target, last = targets[i], i == len(parts) - 1
@@ -578,7 +577,7 @@ def paint_file_rows_overlay(draw_state, draw_list, layout):
             if left <= mouse_x < left + width and 0 <= hovered < layout['row_count']:
                 row_top = top + hovered * row_height
                 draw_list.add_rect_filled(left, row_top, left + width, row_top + row_height,
-                                          pack_color(1.0, 1.0, 1.0, layout['hover_alpha']),
+                                          (1.0, 1.0, 1.0, layout['hover_alpha']),
                                           rounding=layout['rounding'])
         if selected is not None and 0 <= selected < layout['row_count']:
             # Selection spans the viewport with matching side margins. The
@@ -658,13 +657,13 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     # [tint=(0.55, 0.72, 0.95)]
     file_icon = f""
     text_rgba = (0.92, 0.92, 0.92, 1.0)
-    text_col = pack_color(*text_rgba)
-    dim_col = pack_color(0.6, 0.63, 0.68, 1.0)
+    text_col = text_rgba
+    dim_col = (0.6, 0.63, 0.68, 1.0)
     folder_rgba = (0.78, 0.84, 0.92, 1.0)
-    folder_col = pack_color(*folder_rgba)
-    search_wash = pack_color(search_tint[0], search_tint[1], search_tint[2], 0.30)
-    search_col = pack_color(search_tint[0], search_tint[1], search_tint[2], 1.0)
-    no_match_col = pack_color(0.95, 0.55, 0.5, 1.0)
+    folder_col = folder_rgba
+    search_wash = (search_tint[0], search_tint[1], search_tint[2], 0.30)
+    search_col = (search_tint[0], search_tint[1], search_tint[2], 1.0)
+    no_match_col = (0.95, 0.55, 0.5, 1.0)
     state = explorer_state
     state._row_overlay = None
     # Release retained selection shadows from earlier captures after hotswap.
@@ -917,8 +916,8 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
             name_col = tinted_text(name_rgba, tint, text_mix)
             icon_col = tinted_text(glyph_rgba, tint, icon_mix)
         elif dimmed and spans is None:
-            name_col = pack_color(*name_rgba)
-            icon_col = pack_color(*glyph_rgba)
+            name_col = name_rgba
+            icon_col = glyph_rgba
         else:
             name_col = icon_col = folder_col if is_dir else text_col
         if drag_rows:
@@ -935,8 +934,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
             if drag:
                 ghost = drag.draw_list
                 ghost.add_rect_filled(drag.x, drag.y, drag.x + drag.w, drag.y + drag.h,
-                                      pack_color(*row_bg.rgb(tint or default_tint, ghost_tint_boost),
-                                                 ghost_alpha),
+                                      (*row_bg.rgb(tint or default_tint, ghost_tint_boost), ghost_alpha),
                                       rounding=px(select_rounding))
                 path_icon(path, drag.x + px(4), drag.y + (row_h - px(18)) / 2,
                           px(18), icon_col, is_dir=is_dir, fallback=icon,
@@ -984,11 +982,11 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
         px0 = max(view_rect[0] + px(6), px1 - pill_w)
         py0 = py1 - pill_h
         draw_list.add_rect_filled(px0 + px(1), py0 + px(2), px1 + px(1), py1 + px(2),
-                                  pack_color(0.0, 0.0, 0.0, 0.35), rounding=pill_h * 0.5)
+                                  (0.0, 0.0, 0.0, 0.35), rounding=pill_h * 0.5)
         draw_list.add_rect_filled(px0, py0, px1, py1,
-                                  pack_color(*row_bg.rgb(default_tint, -0.02), 0.97),
+                                  (*row_bg.rgb(default_tint, -0.02), 0.97),
                                   rounding=pill_h * 0.5)
-        draw_list.add_rect(px0, py0, px1, py1, pack_color(1.0, 1.0, 1.0, 0.14),
+        draw_list.add_rect(px0, py0, px1, py1, (1.0, 1.0, 1.0, 0.14),
                            rounding=pill_h * 0.5)
         pill_ty = py0 + (pill_h - imgui.get_font_size()) * 0.5
         draw_list.add_text(px0 + pad_x, pill_ty, search_col, icon_search)
@@ -1054,7 +1052,7 @@ def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_
     # [tint=(0.55, 0.72, 0.95)]
     glyph_width = 20.0
     text_rgba = (0.85, 0.88, 0.92, 1.0)
-    text_col = pack_color(*text_rgba)
+    text_col = text_rgba
     # [tint=(0.55, 0.72, 0.95)]
     hover_boost = 0.06
     # [tint=(0.55, 0.72, 0.95)]
@@ -1063,7 +1061,7 @@ def draw_shortcuts(input_value: str, draw_state, file_metadata=None, left_mouse_
     text_mix = 0.5
     # [tint=(0.55, 0.72, 0.95)]
     icon_mix = 0.9
-    hover_wash = pack_color(1.0, 1.0, 1.0, hover_alpha)
+    hover_wash = (1.0, 1.0, 1.0, hover_alpha)
 
     px = Melty.px
     clear_glows(draw_state)      # the current row's retained shadow
@@ -1251,7 +1249,7 @@ def draw_fast_file_explorer(input_value: str, draw_state, file_metadata=None, co
     # [tint=(0.55, 0.72, 0.95)]
     glyph_width = 20.0
     text_rgba = (0.85, 0.88, 0.92, 1.0)
-    text_col = pack_color(*text_rgba)
+    text_col = text_rgba
     # [tint=(0.55, 0.72, 0.95)]
     hover_boost = 0.06
     # [tint=(0.55, 0.72, 0.95)]
@@ -1260,7 +1258,7 @@ def draw_fast_file_explorer(input_value: str, draw_state, file_metadata=None, co
     text_mix = 0.5
     # [tint=(0.55, 0.72, 0.95)]
     icon_mix = 0.9
-    hover_wash = pack_color(1.0, 1.0, 1.0, hover_alpha)
+    hover_wash = (1.0, 1.0, 1.0, hover_alpha)
 
     px = Melty.px
     clear_glows(draw_state)      # The current shortcut's retained shadow (see the listing)
@@ -1620,7 +1618,7 @@ def render_file_tree(input_value=None, draw_state=None,
             status += f", {len(graph.errors)} unparsed"
     else:
         status = "no graph yet"
-    dl.add_text(status_x, status_y, pack_color(0.75, 0.78, 0.82, 1.0), status)
+    dl.add_text(status_x, status_y, (0.75, 0.78, 0.82, 1.0), status)
     imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + px(4))
     x0, y0 = imgui.get_cursor_screen_pos()
 
@@ -1665,8 +1663,8 @@ def render_file_tree(input_value=None, draw_state=None,
               if (left_mouse_double_clicked and hasattr(left_mouse_double_clicked, "x")) else None)
     clip = getattr(draw_state, "abs_clip_rect", None)
 
-    text_col = pack_color(0.92, 0.92, 0.92, 1.0)
-    unused_col = pack_color(*unused_text)
+    text_col = (0.92, 0.92, 0.92, 1.0)
+    unused_col = unused_text
     font_size = imgui.get_font_size()
     # The scaled name must still fit the row.
     font_scale_max = min(usage_font_scale_max, row_h / max(font_size, 1.0))
@@ -1686,16 +1684,16 @@ def render_file_tree(input_value=None, draw_state=None,
                 alpha=1.0)
             mixed = brightness_clamp(mixed[0], mixed[1], mixed[2], 0.0,
                                      Toggles.CodeEditor.tab_active_bg_max_brightness)
-            bg = bg_memo[tint] = pack_color(mixed[0], mixed[1], mixed[2], 1.0)
+            bg = bg_memo[tint] = (mixed[0], mixed[1], mixed[2], 1.0)
         return bg
-    hover_col = pack_color(1.0, 1.0, 1.0, 0.08)
-    select_col = pack_color(0.4, 0.6, 0.9, 0.35)
+    hover_col = (1.0, 1.0, 1.0, 0.08)
+    select_col = (0.4, 0.6, 0.9, 0.35)
 
-    imports_col = pack_color(*imports_tint, 0.9)
-    importers_col = pack_color(*importers_tint, 0.9)
-    both_col = pack_color(*[(a + b) / 2 for a, b in zip(imports_tint, importers_tint)], 0.9)
-    imports_wash = pack_color(*imports_tint, 0.14)
-    importers_wash = pack_color(*importers_tint, 0.14)
+    imports_col = (*imports_tint, 0.9)
+    importers_col = (*importers_tint, 0.9)
+    both_col = (*[(a + b) / 2 for a, b in zip(imports_tint, importers_tint)], 0.9)
+    imports_wash = (*imports_tint, 0.14)
+    importers_wash = (*importers_tint, 0.14)
     folder_alpha = 0.45
 
     def highlight_of(p):

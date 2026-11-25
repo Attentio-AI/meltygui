@@ -2,7 +2,7 @@
 from collections.abc import Callable
 from meltygui.model.display_model import Display
 from meltygui.state.editor_state import EditorState
-from meltygui.view.dict_view import Tree
+from meltygui.view.common.dict_view import Tree
 from meltygui.core.rendering.gui_any import is_default_for as is_default_for
 from meltygui.core.rendering.shaped import Shaped as Shaped
 from meltygui.core.rendering.keyed import Keyed as Keyed

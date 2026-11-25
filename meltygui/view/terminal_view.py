@@ -6,7 +6,6 @@ from meltygui.state.terminal_state import TerminalScreenState
 from meltygui.core.runtime.toggles import Toggles
 import meltygui_imgui as imgui
 import re
-from meltygui.hdr_color import pack_color
 from meltygui.core.styling.fonts import Font
 from meltygui.state.terminal_state import _norm
 
@@ -31,11 +30,11 @@ _DEFAULT_FG = (0.85, 0.85, 0.85)
 _DEFAULT_BG = None  # None == transparent, let the window background show through
 
 
-_SEL_COLOR = pack_color(51 / 255, 102 / 255, 204 / 255, 102 / 255)   # pale blue wash
+_SEL_COLOR = (51 / 255, 102 / 255, 204 / 255, 102 / 255)   # pale blue wash
 
 
 def _pack(rgb, alpha=255):
-    return pack_color(rgb[0], rgb[1], rgb[2], alpha / 255.0)
+    return (rgb[0], rgb[1], rgb[2], alpha / 255.0)
 
 
 def _resolve(name, default, bold=False):
@@ -74,10 +73,10 @@ _LINK_RE = re.compile(
     r'|(?<![\w./~-])(?P<p2>(?:/|~/|\./|\.\./)[^\s:"\'\)\],]+\.[A-Za-z0-9_]+):(?P<l2>\d+)')
 
 
-_LINK_COLOR = pack_color(110 / 255, 180 / 255, 1.0, 200 / 255)      # underline (cyan-blue)
+_LINK_COLOR = (110 / 255, 180 / 255, 1.0, 200 / 255)      # underline (cyan-blue)
 
 
-_LINK_HOVER_COLOR = pack_color(170 / 255, 235 / 255, 1.0, 1.0)      # brighter on hover
+_LINK_HOVER_COLOR = (170 / 255, 235 / 255, 1.0, 1.0)      # brighter on hover
 
 
 def _find_links(grid, scols):

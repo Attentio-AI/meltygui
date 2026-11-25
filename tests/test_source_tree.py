@@ -229,7 +229,7 @@ def test_keys_are_numbered_as_in_the_whole_text_after_edits():
 def test_a_tree_read_after_edits_is_the_tree_of_the_text():
     import random
     rng = random.Random(7)
-    text = (ROOT / 'meltygui/model/editor_model.py').read_text() + (ROOT / 'meltygui/view/dict_view.py').read_text()
+    text = (ROOT / 'meltygui/model/editor_model.py').read_text() + (ROOT / 'meltygui/view/common/dict_view.py').read_text()
     pool = ['x = 1\n', 'if x:\n    y = 2\n', 'def f(a=1):\n    return a\n', 'try:\n    pass\nexcept E:\n    pass\n', '"""\n', 'ITEMS = [1, 2,\n', ')\n']
     source = Source(text)
     source.tree

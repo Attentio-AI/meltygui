@@ -22,21 +22,21 @@ CORE = {
 
 # stubs.py writes the lines down to `# end`
 VIEWS = {
-    'draw_bool': 'meltygui.view.value_view',
+    'draw_bool': 'meltygui.view.common.value_view',
     'draw_button': 'meltygui.view.button_view',
-    'draw_collection': 'meltygui.view.dict_view',
-    'draw_color': 'meltygui.view.color_picker_view',
-    'draw_color_picker': 'meltygui.view.color_picker_view',
+    'draw_collection': 'meltygui.view.common.dict_view',
+    'draw_color': 'meltygui.view.common.color_picker_view',
+    'draw_color_picker': 'meltygui.view.common.color_picker_view',
     'draw_context_menu': 'meltygui.view.context_menu_view',
     'draw_dropdown': 'meltygui.view.choice_view',
     'draw_editor': 'meltygui.view.editor_view',
-    'draw_float': 'meltygui.view.value_view',
+    'draw_float': 'meltygui.view.common.value_view',
     'draw_function': 'meltygui.view.function_view',
-    'draw_int': 'meltygui.view.value_view',
-    'draw_none': 'meltygui.view.value_view',
-    'draw_str': 'meltygui.view.value_view',
+    'draw_int': 'meltygui.view.common.value_view',
+    'draw_none': 'meltygui.view.common.value_view',
+    'draw_str': 'meltygui.view.common.value_view',
     'draw_tiles': 'meltygui.view.tiles_view',
-    'draw_value': 'meltygui.view.value_view',
+    'draw_value': 'meltygui.view.common.value_view',
 }
 # end
 

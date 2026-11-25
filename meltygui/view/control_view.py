@@ -1,6 +1,5 @@
 """Control view functions and supporting definitions."""
 from enum import Enum
-from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.core_decoration import Core
@@ -95,13 +94,13 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left
 
     if alpha > 0.0 and show_button_bg:
         draw_list.add_rect_filled(bx0, by0, bx1, by1,
-                                  pack_color(*mixed_color[:3], alpha), rounding=rnd)
+                                  (*mixed_color[:3], alpha), rounding=rnd)
 
     # Tint fill: button mutes `color` into a dark bg, so to show a window's tint
     # we paint the raw colour over it — at low alpha so it stays a subtle wash.
     elif tint is not None and show_button_bg:
         draw_list.add_rect_filled(bx0, by0, bx1, by1,
-                                  pack_color(tint[0], tint[1], tint[2], 0.33),
+                                  (tint[0], tint[1], tint[2], 0.33),
                                   rounding=rnd)
 
     # Search match highlight (drawn under the text): the current row radiates a
@@ -120,15 +119,15 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left
     if text_align == "left":
         draw_list.add_text(draw_state.abs_left + 5,
                            draw_state.abs_top + (height - min_size[1]) / 2.0 - 1,
-                           pack_color(*text_color[:3], 1.0), button_txt)
+                           (*text_color[:3], 1.0), button_txt)
     elif text_align == "right":
         draw_list.add_text(draw_state.abs_left + width - min_size[0] - 5,
                            draw_state.abs_top + (height - min_size[1]) / 2.0 - 1,
-                           pack_color(*text_color[:3], 1.0), button_txt)
+                           (*text_color[:3], 1.0), button_txt)
     else:
         draw_list.add_text(draw_state.abs_left + (width - min_size[0]) / 2.0 + 2,
                            draw_state.abs_top + (height - min_size[1]) / 2.0 - 1,
-                           pack_color(*text_color[:3], 1.0), button_txt)
+                           (*text_color[:3], 1.0), button_txt)
 
     if left_mouse_down:
         # Effect ledger, exactly as flat_button: a fired button is an
@@ -187,12 +186,12 @@ def draw_bool(
     cursor_start = imgui.get_cursor_screen_pos().x
 
     if input_value:
-        bg_color = pack_color(*Tint.checkbox_bg_selected(), 1.0)
+        bg_color = (*Tint.checkbox_bg_selected(), 1.0)
         text_color = (*Tint.checkbox_text_true(), 1.0)
         # icons are available as a dropdown! Use f"{}"  is encouraged
         icon = f""
     else:
-        bg_color = pack_color(*Tint.checkbox_bg(), 1.0)
+        bg_color = (*Tint.checkbox_bg(), 1.0)
         text_color = (*Tint.checkbox_text(), 0.45)
         icon = f""
 
@@ -218,7 +217,7 @@ def draw_bool(
     
     # draw list should not be abbrivated ds
     draw_list = imgui.get_window_draw_list()
-    outline_color = pack_color(*Tint.checkbox_outline(), 1.0)
+    outline_color = (*Tint.checkbox_outline(), 1.0)
 
     # This is an example of a comment I don't really like. Documenting what something 
     # does is fine but if that's needed it usually means the code is written poorly.
@@ -254,7 +253,7 @@ def draw_bool(
         box_left, box_top, box_right, box_bottom)
 
     if box_hovered:
-        hover_color = pack_color(*Tint.checkbox_bg_hovered(), 0.2)
+        hover_color = (*Tint.checkbox_bg_hovered(), 0.2)
         draw_list.add_rect_filled(box_left, box_top, box_right, box_bottom,
                                   rounding=4, col=hover_color)
 
@@ -392,7 +391,7 @@ def draw_float_ctx(input_value):
     draw_list.add_rect(upper_left_x=input_value.abs_left, upper_left_y=input_value.abs_top,
                        lower_right_x=input_value.abs_left + input_value.width,
                        lower_right_y=input_value.abs_top + input_value.height,
-                       col=pack_color(1, 0, 0, 0.5), thickness=1.0)
+                       col=(1, 0, 0, 0.5), thickness=1.0)
 
 
 def begin_number_field(draw_state, wrap, min_width):
@@ -438,7 +437,7 @@ def end_number_field():
     field_min, field_max = imgui.get_item_rect_min(), imgui.get_item_rect_max()
     imgui.get_window_draw_list().add_rect(
         field_min.x, field_min.y, field_max.x, field_max.y,
-        pack_color(*Tint.checkbox_outline(), 1.0),
+        (*Tint.checkbox_outline(), 1.0),
         rounding=field_rounding, thickness=outline_thickness)
 
 
@@ -556,14 +555,14 @@ def draw_int_slider(input_value: int, draw_state=None, min_value=0, max_value=10
     fraction = (value - min_value) / max(1, max_value - min_value)
     draw_list = imgui.get_window_draw_list()
     draw_list.add_rect_filled(left, top + 4, left + width, top + height - 4,
-                              pack_color(*Tint.checkbox_bg(), 1.0), rounding=3)
+                              (*Tint.checkbox_bg(), 1.0), rounding=3)
     draw_list.add_rect_filled(left, top + 4, left + width * fraction, top + height - 4,
-                              pack_color(*Tint.checkbox_bg_selected(), 1.0), rounding=3)
+                              (*Tint.checkbox_bg_selected(), 1.0), rounding=3)
     label = str(value)
     label_width, label_height = imgui.calc_text_size(label)
     draw_list.add_text(left + (width - label_width) / 2,
                        top + (height - label_height) / 2,
-                       pack_color(*Tint.checkbox_text(), 1.0), label)
+                       (*Tint.checkbox_text(), 1.0), label)
     imgui.dummy(width, height)
     changed = event is not None and value != input_value
     return changed, value if changed else input_value

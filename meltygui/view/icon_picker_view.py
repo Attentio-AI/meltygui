@@ -19,7 +19,6 @@ import meltygui.core.windowing.window_constants as glfw
 from meltygui.core.rendering.gui_prototype import gui
 from meltygui.editor.inline import inline
 from meltygui.editor.keys import printable
-from meltygui.hdr_color import pack_color
 from meltygui.view.editor_view import LINE, font, look
 
 # Levers: the grid's columns and rows, a cell's size in pixels, the space around the grid.
@@ -162,7 +161,7 @@ def icon(input_value: str, width=0., height=0., shown=0, draw_state=None):
                                    left=shown * cell, top=height + 2, width=wide, height=tall)
     for at in {over, shown if opened is not None else None} - {None}:
         dl.add_rect(at * cell - 1, 1, (at + 1) * cell + 1, height - 1,
-                    pack_color(1., 1., 1., .5 if at == shown and opened is not None else .25), 4.)
+                    (1., 1., 1., .5 if at == shown and opened is not None else .25), 4.)
     if not edited:
         return False, input_value
     return True, input_value[:shown] + picked + input_value[shown + 1:]

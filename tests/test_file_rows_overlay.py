@@ -8,7 +8,6 @@ from OpenGL import GL as gl
 
 from meltygui import imgui
 from meltygui.core.melty import Melty
-from meltygui.hdr_color import pack_color
 from meltygui.state.file_state import FileExplorerState
 from meltygui.view.file_view import paint_file_rows_overlay
 
@@ -75,7 +74,7 @@ def test_gpu_selection_leaves_no_body_pixels_after_resize_and_scroll(gl_context,
         imgui.set_next_window_size(500, 350)
         imgui.begin('File row overlay', flags=imgui.WINDOW_NO_TITLE_BAR)
         body = imgui.get_window_draw_list()
-        body.add_rect_filled(20, 20, 480, 320, pack_color(.1, .1, .1, 1))
+        body.add_rect_filled(20, 20, 480, 320, (.1, .1, .1, 1))
         vertices = body.vtx_buffer_size
         paint_file_rows_overlay(ds, imgui.get_overlay_draw_list(), layout)
         assert body.vtx_buffer_size == vertices

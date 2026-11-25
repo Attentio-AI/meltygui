@@ -1,5 +1,4 @@
 """Orchestration view functions and supporting definitions."""
-from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
 from meltygui.core.core_render import render_func
 from meltygui.state.orchestration_state import OrchestratorPanelState
@@ -102,7 +101,7 @@ def draw_orchestrator(input_value=None, draw_state=None, style_manager=None,
                                             factor=mix_factor, saturation_scale=mix_saturation)
 
     def _u32(color, alpha=1.0):
-        return pack_color(color[0], color[1], color[2], alpha)
+        return (color[0], color[1], color[2], alpha)
 
     def _in(rect, x, y):
         return rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3]

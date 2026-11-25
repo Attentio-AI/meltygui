@@ -9,13 +9,12 @@ here keeps an open flag.
 """
 from meltygui import gui, os_window, imgui
 from meltygui.core.conversion.dict_conversion import DictConversion
-from meltygui.hdr_color import pack_color
 from meltygui.view.editor_view import draw_editor
 import meltygui.core.windowing.window_constants as glfw
 
 # Levers: a list row's height, the popups' colours.
 ROW = 24.
-BACK, PICK, TEXT = pack_color(.10, .12, .15), pack_color(.20, .36, .52), pack_color(.92, .94, .96)
+BACK, PICK, TEXT = (.10, .12, .15), (.20, .36, .52), (.92, .94, .96)
 MODES = ('Draw', 'Erase', 'Fill', 'Select')     # one object: a new tuple each run would run the list again
 
 
@@ -32,7 +31,7 @@ def picker(input_value, width=0., height=0.):
     """Channel sliders beside a preview of the colour."""
     dl = imgui.get_window_draw_list()
     dl.add_rect_filled(0, 0, width, height, BACK, 4.)
-    dl.add_rect_filled(width - 34, 6, width - 6, height - 6, pack_color(*input_value[:3]), 3.)
+    dl.add_rect_filled(width - 34, 6, width - 6, height - 6, input_value[:3], 3.)
     value, changed = list(input_value), False
     imgui.push_item_width(width - 70)
     for at, label in enumerate('rgb'):
@@ -47,7 +46,7 @@ def picker(input_value, width=0., height=0.):
 def swatch(input_value, width=0., height=0.):
     """A colour chip: a click opens the picker under it."""
     pressed = imgui.invisible_button('##swatch', width, height)
-    imgui.get_window_draw_list().add_rect_filled(0, 0, width, height, pack_color(*input_value[:3]), 4.)
+    imgui.get_window_draw_list().add_rect_filled(0, 0, width, height, input_value[:3], 4.)
     return picker(input_value, name='picker', popup=pressed, left=0., top=height + 2)
 
 

@@ -11,17 +11,16 @@ What to look at:
 """
 from meltygui import gui, os_window, imgui
 from meltygui.core.input import mouse_cursor
-from meltygui.hdr_color import pack_color
 from meltygui.rust import draw_function
 
 # Levers: sizes in logical pixels, colours.
 PAD = 8.0
 ROW = 26.0                              # height of a line of text
 FORM = 86.0                             # room for the two parameters of `add` and its button
-FACE = pack_color(0.20, 0.24, 0.30)     # the counter
-HOT = pack_color(0.28, 0.36, 0.48)      # the counter under the pointer
-TEXT = pack_color(0.92, 0.94, 0.96)
-DIM = pack_color(0.60, 0.64, 0.70)
+FACE = (0.20, 0.24, 0.30)     # the counter
+HOT = (0.28, 0.36, 0.48)      # the counter under the pointer
+TEXT = (0.92, 0.94, 0.96)
+DIM = (0.60, 0.64, 0.70)
 NOTES = []                              # what `add` appends to
 
 

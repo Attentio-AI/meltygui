@@ -43,7 +43,7 @@ from __future__ import annotations
 import math
 
 # The pickers a colour can be chosen with (`selector=` of draw_color_picker,
-# view/color_picker_view.py): which of the displayable colours the field lays
+# view/common/color_picker_view.py): which of the displayable colours the field lays
 # out. Public as meltygui.SRGB, meltygui.SRGB_PLUS and meltygui.HDR.
 SRGB = 'srgb'           # the classic sRGB square
 SRGB_PLUS = 'srgb+'     # that square, with P3 right of it and HDR above both
@@ -487,9 +487,18 @@ def pack_color(r: float, g: float, b: float, a: float = 1.0) -> int:
     return packed
 
 
-def unpack_color(packed: int):
+# A colour is floats everywhere outside this module: (r, g, b) or (r, g, b, a) straight into a
+# draw list call. The binding packs what lies inside [0, 1] itself and asks here for the rest.
+import meltygui_imgui
+meltygui_imgui.set_wide_color(pack_color)
+
+
+def unpack_color(packed):
     """imgui u32 → extended-sRGB ``(r, g, b, a)``. Inverse of ``pack_color``
-    up to the byte quantization."""
+    up to the byte quantization. A colour that is floats already is returned
+    with its alpha."""
+    if packed.__class__ is not int:
+        return (packed[0], packed[1], packed[2], packed[3] if len(packed) > 3 else 1.0)
     packed &= 0xFFFFFFFF
     a = ((packed >> 24) & 0x7F) / 127.0
     rb, gb, bb = packed & 0xFF, (packed >> 8) & 0xFF, (packed >> 16) & 0xFF
@@ -504,14 +513,19 @@ def is_sdr_packed(packed: int) -> bool:
     return bool(packed & SDR_BIT)
 
 
-def with_alpha(packed: int, a: float) -> int:
-    """``packed`` with its alpha replaced — the flag and RGB bytes kept."""
+def with_alpha(packed, a: float):
+    """``packed`` with its alpha replaced — the flag and RGB bytes kept. A
+    colour in floats stays floats."""
+    if packed.__class__ is not int:
+        return (packed[0], packed[1], packed[2], a)
     alpha7 = int(a * 127.0 + 0.5)
     alpha7 = 0 if alpha7 < 0 else (127 if alpha7 > 127 else alpha7)
     return (packed & (SDR_BIT | RGB_MASK)) | (alpha7 << 24)
 
 
-def packed_alpha(packed: int) -> float:
+def packed_alpha(packed) -> float:
+    if packed.__class__ is not int:
+        return packed[3] if len(packed) > 3 else 1.0
     return ((packed >> 24) & 0x7F) / 127.0
 
 

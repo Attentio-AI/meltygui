@@ -879,7 +879,7 @@ requires-dist = [
     { name = "libcst", specifier = ">=1.4" },
     { name = "line-profiler", marker = "extra == 'profile'", specifier = ">=4" },
     { name = "mcp", specifier = ">=2.0" },
-    { name = "meltygui-imgui", specifier = ">=2.0.5,<2.0.6" },
+    { name = "meltygui-imgui", specifier = ">=2.0.6,<2.0.7" },
     { name = "meltygui-pycuda", marker = "sys_platform == 'linux' and extra == 'tensor'", specifier = ">=2026.3,<2026.4" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "packaging", specifier = ">=24" },
@@ -910,16 +910,16 @@ dev = [
 
 [[package]]
 name = "meltygui-imgui"
-version = "2.0.5"
+version = "2.0.6"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/1e/23/94a6176574b61b26b16753966e3e2b4ca22150e96c392617d2de09fea7f0/meltygui_imgui-2.0.5.tar.gz", hash = "sha256:547b23fca7886ed55dae82074ad3c2e938f8aea37b2397704c536fd7601c41b0", size = 1523637, upload-time = "2026-11-10T10:57:13.84Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ad/e7/ad510943e30045b1a2accfc892fa925f6a9dccb57e545c1fae420d7f80ae/meltygui_imgui-2.0.6.tar.gz", hash = "sha256:e2cd39122a11335aa486cba6b153aa31a2fe61553a88ae01e7d1d985f5de30c4", size = 1530704, upload-time = "2026-11-25T09:28:05.214676Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b1/25/8f519a7b8382b38a7ce058ad00593cac5ab401a6a87ebf37dceebae83312/meltygui_imgui-2.0.5-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:685315cf56bed4b13394c2c3c6a9e5754fe420b0271a7f95fd6d910966db48fa", size = 8074201, upload-time = "2026-11-10T10:57:06.036Z" },
-    { url = "https://files.pythonhosted.org/packages/e0/04/1b90ce92e8e4520015d69941c5ffe0fe2248ea98f45c8825be1744644c36/meltygui_imgui-2.0.5-cp311-cp311-win_amd64.whl", hash = "sha256:665c2a454bd94cbfe2c26868b42088fa9523ddb487528ca99525eca2596075db", size = 1883694, upload-time = "2026-11-10T10:57:12.576Z" },
-    { url = "https://files.pythonhosted.org/packages/48/48/79fab5101f583d3a3bb37d91ea2a5e3a39697fb4cc781e559c91e07660d7/meltygui_imgui-2.0.5-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:db35c5e997755003ac61a838f56e787844b955dd221a2817db6a1bf55a4c12ac", size = 8214371, upload-time = "2026-11-10T10:57:07.784Z" },
-    { url = "https://files.pythonhosted.org/packages/5c/47/d8635ae38cbeea191fc053aa52106d03ecb566eb7de7728d57dd8ecb3b6c/meltygui_imgui-2.0.5-cp312-cp312-win_amd64.whl", hash = "sha256:948ecaaba19b451b3feb119be39dea8ea380b813bd6306513f466f8c715b6972", size = 1887951, upload-time = "2026-11-10T10:57:09.058Z" },
-    { url = "https://files.pythonhosted.org/packages/c9/01/e890fc27cdc296d8f3b181872ead29f73a83432b32ebd7f2d12bff57137f/meltygui_imgui-2.0.5-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:dd5fb274e73e5f383a948322e7e80ce206fac2637d0de6c99822356ad5fd1b7f", size = 8642969, upload-time = "2026-11-10T10:57:10.74Z" },
-    { url = "https://files.pythonhosted.org/packages/6a/99/36841ca22b39e0341406c832dafca40f5548b01da7223425ffb51e6dea50/meltygui_imgui-2.0.5-cp313-cp313-win_amd64.whl", hash = "sha256:99ddcc90bb1a97fcd97ef7c7f6a49491ca3bac345f268e0b6623c102b826e0eb", size = 2052127, upload-time = "2026-11-10T10:57:15.287Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/b0/360befabf51b70915f43a8204304a31e033e34c7ebe8e9609394b4cc1afa/meltygui_imgui-2.0.6-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:98f06ed20412f938680cc15a2dbccc1c430f4a7c053b41e9c00bc22cec647969", size = 8096250, upload-time = "2026-11-25T09:27:58.319974Z" },
+    { url = "https://files.pythonhosted.org/packages/21/aa/81c0dd66c6ec6cff097ff4401252f09b5b1c3f88afa9292fbbebb8b8b2f0/meltygui_imgui-2.0.6-cp311-cp311-win_amd64.whl", hash = "sha256:823638afdfda08627c581bf57383c815d91b20acb31430df8cb69927880e6033", size = 1892222, upload-time = "2026-11-25T09:27:55.171327Z" },
+    { url = "https://files.pythonhosted.org/packages/46/24/75a6f1d6751ff974f76967ed3b8297e95abdf9656b9d865a9fb7bb6d0280/meltygui_imgui-2.0.6-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:58943ab64d8fba8bf640a10b23b279e55bfb2e53b9406d7cddf9394f5522ee51", size = 8235795, upload-time = "2026-11-25T09:27:56.763552Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/44/82fae1710a52d85b8004c5df84b0516bd54a95082a61ccd673a0766145df/meltygui_imgui-2.0.6-cp312-cp312-win_amd64.whl", hash = "sha256:d532b635733dadac7cee8da0738672f92720eeccdaabfaf6a1b33e14b255d0d5", size = 1896354, upload-time = "2026-11-25T09:28:03.911612Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/3e/ddd10d6a8d977ecdfb1db7963c23e543f3e4b1b33445c8cdc8780adf09a2/meltygui_imgui-2.0.6-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6394b0dd2827981192af70dd99c280d85579b1995c4ce273f623047a6f4b603d", size = 8669331, upload-time = "2026-11-25T09:28:00.438537Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/18/3d79f01d347bbef2c88f86fdc451ee1be66ec20a2852ed07d22f50a48020/meltygui_imgui-2.0.6-cp313-cp313-win_amd64.whl", hash = "sha256:28703ac567930f176d6b99f07996022d7dabc020dcb99e313b90bafef162d760", size = 2060533, upload-time = "2026-11-25T09:28:02.545654Z" },
 ]
 
 [[package]]

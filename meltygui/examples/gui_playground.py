@@ -5,7 +5,6 @@ import meltygui
 from meltygui import Style
 from meltygui import glfw_window
 from meltygui import pressed
-from meltygui.hdr_color import pack_color
 from meltygui.hdr_color import white
 from meltygui.hdr_color import p3
 from meltygui.core.melty import Melty
@@ -39,12 +38,12 @@ def sample(input_value, draw_state, style=None, nested=False):
         imgui.get_window_draw_list().add_rect_filled(
             draw_state.abs_left, draw_state.abs_top,
             draw_state.abs_left + draw_state.width, draw_state.abs_top + draw_state.height,
-            pack_color(0.2, 0.22, 0.25, 1), 5)
+            (0.2, 0.22, 0.25, 1), 5)
     left, top = draw_state.abs_left + 12, draw_state.abs_top + 10
     draw_list = imgui.get_window_draw_list()
-    draw_list.add_text(left, top, pack_color(0.6, 0.6, 0.6, 1), input_value)
+    draw_list.add_text(left, top, (0.6, 0.6, 0.6, 1), input_value)
     for index, suggestion in enumerate(((0.2, 0.2, 0.2), (0.9, 0.9, 0.9), (0.7, 0.12, 0.12))):
-        draw_list.add_text(left + index * 210, top + 27, pack_color(*suggestion, 1),
+        draw_list.add_text(left + index * 210, top + 27, (*suggestion, 1),
                            ('Dark suggestion', 'Light suggestion', 'Red suggestion')[index])
     if nested:
         imgui.set_cursor_screen_pos((left + 10, top + 58))

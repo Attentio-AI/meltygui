@@ -5,7 +5,6 @@ import meltygui
 from meltygui import Style
 from meltygui import glfw_window
 from meltygui import pressed
-from meltygui.hdr_color import pack_color
 from meltygui.core.styling.fonts import Font
 from meltygui.core.melty import Melty
 from meltygui.core.runtime.toggles import Toggles
@@ -57,7 +56,7 @@ def panel(input_value, draw_state, style=None):
         imgui.get_window_draw_list().add_rect_filled(
             draw_state.abs_left, draw_state.abs_top,
             draw_state.abs_left + draw_state.width, draw_state.abs_top + draw_state.height,
-            pack_color(0.2, 0.22, 0.25, 1), 8)
+            (0.2, 0.22, 0.25, 1), 8)
     x, y = draw_state.abs_left, draw_state.abs_top
     w, h = draw_state.width, draw_state.height
     # Paint children first, then text: crossing glyphs sample the actual surface.
@@ -67,7 +66,7 @@ def panel(input_value, draw_state, style=None):
         panel(content, name=key, style=child_style, width=width * w, height=height * h)
     dl = imgui.get_window_draw_list()
     for left, top, label in input_value.get('text', ()):
-        dl.add_text(x + left * w, y + top * h, pack_color(0.58, 0.58, 0.58, 1), label)
+        dl.add_text(x + left * w, y + top * h, (0.58, 0.58, 0.58, 1), label)
     imgui.set_cursor_screen_pos((x, y))
     imgui.dummy(w, h)
     return False, input_value

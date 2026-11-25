@@ -336,7 +336,7 @@ something closes it. Nobody keeps an open flag:
 def swatch(input_value, width=0., height=0.):
     """A colour chip: a click opens the picker under it."""
     pressed = imgui.invisible_button('##swatch', width, height)
-    imgui.get_window_draw_list().add_rect_filled(0, 0, width, height, pack_color(*input_value[:3]), 4.)
+    imgui.get_window_draw_list().add_rect_filled(0, 0, width, height, input_value[:3], 4.)
     return picker(input_value, name='picker', popup=pressed, left=0., top=height + 2)
 ```
 
@@ -483,8 +483,8 @@ then `object`. A string also matches a type by its `__name__`, for
 types the registering module should not import. A later registration replaces an earlier one, so
 an app overrides a built in view. The built in ones are `draw_bool`, `draw_int`, `draw_float`,
 `draw_str`, `draw_none` and `draw_value` (a bounded `repr` for the rest) in
-[value_view.py](../meltygui/view/value_view.py), and `draw_collection` in
-[dict_view.py](../meltygui/view/dict_view.py). Each module's docstring says how to change it.
+[value_view.py](../meltygui/view/common/value_view.py), and `draw_collection` in
+[dict_view.py](../meltygui/view/common/dict_view.py). Each module's docstring says how to change it.
 
 Cost (`tests/benchmark_gui_any.py`, hidden window, no swap, 2026-11-12): routing a value takes about
 0.1 us. A dict's frame does not depend on its size, 1,000 against 1,000,000 entries: idle 0.2 ms,
@@ -854,7 +854,7 @@ resolved in full.
 | Context menus (`@context_menu`) | [context_menu.py](../meltygui/core/input/context_menu.py) (the decorator, the walk, whose popup it is), `right_click` in [gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py), `AFTER` / `followed` in [gui_prototype.py](../meltygui/core/rendering/gui_prototype.py), [context_menu_view.py](../meltygui/view/context_menu_view.py) (the menu, the arguments of a pick); [examples/gui_context_menu.py](../examples/gui_context_menu.py), [test_gui_context_menu.py](../tests/test_gui_context_menu.py) |
 | Wake from native threads | [wake.rs](../native/gui_prototype/src/wake.rs), `waker` / `drain_wakes` / `close_wakes` / `park` in [glfw_utils.py](../meltygui/core/windowing/glfw_utils.py), `poke` in [window_api.py](../meltygui/core/windowing/window_api.py) |
 | Largest user so far | the [native editor](NATIVE_EDITOR.md): [editor_view.py](../meltygui/view/editor_view.py) |
-| Default views | [gui_any.py](../meltygui/core/rendering/gui_any.py) (`draw_any`, `is_default_for`), [keyed.py](../meltygui/core/rendering/keyed.py) (`Keyed`, `keyed_as`), [value_view.py](../meltygui/view/value_view.py), [dict_view.py](../meltygui/view/dict_view.py); tests [routing and rows](../tests/test_gui_any.py), [views](../tests/test_gui_any_view.py) |
+| Default views | [gui_any.py](../meltygui/core/rendering/gui_any.py) (`draw_any`, `is_default_for`), [keyed.py](../meltygui/core/rendering/keyed.py) (`Keyed`, `keyed_as`), [value_view.py](../meltygui/view/common/value_view.py), [dict_view.py](../meltygui/view/common/dict_view.py); tests [routing and rows](../tests/test_gui_any.py), [views](../tests/test_gui_any_view.py) |
 | Parameters built by their type, `draw_function` | `constructor`, `Ask`, `asking` in [gui_prototype.py](../meltygui/core/rendering/gui_prototype.py), `kind` in [lib.rs](../native/gui_prototype/src/lib.rs), [function_view.py](../meltygui/view/function_view.py); tests [built parameters](../tests/test_gui_value.py), [the function view](../tests/test_function_view.py); [example](../examples/gui_function.py) |
 | Session persistence | [app_session.py](../meltygui/core/runtime/app_session.py), [load_save_v2.py](../meltygui/core/conversion/load_save_v2.py) |
 | Contract tests | [a view follows its caller](../tests/test_gui_immediate.py), [the value parameter](../tests/test_gui_value.py), [identity](../tests/test_gui_identity.py), [persistence](../tests/test_gui_persistence.py), [positions](../tests/test_gui_position_api.py), [scroll/geometry](../tests/test_gui_scroll_geometry.py) |

@@ -11,7 +11,7 @@ from editor_host import Host
 from meltygui.core.rendering.gui_any import draw_any
 from meltygui.model.source_file_model import flush, framing
 from meltygui.model.source_model import Source
-from meltygui.view.dict_view import ROW, Tree
+from meltygui.view.common.dict_view import ROW, Tree
 
 TEXT = '''GAIN = 0.5
 ON = True

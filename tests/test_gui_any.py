@@ -9,8 +9,8 @@ import pytest
 from meltygui.core.rendering import gui_any, keyed
 from meltygui.core.rendering.gui_any import default_for, is_default_for
 from meltygui.core.rendering.shaped import Shaped
-from meltygui.view import dict_view, value_view
-from meltygui.view.dict_view import Rows
+from meltygui.view.common import dict_view, value_view
+from meltygui.view.common.dict_view import Rows
 
 
 @pytest.fixture
@@ -172,7 +172,7 @@ def test_public_names_are_the_views_and_cost_nothing_to_import():
 
 
 @pytest.mark.parametrize('first', ['from meltygui.rust import draw_collection',
-                                   'from meltygui.view.value_view import draw_float',
+                                   'from meltygui.view.common.value_view import draw_float',
                                    'from meltygui.rust import draw_any',
                                    'import meltygui; meltygui.rust.draw_bool'])
 def test_any_name_can_be_the_first_one_imported(first):
@@ -180,7 +180,7 @@ def test_any_name_can_be_the_first_one_imported(first):
     loaded = imported_after(first, 'from meltygui.rust import draw_any, draw_collection',
                             'from meltygui.core.rendering.gui_any import default_for',
                             'assert default_for({}) is draw_collection and default_for(1.5).__name__ == "draw_float"')
-    assert 'meltygui.view.dict_view' in loaded
+    assert 'meltygui.view.common.dict_view' in loaded
 
 
 @pytest.mark.parametrize('order', ['app first', 'built in first'])
@@ -188,9 +188,9 @@ def test_an_apps_view_wins_whichever_registers_first(order):
     from test_startup_imports import imported_after
     imported_after(
         'from meltygui.core.rendering.gui_any import default_for, is_default_for',
-        'import meltygui.view.value_view' if order == 'built in first' else '',
+        'import meltygui.view.common.value_view' if order == 'built in first' else '',
         'mine = is_default_for(float)(lambda input_value=None: None)',
-        'import meltygui.view.value_view',
+        'import meltygui.view.common.value_view',
         'assert default_for(1.5) is mine and default_for(3).__name__ == "draw_int"',
         'assert default_for({}).__name__ == "draw_collection"')
 

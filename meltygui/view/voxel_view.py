@@ -1,6 +1,5 @@
 """Voxel presentation: volume passes, camera interaction and in-scene labels."""
 from meltygui.core.graphics.tensor_core import _voxels_cleanup
-from meltygui.hdr_color import pack_color
 from meltygui.core.graphics.gl_state import GLState
 from meltygui.model.lut_model import Lut, LutPalette
 from meltygui.model.tensor_model import TensorDim
@@ -1232,7 +1231,7 @@ def _draw_axis_lines(draw_list, img_pos, edges):
     are NOT drawn here any more — they're textured billboards in the voxel
     FBO (_billboard_specs + _render_label_billboards), so they live in the
     3-D scene."""
-    line_col = pack_color(0.9, 0.9, 1.0, 0.5)
+    line_col = (0.9, 0.9, 1.0, 0.5)
     for a, b, pa, pb, t0, t1, z0, z1 in edges:
         dx, dy = pb[0] - pa[0], pb[1] - pa[1]
         length = math.hypot(dx, dy)

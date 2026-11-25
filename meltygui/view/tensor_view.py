@@ -1,5 +1,4 @@
 """Tensor view functions and supporting definitions."""
-from meltygui.hdr_color import pack_color
 from meltygui.state.tensor_state import TensorErrorState
 from meltygui.model.tensor_model import TensorDim
 from meltygui.model.tensor_model import TensorDims
@@ -53,11 +52,11 @@ def draw_tensor_error(input_value: str, draw_state=None,
     padding = 12.0
     draw_list = imgui.get_window_draw_list()
     draw_list.add_rect_filled(left, top, left + width, top + height,
-                              pack_color(0.09, 0.05, 0.05, 1.0), 6.0)
+                              (0.09, 0.05, 0.05, 1.0), 6.0)
     draw_list.add_rect(left, top, left + width, top + height,
-                       pack_color(0.75, 0.25, 0.25, 0.9), 6.0, thickness=1.5)
+                       (0.75, 0.25, 0.25, 0.9), 6.0, thickness=1.5)
     draw_list.add_text(left + padding, top + padding,
-                       pack_color(1.0, 0.55, 0.55, 1.0),
+                       (1.0, 0.55, 0.55, 1.0),
                        f"{who} can't display this tensor")
     line_height = imgui.get_font_size() + 2
     line_top = top + padding + line_height + 4
@@ -65,7 +64,7 @@ def draw_tensor_error(input_value: str, draw_state=None,
     draw_list.push_clip_rect(left + padding, top + padding, right - padding, bottom - padding)
     for paragraph in input_value.splitlines():
         for line in textwrap.wrap(paragraph, width=columns) or ['']:
-            draw_list.add_text(left + padding, line_top, pack_color(1.0, 0.85, 0.85, 1.0), line)
+            draw_list.add_text(left + padding, line_top, (1.0, 0.85, 0.85, 1.0), line)
             line_top += line_height
     draw_list.pop_clip_rect()
     imgui.dummy(width, height)
@@ -194,7 +193,7 @@ def _draw_image_notice(img_pos, width, text):
     tw, th = imgui.calc_text_size(text, wrap_width=wrap_w)
     imgui.get_window_draw_list().add_rect_filled(
         x + 2, y + 2, x + min(tw, wrap_w) + 2 * pad + 2, y + th + 2 * pad + 2,
-        pack_color(0.0, 0.0, 0.0, 0.6), 4.0)
+        (0.0, 0.0, 0.0, 0.6), 4.0)
     cur = imgui.get_cursor_screen_pos()
     imgui.set_cursor_screen_pos((x + pad + 2, y + pad + 2))
     imgui.push_text_wrap_pos(x + pad + 2 + wrap_w)
@@ -245,9 +244,9 @@ def _draw_tensor_meta(img_pos, height, t):
     x0, y0 = x + 2, y + height - th - 2 * pad - 2
     dl = imgui.get_window_draw_list()
     dl.add_rect_filled(x0, y0, x0 + tw + 2 * pad, y0 + th + 2 * pad,
-                       pack_color(0.0, 0.0, 0.0, 0.55), 4.0)
-    dl.add_text(x0 + pad, y0 + pad, pack_color(0.85, 0.85, 0.85, 1.0), head)
-    dl.add_text(x0 + pad + hw + gap, y0 + pad, pack_color(*size_tint), size_txt)
+                       (0.0, 0.0, 0.0, 0.55), 4.0)
+    dl.add_text(x0 + pad, y0 + pad, (0.85, 0.85, 0.85, 1.0), head)
+    dl.add_text(x0 + pad + hw + gap, y0 + pad, size_tint, size_txt)
 
 
 DIM_TAB_HEIGHT = 26

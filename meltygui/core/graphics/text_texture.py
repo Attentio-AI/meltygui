@@ -18,7 +18,6 @@ are reused locally, survive source edits and are released with their GL context.
 import ctypes
 
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 from meltygui.core.graphics import desktop_gl as gl
 
 from meltygui.core.graphics.gl_state import GLState, GLTexture
@@ -272,7 +271,7 @@ def bake_text(text, gl_state: GLState, font=None, pad=2):
             w = max(1, int(ts.x + 0.5)) + pad * 2
             h = max(1, int(ts.y + 0.5)) + pad * 2
             imgui.get_overlay_draw_list().add_text(
-                float(pad), float(pad), pack_color(1, 1, 1, 1), text)
+                float(pad), float(pad), (1, 1, 1, 1), text)
         finally:
             if font is not None:
                 imgui.pop_font()
@@ -302,7 +301,7 @@ def bake_texts(texts, gl_state: GLState, font=None, pad=2, gap=8):
             imgui.push_font(font)
         try:
             dl = imgui.get_overlay_draw_list()
-            col = pack_color(1, 1, 1, 1)
+            col = (1, 1, 1, 1)
             rows, y, w_max = {}, 0, 1
             for t in texts:
                 ts = imgui.calc_text_size(t)

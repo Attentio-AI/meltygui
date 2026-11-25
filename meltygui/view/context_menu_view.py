@@ -20,7 +20,7 @@ from meltygui.core.input import mouse_cursor
 from meltygui.core.rendering.gui_prototype import gui
 from meltygui.view import choice_view
 from meltygui.view.choice_view import MORE, options
-from meltygui.view.value_view import PAD, ROUND, ROW, SLATE, box, look
+from meltygui.view.common.value_view import PAD, ROUND, ROW, SLATE, box, look
 
 TINT = SLATE                    # the tint the menu's colours are made from
 GAP = 7.0                       # height of the line between two views' options

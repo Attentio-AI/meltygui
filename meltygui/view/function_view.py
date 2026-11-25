@@ -24,15 +24,14 @@ import meltygui_imgui as imgui
 
 from meltygui.core.rendering.gui_any import draw_any
 from meltygui.core.rendering.gui_prototype import constructor, gui, needs_arguments
-from meltygui.hdr_color import pack_color
 from meltygui.view.button_view import draw_button
-from meltygui.view.dict_view import ROW as LINE
-from meltygui.view.value_view import PAD, ROW
+from meltygui.view.common.dict_view import ROW as LINE
+from meltygui.view.common.value_view import PAD, ROW
 
 GAP = 6.0                               # space between the parameters, the button and the error
 BUTTON = 160.0                          # the button's width, at most
 SHOWN = 8                               # parameters in view before the list scrolls
-ERROR = pack_color(1.0, 0.45, 0.40)     # the text of a call that raised
+ERROR = (1.0, 0.45, 0.40)     # the text of a call that raised
 
 
 def start(parameter):

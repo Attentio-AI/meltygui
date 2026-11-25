@@ -34,7 +34,6 @@ def draw_tile_picker_label(input_value, draw_state, draw_list):
     """Paint live footer text outside cached pixels, including resize replay."""
     from meltygui.core.runtime.toggles import Tint
     from meltygui.core.melty import Melty
-    from meltygui.hdr_color import pack_color
     from meltygui.view.dropdown_view import TRIGGER_TEXT_INSET
 
     label = "Empty" if input_value is None else renderer_label(input_value)
@@ -51,7 +50,7 @@ def draw_tile_picker_label(input_value, draw_state, draw_list):
     size = imgui.calc_text_size(label)
     x += 2 * Melty.ui_scale
     y = draw_state.abs_top + (height - size.y) / 2 - Melty.ui_scale
-    color = pack_color(*Tint.dd_text(requested_tint=draw_state.current_tint)[:3], 1)
+    color = (*Tint.dd_text(requested_tint=draw_state.current_tint)[:3], 1)
     draw_list.push_clip_rect(draw_state.abs_left, draw_state.abs_top,
                              draw_state.abs_left + width,
                              draw_state.abs_top + draw_state.height, True)

@@ -1,5 +1,4 @@
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 from meltygui.hdr_color import unpack_color
 from meltygui.hdr_color import style_color
 from meltygui.hdr_color import scale_saturation
@@ -126,7 +125,7 @@ class ImGuiStyleManager:
     def make_custom(self, r, g, b, value, saturation_scale=1.0, alpha=1.0):
         h, s, v = self._safe_rgb_to_hsv(r, g, b)
         modified_rgb = colorsys.hsv_to_rgb(h, scale_saturation(s, saturation_scale), value)
-        imgui_color = pack_color(modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
+        imgui_color = (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
         return unpack_color(imgui_color)[:3]
 
@@ -135,7 +134,7 @@ class ImGuiStyleManager:
         value = (v * GlobalStyle.secondary_value) + value
 
         modified_rgb = colorsys.hsv_to_rgb(h, scale_saturation(s, saturation_scale), value)
-        imgui_color = pack_color(modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
+        imgui_color = (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
         return imgui_color
 
     def make_color_rgb(self, r, g, b, saturation_scale=0.4, alpha=1.0, factor=0.3, value=0.5,
@@ -188,7 +187,7 @@ class ImGuiStyleManager:
             Packed u32 color value
         """
         color = self.make_color_style(input, alpha)
-        return pack_color(color[0], color[1], color[2], alpha)
+        return (color[0], color[1], color[2], alpha)
 
     def make_color_style_value_imgui(self, input, saturation=None, alpha=1.0, value=0.0):
         """
@@ -199,7 +198,7 @@ class ImGuiStyleManager:
             Packed u32 color value
         """
         color = self.make_color_style_value(input, alpha, saturation=saturation, value=value)
-        return pack_color(color[0], color[1], color[2], alpha)
+        return (color[0], color[1], color[2], alpha)
 
 
     def make_color_style_rgb(self, r, g, b, input,factor=0.6):

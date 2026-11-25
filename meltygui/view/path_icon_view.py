@@ -9,7 +9,6 @@ from meltygui.model.file_location_model import file_path
 from meltygui import imgui
 from meltygui.core.core_render import render_func
 from meltygui.core.files.path_icons import cleanup_path_icon, sync_icon_watches, dispatch_icon_loads
-from meltygui.hdr_color import pack_color
 from meltygui.state.path_icon_state import PathIconState
 from meltygui.view.file_icon_view import draw_file_badge
 from meltygui.model.folder_icon_model import PathIcon
@@ -29,7 +28,7 @@ def draw_path_icon(input_value: str, draw_state, icon_state: PathIconState = Non
     texture = icon_state.folders.get(path)
     x, y = imgui.get_cursor_screen_pos()
     dl = imgui.get_window_draw_list()
-    color = pack_color(0.9, 0.92, 0.96, alpha) if color is None else color
+    color = (0.9, 0.92, 0.96, alpha) if color is None else color
     if paint:
         paint_path_icon(dl, path, texture, x, y, size, color, is_dir, fallback, custom_icon, alpha)
     imgui.dummy(size, size)
@@ -46,7 +45,7 @@ def paint_path_icon(dl, path, texture, x, y, size, color, is_dir, fallback, cust
         w, h = pixels.width * scale, pixels.height * scale
         left, top = x + (size - w) / 2, y + (size - h) / 2
         dl.add_image(int(texture), (left, top), (left + w, top + h),
-                     col=pack_color(1, 1, 1, alpha))
+                     col=(1, 1, 1, alpha))
         dl.add_line(x + 1, y + size, x + size - 1, y + size, color, 1.5)
     elif is_dir or custom_icon:
         dl.add_text(x, y + (size - imgui.get_font_size()) / 2, color, custom_icon or fallback)

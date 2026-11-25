@@ -1,6 +1,5 @@
 """Compact codec badges shared by file lists and editor tabs."""
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 
 
 def draw_file_badge(draw_list, x, y, size, color, badge, alpha=1.0):
@@ -11,7 +10,7 @@ def draw_file_badge(draw_list, x, y, size, color, badge, alpha=1.0):
     left, top = x + 5 * unit, y + unit
     right, bottom = x + 23 * unit, y + 26 * unit
     fold = 5 * unit
-    ink = pack_color(0.08, 0.10, 0.13, alpha)
+    ink = (0.08, 0.10, 0.13, alpha)
     if mark == "image":
         # The same white-to-metadata-tint blend as the other file bases.
         # A dark inset makes the landscape distinct even with no assigned tint.
@@ -35,8 +34,8 @@ def draw_file_badge(draw_list, x, y, size, color, badge, alpha=1.0):
         draw_list.add_line(right - fold, top + fold, right, top + fold, ink, unit)
     if mark == "python":
         # Interlocking blue/yellow snakes, drawn as vectors so no brand font is needed.
-        blue = pack_color(0.18, 0.43, 0.65, alpha)
-        yellow = pack_color(1.0, 0.82, 0.28, alpha)
+        blue = (0.18, 0.43, 0.65, alpha)
+        yellow = (1.0, 0.82, 0.28, alpha)
         sx, sy = x + 8 * unit, y + 4 * unit
         for dx, dy, width, height, paint in (
                 (3, 0, 7, 5, blue), (0, 4, 7, 5, blue),
@@ -48,12 +47,12 @@ def draw_file_badge(draw_list, x, y, size, color, badge, alpha=1.0):
         draw_list.add_circle_filled(sx + 7 * unit, sy + 11 * unit, 0.7 * unit, ink)
     # A narrow colored footer leaves the page itself predominantly file-tinted.
     draw_list.add_rect_filled(x, y + 18 * unit, x + size, y + 27 * unit,
-                              pack_color(*accent, alpha), rounding=unit)
+                              (*accent, alpha), rounding=unit)
     imgui.set_window_font_scale(0.36)
     try:
         extent = imgui.calc_text_size(label)
         # Dark red needs light lettering; the brighter badges use dark lettering.
-        lettering = pack_color(1.0, 0.93, 0.93, alpha) if label == "MD" else ink
+        lettering = (1.0, 0.93, 0.93, alpha) if label == "MD" else ink
         draw_list.add_text(x + (size - extent.x) * 0.5,
                            y + 22.5 * unit - extent.y * 0.5, lettering, label)
     finally:

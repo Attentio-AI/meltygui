@@ -47,9 +47,9 @@ def test_packed_colors_decode_to_linear_light(gl_context):
     def swatches():
         ids['node'] = cache.current
         draw_list = imgui.get_window_draw_list()
-        draw_list.add_rect_filled(0, 0, 20, 20, hdr_color.pack_color(*opaque, 1.0))
-        draw_list.add_rect_filled(20, 0, 40, 20, hdr_color.pack_color(*translucent, 0.5))
-        draw_list.add_rect_filled(40, 0, 60, 20, hdr_color.pack_color(*bright, 1.0))
+        draw_list.add_rect_filled(0, 0, 20, 20, (*opaque, 1.0))
+        draw_list.add_rect_filled(20, 0, 40, 20, (*translucent, 0.5))
+        draw_list.add_rect_filled(40, 0, 60, 20, (*bright, 1.0))
     try:
         swatches()
         image = linear_pixels(cache.gpu.texture(ids['node']), 60, 20)
@@ -114,7 +114,7 @@ def glyph_pixels(monkeypatch, layout, tint=(0., 0., 0., 1.)):
     @cache.gui(width=80, height=24, tint=tint)
     def label():
         ids['node'] = cache.current
-        imgui.get_window_draw_list().add_text(3, 3, hdr_color.pack_color(1., 1., 1., 1.), 'milk WAVE')
+        imgui.get_window_draw_list().add_text(3, 3, (1., 1., 1., 1.), 'milk WAVE')
     try:
         label()
         return linear_pixels(cache.gpu.texture(ids['node']), 80, 24).copy()

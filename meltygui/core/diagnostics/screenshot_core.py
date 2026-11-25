@@ -26,7 +26,6 @@ a measure tool (drag over a thing, read its rect off the label, Esc).
 
 import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 
 import meltygui.core.input.mouse_cursor as mouse_cursor
 from meltygui.core.melty import Melty
@@ -195,10 +194,10 @@ def _draw_box_label(overlay, x0, y0, x1, y1, display_w, display_h):
     label_h = line_h * len(lines) + padding * 2
     left, top = label_rect(x0, y0, x1, y1, label_w, label_h, display_w, display_h, gap)
     overlay.add_rect_filled(left, top, left + label_w, top + label_h,
-                            pack_color(*label_background), rounding=4.0)
+                            label_background, rounding=4.0)
     overlay.add_rect(left, top, left + label_w, top + label_h,
-                     pack_color(*_BOX_COLOR), rounding=4.0, thickness=1.0)
-    text_color = pack_color(*_BOX_COLOR)
+                     _BOX_COLOR, rounding=4.0, thickness=1.0)
+    text_color = _BOX_COLOR
     for index, line in enumerate(lines):
         overlay.add_text(left + padding, top + padding + line_h * index, text_color, line)
 
@@ -240,8 +239,8 @@ def draw(draw_state):
         overlay.channels_set_current(Core.melty.max_layer - 1)
         sx, sy = RegionScreenshot.start
         x0, y0, x1, y1 = min(sx, mx), min(sy, my), max(sx, mx), max(sy, my)
-        overlay.add_rect_filled(x0, y0, x1, y1, pack_color(*_FILL_COLOR))
-        overlay.add_rect(x0, y0, x1, y1, pack_color(*_BOX_COLOR), 0.0, 0, 1.0)
+        overlay.add_rect_filled(x0, y0, x1, y1, _FILL_COLOR)
+        overlay.add_rect(x0, y0, x1, y1, _BOX_COLOR, 0.0, 0, 1.0)
         _draw_box_label(overlay, x0, y0, x1, y1, full[2], full[3])
         # The box's moving edge tracks the cursor: keep frames coming.
         request_render()

@@ -82,8 +82,7 @@ def tap(row):
 for _ in range(8): frame()
 assert state['ds']._stack_trace is None, state['ds']._stack_trace
 if console_colors:
-    from meltygui.hdr_color import pack_color
-    assert pack_color(205 / 255, 49 / 255, 49 / 255, 1.0) in state['ds']._tok_color_memo[1]
+    assert (205 / 255, 49 / 255, 49 / 255, 1.0) in state['ds']._tok_color_memo[1]
 tap(6.5)
 assert Melty.text_focused_ds is None
 assert not any(keyboard), keyboard

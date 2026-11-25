@@ -8,7 +8,6 @@ from meltygui.core.rendering.core_decoration import defaults
 from meltygui.core.rendering.window_decoration import window
 from meltygui.core.styling.style_core import ImGuiStyleManager
 import json
-from meltygui.hdr_color import pack_color
 from meltygui.hdr_color import scale_saturation
 
 
@@ -1034,7 +1033,7 @@ class Toggles:
                 Snippet("", "dl = imgui.get_window_draw_list()", ""),
             ],
             ("rect",): [
-                Snippet("", "dl.add_rect_filled(x, y, x + w, y + h, pack_color($0), "
+                Snippet("", "dl.add_rect_filled(x, y, x + w, y + h, ($0), "
                             "rounding=getattr(draw_state, 'corner_radius', 6))",
                         ""),
             ],
@@ -1042,7 +1041,7 @@ class Toggles:
                 Snippet("", "pos = imgui.get_cursor_screen_pos()", ""),
             ],
             ("u32",): [
-                Snippet("", "pack_color($0)", ""),
+                Snippet("", "($0, 1.0)", ""),
             ],
             ("txc",): [
                 Snippet("", "imgui.text_colored($0, 1.0, 1.0, 1.0, 1.0)", ""),

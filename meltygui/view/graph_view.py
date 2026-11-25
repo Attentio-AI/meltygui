@@ -1,7 +1,6 @@
 """Graph view functions and supporting definitions."""
 from meltygui.core.graphics.gl_state import GLState
 from meltygui.core.graphics.shader_func import shader_func
-from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
 from meltygui.model.lut_model import Lut, LutPalette
 from meltygui.model.tensor_model import TensorDim
@@ -498,7 +497,7 @@ def render_import_graph(input_value=None, draw_state=None,
             status += f"  {Path(state.selected).name}"
     else:
         status = "no graph yet — build one"
-    dl.add_text(status_x, status_y, pack_color(0.75, 0.78, 0.82, 1.0), status)
+    dl.add_text(status_x, status_y, (0.75, 0.78, 0.82, 1.0), status)
     imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + px(4))
     x0, y0 = imgui.get_cursor_screen_pos()
     height = max(1.0, (draw_state.height or 400) - (y0 - draw_state.abs_top) - px(4))
@@ -622,20 +621,20 @@ def render_import_graph(input_value=None, draw_state=None,
                 alpha=1.0)
             mixed = brightness_clamp(mixed[0], mixed[1], mixed[2], 0.0,
                                      Toggles.CodeEditor.tab_active_bg_max_brightness)
-            col = fill_memo[key] = pack_color(mixed[0], mixed[1], mixed[2], alpha)
+            col = fill_memo[key] = (mixed[0], mixed[1], mixed[2], alpha)
         return col
 
     selected_tint = (_tint_of(selected) if selected is not None else None) or highlight_fallback_tint
     hue, saturation, value = colorsys.rgb_to_hsv(*selected_tint)
     importers_tint = colorsys.hsv_to_rgb(hue, saturation * importer_saturation,
                                          min(1.0, value + importer_value_boost))
-    imports_col = pack_color(*selected_tint, 0.9)
-    importers_col = pack_color(*importers_tint, 0.9)
-    edge_col = pack_color(0.8, 0.85, 0.95, edge_alpha)
-    faded_edge_col = pack_color(0.8, 0.85, 0.95, edge_alpha * faded_alpha)
-    text_col = pack_color(0.92, 0.92, 0.92, 1.0)
-    faded_text_col = pack_color(0.92, 0.92, 0.92, faded_alpha)
-    outline_col = pack_color(1.0, 1.0, 1.0, 0.85)
+    imports_col = (*selected_tint, 0.9)
+    importers_col = (*importers_tint, 0.9)
+    edge_col = (0.8, 0.85, 0.95, edge_alpha)
+    faded_edge_col = (0.8, 0.85, 0.95, edge_alpha * faded_alpha)
+    text_col = (0.92, 0.92, 0.92, 1.0)
+    faded_text_col = (0.92, 0.92, 0.92, faded_alpha)
+    outline_col = (1.0, 1.0, 1.0, 0.85)
 
     # ── edges (under the boxes): importer → imported, right edge → left edge
     # when the line runs left → right (the layered case), centre → centre
@@ -750,9 +749,9 @@ def _draw_axes_overlay(draw_list, img_pos, width, height, n_samples, y_range,
     caption (series dim × line count) top-right. Pure imgui draw-list
     text, recomputed per frame from the camera params."""
     x0, y0 = img_pos
-    grid_col = pack_color(1.0, 1.0, 1.0, 0.07)
-    tick_col = pack_color(0.85, 0.85, 0.85, 0.8)
-    dim_col = pack_color(0.85, 0.85, 0.85, 0.55)
+    grid_col = (1.0, 1.0, 1.0, 0.07)
+    tick_col = (0.85, 0.85, 0.85, 0.8)
+    dim_col = (0.85, 0.85, 0.85, 0.55)
     # x: visible index span from the inverse camera at the image edges.
     ux, uy = unit
     if n_samples > 1:

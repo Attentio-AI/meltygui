@@ -10,7 +10,7 @@ from meltygui.core.rendering.gui_prototype import gui
 from meltygui.editor import syntax
 from meltygui.model.source_model import Source
 from meltygui.state.editor_state import EditorState
-from meltygui.view.dict_view import ROW, Tree
+from meltygui.view.common.dict_view import ROW, Tree
 from meltygui.view.editor_view import draw_editor
 
 TEXT = '''GAIN = 0.5

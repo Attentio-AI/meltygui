@@ -10,7 +10,7 @@ import pytest
 import meltygui.core.windowing.window_constants as glfw
 from editor_host import Host
 from meltygui.core.rendering.gui_prototype import gui
-from meltygui.view.dict_view import ROW as LINE
+from meltygui.view.common.dict_view import ROW as LINE
 from meltygui.view.function_view import GAP, draw_function
 
 ENTER = (glfw.KEY_ENTER, 0)

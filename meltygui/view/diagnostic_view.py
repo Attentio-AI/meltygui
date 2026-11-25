@@ -1,6 +1,5 @@
 """Diagnostic view functions and supporting definitions."""
 from meltygui.core.conversion.path_finder import Pending
-from meltygui.hdr_color import pack_color
 from meltygui.core.rendering.modes import Modes
 from meltygui.core.core_render import render_func
 from meltygui.state.core_enums import PendingAction
@@ -102,8 +101,8 @@ def draw_debug_label(input_value: str):
 
 def draw_debug(x, y, label, color=(1, 0, 0), size=16):
     draw_list: _DrawList = imgui.get_overlay_draw_list()
-    draw_list.add_circle_filled(x, y, size, pack_color(*color, 1.0))
-    draw_list.add_text(x + size + 2, y - size / 2, pack_color(*color, 1.0), label)
+    draw_list.add_circle_filled(x, y, size, (*color, 1.0))
+    draw_list.add_text(x + size + 2, y - size / 2, (*color, 1.0), label)
 
 
 @render_func(show_bg=True, use_cache=True, shadow=False, with_header=draw_header)

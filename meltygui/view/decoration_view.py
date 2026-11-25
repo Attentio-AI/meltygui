@@ -1,6 +1,5 @@
 """Decoration view functions and supporting definitions."""
 from math import sqrt
-from meltygui.hdr_color import pack_color
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.core_decoration import Core
 from meltygui.core.rendering.window_decoration import window
@@ -150,7 +149,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
             height = draw_state.height
 
             draw_list.add_rect_filled(left, top, right, bottom,
-                                      col=pack_color(*color), rounding=4.0)
+                                      col=color, rounding=4.0)
 
             if opacity > 0:
                 Core.melty.cache.mask_mark_rect(draw_state, Core.melty.max_depth - 1, draw_state.shadow_depth, left,
@@ -161,7 +160,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
             # draw_list.add_line(draw_state.left, draw_state.abs_top - 2 - offset,
             #                    draw_state.left + draw_state.width,
             #                    draw_state.abs_top - 2 - offset,
-            #                    col=pack_color(*color), thickness=3)
+            #                    col=color, thickness=3)
 
     return False, flow_spacing
 
@@ -182,8 +181,8 @@ def draw_vertical_scrollbar(content_height: float,
     if min_grab_size is None:
         min_grab_size = float(style.grab_min_size)
 
-    col_track = pack_color(0, 0, 0, 0.1)
-    col_grab = pack_color(1, 1, 1, 0.3)
+    col_track = (0, 0, 0, 0.1)
+    col_grab = (1, 1, 1, 0.3)
     col_border = imgui.get_color_u32(imgui.COLOR_BORDER)
 
     # Early clamps & deriveds
@@ -404,9 +403,9 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     bleed_color, outline_color = memo
 
     if outline:
-        packed_outline = pack_color(*outline_color[:3], 1.0)
+        packed_outline = (*outline_color[:3], 1.0)
         if outline_tint is not None:
-            packed_outline = pack_color(*outline_tint[:3], 1.0)
+            packed_outline = (*outline_tint[:3], 1.0)
         (draw_list if draw_list is not None else imgui.get_window_draw_list()).add_rect(
             *outline_rect, col=packed_outline, rounding=corner_radius, thickness=stroke_width,
         )
@@ -428,10 +427,10 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     # Applies to whatever ends up as the fill - depth-ramp color OR a passed
     # bg_color/tint, so the cap holds regardless of the input's hue/brightness.
     bg_color = _clamp_bg_value(bg_color, max_bg_value)
-    packed_fill = pack_color(bg_color[0], bg_color[1], bg_color[2], 1.0)
+    packed_fill = (bg_color[0], bg_color[1], bg_color[2], 1.0)
     if tint is not None:
         tinted = _clamp_bg_value(tint, max_bg_value)
-        packed_fill = pack_color(*tinted[:3], opacity)
+        packed_fill = (*tinted[:3], opacity)
 
     if opacity > 0.0:
         (draw_list if draw_list is not None else imgui.get_window_draw_list()).add_rect_filled(

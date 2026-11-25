@@ -63,7 +63,7 @@ UNSIZED = (300., 100.)
 def _fills(size):
     return size is not None and FILL_FROM <= size < INFINITE      # infinity is a caller's bug, not a size
 # Levers of the double render mark (`RetainedGui._doubles`): how long it stays after the view last ran
-# twice in a frame (seconds), its colours (r, g, b, a for pack_color), the outline's thickness, and the tag's
+# twice in a frame (seconds), its colours (r, g, b, a), the outline's thickness, and the tag's
 # text, text scale and padding (px).
 DOUBLE_HOLD = 1.0
 DOUBLE_RED = (0.95, 0.10, 0.10, 1.0)
@@ -930,9 +930,12 @@ class RetainedGui:
             geometry.commit(node)
 
     def _propagate(self, node, input_value):
-        # A returned edit: other views of the same input repaint.
+        # A returned edit made in place (the value returned is the input): other views of the same
+        # input repaint. An edit that returned another value changed nothing they show: the caller
+        # passes the new one where it belongs. Two views of an equal number or text share no model.
         self.geometry.frozen.clear()
-        self.graph.invalidate(_alias(input_value), exclude=node)
+        if _same(self.graph.result(node, False)[1], input_value):
+            self.graph.invalidate(_alias(input_value), exclude=node)
         if input_value is ABSENT:
             # The view owns its value, so no caller passes the edit back to it: it runs once more
             # by itself, for a body that drew before it knew (an ImGui button with its value as label).
@@ -1335,7 +1338,6 @@ class RetainedGui:
         """Outline, in red with a tag in the top right corner, every view that ran more than once
         in a frame (`again`: the ones of this frame, from Executor.end_frame), for DOUBLE_HOLD
         seconds after its last such frame. A second run draws the same pixels: this is what shows it."""
-        from meltygui.hdr_color import pack_color
         now = time.monotonic()
         for node in again or ():
             self.doubled[node] = now
@@ -1343,7 +1345,7 @@ class RetainedGui:
             self.doubled.clear()
             return
         imgui = self.imgui
-        red, ink = pack_color(*DOUBLE_RED), pack_color(*DOUBLE_INK)
+        red, ink = DOUBLE_RED, DOUBLE_INK
         imgui.set_window_font_scale(DOUBLE_SCALE)
         wide, tall = imgui.calc_text_size(DOUBLE_TAG)
         for node, when in tuple(self.doubled.items()):

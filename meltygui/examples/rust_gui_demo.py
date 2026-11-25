@@ -19,7 +19,6 @@ from functools import partial
 from meltygui.core.rendering.gui_prototype import _new_native, _bind_native
 from meltygui.core.runtime.toggles import Tint, Toggles
 from meltygui.core.windowing.glfw_utils import request_render
-from meltygui.hdr_color import pack_color
 from meltygui.model.tile_model import Split, Tile
 from meltygui.view.header_view import flat_button as host_button
 
@@ -44,7 +43,7 @@ def make_views(decorate, counts):
         hovered = left <= mouse_pos[0] < left + width and top <= mouse_pos[1] < top + height
         dl = imgui.get_window_draw_list()
         color = Tint.checkbox_bg_hovered() if hovered else Tint.checkbox_bg()
-        dl.add_rect_filled(left, top, left + width, top + height, pack_color(*color), 4)
+        dl.add_rect_filled(left, top, left + width, top + height, color, 4)
         # Submit text through the current ImGui font/style stack, just like the
         # numeric labels. Keep the button's layout and event rectangle fixed.
         imgui.set_cursor_screen_pos((left + 9, top + 4))

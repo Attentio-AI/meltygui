@@ -34,7 +34,6 @@ from meltygui.core.rendering.core_decoration import Core
 from meltygui.core.rendering.gui_any import is_default_for
 from meltygui.core.rendering.gui_prototype import gui
 from meltygui.core.runtime.toggles import Tint
-from meltygui.hdr_color import pack_color
 
 ROW = 22.                        # height of a value view, unless its caller gives another
 PAD = 6.                         # space left and right of the text in a field
@@ -45,7 +44,7 @@ FINE = .01                       # a float's step, as a share of the value the d
 DIGITS = '.6g'                   # how a float is shown while it is not being typed
 SHOWN = 240                      # characters of a text that are drawn while it is not being typed
 LONG = 4096                      # a text longer than this is read only
-NONE = pack_color(.164, .389, .197, .8)                  # the word None
+NONE = (.164, .389, .197, .8)                  # the word None
 # The tint each view's colours are made from: those of the legacy views, and a slate for text and the rest.
 BOOL = (0., .527, .817)
 INT = (0., .45, .85)
@@ -70,13 +69,13 @@ def look(tint):
         held = manager.push_tint_fields(*tint)
         try:
             table = LOOKS[key] = Look(
-                field=pack_color(*Tint.checkbox_bg(), 1.),               # a field's fill
-                on=pack_color(*Tint.checkbox_bg_selected(), 1.),         # the fill of a True chip
-                outline=pack_color(*Tint.checkbox_outline(), 1.),
-                text=pack_color(*Tint.checkbox_text_true(), 1.),         # a value, a key
-                dim=pack_color(*Tint.checkbox_text(), .45),              # False, and what is read only
-                select=pack_color(*Tint.text_selection(), .4),
-                caret=pack_color(*Tint.cursor_tint(), 1.))
+                field=(*Tint.checkbox_bg(), 1.),               # a field's fill
+                on=(*Tint.checkbox_bg_selected(), 1.),         # the fill of a True chip
+                outline=(*Tint.checkbox_outline(), 1.),
+                text=(*Tint.checkbox_text_true(), 1.),         # a value, a key
+                dim=(*Tint.checkbox_text(), .45),              # False, and what is read only
+                select=(*Tint.text_selection(), .4),
+                caret=(*Tint.cursor_tint(), 1.))
         finally:
             manager.pop_tint_fields(held)
     return table

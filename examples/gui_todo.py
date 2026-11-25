@@ -19,7 +19,6 @@ import time
 import meltygui.core.windowing.window_constants as glfw
 from meltygui import gui, os_window, imgui, save
 from meltygui.core.input import mouse_cursor
-from meltygui.hdr_color import pack_color
 from meltygui.rust import draw_bool, draw_str
 
 # Levers: sizes in logical pixels, colours.
@@ -27,12 +26,12 @@ PAD = 8.0
 ROW = 30.0                          # height of one item
 TOOLS = 30.0                        # height of the toolbar's views
 FILTERS = ('All', 'Open', 'Done')   # one object: a new tuple each run would run the list again
-BACK = pack_color(0.10, 0.12, 0.15)     # the list under the dropdown
-FACE = pack_color(0.20, 0.24, 0.30)     # a control
-HOT = pack_color(0.28, 0.36, 0.48)      # a control under the pointer
-PICK = pack_color(0.20, 0.36, 0.52)     # the selected row of the list
-TEXT = pack_color(0.92, 0.94, 0.96)
-DIM = pack_color(0.60, 0.64, 0.70)
+BACK = (0.10, 0.12, 0.15)     # the list under the dropdown
+FACE = (0.20, 0.24, 0.30)     # a control
+HOT = (0.28, 0.36, 0.48)      # a control under the pointer
+PICK = (0.20, 0.36, 0.52)     # the selected row of the list
+TEXT = (0.92, 0.94, 0.96)
+DIM = (0.60, 0.64, 0.70)
 
 
 @save

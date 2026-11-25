@@ -9,7 +9,6 @@ from meltygui.core.melty import Melty
 from meltygui.core.rendering.core_decoration import Core
 import meltygui_imgui as imgui
 import types
-from meltygui.hdr_color import pack_color
 from meltygui.core.runtime.toggles import Tint
 
 
@@ -244,9 +243,9 @@ def draw_view_icon_fast(owner, draw_state):
     io = imgui.get_io()
     hovered = x <= io.mouse_pos.x < x + chip and y <= io.mouse_pos.y < y + chip
     if hovered:
-        draw_list.add_rect_filled(x, y, x + chip, y + chip, pack_color(*chip_hover),
+        draw_list.add_rect_filled(x, y, x + chip, y + chip, chip_hover,
                                   rounding=chip_rounding)
-    draw_list.add_rect(x, y, x + chip, y + chip, pack_color(*chip_outline),
+    draw_list.add_rect(x, y, x + chip, y + chip, chip_outline,
                        rounding=chip_rounding)
     glyph = current if current is not None else placeholder
     tint = Tint.icon_tint()
@@ -256,7 +255,7 @@ def draw_view_icon_fast(owner, draw_state):
     # FA glyphs aren't monospaced - centre the glyph's real box in the chip.
     gw, gh = imgui.calc_text_size(glyph)
     draw_list.add_text(x + (chip - gw) * 0.5, y + (chip - gh) * 0.5,
-                       pack_color(tint[0], tint[1], tint[2], alpha), glyph)
+                       (tint[0], tint[1], tint[2], alpha), glyph)
     clicked = draw_state.on_action("left_mouse_down", view_id="view_icon_chip",
                                    rect=rect, priority_delta=4) is not None
     imgui.dummy(chip, chip)
@@ -524,8 +523,8 @@ def _draw_wide_picker(input_value, draw_state, gl_state, info, picker_state):
     h, s, v, exposure = picker_state.current_coordinates("wide")
 
     dl = imgui.get_window_draw_list()
-    white = pack_color(1, 1, 1, 1)
-    black = pack_color(0, 0, 0, 1)
+    white = (1, 1, 1, 1)
+    black = (0, 0, 0, 1)
     changed = False
     hsv_changed = False
 
@@ -545,8 +544,8 @@ def _draw_wide_picker(input_value, draw_state, gl_state, info, picker_state):
     hx0, hy0 = imgui.get_cursor_screen_pos()
     for i in range(12):
         t0, t1 = i / 12.0, (i + 1) / 12.0
-        c0 = pack_color(*hdr_color.p3(*imgui.color_convert_hsv_to_rgb(t0, 1, 1)), 1)
-        c1 = pack_color(*hdr_color.p3(*imgui.color_convert_hsv_to_rgb(t1, 1, 1)), 1)
+        c0 = (*hdr_color.p3(*imgui.color_convert_hsv_to_rgb(t0, 1, 1)), 1)
+        c1 = (*hdr_color.p3(*imgui.color_convert_hsv_to_rgb(t1, 1, 1)), 1)
         dl.add_rect_filled_multicolor(hx0, hy0 + SQ * t0, hx0 + BAR_W, hy0 + SQ * t1, c0, c0, c1, c1)
     imgui.invisible_button("##whue", BAR_W, SQ)
     if imgui.is_item_active():
@@ -555,10 +554,10 @@ def _draw_wide_picker(input_value, draw_state, gl_state, info, picker_state):
 
     # --- sRGB region outline + the white seam ---
     pts = [(sx0 + px * SQ, sy0 + py * SQ) for px, py in hdr_color.srgb_region_outline(h, top_fraction)]
-    dl.add_polyline(pts, pack_color(*outline_shadow), False, 3.0)
-    dl.add_polyline(pts, pack_color(*outline_color), False, 1.0)
+    dl.add_polyline(pts, outline_shadow, False, 3.0)
+    dl.add_polyline(pts, outline_color, False, 1.0)
     seam_y = sy0 + top_fraction * SQ
-    dl.add_line(sx0, seam_y, sx0 + SQ, seam_y, pack_color(1, 1, 1, 0.25), 1.0)
+    dl.add_line(sx0, seam_y, sx0 + SQ, seam_y, (1, 1, 1, 0.25), 1.0)
 
     # --- markers ---
     mx_, my_ = _wide_marker(s, v, exposure, top_fraction, max_stops)
@@ -707,8 +706,8 @@ def _draw_extended_picker(input_value, draw_state, gl_state, info, picker_state)
     h, s, v, x, exposure = picker_state.current_coordinates("extended")
 
     dl = imgui.get_window_draw_list()
-    white = pack_color(1, 1, 1, 1)
-    black = pack_color(0, 0, 0, 1)
+    white = (1, 1, 1, 1)
+    black = (0, 0, 0, 1)
     changed = False
     hsv_changed = False
 
@@ -718,7 +717,7 @@ def _draw_extended_picker(input_value, draw_state, gl_state, info, picker_state)
     tex = _srgb_plus_texture(gl_state, h, SQ, EXT, BAND, max_stops)
     if tex is not None:
         dl.add_image(tex.texture_id, (ax0, ay0), (ax0 + SQ + EXT, ay0 + BAND + SQ))
-    seam = pack_color(*seam_color)
+    seam = seam_color
     dl.add_line(sx0 + SQ, ay0, sx0 + SQ, sy0 + SQ, seam, 1.0)        # sRGB | P3
     dl.add_line(ax0, sy0, ax0 + SQ + EXT, sy0, seam, 1.0)            # exposure | SDR
     imgui.invisible_button("##xsv", SQ + EXT, BAND + SQ)
@@ -733,8 +732,8 @@ def _draw_extended_picker(input_value, draw_state, gl_state, info, picker_state)
     bar_h = BAND + SQ
     for i in range(6):
         t0, t1 = i / 6.0, (i + 1) / 6.0
-        c0 = pack_color(*imgui.color_convert_hsv_to_rgb(t0, 1, 1), 1)
-        c1 = pack_color(*imgui.color_convert_hsv_to_rgb(t1, 1, 1), 1)
+        c0 = (*imgui.color_convert_hsv_to_rgb(t0, 1, 1), 1)
+        c1 = (*imgui.color_convert_hsv_to_rgb(t1, 1, 1), 1)
         dl.add_rect_filled_multicolor(hx0, hy0 + bar_h * t0, hx0 + BAR_W, hy0 + bar_h * t1, c0, c0, c1, c1)
     imgui.invisible_button("##xhue", BAR_W, bar_h)
     if imgui.is_item_active():
@@ -863,9 +862,9 @@ def _draw_srgb_picker(input_value, draw_state, info, picker_state):
 
     SQ, BAR_W, GAP = 180, 18, 8
     dl = imgui.get_window_draw_list()
-    white = pack_color(1, 1, 1, 1)
-    black = pack_color(0, 0, 0, 1)
-    trans = pack_color(0, 0, 0, 0)
+    white = (1, 1, 1, 1)
+    black = (0, 0, 0, 1)
+    trans = (0, 0, 0, 0)
     changed = False
     hsv_changed = False  # only convert HSV->RGB when the square/hue is actually changed
 
@@ -877,7 +876,7 @@ def _draw_srgb_picker(input_value, draw_state, info, picker_state):
     # --- SV square: white->hue across, transparent->black down ---
     sx0, sy0 = imgui.get_cursor_screen_pos()
     hr, hg, hb = imgui.color_convert_hsv_to_rgb(h, 1.0, 1.0)
-    hue = pack_color(hr, hg, hb, 1)
+    hue = (hr, hg, hb, 1)
     dl.add_rect_filled_multicolor(sx0, sy0, sx0 + SQ, sy0 + SQ, white, hue, hue, white)
     dl.add_rect_filled_multicolor(sx0, sy0, sx0 + SQ, sy0 + SQ, trans, trans, black, black)
     imgui.invisible_button("##sv", SQ, SQ)
@@ -894,8 +893,8 @@ def _draw_srgb_picker(input_value, draw_state, info, picker_state):
         t0, t1 = i / 6.0, (i + 1) / 6.0
         r0, g0, b0 = imgui.color_convert_hsv_to_rgb(t0, 1, 1)
         r1, g1, b1 = imgui.color_convert_hsv_to_rgb(t1, 1, 1)
-        c0 = pack_color(r0, g0, b0, 1)
-        c1 = pack_color(r1, g1, b1, 1)
+        c0 = (r0, g0, b0, 1)
+        c1 = (r1, g1, b1, 1)
         dl.add_rect_filled_multicolor(hx0, hy0 + SQ * t0, hx0 + BAR_W, hy0 + SQ * t1, c0, c0, c1, c1)
     imgui.invisible_button("##hue", BAR_W, SQ)
     if imgui.is_item_active():

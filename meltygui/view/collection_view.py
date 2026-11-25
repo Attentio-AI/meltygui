@@ -5,7 +5,6 @@ from collections.abc import MutableMapping
 from enum import Enum
 from meltygui.core.conversion.bubbling import _BubblingDict
 from meltygui.core.conversion.bubbling import _DeepPath
-from meltygui.hdr_color import pack_color
 from meltygui.core.melty import CollectionAction
 from meltygui.core.melty import Melty
 from meltygui.core.melty import SearchTerm
@@ -883,9 +882,8 @@ def draw_drag_ghost(drag, label, style_manager):
     tint = style_manager.get_tint()
     brightness, alpha = drag_ghost_fill
     drag.draw_list.add_rect_filled(drag.x, drag.y, drag.x + drag.w, drag.y + drag.h,
-                                   pack_color(tint[0] * brightness, tint[1] * brightness,
-                                              tint[2] * brightness, alpha), rounding=5.0)
-    drag.draw_list.add_text(drag.x + 22, drag.y + 3, pack_color(*drag_ghost_text), str(label).split("##")[0])
+                                   (tint[0] * brightness, tint[1] * brightness, tint[2] * brightness, alpha), rounding=5.0)
+    drag.draw_list.add_text(drag.x + 22, drag.y + 3, drag_ghost_text, str(label).split("##")[0])
 
 
 def invalidate_collection_rows(draw_state, max_depth=32):
@@ -1281,7 +1279,7 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
         # Missing tint: a hollow chip; a click stamps in an opaque black.
         if paint:
             draw_list.add_rect(x, y, x + size, y + size,
-                               pack_color(1.0, 1.0, 1.0, 0.35),
+                               (1.0, 1.0, 1.0, 0.35),
                                rounding=corner_radius)
         if draw_state.on_action("left_mouse_down", view_id=view_id, rect=rect,
                                 priority_delta=priority_delta) is not None:
@@ -1295,11 +1293,11 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
             extent = imgui.calc_text_size(glyph)
             if hovered:
                 draw_list.add_rect_filled(x - 2, y - 2, x + size + 2, y + size + 2,
-                                          pack_color(1.0, 1.0, 1.0, 0.10),
+                                          (1.0, 1.0, 1.0, 0.10),
                                           rounding=corner_radius)
-            color = pack_color(1.0, 1.0, 1.0, 1.0) if unpainted else icon_color
+            color = (1.0, 1.0, 1.0, 1.0) if unpainted else icon_color
             if color is None:
-                color = pack_color(1.0, 1.0, 1.0, 1.0)
+                color = (1.0, 1.0, 1.0, 1.0)
             draw_list.add_text(x + (size - extent.x) * 0.5,
                                y + (size - extent.y) * 0.5, color, glyph)
         else:
@@ -1311,29 +1309,29 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
                 # half: the colour opaque - so transparency shows in the chip.
                 half = x + size * 0.5
                 draw_list.add_rect_filled(x, y, half, y + size,
-                                          pack_color(*checker_dark, 1.0),
+                                          (*checker_dark, 1.0),
                                           rounding=corner_radius,
                                           flags=imgui.DRAW_ROUND_CORNERS_LEFT)
                 cell = size * 0.5
                 draw_list.add_rect_filled(x + cell * 0.5, y, half, y + cell * 0.5,
-                                          pack_color(*checker_light, 1.0))
+                                          (*checker_light, 1.0))
                 draw_list.add_rect_filled(x, y + cell * 0.5, x + cell * 0.5, y + size,
-                                          pack_color(*checker_light, 1.0))
+                                          (*checker_light, 1.0))
                 draw_list.add_rect_filled(x, y, half, y + size,
-                                          pack_color(r, g, b, alpha),
+                                          (r, g, b, alpha),
                                           rounding=corner_radius,
                                           flags=imgui.DRAW_ROUND_CORNERS_LEFT)
                 draw_list.add_rect_filled(half, y, x + size, y + size,
-                                          pack_color(r, g, b, 1.0),
+                                          (r, g, b, 1.0),
                                           rounding=corner_radius,
                                           flags=imgui.DRAW_ROUND_CORNERS_RIGHT)
             else:
                 draw_list.add_rect_filled(x, y, x + size, y + size,
-                                          pack_color(r, g, b, 1.0),
+                                          (r, g, b, 1.0),
                                           rounding=corner_radius)
             if outline:
                 draw_list.add_rect(x - 1.5, y - 1.5, x + size + 1.5, y + size + 1.5,
-                                   pack_color(*outline_color),
+                                   outline_color,
                                    rounding=corner_radius)
 
     # `owner`: this chip last opened the popover. It stays the owner past an

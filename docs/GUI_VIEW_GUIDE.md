@@ -67,7 +67,7 @@ parameters.
 
 Most views are not the app's: a control or a view of a kind of value serves
 every app, and is a public view of the library (section 12). The reference for
-such a widget is [color_picker_view.py](../meltygui/view/color_picker_view.py):
+such a widget is [color_picker_view.py](../meltygui/view/common/color_picker_view.py):
 a public view composed of small parts, each with one gesture. The app keeps its
 root, its model and what only it needs. The example keeps its controls in its
 own file only to show every pattern in one place.
@@ -282,7 +282,7 @@ def options(input_value, choices=(), index=None, width=0.0, height=0.0, draw_sta
     upgrades it and returns the result as an edit (`(True, value)`), so the
     state or the caller keeps the upgraded value: `draw_color_picker()`
     starts from `()` and fills it up to a colour (`whole` in
-    [color_picker_view.py](../meltygui/view/color_picker_view.py)).
+    [color_picker_view.py](../meltygui/view/common/color_picker_view.py)).
   - A parameter without a type is None. So is one whose type builds nothing:
     `object`, `Any`, `int | None`, an abstract class (`constructor` in
     [gui_prototype.py](../meltygui/core/rendering/gui_prototype.py)).
@@ -440,7 +440,7 @@ or leaves, never for a move inside it or a key.
   never routed. Keys most of all: a left press gives the keyboard to the view
   under it that had asked for keys before that press, so a field that asks
   only once it is open never gets them (`number` in
-  [value_view.py](../meltygui/view/value_view.py) asks first, then decides).
+  [value_view.py](../meltygui/view/common/value_view.py) asks first, then decides).
 - **A view that only paints is `listen=()`**: it runs when its arguments
   change and never for input. A view that has neither `event` nor `listen=()`
   is run by raw pointer samples, which is what an ImGui widget in it needs
@@ -587,7 +587,7 @@ def items(input_value: dict, show='All', width=0.0, height=0.0):
   child views.
 - Thousands of rows: declare only the rows near the viewport (read
   `scroll_offset`, and ask `event.scrolled()` so that a scroll runs the view),
-  as `draw_collection` does ([dict_view.py](../meltygui/view/dict_view.py));
+  as `draw_collection` does ([dict_view.py](../meltygui/view/common/dict_view.py));
   the frame then does not depend on the size of the data.
 
 ## 9. What runs a view
@@ -642,10 +642,8 @@ here). The mechanism is `ImGuiInput.process` and `finish` in
 ## 10. Drawing
 
 ```python
-from meltygui.hdr_color import pack_color
-
-FACE = pack_color(0.20, 0.24, 0.30)                                  # r, g, b[, a]
-TEXT = pack_color(0.92, 0.94, 0.96)
+FACE = (0.20, 0.24, 0.30)                                            # r, g, b[, a]: a colour is floats
+TEXT = (0.92, 0.94, 0.96)
 
 draw_list = imgui.get_window_draw_list()
 draw_list.add_rect_filled(0.0, 0.0, width, height, FACE, 5.0)        # x0, y0, x1, y1, colour, radius
@@ -659,7 +657,7 @@ draw_list.add_text(PAD, (height - imgui.get_text_line_height()) * 0.5, TEXT, lab
 - Icons are Font Awesome glyphs written as literals in f-strings.
 - Colours and sizes are constants at the top of the file, each with a comment
   saying what it changes. A family of views that should follow a tint builds
-  its colours from it (`look` in [value_view.py](../meltygui/view/value_view.py)).
+  its colours from it (`look` in [value_view.py](../meltygui/view/common/value_view.py)).
 
 ## 11. Threads and slow work
 
@@ -686,7 +684,7 @@ def uptime(input_value: Clock, started=False, draw_state=None, cache=None):
   view, section 5), list it in `no_save=`, and end it with
   `cache.on_retire(cache.current, picture.close)`: the callback runs on the
   render thread when the view is retired or the window closes. `field` in
-  [color_picker_view.py](../meltygui/view/color_picker_view.py) keeps an fp16
+  [color_picker_view.py](../meltygui/view/common/color_picker_view.py) keeps an fp16
   texture this way and bakes it again only when its hue changes.
 
 ## 12. Public views: publish what you build, use what exists
@@ -702,9 +700,12 @@ changed, model.gain = meltygui.rust.draw_float(model.gain, name='gain', left=8.0
 
 - **Name**: `draw_<thing>` (`draw_bool`, `draw_collection`). A helper view
   that only serves one public view keeps a short plain name in that view's
-  file (`branch` and `end` in [dict_view.py](../meltygui/view/dict_view.py)).
+  file (`branch` and `end` in [dict_view.py](../meltygui/view/common/dict_view.py)).
 - **Home**: `meltygui/view/<feature>_view.py`, beside the views of the same
-  feature.
+  feature. A default view (`@is_default_for` above `@gui`, what `draw_any`
+  draws a value with) goes in
+  [meltygui/view/common/](../meltygui/view/common/) instead, as
+  `common/<thing>_view.py`: the defaults are all in that one folder.
 - **Publish**: run `.venv/bin/python stubs.py`. It finds every module-level
   `@gui` function named `draw_<thing>`, rewrites `VIEWS` in
   [rust.py](../meltygui/rust.py) and the stubs the IDE completes from.
@@ -722,7 +723,7 @@ changed, model.gain = meltygui.rust.draw_float(model.gain, name='gain', left=8.0
 - **Use**: an app writes `meltygui.rust.draw_thing(...)` or
   `from meltygui.rust import draw_thing`. Library code imports the defining
   module.
-- **A view's file imports through the package** (`from meltygui.view.value_view
+- **A view's file imports through the package** (`from meltygui.view.common.value_view
   import look`), never a neighbour by its bare file name (`from look import
   PAD`). A bare import only resolves when the script's own folder is on the
   path, so nobody else can import the view.
@@ -738,7 +739,7 @@ What is there already:
 | A function to call with arguments the user edits | `ran, _ = draw_function(fit, name='fit')` from `meltygui.rust`: its parameters as values (`draw_any` of a dict the view keeps, each starting at its default or what its type builds) and a button that calls it, in that run, so only for a call that returns at once. `ran` is true in the run of a call that returned; what it returned is the view's `result` (`ran, _, state = draw_function(fit, return_extras=True)`, then `state.result`); an exception is shown under the button. A class is called the same way and builds an instance ([function_view.py](../meltygui/view/function_view.py)) |
 | One of a few choices | `draw_dropdown(value, choices=CHOICES)` from `meltygui.rust`. `CHOICES` is a sequence of the choices (`label=` names those that are not text) or a dict `{label: choice}`; in a dict a value that is a dict is a submenu, to any depth, and the value is the leaf picked ([choice_view.py](../meltygui/view/choice_view.py)) |
 | Tiles the user splits and joins from their corners, as in Blender | `draw_tiles(tree, name='tiles', views=VIEWS, width=width, height=height)` from `meltygui.rust`; `VIEWS` is a module tuple of `@gui` views of a tile's dict, and each tile picks one from a dropdown in its head; the tree is plain dicts and may start as `{}` or bare nested `{'cells': [{}, {}]}` (ids, axes and sizes are filled in); a divider drag runs only the resized tiles, and `draw_tiles` once at its end to write the sizes; no cell goes around it: where it ends on the window's edge a divider pushed against that edge resizes the window, and given a `width` / `height` elsewhere it keeps them and the push moves the window's left / top edge; `width=None` / `height=None` wraps it to its tiles' minimums ([tiles_view.py](../meltygui/view/tiles_view.py)) |
-| A colour to edit | `changed, tint = draw_color(tint, name='tint', width=60.0)` from `meltygui.rust`: a chip, and a press opens the picker under it. `draw_color_picker(tint, ...)` is the picker by itself, sized like any view: its field keeps its shape and is as large as a size that was given lets it be; a height that wraps (`height=None`) is the picker's fixed least, a width that wraps is as wide as the colours of the hue (`extent(len(tint))` of its file is the size for a popup). A colour is an extended sRGB `(r, g, b)` or `(r, g, b, a)`, tuple or list: the picker covers Display P3 and, above white, up to `headroom=` times white (32, five stops); `hardware_max=` and `sdr_white_max=` tell it, in nits, the panel's peak (nothing brighter is drawn) and SDR white at full brightness (where the display does not say); `selector=` picks its field: `meltygui.HDR` (the default, one P3 square under the HDR band), `meltygui.SRGB_PLUS` (the sRGB square with P3 beside and HDR above) `meltygui.SRGB` (the sRGB square alone) `meltygui.PERCEPTUAL` (Oklch: lightness up, chroma across, the field shaped like the hue's gamut) or, as an experiment, `meltygui.DYNAMIC_PERCEPTUAL` (the same in JzCzhz from the nits the panel emits, so the shape follows the desktop's brightness) ([color_picker_view.py](../meltygui/view/color_picker_view.py), [examples/gui_color.py](../examples/gui_color.py)) |
+| A colour to edit | `changed, tint = draw_color(tint, name='tint', width=60.0)` from `meltygui.rust`: a chip, and a press opens the picker under it. `draw_color_picker(tint, ...)` is the picker by itself, sized like any view: its field keeps its shape and is as large as a size that was given lets it be; a height that wraps (`height=None`) is the picker's fixed least, a width that wraps is as wide as the colours of the hue (`extent(len(tint))` of its file is the size for a popup). A colour is an extended sRGB `(r, g, b)` or `(r, g, b, a)`, tuple or list: the picker covers Display P3 and, above white, up to `headroom=` times white (32, five stops); `hardware_max=` and `sdr_white_max=` tell it, in nits, the panel's peak (nothing brighter is drawn) and SDR white at full brightness (where the display does not say); `selector=` picks its field: `meltygui.HDR` (the default, one P3 square under the HDR band), `meltygui.SRGB_PLUS` (the sRGB square with P3 beside and HDR above) `meltygui.SRGB` (the sRGB square alone) `meltygui.PERCEPTUAL` (Oklch: lightness up, chroma across, the field shaped like the hue's gamut) or, as an experiment, `meltygui.DYNAMIC_PERCEPTUAL` (the same in JzCzhz from the nits the panel emits, so the shape follows the desktop's brightness) ([color_picker_view.py](../meltygui/view/common/color_picker_view.py), [examples/gui_color.py](../examples/gui_color.py)) |
 | A popup of your own, a picker | Section 7; [examples/gui_popups.py](../examples/gui_popups.py) |
 | A right click menu on a view | `@context_menu({label: function})` from `meltygui`, above `@gui` (section 7) |
 | A whole standalone ImGui app as one view | `gui_module('app.py')` ([gui_module.py](../meltygui/core/rendering/gui_module.py)) |

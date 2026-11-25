@@ -479,7 +479,7 @@ def test_a_callers_marks_paint_by_shape_and_follow_edits_made_since_they_were_co
     editor.frame(marks={'spell': stale})
     assert ed.marks['spell'] is spell, 'a set too old to follow is not shown'
     assert view.recolour([(0, 'abc def', 'default'), (7, '12', 'number')], [Mark('color', 2, 8, (1., 0., 0.), 1.)], {}) == [
-        (0, 'ab', view.PLAIN), (2, 'c def', view.pack_color(1., 0., 0.)), (7, '1', view.pack_color(1., 0., 0.)),
+        (0, 'ab', view.PLAIN), (2, 'c def', (1., 0., 0.)), (7, '1', (1., 0., 0.)),
         (8, '2', view.PLAIN)]
 
 
@@ -562,11 +562,11 @@ def test_file_lines_map_through_the_numbering_for_everything_a_caller_names(edit
 def test_the_look_comes_from_the_theme_and_settings_in_one_table(editor, monkeypatch):
     from meltygui.core.runtime.toggles import Tint, Toggles
     ed = editor.ed
-    assert ed.look == view.look() and ed.look.caret == view.pack_color(*Tint.cursor_tint()[:3]) and ed.look.back is None
+    assert ed.look == view.look() and ed.look.caret == Tint.cursor_tint()[:3] and ed.look.back is None
     editor.painted.clear()
     monkeypatch.setattr(Toggles.TextEditor, 'scope_guide_alpha', .9)
     editor.frame(file_tint=(.2, .4, .8))
-    assert ed.look.guide == view.pack_color(.2, .4, .8, .9) and ed.look.number == view.pack_color(*Tint.line_number_tint((.2, .4, .8))[:3])
+    assert ed.look.guide == (.2, .4, .8, .9) and ed.look.number == Tint.line_number_tint((.2, .4, .8))[:3]
     assert ed.look.back is not None and editor.painted, 'a changed look repaints the blocks'
     editor.painted.clear()
     editor.frame()

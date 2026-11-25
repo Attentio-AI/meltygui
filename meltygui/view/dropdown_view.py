@@ -3,7 +3,6 @@ from meltygui.core.files.path_icons import with_path_icons, cleanup_path_icon
 from meltygui.state.path_icon_state import PathIconState
 from meltygui.core.runtime.paths import debug_log_path
 from meltygui.core.runtime.toggles import Toggles
-from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
 from meltygui.core.core_render import render_func
 from meltygui.core.rendering.core_decoration import Core
@@ -38,7 +37,7 @@ def draw_drop_down_item(input_value, name="", unique=0, shadow=False, draw_state
         dl.add_rect_filled(draw_state.abs_left, draw_state.abs_top,
                            draw_state.abs_left + draw_state.width,
                            draw_state.abs_top + draw_state.height,
-                           pack_color(1, 1, 1, 0.16),
+                           (1, 1, 1, 0.16),
                            rounding=getattr(draw_state, 'corner_radius', 6))
 
     if clicked:
@@ -209,7 +208,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         else:
             imgui.get_window_draw_list().add_rect_filled(
                 trigger_left, trigger_top, trigger_left+trigger_w, trigger_top+trigger_h,
-                pack_color(*background), rounding=6)
+                background, rounding=6)
     clicked = flat_button("" if display_paths else drop_down_display_str, draw_state, view_id=f"{name}_dd_trigger{unique}",
                           width=trigger_w, height=trigger_h,
                           alpha=1.0 if kwargs.get("show_button_bg", True) and not tinted_background else 0.0,
@@ -220,7 +219,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         from meltygui.view.path_icon_view import path_label
         label_x = trigger_left + (trigger_text_offset if trigger_text_offset is not None
                                   else (trigger_w - label_width) / 2)
-        color = pack_color(*Tint.dd_text(requested_tint=draw_state.current_tint)[:3], 1)
+        color = (*Tint.dd_text(requested_tint=draw_state.current_tint)[:3], 1)
         dl = imgui.get_window_draw_list()
         dl.push_clip_rect(*text_clip_rect, True)
         try:
@@ -238,7 +237,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
             icon_state.folders.get(path)
     if trigger_path and kwargs.get("paint_trigger", True):
         from meltygui.view.path_icon_view import path_icon
-        color = pack_color(*Tint.dd_text(requested_tint=draw_state.current_tint)[:3], 1)
+        color = (*Tint.dd_text(requested_tint=draw_state.current_tint)[:3], 1)
         imgui.get_window_draw_list().add_text(trigger_left + TRIGGER_TEXT_INSET,
             trigger_top + (trigger_h - imgui.get_font_size()) / 2, color, caret)
         path_icon(trigger_path, trigger_left + TRIGGER_TEXT_INSET + 20,
@@ -527,7 +526,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
         title_height = Toggles.Dropdown.row_height
         imgui.get_window_draw_list().add_text(
             title_x + 6, title_y + (title_height - imgui.get_text_line_height()) * 0.5,
-            pack_color(color[0], color[1], color[2], 0.85), menu_title)
+            (color[0], color[1], color[2], 0.85), menu_title)
         imgui.dummy(max(0.0, draw_state.content_width), title_height)
         imgui.set_cursor_screen_pos((title_x, title_y + title_height))
 
@@ -745,7 +744,7 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
         dl.add_rect_filled(draw_state.abs_left, draw_state.abs_top,
                            draw_state.abs_left + draw_state.width,
                            draw_state.abs_top + draw_state.height,
-                           pack_color(1, 1, 1, 0.16),
+                           (1, 1, 1, 0.16),
                            rounding=getattr(draw_state, 'corner_radius', 6))
 
     chevron = f"  {fa_chrevron_right}" if is_branch else "    "  # fa-chevron-right
@@ -966,9 +965,7 @@ def _dd_paint_tag(draw_list, right, top, height, tag, active,
             b = b * (1 - Toggles.Dropdown.row_tint_alpha) + row_tint[2] * Toggles.Dropdown.row_tint_alpha
         if active:
             r, g, b = r * 0.84 + 0.16, g * 0.84 + 0.16, b * 0.84 + 0.16
-        mask = pack_color(min(max(r, 0.0), 1.0),
-                                        min(max(g, 0.0), 1.0),
-                                        min(max(b, 0.0), 1.0), 1.0)
+        mask = (min(max(r, 0.0), 1.0), min(max(g, 0.0), 1.0), min(max(b, 0.0), 1.0), 1.0)
         draw_list.add_rect_filled(tag_x - 6, top + 1, tag_x + tag_w + 6,
                                   top + height - 1, mask)
     fade = min(max(float(fade or 0.0), 0.0), 1.0)
@@ -980,7 +977,7 @@ def _dd_paint_tag(draw_list, right, top, height, tag, active,
             green = green * (1 - fade) + bg[1] * fade
             blue = blue * (1 - fade) + bg[2] * fade
         draw_list.add_text(x, tag_y,
-                           pack_color(red, green, blue, alpha),
+                           (red, green, blue, alpha),
                            text)
         x += imgui.calc_text_size(text)[0] + Toggles.Dropdown.tag_gap
 
@@ -1033,7 +1030,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
         h = Toggles.Dropdown.row_height
         imgui.get_window_draw_list().add_line(
             x + left_pad, y + h * 0.5, x + w - left_pad, y + h * 0.5,
-            pack_color(*Tint.dd_text(requested_tint=tint), 0.28))
+            (*Tint.dd_text(requested_tint=tint), 0.28))
         imgui.dummy(w, h)
         imgui.set_cursor_screen_pos((x, y + h))
         return UNSET_VALUE
@@ -1089,21 +1086,21 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
             g = max(0.0, m - (m - g) * _ROW_TINT_S_BOOST)
             b = max(0.0, m - (m - b) * _ROW_TINT_S_BOOST)
         dl.add_rect_filled(x, y + 1, x + w, y + h - 1,
-                           pack_color(r, g, b, _ROW_TINT_A),
+                           (r, g, b, _ROW_TINT_A),
                            rounding=getattr(draw_state, 'corner_radius', 6))
     if selected:
         dl.add_rect_filled(x, y + 1, x + w, y + h - 1,
-                           pack_color(1, 1, 1, 0.20), rounding=4)
+                           (1, 1, 1, 0.20), rounding=4)
         dl.add_rect(x + 0.5, y + 1.5, x + w - 0.5, y + h - 1.5,
-                    pack_color(1, 1, 1, 0.48), rounding=4, thickness=1)
+                    (1, 1, 1, 0.48), rounding=4, thickness=1)
     if selection_gutter:
         if selected:
             dl.add_text(x + 8, y + (h - line_h) * 0.5,
-                        pack_color(1, 1, 1, 1), f"\uf00c")
+                        (1, 1, 1, 1), f"\uf00c")
         left_pad = 28
     if active:
         dl.add_rect_filled(x, y, x + w, y + h,
-                           pack_color(1, 1, 1, 0.16),
+                           (1, 1, 1, 0.16),
                            rounding=getattr(draw_state, 'corner_radius', 6))
 
     # Raw imgui.text_colored() for the label, coloured by the value's embedded
@@ -1144,7 +1141,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     if icon_path and tint_background:
         from meltygui.view.path_icon_view import path_icon
         size = min(18.0, h - 2)
-        path_icon(icon_path, x + left_pad, y + (h - size) / 2, size, pack_color(*color), key=key, icons=icon_state)
+        path_icon(icon_path, x + left_pad, y + (h - size) / 2, size, color, key=key, icons=icon_state)
         left_pad += size + 5
         imgui.set_cursor_screen_pos((x + left_pad, y + (h - line_h) / 2))
 
@@ -1162,7 +1159,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
         for text, cell_left, cell_right, align, alpha in cells:
             dl.push_clip_rect(cell_left, y, max(cell_left, cell_right), y+h, True)
             text_x = max(cell_left, cell_right-imgui.calc_text_size(text)[0]) if align == 'right' else cell_left
-            dl.add_text(text_x, y+(h-line_h)*.5, pack_color(*color[:3], alpha), text)
+            dl.add_text(text_x, y+(h-line_h)*.5, (*color[:3], alpha), text)
             dl.pop_clip_rect()
         imgui.dummy(w-left_pad, h)
         imgui.set_cursor_screen_pos((x, y+h))
@@ -1185,7 +1182,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                           x + left_pad + Toggles.Dropdown.code_label_max_width, y + h, True)
         try:
             dl.add_text(x + left_pad, _ty,
-                        pack_color(color[0], color[1], color[2], 0.9), _lbl)
+                        (color[0], color[1], color[2], 0.9), _lbl)
         finally:
             dl.pop_clip_rect()
         # Shared column (widest label in the menu, capped, precomputed by
@@ -1289,8 +1286,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
         _ax = x + w - 24
         _over_act = hovered and mp[0] >= _ax - 4
         dl.add_text(_ax, y + (h - line_h) * 0.5,
-                    pack_color(0.85, 0.32, 0.28,
-                                             0.95 if _over_act else 0.4),
+                    (0.85, 0.32, 0.28, 0.95 if _over_act else 0.4),
                     "")
         if _over_act and imgui.is_mouse_clicked(0):
             _act(value)
@@ -1322,7 +1318,7 @@ def _preview_source(target, menu, owner, row_rect):
         # Translucent white, a single thin line; leave source content untouched.
         overlay.add_rect(target.abs_left, target.abs_top,
                          target.abs_left + target.width, target.abs_top + target.height,
-                         pack_color(1.0, 1.0, 1.0, 0.4), rounding=4.0, thickness=1.0)
+                         (1.0, 1.0, 1.0, 0.4), rounding=4.0, thickness=1.0)
     finally:
         if clip is not None:
             overlay.pop_clip_rect()
@@ -1363,8 +1359,8 @@ def _draw_dd_columns(collection, draw_state, root_state, columns, tint, row_tint
         x, y, cell = left + dx * scale, top + dy, cell * scale
         dl.push_clip_rect(x, y, x + cell, top + height, True)
         try:
-            dl.add_text(x + 4, y, pack_color(*color[:3], 1), column['title'])
-            dl.add_text(x + 4, y + 21, pack_color(*color[:3], 0.60), column['subtitle'])
+            dl.add_text(x + 4, y, (*color[:3], 1), column['title'])
+            dl.add_text(x + 4, y + 21, (*color[:3], 0.60), column['subtitle'])
             for index, (key, label) in enumerate(column['rows']):
                 imgui.set_cursor_screen_pos((x, y + 46 + index * Toggles.Dropdown.row_height))
                 value = collection[key]
@@ -1399,16 +1395,16 @@ def _draw_link_label(draw_list, label, x, y, tint, base_color, icon_path=None, i
             continue
         prefix = label[start:index]
         if prefix:
-            draw_list.add_text(x, y, pack_color(*text_color, 1), prefix)
+            draw_list.add_text(x, y, (*text_color, 1), prefix)
             x += imgui.calc_text_size(prefix)[0]
         if icon_path and char in (f"\uf07b", f"\uf07c"):
             from meltygui.view.path_icon_view import path_icon
             size = min(18.0, imgui.calc_text_size(char)[0])
             path_icon(icon_path, x, y + (imgui.get_font_size() - size) / 2,
-                      size, pack_color(*icon_color, 1), key=icon_key, icons=icon_state)
+                      size, (*icon_color, 1), key=icon_key, icons=icon_state)
         else:
-            draw_list.add_text(x, y, pack_color(*icon_color, 1), char)
+            draw_list.add_text(x, y, (*icon_color, 1), char)
         x += imgui.calc_text_size(char)[0]
         start = index + 1
     if start < len(label):
-        draw_list.add_text(x, y, pack_color(*text_color, 1), label[start:])
+        draw_list.add_text(x, y, (*text_color, 1), label[start:])

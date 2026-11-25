@@ -6,8 +6,8 @@ from editor_host import Host
 from meltygui.core.rendering import gui_any
 from meltygui.core.rendering.gui_any import draw_any, is_default_for
 from meltygui.core.rendering.gui_prototype import gui
-from meltygui.view import dict_view
-from meltygui.view.dict_view import ROW, Tree
+from meltygui.view.common import dict_view
+from meltygui.view.common.dict_view import ROW, Tree
 
 ENTER, ESCAPE = (glfw.KEY_ENTER, 0), (glfw.KEY_ESCAPE, 0)
 

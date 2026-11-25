@@ -2,7 +2,6 @@ import inspect
 import sys
 
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 
 from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.runtime.toggles import Toggles
@@ -149,13 +148,13 @@ def draw_rect(x=None, y=None, width=5, height=None, color=(1, 1, 1, 1)):
         line_height = imgui.get_text_line_height()
         height = line_height + padding[1] * 2
     imgui.get_foreground_draw_list().add_rect_filled(
-        x, y, x + width, y + height, pack_color(*color))
+        x, y, x + width, y + height, color)
 
     clicked = False
     if imgui.is_mouse_hovering_rect(x, y, x + max(width, 10), y + height):
         white = (1.0, 1.0, 1.0, 1.0)
         imgui.get_foreground_draw_list().add_rect(
-            x, y, x + width, y + height, pack_color(*white))
+            x, y, x + width, y + height, white)
         if imgui.is_mouse_clicked(imgui.MOUSE_BUTTON_LEFT):
             clicked = True
     return clicked

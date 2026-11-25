@@ -1,4 +1,4 @@
-"""`draw_color` and `draw_color_picker` (view/color_picker_view.py): the sRGB square, the P3 and HDR
+"""`draw_color` and `draw_color_picker` (view/common/color_picker_view.py): the sRGB square, the P3 and HDR
 quadrants around it, the hue bar and the chip that opens the picker as a popup.
 
 The app is one picker (or one chip) at (10, 10). The tests drive the real router through the GL
@@ -8,11 +8,11 @@ import pytest
 
 from editor_host import Host
 from meltygui import hdr_color
-from meltygui.view.color_picker_view import BAND, BAR, GAP, PEAK, SQUARE, WIDE
+from meltygui.view.common.color_picker_view import BAND, BAR, GAP, PEAK, SQUARE, WIDE
 from meltygui.hdr_color import DYNAMIC_PERCEPTUAL, HDR, PERCEPTUAL, SRGB, SRGB_PLUS
-from meltygui.view.color_picker_view import ACROSS, LEAST, SELECTORS, bar, field
-from meltygui.view.color_picker_view import caption, draw_color, draw_color_picker, extent, scale, white
-from meltygui.view.value_view import PAD, ROW
+from meltygui.view.common.color_picker_view import ACROSS, LEAST, SELECTORS, bar, field
+from meltygui.view.common.color_picker_view import caption, draw_color, draw_color_picker, extent, scale, white
+from meltygui.view.common.value_view import PAD, ROW
 
 LEFT, TOP = 10.0, 10.0
 FIELD = (LEFT + PAD, TOP + PAD)                         # the field's corner on the surface
@@ -326,7 +326,7 @@ def test_a_dynamic_spot_emits_the_same_light_at_every_brightness():
     stages on, the colour value sent for it differs with the brightness; what the panel then emits
     does not."""
     from meltygui.model.display_model import Tone
-    from meltygui.view.color_picker_view import seen
+    from meltygui.view.common.color_picker_view import seen
     kind = SELECTORS[DYNAMIC_PERCEPTUAL]
     forth = hdr_color.srgb_to_primaries(hdr_color.BT2020_XY)
     panel = (forth, hdr_color._mat_inv(forth))
@@ -417,7 +417,7 @@ def test_a_square_selector_wraps_to_its_own_size(show):
 
 
 def test_what_the_hardware_cannot_show_is_not_drawn():
-    from meltygui.view.color_picker_view import within
+    from meltygui.view.common.color_picker_view import within
     kind = SELECTORS[HDR]
     room = scale(PEAK, HDR)
     pixels, lines = kind.bake(0.0, room)
@@ -439,7 +439,7 @@ def limited(input_value=None, selector=HDR, hardware_max=None, sdr_white_max=Non
 
 def test_the_display_can_be_told_to_the_picker(show, monkeypatch):
     from meltygui.model.display_model import Display
-    from meltygui.view.color_picker_view import Picture
+    from meltygui.view.common.color_picker_view import Picture
     monkeypatch.setattr(Display, 'read', lambda self: False)
     rooms = []
     real = Picture.show

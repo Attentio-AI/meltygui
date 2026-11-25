@@ -16,7 +16,7 @@ from meltygui.core.input.context_menu import context_menu
 from meltygui.core.rendering.gui_prototype import AFTER, _renderer_name, gui
 from meltygui.view import choice_view
 from meltygui.view.context_menu_view import GAP, draw_context_menu
-from meltygui.view.value_view import ROW
+from meltygui.view.common.value_view import ROW
 
 PICKS = []          # what the options did
 RUNS = []           # the bodies that ran

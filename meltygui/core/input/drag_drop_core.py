@@ -89,7 +89,6 @@ import math
 from dataclasses import dataclass
 
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 
 from meltygui.core.runtime.toggles import Toggles
 from meltygui.core.windowing.glfw_utils import request_render
@@ -568,7 +567,7 @@ class DragDrop:
                     max(0, min(meltygui.get_channel() - 3, meltygui.max_depth - 1)))
 
             imgui.get_window_draw_list().add_rect_filled(
-                x, y, x + w, y + h, pack_color(1.0, 1.0, 1.0, 0.05),
+                x, y, x + w, y + h, (1.0, 1.0, 1.0, 0.05),
                 rounding=5.0)
             draw_bg(bypass=True, left=x, top=y, width=w, height=h - 2,
                     rounding=5.0, bg_offset=1, depth=meltygui.shadow_depth,
@@ -579,7 +578,7 @@ class DragDrop:
         else:
             imgui.get_window_draw_list().add_rect(
                 x + 2, y, x + w - 2, y + h - 2,
-                pack_color(1.0, 1.0, 1.0, 0.10),
+                (1.0, 1.0, 1.0, 0.10),
                 rounding=4.0, thickness=1.0)
         # The slot dummies anchor on the same pickup position as the bg - not
         # on the incoming cursor or the floating window's win_* (glued to the
@@ -621,7 +620,7 @@ class DragDrop:
         else:
             imgui.get_window_draw_list().add_rect(
                 x + 2, y, x + w - 2, y + h - 2,
-                pack_color(1.0, 1.0, 1.0, 0.10),
+                (1.0, 1.0, 1.0, 0.10),
                 rounding=4.0, thickness=1.0)
 
     # ── per-frame update (called from Melty.end_frame) ───────────────────
@@ -1179,7 +1178,7 @@ class DragDrop:
             # Opacity: nearest = the active drop zone at full strength (it
             # snaps between lines); the rest ease in from zero at the drag
             # edge; everything rides the pickup reveal (slot_alpha).
-            col = pack_color(*rgb, cls.slot_alpha(dist, nearest))
+            col = (*rgb, cls.slot_alpha(dist, nearest))
             thickness = 3.0 if nearest else 2.0
             if vert:
                 # Vertical insertion line at x=cross spanning y a0..a1
@@ -1260,7 +1259,7 @@ class DragDrop:
         src = cls.source_ds
         rgb = meltygui._highlight_rgb(src.current_tint) if src is not None else (1.0, 1.0, 1.0)
         active = cls.nearest is _HOME
-        col = pack_color(*rgb, cls.home_alpha(active))
+        col = (*rgb, cls.home_alpha(active))
         thickness = 1.75 if active else 1.5
         rounding = 5.0
         # Inset 1px on every side so the highlight sits ever so slightly

@@ -1,4 +1,4 @@
-"""`Keyed`: how a value is read and written as keys and items. `draw_collection` (view/dict_view.py)
+"""`Keyed`: how a value is read and written as keys and items. `draw_collection` (view/common/dict_view.py)
 draws every value that has one, and `draw_any` sends such a value there when no view is nearer.
 
     keyed_as('Module', keys=lambda module: [name for name, _ in module.named_children()], get=getattr)

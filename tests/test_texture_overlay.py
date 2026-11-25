@@ -161,7 +161,6 @@ def test_double_click_zoom_is_touch_only(monkeypatch, touch, expected):
     monkeypatch.setattr(imgui, 'dummy', Mock())
     monkeypatch.setattr(imgui, 'get_text_line_height', lambda: 18)
     monkeypatch.setattr(texture_view, 'texture_filter_target', lambda *args: 2)
-    monkeypatch.setattr(texture_view, 'pack_color', lambda *args: 0)
     zoom = SimpleNamespace(zoom=1., center_u=.5, center_v=.5,
                            brightness=0., contrast=1., hue=0., saturation=1.)
     ds = SimpleNamespace(width=400, height=300, on_action=lambda name: None)

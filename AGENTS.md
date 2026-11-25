@@ -25,6 +25,10 @@ rules restated for `@gui`), `GUI_PROTOTYPE.md` (how it works) and
 named `draw_<thing>` in `meltygui/view/<feature>_view.py`, published by running
 `stubs.py` (it writes `VIEWS` in `meltygui/rust.py` and the IDE stubs) and used as
 `meltygui.rust.draw_thing`.
+**Default `@gui` views live in `meltygui/view/common/`**: a view with `@is_default_for`
+above `@gui` (what `draw_any` draws a value with) goes there, as `common/<thing>_view.py`,
+never loose in `meltygui/view/`. New default views are added there as `@gui` replaces
+`@render_func`; the legacy views stay where they are until they are cleared out.
 When Lukas decides something about `@gui` in chat, add a dated line to
 `GUI_REQUIREMENTS.md` in the same turn.
 

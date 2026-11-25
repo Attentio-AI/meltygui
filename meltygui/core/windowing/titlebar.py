@@ -845,7 +845,6 @@ def paint_fps(overlay, chrome, frame_ms, fps, *, fps_only=False, presentation_ms
     titlebar: it renders over the cached tiles' blits whatever the views'
     caches did this frame. fps_only uses a compact uppercase readout for iOS."""
     from meltygui.core.melty import Melty
-    from meltygui.hdr_color import pack_color
     from meltygui.core.styling.fonts import Font
     io = imgui.get_io()
     disp_w = io.display_size.x
@@ -872,8 +871,8 @@ def paint_fps(overlay, chrome, frame_ms, fps, *, fps_only=False, presentation_ms
         x0 = x1 - slot.x - 2 * pad
         y0 = (Melty.px(_BTN_H) - height) * 0.5
         text_y = y0 + (height - slot.y) * 0.5
-        color = pack_color(*FPS_TEXT_COLOR, 1.0)
-        overlay.add_rect_filled(x0, y0, x1, y0 + height, pack_color(*FPS_PILL_COLOR), rounding=Melty.px(6.0))
+        color = (*FPS_TEXT_COLOR, 1.0)
+        overlay.add_rect_filled(x0, y0, x1, y0 + height, FPS_PILL_COLOR, rounding=Melty.px(6.0))
         # Two right-aligned fields with fixed right edges: the ms field ends at
         # the pill's padding, the fps field where the template's fps part ends.
         fps_label = f"{min(fps, 9999.0):.0f} FPS" if fps_only else f"{min(fps, 9999.0):.0f} fps"
@@ -959,13 +958,12 @@ def _paint_buttons(dl, buttons, over_button):
             if artwork:
                 texture = titlebar_buttons.artwork_texture(icon)
                 if texture is not None:
-                    from meltygui.hdr_color import pack_color
                     size = imgui.get_font_size()
                     ratio = size / max(texture.pixels.width, texture.pixels.height)
                     w, h = texture.pixels.width * ratio, texture.pixels.height * ratio
                     x, y = (x0 + x1 - w) / 2, (y0 + y1 - h) / 2
                     dl.add_image(int(texture), (x, y), (x + w, y + h),
-                                 col=pack_color(1, 1, 1, 0.4 if faded else 1))
+                                 col=(1, 1, 1, 0.4 if faded else 1))
     finally:
         if style_manager is not None and previous_tint is not None:
             style_manager.set_imgui_tint(*previous_tint)

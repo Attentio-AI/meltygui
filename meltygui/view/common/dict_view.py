@@ -47,7 +47,7 @@ from meltygui.core.rendering.core_decoration import no_save_exclude
 from meltygui.core.rendering.gui_any import default_for, is_default_for
 from meltygui.core.rendering.gui_prototype import gui
 from meltygui.core.rendering.keyed import Keyed, keyed
-from meltygui.view.value_view import PAD, ROW as FIELD, SLATE, look
+from meltygui.view.common.value_view import PAD, ROW as FIELD, SLATE, look
 
 ROW = 26.                        # height of a row
 GAP = (ROW - FIELD) * .5         # space above and below a row's value
@@ -58,8 +58,20 @@ NARROW = 90.                     # the label column's least width
 BAR = 8.                         # width of the scroll thumb's lane
 LABEL = 96                       # characters of a key that are drawn
 SEPARATOR = '\x1f'               # between the keys of a row's identity
+BACK = (0., 0., 0.)    # the fill behind every collection
+EDGE = (.2, .2, .2)    # its outline
 LOCKED = {'editable': False}      # what the values of a dict that cannot be written are drawn with
 MISSING = object()
+
+
+def named(name, key):
+    """The view identity of the row `key` in the dict whose rows begin with `name`: the keys from the
+    top. A str or an int is told by its repr; any other key by its hash too, as two keys of one dict
+    may print alike."""
+    kind = key.__class__
+    if kind is str or kind is int:
+        return f'{name}{SEPARATOR}{key!r}'
+    return f'{name}{SEPARATOR}{key!r}{SEPARATOR}{hash(key)}'
 
 
 def nests(value, key):
@@ -125,14 +137,14 @@ class Rows:
             for index, key in enumerate(node.keys):
                 item = node.item(key)
                 if item is not MISSING and nests(item, key) and path + (key,) not in self.flipped:
-                    node.open[index] = self.grow(item, path + (key,), f'{name}{SEPARATOR}{key!r}')
+                    node.open[index] = self.grow(item, path + (key,), named(name, key))
         else:
             for found in self.flipped:
                 if len(found) == len(path) + 1 and found[:-1] == path:
                     key = found[-1]
                     item = node.item(key)
                     if item is not MISSING and nests(item, key):
-                        node.open[node.keys.index(key)] = self.grow(item, found, f'{name}{SEPARATOR}{key!r}')
+                        node.open[node.keys.index(key)] = self.grow(item, found, named(name, key))
         node.measure()
         return node
 
@@ -174,6 +186,21 @@ class Rows:
             index, inside = index + 1, -1
         return row
 
+    def above(self, first):
+        """[(row, node)] of the open dicts whose own row is above row `first` and whose rows reach it,
+        outermost first: a bisection per level."""
+        found, node, base = [], self.top, 0
+        while node.open:
+            at = bisect_right(node.starts, first - base) - 1
+            if at < 0:
+                break
+            child, row = node.open[node.order[at]], base + node.starts[at]
+            if row == first or row + child.rows < first:
+                break
+            found.append((row, child))
+            node, base = child, row + 1
+        return found
+
     def flip(self, row):
         """Open or close the branch at `row`. Returns the paths now flipped, or None when the row is no branch."""
         found = self.window(row, 1)
@@ -189,7 +216,7 @@ class Rows:
         if index in node.open:
             del node.open[index]
         else:
-            node.open[index] = self.grow(item, path, f'{node.name}{SEPARATOR}{key!r}')
+            node.open[index] = self.grow(item, path, named(node.name, key))
         self.settle(self.top)
         return self.flipped
 
@@ -234,6 +261,12 @@ def branch(input_value: bool, label='', height=0.0, event=None):
     return pressed, opened
 
 
+def box(draw_list, left, top, right, bottom):
+    """The background of one dict: the collection's own, and that of every dict among its rows."""
+    draw_list.add_rect_filled(left, top, right, bottom, BACK)
+    draw_list.add_rect(left, top, right, bottom, EDGE)
+
+
 @is_default_for(Keyed)
 @gui(scroll=True)
 def draw_collection(input_value: object, tree: Tree = None, expand=1, editable=True, width=0.0, height=0.0,
@@ -251,6 +284,7 @@ def draw_collection(input_value: object, tree: Tree = None, expand=1, editable=T
         rows.top = rows.check(rows.top)
     top = scroll_offset[1]
     table, draw_list = look(SLATE), imgui.get_window_draw_list()
+    box(draw_list, 0., 0., width, height)
     split = max(width * SPLIT, NARROW)
     wide = max(width - split - BAR - PAD, 1.)
     text_y = (ROW - imgui.get_text_line_height()) * .5
@@ -263,6 +297,9 @@ def draw_collection(input_value: object, tree: Tree = None, expand=1, editable=T
         rows.top = rows.grow(rows.value, (), '')
         shown = rows.window(first, count)
         items = [node.item(node.keys[index]) for _, node, index in shown]
+    # The dicts that began above the first row in view; one whose row is in view is boxed at that row.
+    for row, node in rows.above(first):
+        box(draw_list, (node.depth - 1) * INDENT, row * ROW - top, width, (row + 1 + node.rows) * ROW - top)
     at = 0
     while at < len(shown):
         (row, node, index), value = shown[at], items[at]
@@ -272,7 +309,7 @@ def draw_collection(input_value: object, tree: Tree = None, expand=1, editable=T
         key = node.keys[index]
         view = default_for(value, key)
         inner = keyed(value.__class__) if view is draw_collection else None
-        label, name = str(key)[:LABEL], f'{node.name}{SEPARATOR}{key!r}'
+        label, name = str(key)[:LABEL], named(node.name, key)
         y, x = row * ROW - top, PAD + node.depth * INDENT
         if inner is not None:
             # A branch: its chevron and key are a view that a press flips, no wider than they are.
@@ -285,6 +322,10 @@ def draw_collection(input_value: object, tree: Tree = None, expand=1, editable=T
                 tree.flipped = sorted(rows.flipped, key=repr)
                 shown = rows.window(first, count)
                 items = [node.item(node.keys[index]) for _, node, index in shown]
+            # Its box, around its own row and its open rows, which are painted after it. To inset
+            # the boxes, change the left and right here and in the loop above.
+            below = node.open[index].rows if index in node.open else 0
+            box(draw_list, node.depth * INDENT, y, width, y + (1 + below) * ROW)
             held = inner.count(value)
             draw_list.add_text(split + PAD, y + text_y, table.dim, f'{held} item{"s" * (held != 1)}')
             continue

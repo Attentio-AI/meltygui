@@ -3,7 +3,6 @@ from pathlib import Path
 import meltygui_imgui as imgui
 from meltygui.core.melty import Melty
 from meltygui.core.runtime.toggles import Toggles, Tint
-from meltygui.hdr_color import pack_color
 from meltygui.core.cache.tile_marks import add_shadow
 from meltygui.editor.source_ui import _tab_text_color
 

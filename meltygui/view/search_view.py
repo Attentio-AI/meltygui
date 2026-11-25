@@ -1,5 +1,4 @@
 """Search view functions and supporting definitions."""
-from meltygui.hdr_color import pack_color
 from meltygui.core.melty import Melty
 from meltygui.core.core_render import render_func
 from meltygui.core.runtime.toggles import Toggles
@@ -101,7 +100,7 @@ def draw_search(input_value=None, draw_state=None, unique=0):
     _glyph_w = imgui.calc_text_size(fa_x_icon).x
     imgui.get_window_draw_list().add_text(
         close_left + (x_width - _glyph_w) * 0.5, row_top + (row_h - imgui.get_font_size()) * 0.5,
-        pack_color(1.0, 1.0, 1.0, 0.9 if _close_hover else 0.35), fa_x_icon)
+        (1.0, 1.0, 1.0, 0.9 if _close_hover else 0.35), fa_x_icon)
     imgui.set_cursor_screen_pos((close_left, row_top))
     imgui.dummy(x_width, row_h)
     if draw_state.on_action("left_mouse_down", view_id=f"find_close{unique}",
@@ -225,7 +224,7 @@ def draw_search_highlight_multi(draw_list, segs, *, current):
     a = float(spec.outline_alpha)
     if a > 0.0:
         oc = spec.outline_color
-        col = pack_color(oc[0], oc[1], oc[2], a)
+        col = (oc[0], oc[1], oc[2], a)
         for x0, y0, x1, y1 in segs:
             draw_list.add_rect(x0, y0, x1, y1, col,
                                rounding=float(spec.cutout_radius),
@@ -248,7 +247,7 @@ def draw_search_highlight(draw_list, x0, y0, x1, y1, *, current, rounding=0.0):
     a = float(spec.outline_alpha)
     if a > 0.0:
         oc = spec.outline_color
-        draw_list.add_rect(x0, y0, x1, y1, pack_color(oc[0], oc[1], oc[2], a),
+        draw_list.add_rect(x0, y0, x1, y1, (oc[0], oc[1], oc[2], a),
                            rounding=max(float(rounding), float(spec.cutout_radius)),
                            thickness=float(spec.outline_thickness))
 
@@ -327,7 +326,7 @@ def _draw_glow(draw_list, x0, y0, x1, y1, spec):
             d = t * falloff
             a_outer = opacity * (1.0 - t) ** exp
             outer = [(bx + nx * d, by + ny * d) for (bx, by, nx, ny) in samples]
-            col = pack_color(cr, cg, cb, (a_inner + a_outer) * 0.5)
+            col = (cr, cg, cb, (a_inner + a_outer) * 0.5)
             for i in range(n):
                 j = i + 1 if i + 1 < n else 0
                 ix0, iy0 = inner[i]

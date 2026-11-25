@@ -12,7 +12,6 @@ import uuid
 
 import meltygui_imgui as imgui
 import numpy as np
-from meltygui.hdr_color import pack_color
 import meltygui.core.windowing.window_api as glfw
 
 from meltygui.core.melty import Melty

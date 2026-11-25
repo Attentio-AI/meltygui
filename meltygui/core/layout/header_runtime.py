@@ -7,7 +7,6 @@ from typing import MutableMapping
 
 import meltygui.core.windowing.window_api as glfw
 import meltygui_imgui as imgui
-from meltygui.hdr_color import pack_color
 from meltygui.core.styling.style import Style
 from meltygui_imgui.core import _DrawList
 

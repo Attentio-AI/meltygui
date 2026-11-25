@@ -52,9 +52,8 @@ from meltygui.core.input import mouse_cursor
 from meltygui.core.rendering.gui_layout_prototype import anchor, columns, rows
 from meltygui.core.rendering.gui_prototype import gui
 from meltygui.core.rendering.gui_readers import Readers
-from meltygui.hdr_color import pack_color
 from meltygui.view.choice_view import draw_dropdown
-from meltygui.view.value_view import ROW
+from meltygui.view.common.value_view import ROW
 
 # Levers: sizes in logical pixels, colours.
 GAP = 2.0                                   # around each tile, so twice this between two
@@ -66,11 +65,11 @@ REACH = 8.0                                 # how far a drag goes before it spli
 HEAD = 30.0                                 # height of the strip a tile's dropdown sits in
 PICK = 160.0                                # the widest that dropdown gets
 TINT = (0.16, 0.23, 0.29, 1.0)              # a blank tile
-BAR = pack_color(0.11, 0.16, 0.20)          # the strip behind the dropdown
-IDLE = pack_color(1.0, 1.0, 1.0, 0.16)      # a grip
-HOT = pack_color(1.0, 1.0, 1.0, 0.55)       # a grip under the pointer, or held
-GOING = pack_color(1.0, 0.55, 0.15, 0.42)   # over the tile a release would remove
-TEXT = pack_color(1.0, 1.0, 1.0)
+BAR = (0.11, 0.16, 0.20)          # the strip behind the dropdown
+IDLE = (1.0, 1.0, 1.0, 0.16)      # a grip
+HOT = (1.0, 1.0, 1.0, 0.55)       # a grip under the pointer, or held
+GOING = (1.0, 0.55, 0.15, 0.42)   # over the tile a release would remove
+TEXT = (1.0, 1.0, 1.0)
 NOTE = 'Release to join'
 CORNERS = (('nw', True, True), ('ne', False, True), ('se', False, False))   # name, on the left, on the top
 AXES = {'x': 0, 'y': 1}

@@ -40,7 +40,6 @@ from meltygui.model.tile_model import Tile
 from meltygui.model.tile_model import Split
 
 import meltygui.core.input.mouse_cursor as mouse_cursor
-from meltygui.hdr_color import pack_color
 from meltygui.core.runtime.toggles import Tint
 from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.cache.tile_marks import add_shadow
@@ -282,7 +281,7 @@ def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
             grip, on_left, on_top, corner_triangle_size, corner_triangle_inset)
         draw_list.add_triangle_filled(
             ax, ay, bx, by, cx, cy,
-            pack_color(*(corner_hover_color if hot else corner_color)))
+            (corner_hover_color if hot else corner_color))
         if tree is not None and root_frame is not None and tile_state is not None:
             changed = tile_corner_gesture(
                 tile, frame, draw_state, path, tree, root_frame, tile_state,
@@ -482,9 +481,9 @@ def draw_join_preview(tree, root_frame, draw_state, tile_state):
             rect = tile_rect(frame, draw_state)
             if rect is not None:
                 draw_list = imgui.get_window_draw_list()
-                draw_list.add_rect_filled(*rect, pack_color(*preview_color))
+                draw_list.add_rect_filled(*rect, preview_color)
                 draw_list.add_text(rect[0] + 8, rect[1] + 28,
-                                   pack_color(1.0, 1.0, 1.0, 1.0), "Release to merge")
+                                   (1.0, 1.0, 1.0, 1.0), "Release to merge")
             break
 
 
@@ -522,7 +521,7 @@ def draw_split_dividers(layout, axis, frame, draw_state, tile_state=None, path=(
         handle = "col_edge" if axis == "x" else "row_edge"
         hot = hover_shown(draw_state, grab, dragging, view_id=f"{handle}_{path}_{k}")
         draw_list.add_line(*ends,
-                           pack_color(*(divider_hover_color if hot else divider_color)),
+                           (divider_hover_color if hot else divider_color),
                            divider_thickness)
 
 

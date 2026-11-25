@@ -568,11 +568,33 @@ rust is finally fast enough"). Current numbers:
   and shapes, and `draw_any`, which is called like any view and routes by type,
   recursively. (11-12)
 - **Its own decorator**, so it is "less entangled with the core system". (11-12)
+- **The default views are in one folder**, `meltygui/view/common/`, so he can
+  find them: the ones "with @is_default_for configured" are "the main views
+  that I know about and will use frequently". Moved there as they were
+  (`value_view.py`, `dict_view.py`, `color_picker_view.py`), "not a major code
+  refactor, just grouping it all in one spot". New default views are added
+  there: "over time we will replace all the core functionality of
+  @render_func and then at some point clear out all the old code". A `@gui`
+  view that is the default for nothing stays in `meltygui/view/`. (11-25)
 - **Rust routes, Python draws.** The value views (`draw_int`, `draw_float`,
   `draw_bool`, `draw_str`) are small Python `@gui` functions. (11-07)
 - **`draw_collection` draws anything keyed.** It began as dicts only, then:
   "Anything that looks like a dict should be renderable with draw_collection."
   (11-12)
+- **`draw_collection` has a plain background**: one black rectangle with a
+  dark grey outline, exactly the view's box, square corners, no conditions,
+  for every instance (`BACK`, `EDGE` in dict_view.py). (11-25)
+- **Child dicts get the same rect.** "If draw_collection is drawing them
+  serially then it should draw the rects as well": every dict among the rows,
+  open or closed, is boxed around its own row and its open rows. (11-25)
+- **Nested dicts may use any keys; rows never collide.** "Nested dicts are
+  allowed to do whatever they want key wise, key collisions are not
+  acceptable." A row's identity is its keys from the top (`named` in
+  dict_view.py; a key that is no str or int adds its hash, so two keys that
+  print alike stay apart). An edit that returns another value runs no other
+  view: only one made in place reaches the views of the same object
+  (`_propagate` in retained_gui_prototype.py), so equal numbers or texts in
+  other rows, or in a second collection of the same dict, are not run. (11-25)
 - **Code is such a value.** `draw_editor(source)` and `draw_any(source.tree)`
   show the same source, and an edit in either appears in the other. (11-12)
 - **Its views follow the gesture rule** of section 9. (11-12)
@@ -873,6 +895,15 @@ working example.
   through later. (11-11)
 
 ## 17. Colour and HDR
+
+- **A colour is floats; `pack_color` leaves the code that uses Melty**
+  (2026-11-25): "Usage of melty should just specify the floats directly and
+  melty's internals and the manual draw list renderer should interpret them.
+  Pack color cannot be littered around the codebase." A draw list call takes
+  `(r, g, b)` or `(r, g, b, a)`. State: the draw list of `meltygui-imgui`
+  takes them in its working tree (`_color` in core.pyx; inside [0, 1] packed
+  there, outside it by the packer Melty registers with `set_wide_color`), not
+  released or installed yet; the call sites still pack until it is.
 
 - **The main `@gui` colour picker** (2026-11-18): "we need the full p3 color
   range. I'd like brightness values up to 10k nits, which is an expansion
@@ -1295,7 +1326,7 @@ working example.
 - Built to the first row on 2026-11-18 (by Claude; **Lukas has not reviewed
   it**): `meltygui.rust.draw_color` (a chip that opens the picker as a
   `popup=`) and `meltygui.rust.draw_color_picker`
-  ([color_picker_view.py](../meltygui/view/color_picker_view.py), example
+  ([color_picker_view.py](../meltygui/view/common/color_picker_view.py), example
   [gui_color.py](../examples/gui_color.py), tests
   [test_color_picker_view.py](../tests/test_color_picker_view.py)). One
   picking area and no tabs: the sRGB square bottom left, the P3 quadrant

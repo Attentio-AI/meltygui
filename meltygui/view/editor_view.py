@@ -40,7 +40,6 @@ from meltygui.editor.rows import Numbers
 from meltygui.editor.inline import inline, for_token, for_value
 from meltygui.editor.syntax import shift
 from meltygui.core.runtime.toggles import Tint, Toggles
-from meltygui.hdr_color import pack_color
 from meltygui.model.source_model import Source
 from meltygui.state.editor_state import EditorState, LOADING
 import meltygui.core.windowing.window_constants as glfw
@@ -55,7 +54,7 @@ BAR = 10.                        # scroll bar width
 FOLD = 16.                       # gutter strip holding the fold chevrons
 PAD = 6.                         # space left of the line numbers
 CREEP = 1.5                      # rows a second a held selection scrolls, per pixel past the edge
-PLAIN = pack_color(.66, .72, .78)        # text without a token colour
+PLAIN = (.66, .72, .78)        # text without a token colour
 FOUND = (.98, .62, .12)                  # the current search hit: its fill and frame
 FIELD = 24                               # cells of the find bar's field (it grows with a longer term)
 CHIP = 3                                 # cells of an error's chip over the line number
@@ -69,33 +68,33 @@ def look(tint=None):
     """The colour table for a file tinted `tint` ((r, g, b); None: the theme)."""
     return Look(
         # The body: the host's background shows through; a file tint washes it.
-        back=pack_color(*tint[:3], .06) if tint else None,
-        gutter=pack_color(*Tint.line_number_bg()[:3]),
-        number=pack_color(*Tint.line_number_tint(tint)[:3]),
-        caret=pack_color(*Tint.cursor_tint()[:3]),
-        band=pack_color(*Tint.cursor_line_tint()[:3], Toggles.TextEditor.cursor_line_alpha),
-        select=pack_color(*Tint.text_selection()[:3], .4),
-        guide=pack_color(*(tint or Tint.scope_guide())[:3], Toggles.TextEditor.scope_guide_alpha),
+        back=(*tint[:3], .06) if tint else None,
+        gutter=Tint.line_number_bg()[:3],
+        number=Tint.line_number_tint(tint)[:3],
+        caret=Tint.cursor_tint()[:3],
+        band=(*Tint.cursor_line_tint()[:3], Toggles.TextEditor.cursor_line_alpha),
+        select=(*Tint.text_selection()[:3], .4),
+        guide=(*(tint or Tint.scope_guide())[:3], Toggles.TextEditor.scope_guide_alpha),
         guide_width=Toggles.TextEditor.scope_guide_thickness,
-        scope=pack_color(1., 1., 1., .014),                         # a scope without a tint
+        scope=(1., 1., 1., .014),                         # a scope without a tint
         block=.055 * Toggles.TextEditor.def_block_alpha,            # strength of a definition's tint wash
         symbol=.14 * Toggles.TextEditor.def_symbol_alpha,           # strength of the wash behind its uses
-        hit=pack_color(.75, .60, .15, .45),
-        flash=pack_color(.98, .80, .25, .3),
-        folded=pack_color(.55, .60, .68),
-        error=pack_color(.94, .33, .31),
-        chip=pack_color(.62, .13, .15),                             # an error's chip in the gutter
-        glyph=pack_color(1., .80, .78),                             # the glyph on it
-        breakpoint=pack_color(.86, .24, .24),
-        pause=pack_color(.98, .80, .25),
-        paused=pack_color(.98, .80, .25, .16),
-        value=pack_color(.45, .78, .66),
-        pill=pack_color(.45, .78, .66, .13),
-        ghost=pack_color(.66, .70, .78, .5),
-        thumb=pack_color(1., 1., 1., .18),
-        pop=pack_color(.17, .18, .20),
-        pick=pack_color(.21, .39, .64),
-        dim=pack_color(.50, .53, .57))
+        hit=(.75, .60, .15, .45),
+        flash=(.98, .80, .25, .3),
+        folded=(.55, .60, .68),
+        error=(.94, .33, .31),
+        chip=(.62, .13, .15),                             # an error's chip in the gutter
+        glyph=(1., .80, .78),                             # the glyph on it
+        breakpoint=(.86, .24, .24),
+        pause=(.98, .80, .25),
+        paused=(.98, .80, .25, .16),
+        value=(.45, .78, .66),
+        pill=(.45, .78, .66, .13),
+        ghost=(.66, .70, .78, .5),
+        thumb=(1., 1., 1., .18),
+        pop=(.17, .18, .20),
+        pick=(.21, .39, .64),
+        dim=(.50, .53, .57))
 
 
 def font():
@@ -133,7 +132,7 @@ def lit(rgb):
 
 def tone(rgb, alpha, fallback):
     """A mark's colour (an (r, g, b) tuple) at `alpha`, or the shape's own."""
-    return pack_color(rgb[0], rgb[1], rgb[2], alpha) if rgb else fallback
+    return (rgb[0], rgb[1], rgb[2], alpha) if rgb else fallback
 
 
 def span(row, mark):
@@ -1283,8 +1282,8 @@ def switch(input_value: str, width=0., height=0.):
     does, `press`: the first click only puts the caret in the word, as in any text)."""
     dl = imgui.get_window_draw_list()
     imgui.invisible_button('##flip', width, height)
-    dl.add_rect(0, 1, width, height - 1, pack_color(.80, .47, .20, .9 if imgui.is_item_hovered() else .45), 4.)
-    dl.add_circle_filled(width - 4 if input_value == 'True' else 4, height - 3, 2., pack_color(.80, .47, .20))
+    dl.add_rect(0, 1, width, height - 1, (.80, .47, .20, .9 if imgui.is_item_hovered() else .45), 4.)
+    dl.add_circle_filled(width - 4 if input_value == 'True' else 4, height - 3, 2., (.80, .47, .20))
     return False, input_value
 
 
@@ -1295,7 +1294,7 @@ def drag(input_value: str, width=0., height=0., origin=None, draw_state=None):
     imgui.invisible_button('##drag', width, height)
     hovered, active = imgui.is_item_hovered(), imgui.is_item_active()
     if hovered or active:
-        imgui.get_window_draw_list().add_line(0, height - 2, width, height - 2, pack_color(.41, .59, .73), 1.5)
+        imgui.get_window_draw_list().add_line(0, height - 2, width, height - 2, (.41, .59, .73), 1.5)
     if kind is None or not active:
         if origin is not None:
             draw_state.origin = None
@@ -1316,7 +1315,7 @@ def _swatch(input_value, width, height, rgb, write):
     elsewhere or Escape closes it, core/input/focus.py)."""
     dl = imgui.get_window_draw_list()
     pressed = imgui.invisible_button('##colour', width, height)
-    dl.add_rect_filled(1, 3, width - 3, height - 3, pack_color(*rgb[:3]), 3.)
+    dl.add_rect_filled(1, 3, width - 3, height - 3, rgb[:3], 3.)
     edited, picked = picker(rgb, name='picker', popup=pressed, left=0., top=height + 2, height=len(rgb) * 24 + 12)
     # (A held slider reports the literal's rounding as a change on every frame: only another text is an edit.)
     text = write(picked) if edited else input_value
@@ -1328,7 +1327,7 @@ def picker(input_value, width=0., height=0.):
     """Channel sliders over a preview of the colour."""
     dl = imgui.get_window_draw_list()
     dl.add_rect_filled(0, 0, width, height, look().pop, 4.)
-    dl.add_rect_filled(width - 34, 6, width - 6, height - 6, pack_color(*input_value[:3]), 3.)
+    dl.add_rect_filled(width - 34, 6, width - 6, height - 6, input_value[:3], 3.)
     value, changed = list(input_value), False
     imgui.push_item_width(width - 70)
     for at, label in enumerate('rgba'[:len(value)]):
