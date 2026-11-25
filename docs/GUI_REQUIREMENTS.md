@@ -311,6 +311,11 @@ rust is finally fast enough"). Current numbers:
   [WINDOW_COLLISION_COLUMNS.md](WINDOW_COLLISION_COLUMNS.md). (10-09)
 - **Default gestures on every Melty and OS window**: left drag moves, right
   drag resizes. (11-12)
+- **The OS window's left-drag move has no distance threshold**: the first
+  pointer motion of a press the window owns moves it, however slow or short;
+  a press that never moves stays a click. View drags keep the input handler's
+  2 px. Lever: `_MOVE_THRESHOLD` in
+  [titlebar.py](../meltygui/core/windowing/titlebar.py). (2026-11-24)
 - **A view overrides the left drag only for a gesture of its own, over that
   part only.** Text selection replaces moving the window over the text; the
   empty space below the last line still moves it. A container does not take

@@ -152,7 +152,8 @@ def test_hosted_linux_titlebar_keeps_geometry_and_resize_registration(monkeypatc
     monkeypatch.setattr(Melty, 'frame_count', 42)
     monkeypatch.setattr(Melty, 'events', {})
     register = Mock()
-    monkeypatch.setattr(Melty, 'event_handler', SimpleNamespace(register_hovered=register))
+    monkeypatch.setattr(Melty, 'event_handler', SimpleNamespace(
+        register_hovered=register, is_drag_captured=lambda *_: False, press_travel=lambda _: 0.0))
     io = imgui.get_io()
     io.display_size = (800, 600)
     io.mouse_pos = (400, 300)

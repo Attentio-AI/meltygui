@@ -1212,6 +1212,13 @@ class InputHandler:
         s = self._states.get(input_id)
         return s.is_down if s else False
 
+    def press_travel(self, input_id: str) -> float:
+        """Pointer distance (px) from the held press; 0 while the input is up."""
+        s = self._states.get(input_id)
+        if s is None or not s.is_down:
+            return 0.0
+        return ((self._cursor_x - s.down_x) ** 2 + (self._cursor_y - s.down_y) ** 2) ** 0.5
+
     def pointer_press_token(self):
         """Identity of the active pointer press, even across unrendered UP/DOWN.
 

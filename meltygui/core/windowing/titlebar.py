@@ -208,6 +208,17 @@ _STRIP_ID = "enhanced_titlebar_strip"
 _RESIZE_ID = "enhanced_titlebar_rdrag_resize"
 _STRIP_PRIORITY = 10 ** 9
 _wm_move_started = False  # latch: dragged is per-frame, the WM move starts once
+# Pointer travel (px) before a left drag the strip owns moves the OS window.
+# 0 = the first motion moves it; a press that never moves stays a click.
+# View drags keep input_handler.DRAG_THRESHOLD.
+_MOVE_THRESHOLD = 0.0
+
+
+def _move_dragged(handler, events):
+    """The strip owns the held left press and it travelled past _MOVE_THRESHOLD."""
+    return ('non_blocking_left_mouse_dragged' in events
+            or (handler.is_drag_captured('left_mouse', _STRIP_ID)
+                and handler.press_travel('left_mouse') > _MOVE_THRESHOLD))
 
 # Right-drag resize gesture: {"top_left": bool, "x": last total_dx, "y":
 # last total_dy}, latched on the first dragged frame and dropped on release.
@@ -1018,7 +1029,7 @@ def _draw_native_background_move(window):
         cursor=mouse_cursor.MOVE if Toggles.Melty.window_move_cursor else None,
         cursor_gate='left_mouse_dragged')
     events = (Melty.events or {}).get(_STRIP_ID, {})
-    if 'non_blocking_left_mouse_dragged' in events and not _wm_move_started:
+    if not _wm_move_started and _move_dragged(handler, events):
         _wm_move_started = _begin_wm_move(window)
 
 
@@ -1151,7 +1162,7 @@ def draw_titlebar(window):
     if "non_blocking_left_mouse_double_clicked" in strip_events \
             and not Toggles.Melty.disable_double_click_maximize:
         _toggle_maximize(window)
-    elif "non_blocking_left_mouse_dragged" in strip_events and not _wm_move_started:
+    elif not _wm_move_started and _move_dragged(Melty.event_handler, strip_events):
         _wm_move_started = True
         if _begin_wm_move(window):
             return
