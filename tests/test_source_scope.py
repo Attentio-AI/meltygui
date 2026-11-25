@@ -169,3 +169,36 @@ def test_a_statement_is_not_overwritten_by_a_value(knobs):
             branch[key] = 1
     flush()
     assert Path(knobs.__file__).read_text() == module.text == TEXT
+
+
+def test_a_str_that_names_a_file_is_that_file(tmp_path, monkeypatch, capsys):
+    folder = tmp_path / 'Desktop'
+    folder.mkdir()
+    path = folder / 'File.py'
+    path.write_text('GAIN = 1\n')
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.chdir(folder)
+    real = str(path.resolve())
+    # However it is spelled: `~`, the case of a part, blanks and quotes around it, a url, a variable, a relative name.
+    for name in ('~/desktop/file.py', str(path), f'  "{path}"\n', f'file://{path}', '$HOME/Desktop/File.py', './File.py', 'File.py'):
+        source = Source(name)
+        assert type(source) is Scope and source.file is opened(real), name
+    assert Source('~/desktop/file.py').tree['GAIN'] == 1
+    assert Source('~/desktop/file.py', at='disk').file is opened(real)
+    assert not capsys.readouterr().err
+
+    # What is no path stays a text, without a word.
+    for text in ('', 'GAIN = 1', 'file.py', 'a / b', '~x', str(path) + '\n' + str(path), '/' * 5000):
+        assert type(Source(text)) is Source and Source(text).text == text, text
+    assert type(Source(str(path), 'named.py')) is Source and type(Source(str(path), version=1)) is Source
+    assert not capsys.readouterr().err
+
+    # A path with no file is said, and is that file from its first edit on; a folder is said too.
+    missing = Source('~/desktop/new.py')
+    assert type(missing) is Scope and missing.path == str(folder / 'new.py') and missing.text == ''
+    assert 'is not there yet' in capsys.readouterr().err
+    missing.text = 'A = 1\n'
+    flush()
+    assert (folder / 'new.py').read_text() == 'A = 1\n'
+    assert type(Source('~/nowhere/deep/new.py')) is Scope and 'is not there yet' in capsys.readouterr().err
+    assert Source('~/desktop').text == '' and 'is a folder' in capsys.readouterr().err

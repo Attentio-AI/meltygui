@@ -31,6 +31,7 @@ class Document:
     def __init__(self, text='', source=None):
         """`source`: the `Source` holding the text, which this document
         edits along with whoever else does; without one, one is made for `text`."""
+        # (`version=` keeps what was typed a text: a str passed alone may be read as a path.)
         self.source = source if source is not None else Source(text, version=1)
         self.store = self.source.native
         # Undo hook: `record(low, old, new, before, after)` for every `replace` (the session's, see history.py).

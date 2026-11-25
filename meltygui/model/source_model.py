@@ -31,6 +31,7 @@ these events, never by a call from a frame.
 written like a dict, and drawn by `draw_any` (model/tree_model.py).
 
     source = Source(Toggles)                  # anything that is no text: the code of a class, a function or a module
+    source = Source('~/desktop/file.py')      # a str alone that names a file: that file
 
 is the code of that thing: the file it is written in, read, written and
 followed on disk with nothing more to call (model/source_scope_model.py is
@@ -68,6 +69,8 @@ _source_native.builtins([name for name in dir(builtins) if not name.startswith('
 Splice = namedtuple('Splice', 'line column gone old came new')
 # Lever: splices kept for sessions and results that are behind the text.
 LOG = 512
+# Lever: a str passed alone is looked at as a path only up to this length (`Source.__new__`).
+LONGEST = 4096
 
 
 class Source:
@@ -77,9 +80,18 @@ class Source:
     def __new__(cls, text='', path=None, version=0, **how):
         """`Source(text, path)` is a text of its own. Anything else passed first (a class, a
         function, a module, a `Path`) gives the code of that thing: a `Scope` on the file it is
-        written in (model/source_scope_model.py), which takes `how`."""
-        if cls is not Source or text is None or isinstance(text, str):
+        written in (model/source_scope_model.py), which takes `how`. A str passed alone that
+        names a file is that file (`named` there: `Source('~/desktop/file.py')`); with a
+        `path` or a `version` a str is always a text."""
+        if cls is not Source or text is None:
             return object.__new__(cls)
+        if isinstance(text, str):
+            if path is not None or version or not text or len(text) > LONGEST:
+                return object.__new__(cls)
+            from meltygui.model.source_scope_model import named
+            text = named(text)
+            if text is None:
+                return object.__new__(cls)
         from meltygui.model.source_scope_model import Scope
         return Scope(text, **how)
 

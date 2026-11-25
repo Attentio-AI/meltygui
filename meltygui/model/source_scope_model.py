@@ -1,6 +1,7 @@
 """Scope: the code of a class, a function or a module. What `Source(thing)` returns.
 
     toggles = Source(Toggles)            # a class, a function, a method, a module, or a `Path`
+    notes = Source('~/desktop/file.py')  # a str that names a file is that file (`named`: best effort)
     draw_any(toggles.tree)               # its code as keys and values: a class's body, a function's
                                          # `parameters` and `locals`, a module's names
     toggles.tree['show_fps'] = False     # the file on disk says so from here on
@@ -21,18 +22,63 @@ decorated function is the function it wraps (`__wrapped__`), a bound method its 
 property its getter. Where a name is defined twice the last definition is meant. Something
 without a Python source file (built in, typed at a prompt) raises TypeError.
 
-Levers: `where` (what can be passed), `Scope.__init__` (`at`: the spelling of versions; the
+Levers: `where` (what can be passed), `named` (which str is a path), `Scope.__init__` (`at`: the spelling of versions; the
 versions themselves are model/source_version_model.py).
 Not there: a definition under an `if` or `try` (its tree path holds the block, its qualified name
 does not); the decorators above a definition are not part of its `text`.
 Tests: tests/test_source_scope.py.
 """
 import os
+import sys
 import types
 from bisect import bisect_left
 
 # Lever: how many `__wrapped__` are followed (a decorator that wraps itself would never end).
 WRAPS = 32
+# Lever: what a str starts with to be a path whether or not a file is there. Anything else
+# (`file.py`, `$HOME/file.py`, `~name/file.py`) is a path only when a file is there.
+ROOTED = ('~/', '/', './', '../')
+
+
+def fold(path):
+    """`path` with every part that is not there replaced by the one name in its folder that
+    differs only in case (`~/desktop` for `~/Desktop`). A part with no such name, or with two, stays."""
+    if os.path.exists(path):
+        return path
+    above, name = os.path.split(path)
+    if not name or above == path:
+        return path
+    above = fold(above)
+    try:
+        alike = [found for found in os.listdir(above) if found.casefold() == name.casefold()]
+    except OSError:
+        alike = ()
+    return os.path.join(above, alike[0] if len(alike) == 1 else name)
+
+
+def named(text):
+    """The file a str names, or None when it is a text: `Source('~/desktop/file.py')`.
+    Best effort: blanks, quotes and `file://` around it go, `~` and `$VARS` are filled in, a
+    relative name is under the working folder, and the case of a part that is not there is
+    taken from the folder. Nothing raises: a `ROOTED` str without a file is said on stderr and
+    is that file from its first edit on, like a `Path`; any other str without a file is a text."""
+    name = text.strip()
+    if len(name) > 1 and name[0] == name[-1] and name[0] in '\'"':
+        name = name[1:-1]
+    name = name.removeprefix('file://')
+    if not name or '\n' in name or '\0' in name:
+        return None
+    rooted = name.startswith(ROOTED)
+    path = os.path.abspath(os.path.expanduser(os.path.expandvars(name)))
+    if rooted:
+        path = fold(path)
+    if os.path.isfile(path):
+        return path
+    if not rooted:
+        return None
+    what = 'is a folder, not a file' if os.path.isdir(path) else 'is not there yet: the first edit creates it'
+    print(f'meltygui: Source({text!r}): {path} {what}', file=sys.stderr)
+    return path
 
 
 def where(thing):
@@ -40,7 +86,7 @@ def where(thing):
     that file's tree. To take another kind of object, unwrap it to a function or a class here."""
     from meltygui.core.runtime.paths import module_file
     from meltygui.model.tree_model import keys_of
-    if isinstance(thing, os.PathLike):
+    if isinstance(thing, (str, os.PathLike)):          # (a str: a path `named` made of it)
         return os.path.abspath(thing), ()
     module = isinstance(thing, types.ModuleType)
     if not module and not isinstance(thing, type):
