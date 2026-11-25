@@ -108,6 +108,30 @@ holds all of its users (code, state, UI, lifetime). A feature starts as one file
 uses it and grows structure only when a second user appears. The full rule is in
 [docs/APPS.md](docs/APPS.md#designing-a-feature); apply it to any new view, model or app work.
 
+## New `@gui` views and framework features
+
+The global "New features" rules apply. In this project they mean:
+
+- **Sizing contract.** Every view takes the standard `width` / `height` values from `GUI_VIEW_GUIDE.md` (`None`
+  wraps, a number fixes, nothing or a very large number fills) plus `min_width` / `min_height`. Wrap means wrap,
+  never fill, and nothing clips when wrapped.
+- **Contexts to check:** a nested view, `melty_window=True`, `@os_window`, and a caller outside this checkout
+  (`~/Desktop/cleanslate` or `~/Desktop/tile-view`) through `meltygui.rust.draw_thing`. Run `stubs.py` so the
+  IDE sees it.
+- **Degenerate values.** The view draws without crashing when called with no value (state injection), an empty
+  value such as `()` or `{}`, and a view whose saved `draw_state` predates the change. Removing a parameter
+  such as `melty_window=True` returns the view to its default.
+- **Window input.** Left drag on empty space moves the window, right drag resizes, the context menu opens on
+  right mouse up only when there was no drag, and hover does not flicker during a resize.
+- **Idle and double render.** With no input the view does not invalidate, and no view body runs twice in a
+  frame (the red double render mark must not show, also during window resize).
+- **Numbers.** A framework change reports the `@gui` benchmark before and after, including the 512 view worst
+  case (target under 8 ms) and input latency when frame timing is touched.
+- **Nothing hidden.** No new parameter, mechanism, guide rule or framework check without Lukas asking for it.
+  The report lists every public name it added. `GUI_VIEW_GUIDE.md` holds only what Lukas decided.
+- **Show the usage.** The report includes a minimal snippet, caller side and view side, and a new feature gets
+  a minimal demo in `~/Desktop/cleanslate`.
+
 ## Verification
 
 Preserve unrelated work/sessions; the editor refactor is deferred. Run focused
