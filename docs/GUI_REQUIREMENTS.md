@@ -46,6 +46,10 @@ How to read it:
 - **Merged back on 11-13**: `rust-editor-pathfinding` into
   `melty-rust-prototype`, so `~/Desktop/meltygui` carries the runtime that
   new projects install.
+- **All development has shifted to `@gui`; `@render_func` is deprecated**
+  (2026-11-25): "Assume all future chats are referring to @gui unless
+  otherwise specified." The legacy code still exists, but nothing new is built
+  on it. `AGENTS.md` opens with this rule.
 
 ## 2. Performance
 

@@ -6,9 +6,15 @@ These rules reduce boilerplate and maximize reuse of views and models.
 Full design: [CONTRIBUTING.md](CONTRIBUTING.md). Existing code is not always the
 intended pattern; see [known gaps](docs/ARCHITECTURE_DEBT.md).
 
-**Rust `@gui`.** `@render_func` is being reimplemented in Rust as `@gui`
-(`@os_window`, `draw_editor`, `meltygui.rust.draw_any`), beside the code these
-rules describe. It was built in the worktree `~/Desktop/meltygui-rust-editor`
+**All development is on `@gui`; `@render_func` is deprecated** (2026-11-25).
+Assume every request, in every chat, is about `@gui` unless Lukas names
+`@render_func` or the legacy code. Build new views, fixes and features in `@gui`;
+do not add to or extend `@render_func` code unless he asks for that specifically.
+
+**Rust `@gui`.** `@gui` is the Rust reimplementation of `@render_func`
+(`@os_window`, `draw_editor`, `meltygui.rust.draw_any`); it sits beside the
+legacy code the rules below were written for, and they apply to it as restated
+in `GUI_REQUIREMENTS.md`. It was built in the worktree `~/Desktop/meltygui-rust-editor`
 (branch `rust-editor-pathfinding`) and merged into `~/Desktop/meltygui`
 (`melty-rust-prototype`) on 2026-11-13; both carry it.
 Before writing a view or changing `@gui` code read, in `docs/`:
