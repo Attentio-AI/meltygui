@@ -63,6 +63,28 @@ import bridge to the same namespaced binding. Importing upstream `imgui` first
 is rejected when opting into the prototype, since its native contexts are
 incompatible. This does not replace either installed distribution.
 
+### The imgui binding
+
+`meltygui-imgui` is developed with MeltyGUI and is not frozen: on a development machine it is run
+from its checkout, not from a release. `pyproject.toml` says so (`[tool.uv.sources]`): a project
+that installs MeltyGUI from disk with uv gets `../meltygui-imgui` (and `../melty-meta`) from disk
+too, as editable installs. Every environment then loads the one extension built in that folder.
+
+```sh
+.venv/bin/python tools/link_imgui.py                 # link the environments that exist already
+```
+
+After a change to the binding (`core.pyx`, a header), build it once in its folder; no version
+bump, release or reinstall, and every project has it at its next launch:
+
+```sh
+cd ../meltygui-imgui
+uv run --no-project --python 3.12 --with Cython==0.29.37 --with setuptools python setup.py build_ext --inplace
+```
+
+A release to PyPI is for the published wheels only (`../meltygui-imgui/MELTYGUI.md`); a wheel of
+MeltyGUI resolves the binding from there, by the version range in `dependencies`.
+
 ### Tensor dependencies
 
 ```sh

@@ -67,3 +67,10 @@ cwd = "examples"
 module = "examples/rust_example.py"
 
 [tool.melty.tasks."Run examples/rust_example.py".env]
+
+# Checkouts side by side: a project that installs this one from disk gets the imgui binding from
+# disk too, as one editable build shared by every environment (docs/DEVELOPMENT.md, "The imgui
+# binding"). uv reads this for a path install only; a published wheel resolves from PyPI.
+[tool.uv.sources]
+meltygui-imgui = { path = "../meltygui-imgui", editable = true }
+melty-meta = { path = "../melty-meta", editable = true }

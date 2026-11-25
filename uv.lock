@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11, <3.14"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -314,40 +314,40 @@ wheels = [
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cublas", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-cuda-nvrtc", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cuda-runtime", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 cufft = [
-    { name = "nvidia-cufft", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cufft", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-nvjitlink", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 cufile = [
-    { name = "nvidia-cufile", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "nvidia-cufile", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cuda-cupti", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 cusolver = [
-    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-cusolver", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cublas", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-cusolver", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-cusparse", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-nvjitlink", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cusparse", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-nvjitlink", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-nvjitlink", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cuda-nvrtc", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-nvtx", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 
 [[package]]
@@ -814,6 +814,16 @@ wheels = [
 ]
 
 [[package]]
+name = "melty-meta"
+version = "0.1.0"
+source = { editable = "../melty-meta" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8" }]
+
+[[package]]
 name = "meltygui"
 version = "0.1.9"
 source = { editable = "." }
@@ -825,6 +835,7 @@ dependencies = [
     { name = "jedi" },
     { name = "libcst" },
     { name = "mcp" },
+    { name = "melty-meta" },
     { name = "meltygui-imgui" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -879,7 +890,8 @@ requires-dist = [
     { name = "libcst", specifier = ">=1.4" },
     { name = "line-profiler", marker = "extra == 'profile'", specifier = ">=4" },
     { name = "mcp", specifier = ">=2.0" },
-    { name = "meltygui-imgui", specifier = ">=2.0.6,<2.0.7" },
+    { name = "melty-meta", editable = "../melty-meta" },
+    { name = "meltygui-imgui", editable = "../meltygui-imgui" },
     { name = "meltygui-pycuda", marker = "sys_platform == 'linux' and extra == 'tensor'", specifier = ">=2026.3,<2026.4" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "packaging", specifier = ">=24" },
@@ -911,16 +923,34 @@ dev = [
 [[package]]
 name = "meltygui-imgui"
 version = "2.0.6"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ad/e7/ad510943e30045b1a2accfc892fa925f6a9dccb57e545c1fae420d7f80ae/meltygui_imgui-2.0.6.tar.gz", hash = "sha256:e2cd39122a11335aa486cba6b153aa31a2fe61553a88ae01e7d1d985f5de30c4", size = 1530704, upload-time = "2026-11-25T09:28:05.214676Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ff/b0/360befabf51b70915f43a8204304a31e033e34c7ebe8e9609394b4cc1afa/meltygui_imgui-2.0.6-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:98f06ed20412f938680cc15a2dbccc1c430f4a7c053b41e9c00bc22cec647969", size = 8096250, upload-time = "2026-11-25T09:27:58.319974Z" },
-    { url = "https://files.pythonhosted.org/packages/21/aa/81c0dd66c6ec6cff097ff4401252f09b5b1c3f88afa9292fbbebb8b8b2f0/meltygui_imgui-2.0.6-cp311-cp311-win_amd64.whl", hash = "sha256:823638afdfda08627c581bf57383c815d91b20acb31430df8cb69927880e6033", size = 1892222, upload-time = "2026-11-25T09:27:55.171327Z" },
-    { url = "https://files.pythonhosted.org/packages/46/24/75a6f1d6751ff974f76967ed3b8297e95abdf9656b9d865a9fb7bb6d0280/meltygui_imgui-2.0.6-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:58943ab64d8fba8bf640a10b23b279e55bfb2e53b9406d7cddf9394f5522ee51", size = 8235795, upload-time = "2026-11-25T09:27:56.763552Z" },
-    { url = "https://files.pythonhosted.org/packages/b3/44/82fae1710a52d85b8004c5df84b0516bd54a95082a61ccd673a0766145df/meltygui_imgui-2.0.6-cp312-cp312-win_amd64.whl", hash = "sha256:d532b635733dadac7cee8da0738672f92720eeccdaabfaf6a1b33e14b255d0d5", size = 1896354, upload-time = "2026-11-25T09:28:03.911612Z" },
-    { url = "https://files.pythonhosted.org/packages/f4/3e/ddd10d6a8d977ecdfb1db7963c23e543f3e4b1b33445c8cdc8780adf09a2/meltygui_imgui-2.0.6-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6394b0dd2827981192af70dd99c280d85579b1995c4ce273f623047a6f4b603d", size = 8669331, upload-time = "2026-11-25T09:28:00.438537Z" },
-    { url = "https://files.pythonhosted.org/packages/a8/18/3d79f01d347bbef2c88f86fdc451ee1be66ec20a2852ed07d22f50a48020/meltygui_imgui-2.0.6-cp313-cp313-win_amd64.whl", hash = "sha256:28703ac567930f176d6b99f07996022d7dabc020dcb99e313b90bafef162d760", size = 2060533, upload-time = "2026-11-25T09:28:02.545654Z" },
+source = { editable = "../meltygui-imgui" }
+
+[package.metadata]
+requires-dist = [
+    { name = "cocos2d", marker = "extra == 'cocos2d'" },
+    { name = "cocos2d", marker = "extra == 'full'" },
+    { name = "cython", marker = "extra == 'cython'", specifier = ">=0.24,<0.30" },
+    { name = "cython", marker = "extra == 'full'", specifier = ">=0.24,<0.30" },
+    { name = "glfw", marker = "extra == 'full'" },
+    { name = "glfw", marker = "extra == 'glfw'" },
+    { name = "pygame", marker = "extra == 'full'" },
+    { name = "pygame", marker = "extra == 'pygame'" },
+    { name = "pyglet", marker = "sys_platform == 'darwin' and extra == 'cocos2d'", specifier = ">=1.5.6" },
+    { name = "pyglet", marker = "sys_platform == 'darwin' and extra == 'full'", specifier = ">=1.5.6" },
+    { name = "pyglet", marker = "sys_platform == 'darwin' and extra == 'pyglet'", specifier = ">=1.5.6" },
+    { name = "pyglet", marker = "sys_platform != 'darwin' and extra == 'full'" },
+    { name = "pyglet", marker = "sys_platform != 'darwin' and extra == 'pyglet'" },
+    { name = "pyopengl", marker = "extra == 'cocos2d'" },
+    { name = "pyopengl", marker = "extra == 'full'" },
+    { name = "pyopengl", marker = "extra == 'glfw'" },
+    { name = "pyopengl", marker = "extra == 'opengl'" },
+    { name = "pyopengl", marker = "extra == 'pygame'" },
+    { name = "pyopengl", marker = "extra == 'pyglet'" },
+    { name = "pyopengl", marker = "extra == 'sdl2'" },
+    { name = "pysdl2", marker = "extra == 'full'" },
+    { name = "pysdl2", marker = "extra == 'sdl2'" },
 ]
+provides-extras = ["cython", "cocos2d", "sdl2", "glfw", "pygame", "opengl", "pyglet", "full"]
 
 [[package]]
 name = "meltygui-pycuda"

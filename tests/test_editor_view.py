@@ -479,7 +479,7 @@ def test_a_callers_marks_paint_by_shape_and_follow_edits_made_since_they_were_co
     editor.frame(marks={'spell': stale})
     assert ed.marks['spell'] is spell, 'a set too old to follow is not shown'
     assert view.recolour([(0, 'abc def', 'default'), (7, '12', 'number')], [Mark('color', 2, 8, (1., 0., 0.), 1.)], {}) == [
-        (0, 'ab', view.PLAIN), (2, 'c def', (1., 0., 0.)), (7, '1', (1., 0., 0.)),
+        (0, 'ab', view.PLAIN), (2, 'c def', (1., 0., 0., 1.)), (7, '1', (1., 0., 0., 1.)),
         (8, '2', view.PLAIN)]
 
 

@@ -904,6 +904,15 @@ working example.
   takes them in its working tree (`_color` in core.pyx; inside [0, 1] packed
   there, outside it by the packer Melty registers with `set_wide_color`), not
   released or installed yet; the call sites still pack until it is.
+  Done the same day: released as 2.0.6, and every `pack_color` call of the
+  library, the examples, `meltygui_pro` and the code editor is a tuple of
+  floats. `pack_color` stays in hdr_color.py as the packer the binding asks.
+- **The binding is run from disk, not released per change** (2026-11-25):
+  "when a project pulls in meltygui from the filesystem, it gets
+  meltygui-imgui from the file system ... Nothing is frozen we shouldn't be
+  doing this constant release cycle for prototype changes." `[tool.uv.sources]`
+  in pyproject.toml, `tools/link_imgui.py`, docs/DEVELOPMENT.md ("The imgui
+  binding").
 
 - **The main `@gui` colour picker** (2026-11-18): "we need the full p3 color
   range. I'd like brightness values up to 10k nits, which is an expansion
