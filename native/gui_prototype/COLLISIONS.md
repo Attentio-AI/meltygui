@@ -57,9 +57,12 @@ the body. The prototype title strip is 28 pixels. `movable=False` and
 - Minimum compression pushes; capped expansion pulls. An uncapped span does
   not transmit a maximum pull. Connected layouts can push or pull their
   enclosing internal/native frames, subject to backend capabilities.
-- Dividers use left drag. Right drag over a cell selects its local far edges;
-  holding the second right click selects near edges. The other axis falls
-  back to its enclosing window. Gesture targets stay captured until release.
+- Dividers use left drag. Right drag over a cell selects, per axis, the edge
+  nearest the press: the near edge (left / top) within `min(BAND, BAND_SHARE
+  of the cell's span)` of it, 400 px and 30% in `gui_layout_prototype.py`,
+  else the far edge. Holding the second right click selects near edges from
+  anywhere. An axis without a cell under the pointer falls back to its
+  enclosing window, with the same band over that window's span. Gesture targets stay captured until release.
 - Unclaimed native background left drags pass to the existing host window-manager
   move gesture, as in core render. The retained graph observes the resulting OS
   positions and carries local child geometry; it does not issue competing moves.

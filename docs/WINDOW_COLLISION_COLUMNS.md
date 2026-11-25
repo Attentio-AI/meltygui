@@ -31,8 +31,8 @@ This does not enable general window-to-window collision. The native containment 
 | Gesture | Meaning |
 | --- | --- |
 | Left-click drag on a movable window | Move the window. |
-| Right-click, hold and drag | Resize toward bottom/right. |
-| Double-right-click, hold the second press and drag | Resize toward top/left. |
+| Right-click, hold and drag | Resize by the corner of the cell nearest the press (the quadrant rule below); bottom/right from most of the cell. |
+| Double-right-click, hold the second press and drag | Resize toward top/left, from anywhere in the cell. |
 | Left-click drag on a column or row divider | Move that divider and propagate its layout constraints. |
 
 Left-dragging any unclaimed empty space in a native app window moves that window; the header is only one valid area. Nested layout bodies belonging to that native frame must pass background movement through. Interactive controls keep their own gestures, and fixed floating popovers must not accidentally start native window movement.
@@ -40,6 +40,10 @@ Left-dragging any unclaimed empty space in a native app window moves that window
 Both window gestures are defaults of every Melty and OS window (clarified by Lukas on 2026-11-12). A view may override the left drag for a gesture of its own: text selection in an editor replaces window movement, over its text only: the empty space below the last line still moves the window. It does not override the right drag: right-drag resizing works over an editor, as over any other content. In the `@gui` host a view takes the left drag by asking its `event` about the left button (`core/input/event.py`, routed by `core/rendering/gui_imgui_input.py`); nothing a view asks takes the right drag.
 
 Left+right-button corner switching is dead. Ctrl+right is also historical, not the current gesture. Do not restore either based on old conversations or comments. Double-right means the second press is held for dragging, not that a completed double-click starts an unrelated later drag.
+
+**The quadrant rule** (decided by Lukas on 2026-11-25; the rule his Hyprland compositor uses). Each axis is decided on its own, once, at the right press, from where the press is inside the cell that axis resolves to. A press within the band of the cell's near edge (left on x, top on y) moves the near edge; any other press moves the far edge (right, bottom). The band is `min(400 px, 30% of the cell's span on that axis)`; 400 px is the compositor's `general:right_drag_resize_corner_band` default. The four quadrants are therefore the cell's four corners, and bottom/right is by far the largest. Where an axis has no layout cell under the pointer, its cell is the enclosing window (an internal Melty window, else the native frame) and the same band applies to that window's span. Double-right still takes the near edge on both axes from anywhere. Whichever edge is picked, the cell's other edge is the opposite edge for the solver, so minimum push, maximum pull, growth on the other side at a wall and sticky reversal are unchanged.
+
+Implemented for `@gui` (`grab` in `core/rendering/gui_layout_prototype.py`; levers `BAND` and `BAND_SHARE` at its top). `@render_func` still has the earlier behavior: a plain right drag always takes the far edges, and only double-right takes the near ones. So does the host's resize of the OS window from a place with no `@gui` row, column or Melty window under the pointer (`poll_os_window_drag` in `core/windowing/titlebar.py`), which both systems share.
 
 A right-drag over a column must affect the appropriate column edge, rather than always resizing only the outer native window. Bottom/right selects the rightward boundary; top/left selects the leftward boundary. The vertical component acts on the applicable row boundary or enclosing window edge. Rows have the same behavior with axes exchanged. In a simple columns-only layout, horizontal movement changes the selected column boundary and vertical movement changes the enclosing window's top or bottom.
 
@@ -329,7 +333,7 @@ These scenarios define useful verification coverage; this documentation pass did
 
 | Scenario | Required observation |
 | --- | --- |
-| Plain and double-right drag | Bottom/right and top/left respectively; no left+right corner-switch requirement. |
+| Plain and double-right drag | Plain: per axis, a press within `min(400 px, 30% of the span)` of the cell's left / top edge moves that edge, any other press the right / bottom one (2026-11-25; `@gui` only, `@render_func` is still bottom/right from anywhere). Double-right: top/left from anywhere. No left+right corner-switch requirement. |
 | Column at minimum, dragged in either direction | Opposite edge pushes; neighboring minimum constraints cascade. |
 | Column at maximum, dragged in either direction | Opposite edge pulls; slack is consumed before a pull propagates. |
 | Same cases for rows | Equivalent vertical behavior. |

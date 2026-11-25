@@ -18,8 +18,9 @@ class LabState(DictConversion):
 def controls(input_value: object, draw_state=None):
     state=input_value
     imgui.text('Rust collision laboratory')
-    imgui.text('Left drag a divider. Right drag a cell.')
-    imgui.text('Hold the second right click for top/left.')
+    imgui.text('Left drag a divider. Right drag a cell:')
+    imgui.text('near its left / top edge moves that edge,')
+    imgui.text('elsewhere right / bottom. Second right click: top/left.')
     changed,state.show_window=imgui.checkbox('Floating window',state.show_window)
     edited,state.show_nested=imgui.checkbox('Nested window',state.show_nested)
     changed |= edited

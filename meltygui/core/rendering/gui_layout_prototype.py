@@ -12,6 +12,11 @@ import math
 # Lever: a view whose far edge is within this of its window's far edge fills the window (`anchor`).
 FILLS = 0.5
 
+# Levers: a right press within this of a cell's left / top edge resizes by that edge, else by
+# the right / bottom one. BAND is the compositor's general:right_drag_resize_corner_band default.
+BAND = 400          # px
+BAND_SHARE = 0.3    # of the cell's span, the cap for small cells
+
 
 RECT = ('left', 'top', 'width', 'height')     # the fields of a view's state that are its rectangle
 
@@ -982,13 +987,13 @@ class GuiGeometry:
                     graph=self.axes[axis]
                     for index,(a,b) in enumerate(zip(layout.edges,layout.edges[1:])):
                         if graph.position(a)<=point[axis]<graph.position(b):
-                            targets[axis]=(a,b,layout.owner) if reverse else (b,a,layout.owner)
+                            targets[axis]=(*self.grab(axis,a,b,point[axis],reverse),layout.owner)
                             break
                 for axis in range(2):
                     if axis in targets:continue
                     pair=self.windows[portal][axis] if portal else self.native.pairs[axis] if self.native else None
                     if pair:
-                        targets[axis]=(pair[0],pair[1],portal) if reverse else (pair[1],pair[0],portal)
+                        targets[axis]=(*self.grab(axis,*pair,point[axis],reverse),portal)
             if targets:
                 self.sequence+=1
                 self.gesture={'targets':targets,'start':pointer,'token':self.sequence,
@@ -1039,6 +1044,13 @@ class GuiGeometry:
         button_up=right_released if gesture['button'] else released
         if button_up or not button_down:self.end_gesture()
         return True
+
+    def grab(self,axis,near,far,at,reverse=False):
+        """(moved edge, opposite edge) of the cell `near`..`far` for a right press at `at`."""
+        position=self.axes[axis].position
+        low=position(near)
+        if reverse or at-low<min(BAND,(position(far)-low)*BAND_SHARE):return near,far
+        return far,near
 
     def descendant(self,node,ancestor):
         while node:

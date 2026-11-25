@@ -6,7 +6,7 @@ import pytest
 from meltygui.core.rendering.retained_gui_prototype import RetainedGui
 
 
-def scene(graphics=False,freeze=False):
+def scene(graphics=False,freeze=False,width=400):
     cache=RetainedGui(graphics=graphics)
     calls=Counter(); ids={}; layouts={}; model={'show':True,'fail':False}
 
@@ -20,7 +20,7 @@ def scene(graphics=False,freeze=False):
                                                        0xFF0000FF if key=='a' else 0xFF00FF00)
         return False,input_value
 
-    @cache.gui(width=400,height=200)
+    @cache.gui(width=width,height=200)
     def root(input_value):
         calls['root']+=1; ids['root']=cache.current
         if model['show']:
@@ -125,6 +125,98 @@ def test_right_drag_selects_cell_and_native_other_axis():
         assert geometry.axes[1].position(native.pairs[1][1])==300
         geometry.pointer((70,60),right_released=True)
         assert geometry.gesture is None
+    finally:cache.close()
+
+
+def right_drag(cache,press,by=(20,20),reverse=False):
+    """Right press at `press` (surface pixels), drag by `by` and back: per axis, the edge that moved."""
+    g=cache.geometry
+    end=(press[0]+by[0],press[1]+by[1])
+    # drag_position as the host gives it: travel that a moving native origin does not feed back.
+    g.pointer(press,drag_position=press,right_down=True,right_pressed=True,reverse=reverse)
+    targets=dict(g.gesture['targets']); base=[graph.values() for graph in g.axes]
+    g.pointer(end,drag_position=end,right_down=True)
+    for axis,(edge,opposite,_) in targets.items():
+        assert g.axes[axis].position(edge)==base[axis][edge]+by[axis]
+        assert g.axes[axis].position(opposite)==base[axis][opposite]
+    g.pointer(end,drag_position=press,right_down=True)
+    assert [graph.values() for graph in g.axes]==base
+    g.pointer(end,drag_position=press,right_released=True)
+    assert g.gesture is None
+    return tuple(targets[axis][0] for axis in range(2))
+
+
+# Cell b is 200..400 of the 400 x 200 surface: x takes the cell, y the native frame.
+# Both spans are 200, so the band is 30% of them, 60 px.
+@pytest.mark.parametrize('press,near',[((230,30),(True,True)),((370,30),(False,True)),
+                                       ((230,170),(True,False)),((370,170),(False,False)),
+                                       ((259,59),(True,True)),((260,60),(False,False))])
+def test_right_drag_takes_the_corner_of_the_cell_nearest_the_press(press,near):
+    cache,root,calls,ids,layouts,_=scene()
+    try:
+        native=attach_native(cache)
+        cell=layouts['main'].edges[1:]
+        assert right_drag(cache,press)==(cell[not near[0]],native.pairs[1][not near[1]])
+    finally:cache.close()
+
+
+def test_right_drag_near_band_is_at_most_400_px():
+    from meltygui.core.rendering.gui_native_collision import NativeCollision
+    cache,root,calls,ids,layouts,_=scene(width=3000)
+    try:
+        native=cache.geometry.native=NativeCollision(cache.geometry)
+        native.observe((((100.,3100.),(100.,300.)),((0.,4000.),(0.,900.)),'feed',1,((),())))
+        left,middle,_=layouts['main'].edges                 # cell a is 1500 wide: 30% would be 450
+        assert right_drag(cache,(399,100))[0]==left
+        assert right_drag(cache,(400,100))[0]==middle
+    finally:cache.close()
+
+
+# The window is 250 x 208 with its title, at (80, 50): the bands are 75 and 62.4 px.
+# Every press is clear of the nested window at (110, 103), 100 x 88.
+@pytest.mark.parametrize('press,near',[((85,55),(True,True)),((325,55),(False,True)),
+                                       ((85,253),(True,False)),((325,253),(False,False)),
+                                       ((154,60),(True,True)),((155,60),(False,True)),
+                                       ((85,112),(True,True)),((85,113),(True,False))])
+def test_right_drag_takes_the_corner_of_the_window_nearest_the_press(press,near):
+    cache,ids,_=window_scene()
+    try:
+        attach_native(cache,600,450)
+        pairs=cache.geometry.windows[ids['window']]
+        assert right_drag(cache,press,by=(10,10))==tuple(pairs[axis][not near[axis]] for axis in range(2))
+    finally:cache.close()
+
+
+def test_double_right_drag_takes_both_near_edges_from_the_far_corner():
+    cache,root,calls,ids,layouts,_=scene()
+    try:
+        native=attach_native(cache)
+        assert right_drag(cache,(370,170),reverse=True)==(layouts['main'].edges[1],native.pairs[1][0])
+    finally:cache.close()
+    cache,ids,_=window_scene()
+    try:
+        attach_native(cache,600,450)
+        pairs=cache.geometry.windows[ids['window']]
+        assert right_drag(cache,(320,240),by=(10,10),reverse=True)==(pairs[0][0],pairs[1][0])
+    finally:cache.close()
+
+
+def test_near_edge_right_drag_pushes_at_the_minimum_and_reverses_exactly():
+    cache,root,calls,ids,layouts,_=scene()
+    try:
+        native=attach_native(cache)
+        g=cache.geometry;graph=g.axes[0]
+        left,divider,right=layouts['main'].edges
+        start=graph.values()
+        g.pointer((230,100),right_down=True,right_pressed=True)
+        g.pointer((330,100),right_down=True)
+        assert [graph.position(e) for e in (left,divider,right)]==[100,400,500]
+        g.pointer((530,100),right_down=True)                # cell b at its minimum of 70 pushes the frame
+        assert [graph.position(e) for e in (left,divider,right)]==[100,600,670]
+        assert graph.position(native.pairs[0][1])==670
+        g.pointer((230,100),right_down=True)
+        assert graph.values()==start
+        g.pointer((230,100),right_released=True)
     finally:cache.close()
 
 
@@ -297,7 +389,8 @@ def test_child_opposite_edge_does_not_carry_native_resize(native_y,framed_root,n
         native=g.native=NativeCollision(g)
         native.observe((((100,700),(native_y,native_y+450)),((0,1200),(0,900)),'feed',1,((),())))
         before=g.frame_rect(ids['child'])
-        start=(before[0]-100+10,before[1]-native_y+10)
+        # Past the near bands (30% of 250 x 180), so the press takes the far edges.
+        start=(before[0]-100+100,before[1]-native_y+100)
         # Bottom meets the display, then the active child's top moves upward.
         # Only after it reaches the native top may it push that top upward too.
         opposite_top=native_y/2

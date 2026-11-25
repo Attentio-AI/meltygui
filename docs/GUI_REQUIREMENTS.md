@@ -323,6 +323,19 @@ rust is finally fast enough"). Current numbers:
   biggest miss" in the first `draw_any`. (11-12)
 - **Nothing overrides the right drag.** "Right click drag should be robust and
   always work to resize windows/columns/etc." (11-11)
+- **A right drag resizes by the corner nearest the press** (2026-11-25), the
+  rule of Lukas's Hyprland compositor, which he wants as "the universal behavior". Each
+  axis is decided on its own at the press: within the band of the cell's left
+  / top edge the drag moves that edge, anywhere else the right / bottom one.
+  The band is `min(400 px, 30% of the cell's span)`. An axis with no row or
+  column under the pointer uses its Melty window, else the OS window, as the
+  cell. Double-right still takes top/left from anywhere. Levers: `BAND` and
+  `BAND_SHARE` in
+  [gui_layout_prototype.py](../meltygui/core/rendering/gui_layout_prototype.py).
+  Built the same day for `@gui`; `@render_func` keeps bottom/right from
+  anywhere, and so does the host's OS-window resize where no `@gui` layout or
+  Melty window is under the pointer (`poll_os_window_drag`, titlebar.py).
+  Rule: [WINDOW_COLLISION_COLUMNS.md](WINDOW_COLLISION_COLUMNS.md#gestures).
 - **A right click acts on release**, because a right press may be the start of
   a resize. (11-13)
 - **Window movement stays locked to the pointer**, without a frame of lag.
