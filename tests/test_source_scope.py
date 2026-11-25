@@ -84,7 +84,7 @@ def test_source_of_a_text_is_what_it_was():
     source = Source('GAIN = 1\n', 'path.py')
     assert type(source) is Source and source.path == 'path.py' and source.text == 'GAIN = 1\n' and not source.fixed
     assert type(Source()) is Source and Source().text == '' and type(Source(None)) is Source
-    assert type(Source(Code('a + b'))) is Source                    # any str is a text
+    assert type(Source(Code('a + b'))) is Source                    # a str that names no file is a text
     with pytest.raises(TypeError):
         Source('GAIN = 1\n', at='launch')                           # a text has no versions
 

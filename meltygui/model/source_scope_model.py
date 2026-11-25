@@ -69,13 +69,16 @@ def named(text):
     if not name or '\n' in name or '\0' in name:
         return None
     rooted = name.startswith(ROOTED)
-    path = os.path.abspath(os.path.expanduser(os.path.expandvars(name)))
-    if rooted:
-        path = fold(path)
+    if '$' in name:
+        name = os.path.expandvars(name)
+    if name[0] == '~':
+        name = os.path.expanduser(name)
+    if not rooted:
+        # (A text of one line costs one look at the disk here, and nothing else.)
+        return os.path.abspath(name) if os.path.isfile(name) else None
+    path = fold(os.path.abspath(name))
     if os.path.isfile(path):
         return path
-    if not rooted:
-        return None
     what = 'is a folder, not a file' if os.path.isdir(path) else 'is not there yet: the first edit creates it'
     print(f'meltygui: Source({text!r}): {path} {what}', file=sys.stderr)
     return path

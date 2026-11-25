@@ -195,6 +195,7 @@ A prototype (2026-11-17, by Claude; **Lukas has not reviewed it**), beside
 
 ```python
 toggles = Source(Toggles)              # a class, a function, a method, a module, or a Path
+notes = Source('~/desktop/file.py')    # a str that names a file is that file
 draw_any(toggles.tree)                 # a class's body, a function's parameters and locals, a module's names
 toggles.tree['show_fps'] = False       # the file on disk says so: nothing to save
 toggles.text                           # its source; set it and the file changes
@@ -225,8 +226,18 @@ code: no load, no save, no dirty flag, no pending text.
   typed at a prompt, a `partial`) raises `TypeError`.
 - **`scope.tree`** is the `Branch` at that path. A scope whose code is gone (the
   class was renamed in the file) is empty and comes back when the code does.
-- **A str is still a text.** `Source('x = 1\n', path)` is what it was; only a
-  first argument that is no str takes the new path (`Source.__new__`).
+- **A str is a text, unless it is passed alone and names a file**
+  (2026-11-24; `named`, source_scope_model.py). `Source('x = 1\n', path)` is
+  what it was, and so is any str given with a `path` or a `version` (what the
+  editor's own fields pass, so typed text is never a path).
+  `Source('~/desktop/file.py')` is the file, by best effort: blanks, quotes and
+  `file://` around it go, `~` and `$VARS` are filled in, a relative name is
+  under the working folder, and a part that is not there takes its case from
+  the folder (`~/desktop` for `~/Desktop`). Nothing raises. A str that starts
+  with `~/`, `/`, `./` or `../` (`ROOTED`) is a path even with no file there:
+  that is said on stderr and, like a `Path`, the first edit creates it. Any
+  other str is a path only when a file is there, else the text it always was;
+  that look costs a text of one line about 1 us (one `stat`).
   `Source(thing)` returns a `Scope`, which is not an instance of `Source`: pass
   `scope.file` where a `Source` is wanted (`draw_editor`).
 - **Versions** are `at=`: `'disk'` (the default), `'launch'`, or a git revision.

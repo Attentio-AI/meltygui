@@ -704,6 +704,13 @@ rust is finally fast enough"). Current numbers:
   [test_source_scope.py](../tests/test_source_scope.py),
   [test_source_version.py](../tests/test_source_version.py),
   [test_source_file_view.py](../tests/test_source_file_view.py). (2026-11-17)
+- **A str that names a file is that file.** `Source('~/desktop/file.py')`:
+  "make its best effort to turn it into a path", and "have it fail
+  gracefully". Built the same day (`named`, model/source_scope_model.py): a str
+  passed alone; `~`, `$VARS`, a relative name and the case of a part are
+  resolved; nothing raises. Claude's reading of "gracefully", not his words: a
+  path with no file is said on stderr and is created by its first edit, as a
+  `Path` is; a str that is no path stays a text. (2026-11-24)
 - **Cross file symbols**: one roster per project, owned by Melty's shared
   runtime and injected. Python says which files belong and pushes current
   text; a Rust thread reads and indexes. (11-11, approved)
