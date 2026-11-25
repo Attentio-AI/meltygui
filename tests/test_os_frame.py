@@ -1586,7 +1586,7 @@ def test_background_release_applies_only_its_remaining_motion(studio, monkeypatc
     monkeypatch.setattr(Melty, 'event_handler', handler)
     monkeypatch.setattr(Melty, 'events', {tb._RESIZE_ID: {
         'non_blocking_right_mouse_dragged': SimpleNamespace(total_dx=100.0, total_dy=0.0)}})
-    monkeypatch.setattr(tb, '_rdrag', {'top_left': False, 'x': 80.0, 'y': 0.0})
+    monkeypatch.setattr(tb, '_rdrag', {'index': (1, 1), 'x': 80.0, 'y': 0.0})
     tb.poll_os_window_drag()
     assert os_frame._STATE['pending']['x'] == [(1, 20.0)]
     assert tb._rdrag is None
@@ -1970,3 +1970,41 @@ def test_regrab_at_display_wall_starts_from_current_native_frame(studio, monkeyp
     os_frame.queue_drag('x', 1, -10.)
     app_frame(studio, root)
     assert os_x() == (near, far - 10.)
+
+
+@pytest.mark.parametrize('press,corner', [((100, 100), (0, 0)), ((900, 100), (1, 0)), ((100, 700), (0, 1)), ((900, 700), (1, 1)),
+                                          ((299, 239), (0, 0)), ((300, 240), (1, 1))])
+def test_background_right_drag_takes_the_window_corner_nearest_the_press(studio, monkeypatch, press, corner):
+    """The quadrant rule with the OS window as the cell: 30% of 1000 x 800 is 300 and 240 px."""
+    from types import SimpleNamespace
+    studio.frame()
+    handler = SimpleNamespace(is_down=lambda button: True, pointer_press_token=lambda: 1, press_position=lambda button: press)
+    monkeypatch.setattr(tb.imgui, 'get_io', lambda: SimpleNamespace(display_size=(1000, 800)))
+    monkeypatch.setattr(Melty, 'event_handler', handler)
+    monkeypatch.setattr(Melty, 'events', {tb._RESIZE_ID: {
+        'non_blocking_right_mouse_dragged': SimpleNamespace(total_dx=20.0, total_dy=10.0)}})
+    monkeypatch.setattr(tb, '_rdrag', None)
+    os_frame._STATE['pending'] = {'x': [], 'y': []}
+    tb.poll_os_window_drag()
+    assert os_frame._STATE['pending'] == {'x': [(corner[0], 20.0)], 'y': [(corner[1], 10.0)]}
+    assert tb._EDGE_CURSOR[tb._CORNER[tb._rdrag['index']]]
+
+
+def test_background_right_drag_band_is_at_most_400_px(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(tb.imgui, 'get_io', lambda: SimpleNamespace(display_size=(3000, 2000)))
+    corner = lambda at: tb._corner(SimpleNamespace(press_position=lambda button: at))
+    assert corner((399, 399)) == (0, 0) and corner((400, 400)) == (1, 1)
+
+
+def test_background_double_right_drag_takes_the_top_left_from_anywhere(studio, monkeypatch):
+    from types import SimpleNamespace
+    studio.frame()
+    handler = SimpleNamespace(is_down=lambda button: True, pointer_press_token=lambda: 1, press_position=lambda button: (900, 700))
+    monkeypatch.setattr(Melty, 'event_handler', handler)
+    monkeypatch.setattr(Melty, 'events', {tb._RESIZE_ID: {
+        'non_blocking_right_mouse_double_dragged': SimpleNamespace(total_dx=20.0, total_dy=10.0)}})
+    monkeypatch.setattr(tb, '_rdrag', None)
+    os_frame._STATE['pending'] = {'x': [], 'y': []}
+    tb.poll_os_window_drag()
+    assert os_frame._STATE['pending'] == {'x': [(0, 20.0)], 'y': [(0, 10.0)]}

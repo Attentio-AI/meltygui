@@ -102,7 +102,7 @@ def test_hosted_settings_click_is_not_relaid_out_or_handled_twice(monkeypatch):
     monkeypatch.setattr(titlebar, '_hosted_frame', -1)
     monkeypatch.setattr(titlebar, '_pressed_button', 0)
     monkeypatch.setattr(titlebar, '_wm_move_started', True)
-    monkeypatch.setattr(titlebar, '_rdrag', {'top_left': False})
+    monkeypatch.setattr(titlebar, '_rdrag', {'index': (1, 1)})
     monkeypatch.setattr(Melty, 'frame_count', 42)
     monkeypatch.setattr(Melty, 'on_drag', False)
     window = object()

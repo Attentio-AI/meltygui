@@ -332,9 +332,10 @@ rust is finally fast enough"). Current numbers:
   cell. Double-right still takes top/left from anywhere. Levers: `BAND` and
   `BAND_SHARE` in
   [gui_layout_prototype.py](../meltygui/core/rendering/gui_layout_prototype.py).
-  Built the same day for `@gui`; `@render_func` keeps bottom/right from
-  anywhere, and so does the host's OS-window resize where no `@gui` layout or
-  Melty window is under the pointer (`poll_os_window_drag`, titlebar.py).
+  Built the same day for `@gui` and for the host's OS-window resize where no
+  `@gui` layout or Melty window is under the pointer (`_corner`, titlebar.py;
+  `@render_func` apps share that path). `@render_func`'s own columns, rows and
+  Melty windows keep bottom/right from anywhere.
   Rule: [WINDOW_COLLISION_COLUMNS.md](WINDOW_COLLISION_COLUMNS.md#gestures).
 - **A right click acts on release**, because a right press may be the start of
   a resize. (11-13)

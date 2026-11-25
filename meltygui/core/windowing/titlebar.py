@@ -1188,10 +1188,26 @@ def draw_titlebar(window):
     # moves in the same frame the hand did)
     from meltygui.core.windowing import os_frame
     if _rdrag is not None and os_frame.available():
-        mouse_cursor.request(_EDGE_CURSOR[_SIZE_TOPLEFT if _rdrag["top_left"] else _SIZE_BOTTOMRIGHT])
+        mouse_cursor.request(_EDGE_CURSOR[_CORNER[_rdrag["index"]]])
 
     # The buttons themselves are painted earlier in the frame, in the main
     # window draw list (paint_window_controls) - see there for why.
+
+
+# (x edge, y edge) of a right drag, 0 = left / top: the corner whose cursor it shows.
+_CORNER = {(0, 0): _SIZE_TOPLEFT, (1, 0): _SIZE_TOPRIGHT, (0, 1): _SIZE_BOTTOMLEFT, (1, 1): _SIZE_BOTTOMRIGHT}
+
+
+def _corner(handler):
+    """Per axis, the OS window edge a right press grabs (0 = left / top, 1 = right / bottom): the
+    quadrant rule of docs/WINDOW_COLLISION_COLUMNS.md with the window as the cell. Levers: BAND
+    and BAND_SHARE in core/rendering/gui_layout_prototype.py."""
+    from meltygui.core.rendering.gui_layout_prototype import BAND, BAND_SHARE
+    try:
+        at, size = handler.press_position("right_mouse"), imgui.get_io().display_size
+        return tuple(0 if at[i] < min(BAND, size[i] * BAND_SHARE) else 1 for i in range(2))
+    except (AttributeError, TypeError, IndexError):
+        return (1, 1)       # no press to read: the far corner, as before
 
 
 def poll_os_window_drag():
@@ -1220,13 +1236,13 @@ def poll_os_window_drag():
     if _rdrag is not None and press is not None and _rdrag.setdefault("press", press) != press:
         _rdrag = None
     if _rdrag is None:
-        _rdrag = {"top_left": "non_blocking_right_mouse_double_dragged" in resize_events, "x": 0.0, "y": 0.0, "press": press}
-    index = 0 if _rdrag["top_left"] else 1
-    for axis, total in (("x", "total_dx"), ("y", "total_dy")):
+        double = "non_blocking_right_mouse_double_dragged" in resize_events
+        _rdrag = {"index": (0, 0) if double else _corner(handler), "x": 0.0, "y": 0.0, "press": press}
+    for i, (axis, total) in enumerate((("x", "total_dx"), ("y", "total_dy"))):
         now = float(getattr(drag, total, 0.0) or 0.0)
         inc = now - _rdrag[axis]
         _rdrag[axis] = now
-        os_frame.queue_drag(axis, index, inc)
+        os_frame.queue_drag(axis, _rdrag["index"][i], inc)
     # The next frame can carry the drag total. Consume its remainder
     # against the old baseline before clearing it, not the whole drag again.
     if released:
