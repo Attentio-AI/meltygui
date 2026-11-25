@@ -1,4 +1,4 @@
-"""`draw_function` (view/function_view.py), and the view that asks for a parameter with it, driven
+"""`draw_function` (view/common/function_view.py), and the view that asks for a parameter with it, driven
 through a hidden window (reserved desktop).
 
 A function's parameters are a dict the view keeps and `draw_any` draws; the button calls the
@@ -11,7 +11,7 @@ import meltygui.core.windowing.window_constants as glfw
 from editor_host import Host
 from meltygui.core.rendering.gui_prototype import gui
 from meltygui.view.common.dict_view import ROW as LINE
-from meltygui.view.function_view import GAP, draw_function
+from meltygui.view.common.function_view import GAP, draw_function
 
 ENTER = (glfw.KEY_ENTER, 0)
 FIELD = 150.0           # an x inside the value column of the parameters

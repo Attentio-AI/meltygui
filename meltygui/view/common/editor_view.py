@@ -1363,4 +1363,4 @@ def colour_hex(input_value: str, width=0., height=0.):
 
 
 # The icon picker registers itself for 'icon' tokens (it reads this module's look and font, so it is imported last).
-from meltygui.view import icon_picker_view  # noqa: E402,F401
+from meltygui.view.common import icon_picker_view  # noqa: E402,F401

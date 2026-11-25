@@ -2063,7 +2063,7 @@ class Toggles:
         @defaults(tint=(0.406, 0.30, 0.16))
         class ActiveElement:
             gradient_color = (0.86, 0.67, 0.23)   # RGB of the halo
-            outline_color = (0.88, 0.56, 0.15)   # RGB of the optional cutout outline
+            outline_color = (0.88, 0.56, 0.2)   # RGB of the optional cutout outline
             falloff = 26.696          # px the glow radiates out past the match edge
             opacity = 0.176           # peak opacity, % at the cutout edge
             falloff_exp = 2.105       # >1 = bright inside the word, then drops off fast

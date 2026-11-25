@@ -35,7 +35,8 @@ that text lands, so a drag does not snap back. A `Code` is written as it is, a s
 literal it replaces, a float without float noise (`spell`). What was written as `Code` is answered
 as `Code` from then on, so a text field that is typed into stays one.
 
-A list, tuple, dict or set that would run past `WIDTH` is written over several lines (`wrap`).
+A list, tuple, dict or set that would run past `WIDTH` is written over several lines (`wrap`,
+which shows the layout).
 
 Levers: `QUIET`, `INLINE`, `BATCH`, `WIDTH`, `TAB`, `spell`, `wrap`. To surface more of the code: tree.rs, `Grower`.
 Not there yet: adding, removing and reordering keys; undo of a write (it is an edit from outside
@@ -121,20 +122,36 @@ def spell(value, old=''):
 
 def wrap(value, indent='', column=0, spell=spell):
     """The source text of `value` for a place that starts at `column` of a line indented by `indent`:
-    on that line when it fits inside `WIDTH`, else its items on lines of their own one `TAB` deeper.
-    Items that fit share a line; one that has to break, or that holds lists or dicts of its own (a
-    level of a tree), stands alone, and so on down. `spell` spells a value on one line (a set's
-    items are put in the order of their spelling)."""
+    on that line when it fits inside `WIDTH`, else its items on lines one `TAB` deeper (`stacked`):
+
+        test_dict = {
+            'item 1': 202, 'item 2': 188,                   numbers and texts share a line
+            'color': (3.14, 3.14, 3.14),                    anything else has a line of its own
+            'mode': Mode.FAST,
+            'nested': {                                     a dict inside is opened, a key a line
+                'inner': {
+                    'item 1': 79,
+                },
+                'a_string': 'Testing',
+            },
+        }
+
+    A list, tuple or set inside, and a dict that is an item of a list (`{'id': 1}`, a cell of a tree),
+    stays on its line while it fits and holds no list or dict.
+    `spell` spells a value on one line (a set's items are put in the order of their spelling)."""
     flat = spell(value)
     return flat if column + len(flat) <= WIDTH else stacked(value, indent, spell, flat)
 
 
-def stacked(value, indent, spell, flat):
+def stacked(value, indent, spell, flat, top=True):
+    """Levers: `shares` (what may stand beside another item on a line), `opens` (what is written
+    over lines of its own though it would fit); the comma after a last item is in the last line."""
     kind = type(value)
     if kind not in BRACKETS or not value:
         return flat
     inner = indent + TAB
     room = WIDTH - len(inner) - 1              # (the comma that ends each line)
+    packs = top or kind is not dict            # a dict inside another value: a key a line
     if kind is dict:
         items = [(f'{spell(key)}: ', item) for key, item in value.items()]
     else:
@@ -142,12 +159,13 @@ def stacked(value, indent, spell, flat):
     rows, joins = [], False                    # joins: the last row takes another item
     for head, item in items:
         text = head + spell(item)
-        alone = nested(item) or len(text) > room
-        if joins and not alone and len(rows[-1]) + 2 + len(text) <= room:
+        opens = (kind is dict and type(item) is dict) or nested(item) or len(text) > room
+        shares = packs and type(item) in SCALARS and not opens
+        if joins and shares and len(rows[-1]) + 2 + len(text) <= room:
             rows[-1] += f', {text}'
         else:
-            rows.append(text if len(text) <= room else head + stacked(item, inner, spell, text[len(head):]))
-        joins = not alone
+            rows.append(head + stacked(item, inner, spell, text[len(head):], False) if opens else text)
+        joins = shares
     low, high = BRACKETS[kind]
     return f'{low}\n' + ''.join(f'{inner}{row},\n' for row in rows) + f'{indent}{high}'
 
@@ -159,6 +177,7 @@ def nested(value):
 
 
 BRACKETS = {list: '[]', tuple: '()', dict: '{}', set: '{}', frozenset: '{}'}
+SCALARS = (int, float, str, bytes, bool, type(None))
 
 
 def keys_of(name):

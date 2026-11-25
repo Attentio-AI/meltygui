@@ -26,7 +26,7 @@ Where things are, and how to change them:
   is so a child of the view it was opened on: placed from its corner, closed with it, and on a
   view inside a popup it is below that popup, which stays open. A press outside, Escape and the
   keyboard are the popup rules of core/input/focus.py.
-- The menu itself, and how an option's arguments are filled: view/context_menu_view.py.
+- The menu itself, and how an option's arguments are filled: view/common/context_menu_view.py.
 
 An immediate view (`use_cache=False`) has no place in the graph and so no menu, with one exception:
 the root of a window. Its options come last, and the surface declares the menu when no cached view
@@ -106,7 +106,7 @@ def nearer(cache, node, asker):
 def click(cache, hit, position):
     """A right click at `position` (surface coordinates) over the view `hit`: gather the options of
     the views around it, innermost first, and have the innermost one that has any show them."""
-    from meltygui.view.context_menu_view import draw_context_menu, extent
+    from meltygui.view.common.context_menu_view import draw_context_menu, extent
     router = cache.imgui_input
     records, parent, inputs = cache.records, cache.graph.parent, cache.inputs
     menu_body = draw_context_menu.__gui_definition__[0]
@@ -151,7 +151,7 @@ def show(cache, node):
     menu = router.menu
     if menu is None or menu.node != node:
         return
-    from meltygui.view.context_menu_view import draw_context_menu
+    from meltygui.view.common.context_menu_view import draw_context_menu
     _, _, state = draw_context_menu(menu.sections, name='context menu', popup=menu.fresh, return_extras=True,
                                     left=menu.left, top=menu.top, width=menu.width, height=menu.height)
     menu.fresh = False

@@ -348,7 +348,8 @@ def test_a_list_or_dict_too_long_for_its_line_is_written_over_several(source):
     label = {
         'id': 0,
         'cells': [
-            {'id': 0, 'note': 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'}, {'id': 1, 'note': 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'},
+            {'id': 0, 'note': 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'},
+            {'id': 1, 'note': 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'},
             {'id': 2, 'note': 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'},
         ],
         'sizes': [1.5, 2.5],

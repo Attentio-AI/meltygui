@@ -43,7 +43,7 @@ from meltygui.model import _source_native  # noqa: E402
 from meltygui.model.source_model import Source  # noqa: E402
 from meltygui.state.editor_state import EditorState  # noqa: E402
 from meltygui.view.common.dict_view import ROW, Tree  # noqa: E402
-from meltygui.view.editor_view import draw_editor  # noqa: E402
+from meltygui.view.common.editor_view import draw_editor  # noqa: E402
 
 SPLIT = 600.            # the editor's width; the tree is to its right
 FIELD = SPLIT + 300.    # an x inside the tree's value column

@@ -42,7 +42,9 @@ from meltygui.core.rendering.keyed import DERIVED, Keyed, keyed
 from meltygui.core.rendering.shaped import Shaped, best_match
 
 # The modules of the built in views: to add one, list its module here and register its views there.
-BUILT_IN = ('meltygui.view.common.value_view', 'meltygui.view.common.dict_view')
+# (They are imported at the first `draw_any`, which is what runs their `@is_default_for`.)
+BUILT_IN = ('meltygui.view.common.value_view', 'meltygui.view.common.dict_view',
+            'meltygui.view.common.color_picker_view', 'meltygui.view.common.enum_view')
 NAMES = {}         # name -> view
 SHAPES = {}        # Shaped -> view
 TYPES = {}         # type -> view

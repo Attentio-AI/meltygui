@@ -37,7 +37,7 @@ QUIET = 0.4
 SLICE = 100
 # Lever: remembered line texts; beyond it the memory starts over.
 KEPT = 50000
-# The underline (`SHAPES` in view/editor_view.py) and its colour: teal, so it never reads as an error.
+# The underline (`SHAPES` in view/common/editor_view.py) and its colour: teal, so it never reads as an error.
 SHAPE, COLOR = 'squiggle', (.16, .71, .65)
 
 

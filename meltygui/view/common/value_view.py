@@ -7,6 +7,7 @@
   typed, Escape drops it, so does leaving the field with something that is no number.
 - `draw_str`: click to type; every keystroke is returned, Escape brings back the text it started with.
 - `draw_none` and `draw_value` (whatever has no view of its own): read only.
+- An enum's view is its own file (enum_view.py), a colour's too (color_picker_view.py).
 
 Each view fills the box it is given (`width`, `height`) and asks its `event` for its own input
 (core/input/event.py), so a value nobody touches is drawn once and never runs again. An edit

@@ -23,8 +23,8 @@ are not saved. A class in its body is saved with it (`Look.Editor.tab_width`).
                            (the locality rule, docs/APPS.md). {field: value}, plain `pickle`.
     @save('layout.pkl')    that file instead: beside the module, or where an absolute path says.
     @save(to_code=True)    the class's own source. Nothing is read: the code is the saved state.
-                           Each value that changed is written over its default, as a literal;
-                           one too long for its line has its items on indented lines below.
+                           Each value that changed is written over its default, as a literal,
+                           where it stands: the layout and the comments around it stay.
 
 A pickle is read where the class is decorated, so the values are there for the lines below it. It
 costs one small file read during the import (0.03 ms for tile-view's layout, and 0.6 ms for the
@@ -40,24 +40,41 @@ good file and is reported. A pickle whose bytes are what the file holds is not w
 
 Writing to code goes through the Rust `Source` (model/source_model.py): `source.tree` finds the
 class and the assignment, and an assignment to it splices the new literal over the old one
-(tree_model.py, native/source/src/tree.rs), laid out by `wrap` there (its levers: `WIDTH`, `TAB`). Nothing in Python looks for the place. Before the
+(tree_model.py, native/source/src/tree.rs). Nothing in Python looks for the place.
+
+The layout of a field is kept: only the smallest places that changed are written (`places`), a
+number in a dict, an argument of a constructor, a list whose items changed. New code gets the
+default layout of `wrap` (tree_model.py; its levers: `WIDTH`, `TAB`): a list or dict written
+anew that does not fit where it stands has the whole field laid out by it. Before the
 file is replaced `compile` judges the new text (the judge of syntax everywhere:
 native/source/README.md) and the tree is read again to see that each value landed. Nothing is
 read or parsed at launch, and nothing at exit when no field changed. A field is written when
 - the class body assigns it once, to one name, at the top of the class (not under an `if`),
-- the file still holds the value this run started from: an expression (`2 / 3`) and a default
-  edited while the app ran are left as they are, and said so on stderr. A hotswap that runs the
-  class again makes its new defaults the start (`Coded.again`),
-- its value is a literal (`spelled`).
+- the file still holds the value this run started from (its text is evaluated where the class
+  stands, `given`): a default edited while the app ran is left as it is, and said so on stderr. A hotswap that runs the class again makes its new
+  defaults the start (`Coded.again`),
+- its value is a literal (`spelled`). An `Enum` member is written by name (`Mode.FAST`), when
+  that name gives the member where the class stands: an Enum the file reaches as `modes.Mode` is
+  left and said.
+
+A dataclass object is written as its constructor call, `Point(x=1, y=2)`; where the file has
+the call already its arguments are written in place, by place or by name as they stand
+(`inline`).
+
+An expression in the file (`2 / 3`, `Mode.FAST` inside a dict) is no reason to lose the field.
+It stays in the code while its own value is unchanged and is replaced by the literal, said on
+stderr, once it changed (`kept`): a view that edits `Mode.FAST` as the int it is leaves an int.
 
 Under `meltygui.embedded_imports()` (GUI Gym showing an app's views) `@save` does nothing: no
 file of the app is read or written.
 
 Levers: `named` (where a pickle lives and what it is called), `fields` (what counts as a field),
-`spelled` (the types a to_code field may hold).
+`spelled` (the types a to_code field may hold), `places` (how much of a layout a write keeps),
+`kept` (which expressions outlive a place written anew).
 Not there: saving one class in the middle of a run without the rest (`checkpoint()` saves all).
 Tests: tests/test_app_save.py.
 """
+import enum
 import math
 import os
 import sys
@@ -182,6 +199,8 @@ def spelled(value):
     counts. TypeError for a value that has no literal: to let a to_code field hold another type,
     add its row here."""
     kind = type(value)
+    if kind is Kept:
+        return str(value)
     if kind in (list, tuple, set):
         items = [spelled(item) for item in value]
         if kind is list:
@@ -193,8 +212,118 @@ def spelled(value):
         return '{' + ', '.join(f'{spelled(key)}: {spelled(item)}' for key, item in value.items()) + '}'
     if kind in (str, bytes, int, bool, type(None)) or (kind is float and math.isfinite(value)):
         return repr(value)
-    raise TypeError(f'{value!r} has no literal: a to_code field holds numbers, texts, True, False, None '
-                    f'and lists, tuples, dicts and sets of those')
+    if isinstance(value, enum.Enum) and value.name in kind.__members__:
+        return f'{kind.__qualname__}.{value.name}'      # (`write` sees that the file knows that name)
+    if hasattr(kind, '__dataclass_fields__'):
+        items = ', '.join(f'{name}={spelled(getattr(value, name))}' for name in built(kind))
+        return f'{kind.__qualname__}({items})'
+    raise TypeError(f'{value!r} has no literal: a to_code field holds numbers, texts, True, False, None, '
+                    f'Enum members, dataclass objects and lists, tuples, dicts and sets of those')
+
+
+def built(kind):
+    """The names of the fields the constructor of the dataclass `kind` takes, in its order."""
+    from dataclasses import fields
+    return [field.name for field in fields(kind) if field.init]
+
+
+class Kept(str):
+    """An expression of the file that is written back as it stands: `Mode.FAST`."""
+    __slots__ = ()
+
+
+def given(text, owner):
+    """The value the source `text` gives in the body of the class `owner`."""
+    return eval(text, vars(sys.modules[owner.__module__]), dict(vars(owner)))
+
+
+def places(value, branch, key, start, lost, out):
+    """Collect in `out` the smallest places of the file that differ from `value`, as (branch, key,
+    what to write there): `start` is what the file gives under `key` of `branch`. A number in a
+    dict is one place and nothing around it moves; a list or dict whose keys changed is one
+    place, written anew (`write` lays the whole field out by `wrap` when that does not fit its
+    line). To keep more of a layout through a write, add a row that goes on down."""
+    if spelled(value) == spelled(start):
+        return
+    found = branch[key]
+    kind = getattr(found, 'kind', None)
+    if kind == 'dict' and type(value) is dict and list(value) == list(start) == list(found):
+        for name, item in value.items():
+            places(item, found, name, start[name], lost, out)
+    elif kind in ('list', 'tuple') and type(value).__name__ == kind and len(value) == len(start) == len(found):
+        for at, item in enumerate(value):
+            places(item, found, at, start[at], lost, out)
+    elif kind == 'call' and (names := arguments(value, found, start)) and not defaults(value, start, names):
+        for at, name in names.items():
+            places(getattr(value, name), found, at, getattr(start, name), lost, out)
+    else:
+        out.append((branch, key, kept(value, found, start, lost)))
+
+
+def kept(value, found, start, lost):
+    """`value` with the file's expressions (`found`, the tree's entry) back where what they give
+    (`start`) is still the value, as `Kept`. One whose value changed is put in `lost`: its literal
+    takes its place. To keep more of the code through a write (a set's items), add its row here."""
+    from meltygui.model.tree_model import Code
+    kind = getattr(found, 'kind', None)
+    if kind == 'call' or isinstance(found, Code):
+        text = found.text if kind else str(found)
+        if spelled(value) == spelled(start):
+            return Kept(text)
+        call = inline(value, found, start, lost) if kind else None
+        if call is not None:
+            return call
+        if not isinstance(value, enum.Enum) and type(start) is not bytes:
+            lost.append(text)      # (a member written over a member is no loss; the tree reads b'..' as code)
+    elif kind is None:
+        pass                       # a literal
+    elif kind == 'dict' and type(value) is dict and list(start) == list(found):
+        # (A key or an item that is new has no place in the file: it is written as it is.)
+        return {key: kept(item, found[key], start[key], lost) if key in start else item for key, item in value.items()}
+    elif kind in ('list', 'tuple') and type(value).__name__ == kind and len(start) == len(found):
+        return type(value)(kept(item, found[at], start[at], lost) if at < len(start) else item
+                           for at, item in enumerate(value))
+    else:
+        try:
+            spelled(plain(found))
+        except TypeError:
+            lost.append(found.text)    # it holds expressions and is another kind of value now
+    return value
+
+
+def inline(value, found, start, lost):
+    """The constructor call `found` of a dataclass object with the arguments `value` has now, each
+    where and how the call gives it (by place or by name); a field the call left to its default
+    is added by name once it changed. None when the call is no plain constructor of it (`*args`,
+    another class): the object is then written whole, `Class(name=value, ...)`."""
+    names = arguments(value, found, start)
+    if names is None:
+        return None
+    items = [f'{key}=' * isinstance(key, str) + spelled(kept(getattr(value, name), found[key], getattr(start, name), lost))
+             for key, name in names.items()]
+    items += [f'{name}={spelled(getattr(value, name))}' for name in defaults(value, start, names)]
+    return Kept(f"{found.text.partition('(')[0]}({', '.join(items)})")
+
+
+def arguments(value, found, start):
+    """{argument of the call `found` (its place, or its name): the field it gives} when the call is
+    a plain constructor of the dataclass both `value` and `start` are; else None."""
+    kind = type(value)
+    if type(start) is not kind or not hasattr(kind, '__dataclass_fields__'):
+        return None
+    names, takes = {}, built(kind)
+    for key, item in found.items():
+        name = key if isinstance(key, str) else takes[key] if key < len(takes) else None
+        if name not in takes or str(item).startswith('*'):
+            return None
+        names[key] = name
+    return names
+
+
+def defaults(value, start, names):
+    """The fields a constructor call left to their defaults (`names`: those it gives) that changed."""
+    return [name for name in built(type(value)) if name not in names.values()
+            and spelled(getattr(value, name)) != spelled(getattr(start, name))]
 
 
 class Coded:
@@ -221,9 +350,10 @@ class Coded:
 
     def write(self):
         """Write the fields that changed over their defaults in the file. Returns a note for each
-        field that was left as it is; raises when the file could not be written."""
+        field that was left as it is and each expression a literal replaced; raises when the file
+        could not be written."""
         changed = {}               # label -> its literal on one line: what is compared, never the layout
-        values = {}
+        values = {}                # label -> (the class it is a field of, its value)
         notes = []
         for owner, name, label in self.fields:
             try:
@@ -232,11 +362,11 @@ class Coded:
                 notes.append(f'{label}: {error}')
                 continue
             if text != self.held[label]:
-                changed[label], values[label] = text, getattr(owner, name)
+                changed[label], values[label] = text, (owner, getattr(owner, name))
         if not changed:
             return notes
         from meltygui.model.source_model import Source
-        from meltygui.model.tree_model import Code, keys_of, wrap
+        from meltygui.model.tree_model import Code, keys_of, quote, wrap
         with open(self.path, 'rb') as file:
             data = file.read()
         source = Source(data.decode('utf-8'), self.path)
@@ -246,7 +376,7 @@ class Coded:
             if tree.version != source.head:
                 tree.read()        # a long text is read on its thread: have it here, now
                 top = source.tree
-            wrote = {}
+            wrote = {}                 # label -> [(branch, key, the text written there)]
             for label, text in changed.items():
                 # (Where a class stands in its file's tree is the lookup `Source(cls)` uses: tree_model.py, `keys_of`.)
                 *path, name = keys_of(f'{self.cls.__qualname__}.{label}')
@@ -255,24 +385,51 @@ class Coded:
                     notes.append(f'{label} needs one plain assignment at the top of its class')
                     continue
                 now = read(body[name])
-                if now == text:
+                owner, value = values[label]
+                try:
+                    if spelled(given(text, owner)) != text:     # an Enum member is written by name: the file has to know it
+                        raise ValueError('it reads back as another value')
+                except Exception as error:
+                    notes.append(f'{label}: `{text}` is not what the file would read back '
+                                 f'({type(error).__name__}: {error}): left as it is')
+                    continue
+                try:
+                    start, lost, spots = given(now, owner), [], []
+                    said = spelled(start)
+                    if said == self.held[label]:
+                        places(value, body, name, start, lost, spots)
+                except Exception:
+                    said = None
+                if said == text:
                     self.held[label] = text         # the file says so already (an edit a hotswap brought in)
-                elif now != self.held[label]:
+                    continue
+                if said != self.held[label]:
                     notes.append(f'{label} is `{now}` in the file, not the `{self.held[label]}` this run '
                                  f'started from: left as it is')
-                else:
-                    # One splice, at the span the tree found, wrapped to the line it starts on.
-                    laid = wrap(values[label], *tree.margin(body, name), spelled)
-                    body[name] = Code(laid)
-                    wrote[label] = (body, name, laid)
+                    continue
+                if any(type(item) in (list, tuple, dict, set) and '\n' in wrap(item, *tree.margin(branch, key), spelled)
+                       for branch, key, item in spots):
+                    # What grew does not fit where it stands: the whole field is laid out anew.
+                    lost.clear()
+                    spots = [(body, name, kept(value, body[name], start, lost))]
+                notes += [f'{label}: `{code}` is written as its value, it changed' for code in lost]
+                wrote[label] = []
+                for branch, key, item in spots:
+                    # One splice a place, at the span the tree found; a list or dict is wrapped to the line it starts on.
+                    indent, column = tree.margin(branch, key)
+                    _, low, high = tree.spot(branch, key)
+                    laid = quote(item, source.native.slice(low, high)) if type(item) is str else wrap(item, indent, column, spelled)
+                    branch[key] = Code(laid)
+                    wrote[label].append((branch, key, laid))
             if wrote:
                 text = source.text
                 compile(text, self.path, 'exec')
                 source.settle()                     # the readings the splices asked for end before this one
                 tree.read()
-                for label, (body, name, laid) in wrote.items():
-                    if name not in body or read(body[name]) != laid:
-                        raise ValueError(f'{label} did not read back as written')
+                for label, spots in wrote.items():
+                    for branch, key, laid in spots:
+                        if key not in branch or read(branch[key]) != laid:
+                            raise ValueError(f'{label} did not read back as written')
                 replace(self.path, text.encode('utf-8'), data)
                 stale(self.path)
                 self.held.update({label: changed[label] for label in wrote})

@@ -34,7 +34,7 @@ build.
 ## The parts
 
 ```text
-draw_editor (view/editor_view.py)      keyboard, pointer, caret, popovers
+draw_editor (view/common/editor_view.py)      keyboard, pointer, caret, popovers
   pane                                 the scrolling viewport: declares the blocks near it
     block                              paints about 32 lines; runs again only when its stamp changes
       @inline widgets                  views on tokens and live values
@@ -54,8 +54,8 @@ Spelling (model/spell_model.py)        spell check as a decoration
 
 | Module | Role | Lever |
 | --- | --- | --- |
-| `view/editor_view.py` | `draw_editor`, `pane`, `block`, painters, built-in inline widgets | `paint`, `SHAPES`, `@inline` |
-| `view/icon_picker_view.py` | The icon glyph chip and its picker | |
+| `view/common/editor_view.py` | `draw_editor`, `pane`, `block`, painters, built-in inline widgets | `paint`, `SHAPES`, `@inline` |
+| `view/common/icon_picker_view.py` | The icon glyph chip and its picker | |
 | `state/editor_state.py` | `EditorState` (caret, collapsed folds, viewport snapshot), `LOADING` | |
 | `editor/editor.py` | `Editor` session, `Pane` handle | `sync`, `land`, `window`, `put` |
 | `editor/document.py` | Lines, columns, offsets, caret, `splice` | `BLOCK` (the crate's `LINES`) |

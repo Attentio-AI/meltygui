@@ -1,4 +1,4 @@
-"""`draw_dropdown` (view/choice_view.py): a sequence of choices, a dict of {label: choice}, and a
+"""`draw_dropdown` (view/common/choice_view.py): a sequence of choices, a dict of {label: choice}, and a
 dict in that dict as a submenu, opened beside its row by the pointer or the keyboard.
 
 The app is one dropdown at (10, 10), 160 wide. The tests drive the real router through the GL test
@@ -8,7 +8,7 @@ import pytest
 
 import meltygui.core.windowing.window_constants as glfw
 from editor_host import Host
-from meltygui.view.choice_view import GAP, draw_dropdown, entries, extent, options, shown, submenu
+from meltygui.view.common.choice_view import GAP, draw_dropdown, entries, extent, options, shown, submenu
 from meltygui.view.common.value_view import ROW
 
 FLAT = ('Small', 'Medium', 'Large')

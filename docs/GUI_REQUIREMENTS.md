@@ -91,7 +91,7 @@ rust is finally fast enough"). Current numbers:
 | A value that is passed nothing and has no default is built by its type, not None: "The framework passed none for required val which is not ideal. I'd like to use the default constructor for the type instead." It is built once and then held: "the constructor only needs to run" once. This overrules "a value without a default is None when nothing is passed" in the row above. | 11-17 |
 | That holds for every parameter, not only the value: "Lets do every parameter. That fits cleanly into the framework." A parameter without a type is None: "None for parameters without types sounds correct, do that." | 11-17 |
 | "A constructor that needs arguments should call draw_function on the constructor", an `@gui` function: "draw_function exists as a render function already, we need an @gui version. Its a pretty simple idea, and should be really clean to implement with @gui. you call draw_any with a dict of the parameters of the function, then draw_button with a button that executes the function. I'd like draw_function to be a public reusable function at meltygui.rust.draw_function". | 11-17 |
-| Built to the three rows above on 2026-11-17 (by Claude; **Lukas has not reviewed it**). A parameter without a default takes its annotation as the factory an injected `DictConversion` already used (`compile_plan`, gui_prototype.py), so it is built once per view and resolves where that did: after the state and the decorator default. `meltygui.rust.draw_function` ([function_view.py](../meltygui/view/function_view.py)) is `draw_any` of a dict of the function's parameters, which the view keeps as its state, and `draw_button`. A view with a parameter whose type needs arguments shows it in its own place until the button has built one, which is then the view's state (`asking`). Decided while building, his to overrule: `object`, `Any`, a union, an abstract class and a protocol build nothing and are None, like no type; a name the framework fills is not built; a held value that is no instance of the annotation any more (the annotation was edited, or the session saved an object it cannot pickle as None) is built again, so a plain class is built, or asked for, again at each launch; whether a type needs arguments is read from its signature (`np.ndarray` does, and is asked for), a C type that shows none is taken to need nothing, and a type that then raises when called with nothing fails the call with a `TypeError` naming the view and the parameter; the call of a view that is still asking returns `(False, None)`; `draw_function` calls in its own run (no thread), returns `(True, function)` in the run of a call that returned, keeps what it returned as its `result` state and shows an exception under the button; it is not registered with `draw_any` for functions. Measured against the tree before (8 alternating runs each, headless, median and range): an immediate call passed an int 1048 (1014 to 1122) to 1026 (1008 to 1087) ns, passed nothing 1073 to 1071 ns, with an injected `DictConversion` 1071 to 1069 ns, a typed parameter that is now built 1073 to 1071 ns; a retained frame of 2000 children, best frame per child, unchanged 2278 (2202 to 2821) to 2252 (2186 to 2478) ns, all rerunning 3806 to 3732 ns. Run on a reserved desktop (native Wayland, OpenGL): [examples/gui_function.py](../examples/gui_function.py) drew both forms, called the function, built the object, and after a relaunch had the counter's edit and asked for the object again. How to use it: [guide, sections 5 and 12](GUI_VIEW_GUIDE.md#5-state); tests: [test_gui_value.py](../tests/test_gui_value.py), [test_function_view.py](../tests/test_function_view.py). | 2026-11-17 |
+| Built to the three rows above on 2026-11-17 (by Claude; **Lukas has not reviewed it**). A parameter without a default takes its annotation as the factory an injected `DictConversion` already used (`compile_plan`, gui_prototype.py), so it is built once per view and resolves where that did: after the state and the decorator default. `meltygui.rust.draw_function` ([function_view.py](../meltygui/view/common/function_view.py)) is `draw_any` of a dict of the function's parameters, which the view keeps as its state, and `draw_button`. A view with a parameter whose type needs arguments shows it in its own place until the button has built one, which is then the view's state (`asking`). Decided while building, his to overrule: `object`, `Any`, a union, an abstract class and a protocol build nothing and are None, like no type; a name the framework fills is not built; a held value that is no instance of the annotation any more (the annotation was edited, or the session saved an object it cannot pickle as None) is built again, so a plain class is built, or asked for, again at each launch; whether a type needs arguments is read from its signature (`np.ndarray` does, and is asked for), a C type that shows none is taken to need nothing, and a type that then raises when called with nothing fails the call with a `TypeError` naming the view and the parameter; the call of a view that is still asking returns `(False, None)`; `draw_function` calls in its own run (no thread), returns `(True, function)` in the run of a call that returned, keeps what it returned as its `result` state and shows an exception under the button; it is not registered with `draw_any` for functions. Measured against the tree before (8 alternating runs each, headless, median and range): an immediate call passed an int 1048 (1014 to 1122) to 1026 (1008 to 1087) ns, passed nothing 1073 to 1071 ns, with an injected `DictConversion` 1071 to 1069 ns, a typed parameter that is now built 1073 to 1071 ns; a retained frame of 2000 children, best frame per child, unchanged 2278 (2202 to 2821) to 2252 (2186 to 2478) ns, all rerunning 3806 to 3732 ns. Run on a reserved desktop (native Wayland, OpenGL): [examples/gui_function.py](../examples/gui_function.py) drew both forms, called the function, built the object, and after a relaunch had the counter's edit and asked for the object again. How to use it: [guide, sections 5 and 12](GUI_VIEW_GUIDE.md#5-state); tests: [test_gui_value.py](../tests/test_gui_value.py), [test_function_view.py](../tests/test_function_view.py). | 2026-11-17 |
 | Callers and definitions can both make up arguments: "I really love having flexibility on both the function caller side and on the function def side to make up new arguments without breaking the interface points." No list of known framework fields; every field is equally fast. | 10-09 |
 | `left` and `top` are the one way to place a view, relative to the parent's content. `window_pos` is gone. | 11-07 |
 | `name=` tells repeated calls apart (section 5). | 11-06 |
@@ -255,7 +255,63 @@ rust is finally fast enough"). Current numbers:
   `Tree.put` or `@save(to_code=True)` writes. Inside `WIDTH` (120) it stays
   on its line; else its items go one `TAB` deeper, short ones sharing lines,
   one that holds lists or dicts of its own on lines of its own.
+  - **Changed 2026-11-25**, to a layout he wrote out as "easier to read
+    indentation": in a value that does not fit its line, only numbers and
+    texts share a line; a tuple, an Enum member, an object and a dict each
+    have a line of their own; a dict under a key is opened a key a line even
+    when it would fit. Decided while building, his to overrule: every last
+    item keeps its comma (his sample had it on the outer dict only); a dict
+    that is an item of a list (a tree's cell, `{'id': 1}`) stays on its line
+    while it fits and holds no list or dict.
+  - **A write keeps the layout** (2026-11-25): "lets just preserve the
+    layout. Use my formatting for when new code is generated and needs a
+    default layout." Built the same day (`places` in `app_save.py`): only
+    the smallest places that changed are spliced, so line breaks, comments
+    and the quotes of a text stay. Decided while building, his to overrule:
+    a list or dict whose items changed is written anew on its line while it
+    fits there; once it does not, the whole field gets the default layout
+    (its comments go); a line a longer value pushes past `WIDTH` is left.
   - How to use it: [guide, section 5](GUI_VIEW_GUIDE.md#5-state).
+- **A `to_code` field that holds an expression is still saved; the save
+  swaps the type in the code.** Of a dict holding `SomeEnum.OTHER_STATE`,
+  which `draw_any` edits as an int and whose whole dict was then left
+  unsaved: "the way to handle this would be for the save handler to swap
+  types in the code. to_code is supposed to be dangerous, failing to
+  serialize is worse because we lose all the other app state." (2026-11-25)
+  Built the same day (`started`, `kept` in
+  [app_save.py](../meltygui/core/runtime/app_save.py)): at the write the
+  file's text of the field is evaluated where the class stands; when it
+  still gives the start value the field is written. Decided while building,
+  his to overrule: an expression whose own value did not change stays in
+  the code (only a changed one becomes its literal, said on stderr); a
+  file edited while the app ran is still left as it is.
+- **"To code needs to support Enum."** (2026-11-25) A member is a `to_code`
+  value, written by name: `Mode.FAST` (`spelled`). Decided while building,
+  his to overrule: before a field is written its literal is evaluated where
+  the class stands, and a member the file has no name for (`modes.Mode`,
+  a combined `Flag`) leaves the field as it is, said on stderr, rather than
+  writing a file that fails at the next launch.
+- **`to_code` handles dataclass objects**: "the values should be written
+  back to the constructor inline." (2026-11-25) Built the same day
+  (`inline` in `app_save.py`): each argument is written where the call has
+  it, by place or by name as it stands; a field the call left to its
+  default is added by name once it changed. Decided while building, his to
+  overrule: an object the file has no call for (appended to a list, built
+  with `*args`) is written whole with every constructor field by name; a
+  field with `init=False` is not saved; a long call is not wrapped over
+  lines.
+- **An enum has a default view: `draw_enum`, in `common`.** "Can you build
+  me the quintessential draw_enum @gui ... `@is_default_for(Enum)` ... `for
+  state in SomeEnum: imgui.same_line()` ... Put it in common" (2026-11-25).
+  Built the same day ([enum_view.py](../meltygui/view/common/enum_view.py)):
+  the members side by side in one box, the current one lit, a press picks.
+  Decided while building, his to overrule: `IntEnum`, `StrEnum` and
+  `IntFlag` are registered too, since their members are ints and strs first
+  and were drawn, and edited into, plain numbers and texts (the dict of the
+  bullet above); a `Flag` is a set, each member in it lit and flipped by a
+  press; members that do not fit the width are a `draw_dropdown` (the legacy
+  view switched at more than four members); labels are the names made
+  readable, `FAST_MODE` as 'Fast mode' (as the legacy view did; `label`).
 
 ## 7. Geometry and scrolling
 
@@ -568,14 +624,28 @@ rust is finally fast enough"). Current numbers:
   and shapes, and `draw_any`, which is called like any view and routes by type,
   recursively. (11-12)
 - **Its own decorator**, so it is "less entangled with the core system". (11-12)
+- **A tuple of three floats is a colour**: `draw_any` draws it with
+  `draw_color` (the chip that opens the picker), by his
+  `@is_default_for(Shaped(tuple, (3,), float))` on it: "I would expect the
+  color picker to render". This overrules "`draw_color` is not registered
+  with `draw_any` for tuples" in section 17. A registration only runs when
+  its module is imported, so color_picker_view.py is in `BUILT_IN`
+  (gui_any.py), which `draw_any` imports at its first call. A list, four
+  floats (with alpha) and ints are still a collection. (11-25)
 - **The default views are in one folder**, `meltygui/view/common/`, so he can
   find them: the ones "with @is_default_for configured" are "the main views
   that I know about and will use frequently". Moved there as they were
   (`value_view.py`, `dict_view.py`, `color_picker_view.py`), "not a major code
   refactor, just grouping it all in one spot". New default views are added
   there: "over time we will replace all the core functionality of
-  @render_func and then at some point clear out all the old code". A `@gui`
-  view that is the default for nothing stays in `meltygui/view/`. (11-25)
+  @render_func and then at some point clear out all the old code". (11-25)
+- **The common widgets are in that folder too**: "let's move all the common
+  widgets like buttons into that directory as well". Moved: `button_view.py`,
+  `choice_view.py`, `context_menu_view.py`, `function_view.py`,
+  `tiles_view.py`, `editor_view.py` and its `icon_picker_view.py` (the last
+  three by Claude's reading of "common widgets"; his to overrule). Every
+  `@gui` view is now in `meltygui/view/common/`, and `meltygui/view/` holds
+  only `@render_func` views. (11-25)
 - **Rust routes, Python draws.** The value views (`draw_int`, `draw_float`,
   `draw_bool`, `draw_str`) are small Python `@gui` functions. (11-07)
 - **`draw_collection` draws anything keyed.** It began as dicts only, then:

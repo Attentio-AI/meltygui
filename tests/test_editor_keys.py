@@ -256,7 +256,7 @@ def test_the_folds_of_the_all_chords_are_the_legacy_levels_on_real_files():
     from pathlib import Path
     root, compared = Path(__file__).parent.parent / 'meltygui', 0
     for name in ('editor/editor.py', 'editor/keys.py', 'editor/marks.py', 'model/source_model.py', 'model/roster_model.py',
-                 'view/editor_view.py', 'view/icon_picker_view.py', 'core/runtime/extensions.py', 'state/editor_state.py'):
+                 'view/common/editor_view.py', 'view/common/icon_picker_view.py', 'core/runtime/extensions.py', 'state/editor_state.py'):
         ed = session((root / name).read_text())
         rows = ed.rows
         ranges = rows.ranges()

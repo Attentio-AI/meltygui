@@ -1,7 +1,7 @@
 """Pointer gestures of the native editor: word and line drags, which button is whose (hidden GL window, reserved desktop)."""
 import pytest
 
-import meltygui.view.editor_view as view
+import meltygui.view.common.editor_view as view
 from editor_host import Host
 from meltygui.editor import edit, syntax
 from meltygui.editor.document import Document

@@ -1,7 +1,8 @@
-"""The default `@gui` views: what `draw_any` draws a value with (`@is_default_for` above `@gui`).
+"""The `@gui` views: the defaults `draw_any` draws a value with (`@is_default_for` above `@gui`) and
+the common widgets (button, dropdown, context menu, editor, tiles).
 
-A new default view goes here, one file per kind of value. A view that is the default for nothing
-stays in `meltygui/view/`. `meltygui.view.common.<module>` loads that module when it is first asked
+A new `@gui` view goes here, as `<thing>_view.py`; `meltygui/view/` beside it is the legacy
+`@render_func` views. `meltygui.view.common.<module>` loads that module when it is first asked
 for; `stubs.py` (repository root) writes __init__.pyi.
 """
 import importlib

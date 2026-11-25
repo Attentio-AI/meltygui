@@ -350,7 +350,7 @@ def test_changed_values_are_written_over_their_defaults_and_nothing_else_moves(t
             ('width = 1232  ', 'width = 1300  '), ('height: int = 1252', 'height: int = 900'),
             ('name = "gym"', 'name = \'it\\\'s "new"\''), ('items = [1, 2,\n             3]', 'items = [1, 2, 3, 4]'),
             ("tree = {'id': 0, 'axis': 'x',\n            'cells': [{'id': 1}, {'id': 2}]}",
-             "tree = {'id': 0, 'axis': 'x', 'cells': [{'id': 1, 'size': 0.30000000000000004}, {'id': 2}]}"),
+             "tree = {'id': 0, 'axis': 'x',\n            'cells': [{'id': 1, 'size': 0.30000000000000004}, {'id': 2}]}"),
             ("tags = {'b', 'a'}", "tags = {'a', 'b', 'z'}"), ("codes = {1: 'one', 2: 'two'}", "codes = {1: 'one', 2: 'two', 3: 'three'}"),
             ("blob = b'ab'", "blob = b'\\x00c'"), ('flag = True; other = None', "flag = False; other = 'now'"),
             ('tab = 4', 'tab = 8')]:
@@ -417,17 +417,263 @@ def test_a_field_that_is_no_plain_assignment_is_left_and_said(tmp_path, monkeypa
     Look.guarded = 2            # assigned under an `if`
     Look.twice = 3              # assigned twice
     Look.a = 5                  # one of two targets
-    Look.ratio = 0.75           # an expression in the file
     Look.width = 1500           # a plain literal: written
     assert app_save.write() is True
     said = capsys.readouterr().err
     for name in ('guarded', 'twice', 'a'):
         assert f': {name} needs one plain assignment' in said
-    assert 'ratio is `2 / 3` in the file, not the `0.6666666666666666` this run started from' in said
     text = path.read_text(encoding='utf-8')
     assert 'width = 1500 ' in text
-    for kept in ('ratio = 2 / 3', 'guarded = 1', 'twice = 1\n    twice = 2', 'a = b = 3'):
+    for kept in ('guarded = 1', 'twice = 1\n    twice = 2', 'a = b = 3'):
         assert kept in text
+
+
+MODES = '''from meltygui import save
+
+BASE = 4
+
+
+class Mode:
+    SLOW = 1
+    FAST = 2
+
+
+@save(to_code=True)
+class Run:
+    ratio = 2 / 3
+    scale = BASE * 2
+    data = {
+        'size': 272, 'color': (2.7, 1.10, BASE),
+        'mode': Mode.FAST,
+        'steps': [Mode.SLOW, max(1, 2)], 'grown': [Mode.SLOW],
+    }
+'''
+
+
+def test_an_expression_stays_until_its_own_value_changes_then_its_literal_replaces_it(tmp_path, monkeypatch, capsys):
+    found, path = module(tmp_path, monkeypatch, MODES, 'modes')
+    Run = found.Run
+    Run.data['size'] = 300      # a literal beside the expressions: they stay in the code
+    assert app_save.write() is True
+    assert capsys.readouterr().err == ''
+    text = path.read_text(encoding='utf-8')
+    # (Only the number moved: the layout, and the `1.10` beside it, are as they were written.)
+    assert ("    data = {\n        'size': 300, 'color': (2.7, 1.10, BASE),\n        'mode': Mode.FAST,\n"
+            "        'steps': [Mode.SLOW, max(1, 2)], 'grown': [Mode.SLOW],\n    }\n") in text
+    assert 'ratio = 2 / 3' in text and 'scale = BASE * 2' in text
+
+    Run.data['mode'] = 7        # what an int view makes of `Mode.FAST`
+    Run.data['steps'][1] = 3
+    Run.data['grown'].append(5)
+    Run.ratio = 0.75
+    assert app_save.write() is True
+    said = capsys.readouterr().err
+    for code in ('data: `Mode.FAST`', 'data: `max(1, 2)`', 'ratio: `2 / 3`'):
+        assert f'{code} is written as its value, it changed' in said
+    assert 'BASE' not in said and said.count('written as its value') == 3
+    text = path.read_text(encoding='utf-8')
+    assert ("        'size': 300, 'color': (2.7, 1.10, BASE),\n        'mode': 7,\n"
+            "        'steps': [Mode.SLOW, 3], 'grown': [Mode.SLOW, 5],\n    }\n") in text
+    assert 'ratio = 0.75' in text and 'scale = BASE * 2' in text
+
+    # The next run starts from the file, with the values this one left.
+    again, _ = module(tmp_path, monkeypatch, text, 'modes_again')
+    assert again.Run.data == Run.data and again.Run.ratio == 0.75
+
+
+ENUMS = '''import enum
+from enum import Enum, Flag
+from meltygui import save
+
+
+class Mode(Enum):
+    SLOW = 1
+    FAST = 2
+
+
+class Side(Flag):
+    LEFT = 1
+    RIGHT = 2
+
+
+@save(to_code=True)
+class Run:
+    mode = Mode.FAST
+    side = Side.LEFT
+    far = enum.Enum('Far', 'A B').A
+    data = {
+        'size': 272,
+        'mode': Mode.FAST, 'modes': [Mode.SLOW],
+    }
+'''
+
+
+def test_an_enum_member_is_written_by_name(tmp_path, monkeypatch, capsys):
+    found, path = module(tmp_path, monkeypatch, ENUMS, 'enums')
+    Run, Mode, Side = found.Run, found.Mode, found.Side
+    Run.data['size'] = 300      # beside the members: they stay as they are
+    assert app_save.write() is True
+    assert "        'size': 300,\n        'mode': Mode.FAST, 'modes': [Mode.SLOW],\n" in path.read_text(encoding='utf-8')
+    Run.mode = Mode.SLOW
+    Run.side = Side.RIGHT
+    Run.data['mode'] = Mode.SLOW
+    Run.data['modes'].append(Mode.FAST)
+    assert app_save.write() is True
+    assert capsys.readouterr().err == ''
+    text = path.read_text(encoding='utf-8')
+    assert "    mode = Mode.SLOW\n    side = Side.RIGHT\n" in text
+    assert "        'size': 300,\n        'mode': Mode.SLOW, 'modes': [Mode.SLOW, Mode.FAST],\n" in text
+    again, _ = module(tmp_path, monkeypatch, text, 'enums_again')
+    assert again.Run.data['modes'] == [again.Mode.SLOW, again.Mode.FAST] and again.Run.mode is again.Mode.SLOW
+
+    Run.data['mode'] = 2        # what a view that knows no Enum leaves: an int
+    Run.side = Side.LEFT | Side.RIGHT       # no member of its own: no literal
+    Run.far = type(Run.far).B   # a member the file has no name for
+    Run.mode = Mode.FAST
+    assert app_save.write() is True
+    said = capsys.readouterr().err
+    assert 'side: <Side.LEFT|RIGHT: 3> has no literal' in said
+    assert 'far: `Far.B` is not what the file would read back (NameError' in said
+    text = path.read_text(encoding='utf-8')
+    assert "'mode': 2," in text and 'side = Side.RIGHT' in text and "far = enum.Enum('Far', 'A B').A" in text
+    assert '    mode = Mode.FAST\n' in text
+
+
+OBJECTS = '''from dataclasses import dataclass, field
+from enum import Enum
+from meltygui import save
+
+
+class Mode(Enum):
+    SLOW = 1
+    FAST = 2
+
+
+@dataclass
+class Point:
+    x: int
+    y: int = 0
+    mode: Mode = Mode.SLOW
+    tags: list = field(default_factory=list)
+    seen: int = field(default=0, init=False)
+
+
+@dataclass
+class Line:
+    start: Point
+    end: Point
+    name: str = ''
+
+
+REST = (5, 6)
+
+
+@save(to_code=True)
+class Run:
+    point = Point(1, y=2)
+    line = Line(Point(1), end=Point(x=3, mode=Mode.FAST), name="a")
+    star = Point(*REST)
+    data = {
+        'size': 272,
+        'point': Point(7, 8), 'points': [Point(1)],
+    }
+'''
+
+
+def test_a_dataclass_object_is_written_into_its_constructor_call(tmp_path, monkeypatch, capsys):
+    found, path = module(tmp_path, monkeypatch, OBJECTS, 'objects')
+    Run, Point, Mode = found.Run, found.Point, found.Mode
+    Run.data['size'] = 300      # beside the objects: their calls stay as they are
+    assert app_save.write() is True
+    assert "        'size': 300,\n        'point': Point(7, 8), 'points': [Point(1)],\n" in path.read_text(encoding='utf-8')
+
+    Run.point.x = 5             # by place
+    Run.point.y = 6             # by name
+    Run.point.tags.append('t')  # left to its default by the call: added by name
+    Run.point.seen = 9          # no argument of the constructor: not saved
+    Run.line.start.y = 4
+    Run.line.end.mode = Mode.SLOW
+    Run.line.name = 'b'
+    Run.star.x = 9              # `*REST`: no argument to write into, the object is written whole
+    Run.data['point'].x = 70
+    Run.data['points'].append(Point(2, mode=Mode.FAST))
+    assert app_save.write() is True
+    said = capsys.readouterr().err
+    assert said.count('written as its value') == 1 and 'star: `Point(*REST)` is written as its value' in said
+    text = path.read_text(encoding='utf-8')
+    for row in ("point = Point(5, y=6, tags=['t'])",
+                'line = Line(Point(1, y=4), end=Point(x=3, mode=Mode.SLOW), name="b")',
+                'star = Point(x=9, y=6, mode=Mode.SLOW, tags=[])',
+                "    'point': Point(70, 8), 'points': [Point(1), Point(x=2, y=0, mode=Mode.FAST, tags=[])],"):
+        assert f'    {row}\n' in text, row
+
+    again, _ = module(tmp_path, monkeypatch, text, 'objects_again')
+    assert again.Run.point == again.Point(5, 6, tags=['t']) and again.Run.line.end.mode is again.Mode.SLOW
+    assert again.Run.data['points'][1].x == 2
+
+    Run.point.x = 50            # a second write in one run goes into the call the first one left
+    assert app_save.write() is True
+    assert capsys.readouterr().err == ''
+    assert "    point = Point(50, y=6, tags=['t'])\n" in path.read_text(encoding='utf-8')
+
+
+HAND = '''from meltygui import save
+
+
+@save(to_code=True)
+class Run:
+    data = {
+        # sizes, in pixels
+        'width':  272,   'height': 67,    # the window
+        "name":   "lab",
+
+        'cells': [1, 2,
+                  3],                     # grows
+        'nested': {'a': 1,
+                   'b': {'c': 2}},
+    }
+'''
+
+
+def test_a_write_changes_the_values_and_keeps_the_layout_and_the_comments(tmp_path, monkeypatch, capsys):
+    found, path = module(tmp_path, monkeypatch, HAND, 'hand')
+    data = found.Run.data
+    data['height'] = 70
+    data['name'] = 'tiles'
+    data['nested']['b']['c'] = 3
+    assert app_save.write() is True
+    expected = HAND.replace("'height': 67, ", "'height': 70, ").replace('"lab"', '"tiles"').replace("{'c': 2}", "{'c': 3}")
+    assert path.read_text(encoding='utf-8') == expected
+
+    # A list or dict whose items changed is written anew where it stands, the rest stays.
+    data['cells'].append(4)
+    data['nested']['b']['d'] = 5
+    assert app_save.write() is True
+    expected = expected.replace("[1, 2,\n                  3]", '[1, 2, 3, 4]').replace("{'c': 3}", "{'c': 3, 'd': 5}")
+    assert path.read_text(encoding='utf-8') == expected
+
+    # What grew past its line has no place there: the field gets the default layout.
+    data['cells'].extend(range(100, 140))
+    assert app_save.write() is True
+    assert capsys.readouterr().err == ''
+    text = path.read_text(encoding='utf-8')
+    assert "    data = {\n        'width': 272, 'height': 70, 'name': 'tiles',\n        'cells': [\n            1, 2, 3, 4, 100," in text
+    assert "        'nested': {\n            'a': 1,\n            'b': {\n                'c': 3,\n                'd': 5,\n            },\n        },\n    }\n" in text
+    again, _ = module(tmp_path, monkeypatch, text, 'hand_again')
+    assert again.Run.data == data
+
+
+def test_an_expression_edited_while_the_app_ran_is_not_overwritten(tmp_path, monkeypatch, capsys):
+    found, path = module(tmp_path, monkeypatch, MODES, 'modes')
+    edited = MODES.replace("'mode': Mode.FAST", "'mode': Mode.SLOW").replace('ratio = 2 / 3', 'ratio = missing / 3')
+    path.write_text(edited, encoding='utf-8')
+    found.Run.data['size'] = 300
+    found.Run.ratio = 0.5
+    found.Run.scale = 9         # untouched in the file: written
+    assert app_save.write() is True
+    said = capsys.readouterr().err
+    assert 'data is `{' in said and 'ratio is `missing / 3` in the file' in said and said.count('left as it is') == 2
+    assert path.read_text(encoding='utf-8') == edited.replace('scale = BASE * 2', 'scale = 9')
 
 
 def test_a_default_edited_while_the_app_ran_is_not_overwritten(tmp_path, monkeypatch, capsys):
@@ -440,7 +686,7 @@ def test_a_default_edited_while_the_app_ran_is_not_overwritten(tmp_path, monkeyp
     Look.name = 'both'          # untouched in the file: written
     assert app_save.write() is True
     assert 'width is `1000` in the file, not the `1232`' in capsys.readouterr().err
-    assert path.read_text(encoding='utf-8') == edited.replace('name = "gym"', "name = 'both'")
+    assert path.read_text(encoding='utf-8') == edited.replace('name = "gym"', 'name = "both"')
     # The file and the class agree on `height` now: a later change of it is written.
     Look.height = 820
     assert app_save.write() is True
@@ -472,7 +718,7 @@ def test_each_write_in_one_run_starts_from_the_last(tmp_path, monkeypatch):
         Look.tags.add(str(width))
         assert app_save.write() is True
         assert line(path, 'width') == f'width = {width}          # logical pixels'
-        assert repr(size) in line(path, 'tree')
+        assert f"'cells': [{{'id': 1}}, {{'id': 2, 'size': {size!r}}}]}}\n" in path.read_text(encoding='utf-8')
     assert line(path, 'tags') == "tags = {'1300', '1400', 'a', 'b'}"
     compile(path.read_text(encoding='utf-8'), str(path), 'exec')
 
@@ -565,9 +811,11 @@ def test_a_literal_too_long_for_its_line_is_wrapped_and_read_back(tmp_path, monk
         'cells': [
             {'id': 1, 'note': 'a note that takes some room'},
             {
-                'id': 2, 'axis': 'y',
+                'id': 2,
+                'axis': 'y',
                 'cells': [
-                    {'id': 3, 'note': 'a note that takes some room'}, {'id': 4, 'note': 'a note that takes some room'},
+                    {'id': 3, 'note': 'a note that takes some room'},
+                    {'id': 4, 'note': 'a note that takes some room'},
                     {'id': 5, 'note': 'a note that takes some room'},
                 ],
                 'sizes': [0.30000000000000004, 300.5],
@@ -588,7 +836,7 @@ def test_a_literal_too_long_for_its_line_is_wrapped_and_read_back(tmp_path, monk
     Look.items.clear()
     assert app_save.write() is True
     assert capsys.readouterr().err == ''
-    assert line(path, 'tree') == "tree = {'id': 0, 'axis': 'x', 'cells': [{'id': 1}]}"
+    assert "\n    tree = {\n        'id': 0, 'axis': 'x',\n        'cells': [{'id': 1}],\n    }\n" in path.read_text(encoding='utf-8')
     assert line(path, 'items') == 'items = []'
     again, _ = module(tmp_path, monkeypatch, path.read_text(encoding='utf-8'), 'look_again')
     assert again.Look.tree == Look.tree and again.Look.Editor.tab == Look.Editor.tab

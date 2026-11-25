@@ -757,7 +757,6 @@ def bar(input_value: float, selector=HDR, width=0.0, height=0.0, event=None):
 
 
 # --- the public views --------------------------------------------------------
-@is_default_for(Shaped(tuple, (3,), float))
 @gui(listen=(), no_save=('display', 'watching', 'room'))
 def draw_color_picker(input_value: tuple, display: Display, selector=HDR, headroom=PEAK, hardware_max=None,
                       sdr_white_max=None, hue=0.0, spot=None, shown=None, watching=False, room=None, width=0.0,

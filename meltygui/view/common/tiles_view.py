@@ -52,7 +52,7 @@ from meltygui.core.input import mouse_cursor
 from meltygui.core.rendering.gui_layout_prototype import anchor, columns, rows
 from meltygui.core.rendering.gui_prototype import gui
 from meltygui.core.rendering.gui_readers import Readers
-from meltygui.view.choice_view import draw_dropdown
+from meltygui.view.common.choice_view import draw_dropdown
 from meltygui.view.common.value_view import ROW
 
 # Levers: sizes in logical pixels, colours.

@@ -2,6 +2,7 @@
 from collections.abc import Callable
 from meltygui.model.display_model import Display
 from meltygui.state.editor_state import EditorState
+from enum import Enum
 from meltygui.view.common.dict_view import Tree
 from meltygui.core.rendering.gui_any import is_default_for as is_default_for
 from meltygui.core.rendering.shaped import Shaped as Shaped
@@ -117,6 +118,11 @@ def draw_editor(input_value: str = '', state: EditorState = None, editable=True,
     such as a bound method taken anew, runs the view again.
     The injected `state` gives the caller a handle on the running editor:
     `state.pane` (`editor.Pane`: jump, select, focus; geometry)."""
+
+
+def draw_enum(input_value: Enum = ..., editable=True, *, name: str = ..., key: str | int | tuple | None = ..., left: float | None = ..., top: float | None = ..., width: float | None = ..., height: float | None = ..., min_width: float = ..., max_width: float = ..., min_height: float = ..., max_height: float = ..., initial: dict = ..., popup: bool = ..., melty_window: bool = ..., movable: bool = ..., resizable: bool = ..., scroll: bool = ..., scroll_offset: tuple[float, float] = ..., content_offset: tuple[float, float] = ..., tint: tuple = ..., return_extras: bool = ...) -> tuple:
+    """Returns (True, member) in the run another member is picked. A wrapping width (`width=None`)
+    is the row's."""
 
 
 def draw_float(input_value: float = ..., editable=True, field=None, start=None, *, name: str = ..., key: str | int | tuple | None = ..., left: float | None = ..., top: float | None = ..., width: float | None = ..., height: float | None = ..., min_width: float = ..., max_width: float = ..., min_height: float = ..., max_height: float = ..., initial: dict = ..., popup: bool = ..., melty_window: bool = ..., movable: bool = ..., resizable: bool = ..., scroll: bool = ..., scroll_offset: tuple[float, float] = ..., content_offset: tuple[float, float] = ..., tint: tuple = ..., return_extras: bool = ...) -> tuple:

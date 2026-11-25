@@ -1,4 +1,4 @@
-"""`draw_button` (view/button_view.py): its press, and its size when it wraps, is fixed or fills.
+"""`draw_button` (view/common/button_view.py): its press, and its size when it wraps, is fixed or fills.
 
 The app is one button at (10, 10), driven through the GL test host.
 """
@@ -6,7 +6,7 @@ import pytest
 
 import meltygui_imgui as imgui
 from editor_host import Host
-from meltygui.view.button_view import draw_button
+from meltygui.view.common.button_view import draw_button
 from meltygui.view.common.value_view import PAD, ROW
 
 LEFT, TOP = 10.0, 10.0

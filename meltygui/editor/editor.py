@@ -184,7 +184,7 @@ class Editor:
         self.saved = -1            # the `rows.stamp` the collapsed names were last saved at
         self.standin = False       # the text is a viewport snapshot, shown until the real one arrives
         self.numbers = Numbers()   # buffer lines to file lines
-        self.look = None           # the colour table (view/editor_view.py), as last painted
+        self.look = None           # the colour table (view/common/editor_view.py), as last painted
         self.handle = Pane(self)   # what callers may reach: `EditorState.pane`
         self.asks = []             # commands from the handle, run by the view
         # Repainting: a block view runs again when its stamp or `base` rises.

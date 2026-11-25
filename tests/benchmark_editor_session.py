@@ -215,7 +215,7 @@ def child(path, off, out):
     from meltygui.core.runtime.toggles import Toggles
     from meltygui.model.source_model import Source
     from meltygui.state.editor_state import EditorState
-    from meltygui.view.editor_view import draw_editor
+    from meltygui.view.common.editor_view import draw_editor
 
     class Model:
         def __init__(self):

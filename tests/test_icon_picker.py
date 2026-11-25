@@ -2,8 +2,8 @@
 import pytest
 
 import meltygui.core.windowing.window_constants as glfw
-import meltygui.view.editor_view as view
-import meltygui.view.icon_picker_view as picker
+import meltygui.view.common.editor_view as view
+import meltygui.view.common.icon_picker_view as picker
 from editor_host import Host
 from meltygui.editor import inline, syntax
 from meltygui.state.core_undo import UndoManager

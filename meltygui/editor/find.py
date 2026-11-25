@@ -13,7 +13,7 @@ and flashes it.
 The bar is the editor's own: Ctrl+F opens it (with the selection as the
 term), the keyboard is then the field's (`Find.typed`), Enter and Down step
 on, Shift+Enter and Up back, Escape closes. The field is a single line
-session of its own; the view paints it (`finder` in view/editor_view.py). A
+session of its own; the view paints it (`finder` in view/common/editor_view.py). A
 caller with a field of its own passes `draw_editor(search=)` and steps with
 `state.pane.find(1)` / `find(-1)`; `state.pane.search` is the term, the
 current hit's number and the count for either. To give the bar another key,

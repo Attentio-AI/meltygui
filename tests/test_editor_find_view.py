@@ -3,7 +3,7 @@ bar, stepping, what a caller's own field gets, Ctrl+Shift+B, and typing after Ct
 import pytest
 
 import meltygui.core.windowing.window_constants as glfw
-import meltygui.view.editor_view as view
+import meltygui.view.common.editor_view as view
 from editor_host import Host
 from meltygui.editor import lookup, syntax
 from meltygui.editor.find import Search

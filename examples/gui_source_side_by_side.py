@@ -21,7 +21,7 @@ from meltygui import os_window, imgui
 from meltygui.model.source_model import Source
 from meltygui.rust import draw_any
 from meltygui.state.editor_state import EditorState
-from meltygui.view.editor_view import draw_editor
+from meltygui.view.common.editor_view import draw_editor
 
 PATH = Path(tempfile.mkdtemp(prefix='melty-source-')) / 'sample.py'
 shutil.copy(Path(__file__).with_name('gui_editor_sample.py'), PATH)

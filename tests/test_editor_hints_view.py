@@ -2,7 +2,7 @@
 import pytest
 
 import meltygui.core.windowing.window_constants as glfw
-import meltygui.view.editor_view as view
+import meltygui.view.common.editor_view as view
 from editor_host import Host
 from meltygui.core.runtime.toggles import Toggles, Snippet
 from meltygui.editor import syntax

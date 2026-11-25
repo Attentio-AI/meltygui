@@ -24,7 +24,7 @@ import meltygui_imgui as imgui
 
 from meltygui.core.rendering.gui_any import draw_any
 from meltygui.core.rendering.gui_prototype import constructor, gui, needs_arguments
-from meltygui.view.button_view import draw_button
+from meltygui.view.common.button_view import draw_button
 from meltygui.view.common.dict_view import ROW as LINE
 from meltygui.view.common.value_view import PAD, ROW
 

@@ -157,7 +157,7 @@ def current(marks, doc):
 # --- producers ----------------------------------------------------------------
 # Each turns one model's values into a `Marks` set. A feature that wants to
 # show something in the editor writes one of these and nothing else: the view
-# paints by shape (`SHAPES` in view/editor_view.py), the session follows edits.
+# paints by shape (`SHAPES` in view/common/editor_view.py), the session follows edits.
 # Lines given by callers are file lines: `numbers` (`rows.Numbers`) maps
 # them to buffer lines, which is what marks are kept in.
 def given(found):

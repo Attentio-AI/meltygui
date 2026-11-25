@@ -28,8 +28,8 @@ def test_every_gui_view_is_published():
 
 
 def test_view_modules_load_on_request():
-    assert meltygui.view.button_view.__name__ == 'meltygui.view.button_view'
-    assert meltygui.rust.draw_button is meltygui.view.button_view.draw_button
+    assert meltygui.view.common.button_view.__name__ == 'meltygui.view.common.button_view'
+    assert meltygui.rust.draw_button is meltygui.view.common.button_view.draw_button
     with pytest.raises(AttributeError):
         meltygui.view.missing_view
     with pytest.raises(AttributeError):

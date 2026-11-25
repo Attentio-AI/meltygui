@@ -18,8 +18,8 @@ import meltygui_imgui as imgui
 import meltygui.core.windowing.window_constants as glfw
 from meltygui.core.input import mouse_cursor
 from meltygui.core.rendering.gui_prototype import gui
-from meltygui.view import choice_view
-from meltygui.view.choice_view import MORE, options
+from meltygui.view.common import choice_view
+from meltygui.view.common.choice_view import MORE, options
 from meltygui.view.common.value_view import PAD, ROUND, ROW, SLATE, box, look
 
 TINT = SLATE                    # the tint the menu's colours are made from

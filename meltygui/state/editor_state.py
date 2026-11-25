@@ -1,4 +1,4 @@
-"""Per view state of the native code editor (`view/editor_view.py`)."""
+"""Per view state of the native code editor (`view/common/editor_view.py`)."""
 from meltygui.core.conversion.dict_conversion import DictConversion
 from meltygui.core.rendering.core_decoration import no_save_exclude
 

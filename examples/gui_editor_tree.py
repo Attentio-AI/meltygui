@@ -20,7 +20,7 @@ from meltygui import os_window
 from meltygui.model.source_model import Source
 from meltygui.rust import draw_any
 from meltygui.state.editor_state import EditorState
-from meltygui.view.editor_view import draw_editor
+from meltygui.view.common.editor_view import draw_editor
 
 if len(sys.argv) > 1:
     PATH = Path(sys.argv[1])

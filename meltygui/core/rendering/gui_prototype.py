@@ -83,7 +83,7 @@ def asking(func, asked, hidden):
         for name in asked:
             pending = arguments[name]
             if pending.__class__ is Ask:
-                from meltygui.view.function_view import draw_function
+                from meltygui.view.common.function_view import draw_function
                 built, _, form = draw_function(pending.constructor, name=name, return_extras=True)
                 if built:
                     value = form.result

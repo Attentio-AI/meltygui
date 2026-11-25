@@ -22,13 +22,14 @@ Before writing a view or changing `@gui` code read, in `docs/`:
 `examples/gui_todo.py`), `GUI_REQUIREMENTS.md` (what Lukas decided, and these
 rules restated for `@gui`), `GUI_PROTOTYPE.md` (how it works) and
 `NATIVE_EDITOR.md` (the editor and `Source`). Most `@gui` views are public:
-named `draw_<thing>` in `meltygui/view/<feature>_view.py`, published by running
+named `draw_<thing>` in `meltygui/view/common/<thing>_view.py`, published by running
 `stubs.py` (it writes `VIEWS` in `meltygui/rust.py` and the IDE stubs) and used as
 `meltygui.rust.draw_thing`.
-**Default `@gui` views live in `meltygui/view/common/`**: a view with `@is_default_for`
-above `@gui` (what `draw_any` draws a value with) goes there, as `common/<thing>_view.py`,
-never loose in `meltygui/view/`. New default views are added there as `@gui` replaces
-`@render_func`; the legacy views stay where they are until they are cleared out.
+**`@gui` views live in `meltygui/view/common/`**: the defaults (`@is_default_for` above
+`@gui`, what `draw_any` draws a value with) and the common widgets (button, dropdown,
+context menu, editor, tiles), as `common/<thing>_view.py`. Add new `@gui` views there, never
+loose in `meltygui/view/`: that folder is the legacy `@render_func` views, which stay where
+they are until `@gui` has replaced them and they are cleared out.
 When Lukas decides something about `@gui` in chat, add a dated line to
 `GUI_REQUIREMENTS.md` in the same turn.
 

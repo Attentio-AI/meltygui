@@ -10,7 +10,7 @@ from editor_host import Host
 from meltygui.core.rendering.gui_prototype import gui
 from meltygui.core.rendering.retained_gui_prototype import RetainedGui
 from meltygui.state.editor_state import EditorState
-from meltygui.view.editor_view import draw_editor
+from meltygui.view.common.editor_view import draw_editor
 
 LATER = RetainedGui(graphics=False).graph.SETTLE + 3
 # Where the widget's view stands: drawn directly, a retained root, under a retained panel, in a Melty window

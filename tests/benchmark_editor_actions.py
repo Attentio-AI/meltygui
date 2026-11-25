@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import conftest  # noqa: F401  (creates the ImGui context)
 import benchmark_editor
 import meltygui.core.windowing.window_constants as glfw
-import meltygui.view.editor_view as view
+import meltygui.view.common.editor_view as view
 from editor_host import Host
 from meltygui.editor import lookup, syntax
 from meltygui.model.roster_model import Roster

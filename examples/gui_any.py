@@ -4,19 +4,30 @@
     .venv/bin/python examples/gui_any.py 100000     # the same with that many more entries
 
 Drag a number sideways or click it to type, click a text to type, press a True / False chip, press a
-row with a chevron to open it. `swatch` shows how an app adds a view of its own: by name ('tint') and
+row with a chevron to open it, press a member of an enum (a `Flag` holds several; `Month` does not fit
+its row and is a dropdown). `swatch` shows how an app adds a view of its own: by name ('tint') and
 by shape (three floats).
 """
 import sys
+from enum import Enum, Flag, IntEnum, auto
 
 from meltygui import gui, os_window, imgui
 from meltygui.rust import Shaped, draw_any, is_default_for
 
 EXTRA = int(sys.argv[1]) if len(sys.argv) > 1 else 0
 
+Mode = Enum('Mode', 'FAST BALANCED SLOW_AND_SURE')
+Level = IntEnum('Level', 'LOW HIGH')
+Sides = Flag('Sides', 'LEFT RIGHT TOP BOTTOM')
+Month = Enum('Month', 'JANUARY FEBRUARY MARCH APRIL MAY JUNE JULY AUGUST SEPTEMBER OCTOBER NOVEMBER DECEMBER')
+
 DATA = {
     'name': 'melty',
     'enabled': True,
+    'mode': Mode.BALANCED,
+    'level': Level.LOW,
+    'sides': Sides.LEFT | Sides.TOP,
+    'month': Month.NOVEMBER,
     'retries': 3,
     'gain': 0.25,
     'tint': (0.2, 0.55, 0.9),

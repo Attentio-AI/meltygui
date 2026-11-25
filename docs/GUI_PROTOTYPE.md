@@ -194,7 +194,7 @@ the annotation: an edited annotation, or an object the session brought back
 as None, is built again (`kind` in `invoke`, lib.rs). A type that needs
 arguments resolves to an `Ask`, and the view's body is replaced by `asking`
 until `draw_function` of that type has built one
-([function_view.py](../meltygui/view/function_view.py)).
+([function_view.py](../meltygui/view/common/function_view.py)).
 
 Use `no_save` for runtime-only parameters, callbacks or handles. Geometry is not
 globally excluded: `no_save=('left',)` excludes one coordinate, while
@@ -413,8 +413,8 @@ decorator of its own and no argument of `@gui`; how to use it is
 | The decorator | Writes the view's options into `MENUS` and a step into `AFTER` (gui_prototype.py), both by view name, and hands the view back as it was. Rows are by name so that a source edit's new options are the ones live views read. |
 | A right click | The router (`ImGuiInput.right_click`) tells a click from a drag by the pointer's travel (`CLICK_PIXELS`), on the release. `click` walks from the hit view up its parents and gathers their options, innermost first; an immediate root's come last (`ImGuiInput.root`). |
 | Whose popup | The innermost view that has options. It is run again, and after its body its `AFTER` step declares `draw_context_menu` with `popup=`: the menu is a child of the view it was opened on. It is placed from that view's corner, goes when the view goes, and on a view inside a popup it is below that popup, which stays open with it. With only an immediate root's options the surface declares it, with no parent. |
-| Submenus | An option that is a dict of options. The menu calls the dropdown's list (`options`, [choice_view.py](../meltygui/view/choice_view.py)) as a popup of its own for the selected row, keyed by the row, and is handed the function picked in it, at any depth; it then calls it for the row's view as for any option. Nothing in the router or the decorator knows of submenus but the decorator's check. |
-| The menu | `meltygui.rust.draw_context_menu` ([context_menu_view.py](../meltygui/view/context_menu_view.py)), an ordinary popup view: the popup rules above apply (a press outside, Escape, the keyboard, staying on the surface). |
+| Submenus | An option that is a dict of options. The menu calls the dropdown's list (`options`, [choice_view.py](../meltygui/view/common/choice_view.py)) as a popup of its own for the selected row, keyed by the row, and is handed the function picked in it, at any depth; it then calls it for the row's view as for any option. Nothing in the router or the decorator knows of submenus but the decorator's check. |
+| The menu | `meltygui.rust.draw_context_menu` ([context_menu_view.py](../meltygui/view/common/context_menu_view.py)), an ordinary popup view: the popup rules above apply (a press outside, Escape, the keyboard, staying on the surface). |
 | A pick | `call` fills the function's parameters by name from the state of the option's view (which reads every parameter, a passed value included), plus `draw_state` and `cache`, and calls it. An exception is printed and the app goes on. Then that view and its parents are invalidated, and the menu closes. |
 | Nearest wins | A view that asked about the right button, between the pointer and the nearest view with a menu, keeps the click and no menu opens. When the menu is nearer, that view is not told the press (`deliver`). |
 
@@ -493,7 +493,7 @@ a wheel step 0.5 ms, a fling of 30 rows a frame 1.1 ms, dragging a number 0.4 ms
 1,000 entries, 2.5 ms at 100,000, 15 to 18 ms at 1,000,000.
 
 Not there yet: rows of different heights, sets, add / delete / reorder,
-search, an enum or colour view, undo of an edit. `meltygui.draw_any` is still the legacy one.
+search, undo of an edit. (An enum is `draw_enum`, [enum_view.py](../meltygui/view/common/enum_view.py); a colour `draw_color`.) `meltygui.draw_any` is still the legacy one.
 Every row keeps its view state once it was shown, about 1.5 to 3 KB a row (see the known issues).
 
 ### Results from other threads
@@ -851,11 +851,11 @@ resolved in full.
 | Window/input/layout integration | [gui_window_prototype.py](../meltygui/core/rendering/gui_window_prototype.py), [gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py), [gui_layout_prototype.py](../meltygui/core/rendering/gui_layout_prototype.py) |
 | Input events (`event`) | [event.py](../meltygui/core/input/event.py) (the vocabulary), `deliver` in [gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py) (the routing), `run_node` in [executor.rs](../native/gui_prototype/src/executor.rs) (injection and clearing); [tests](../tests/test_gui_event.py) |
 | Keyboard focus and temporary popups | [focus.py](../meltygui/core/input/focus.py); the `popup` branch and `_fit` in [retained_gui_prototype.py](../meltygui/core/rendering/retained_gui_prototype.py); [example](../examples/gui_popups.py), [tests](../tests/test_gui_focus.py) |
-| Context menus (`@context_menu`) | [context_menu.py](../meltygui/core/input/context_menu.py) (the decorator, the walk, whose popup it is), `right_click` in [gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py), `AFTER` / `followed` in [gui_prototype.py](../meltygui/core/rendering/gui_prototype.py), [context_menu_view.py](../meltygui/view/context_menu_view.py) (the menu, the arguments of a pick); [examples/gui_context_menu.py](../examples/gui_context_menu.py), [test_gui_context_menu.py](../tests/test_gui_context_menu.py) |
+| Context menus (`@context_menu`) | [context_menu.py](../meltygui/core/input/context_menu.py) (the decorator, the walk, whose popup it is), `right_click` in [gui_imgui_input.py](../meltygui/core/rendering/gui_imgui_input.py), `AFTER` / `followed` in [gui_prototype.py](../meltygui/core/rendering/gui_prototype.py), [context_menu_view.py](../meltygui/view/common/context_menu_view.py) (the menu, the arguments of a pick); [examples/gui_context_menu.py](../examples/gui_context_menu.py), [test_gui_context_menu.py](../tests/test_gui_context_menu.py) |
 | Wake from native threads | [wake.rs](../native/gui_prototype/src/wake.rs), `waker` / `drain_wakes` / `close_wakes` / `park` in [glfw_utils.py](../meltygui/core/windowing/glfw_utils.py), `poke` in [window_api.py](../meltygui/core/windowing/window_api.py) |
-| Largest user so far | the [native editor](NATIVE_EDITOR.md): [editor_view.py](../meltygui/view/editor_view.py) |
+| Largest user so far | the [native editor](NATIVE_EDITOR.md): [editor_view.py](../meltygui/view/common/editor_view.py) |
 | Default views | [gui_any.py](../meltygui/core/rendering/gui_any.py) (`draw_any`, `is_default_for`), [keyed.py](../meltygui/core/rendering/keyed.py) (`Keyed`, `keyed_as`), [value_view.py](../meltygui/view/common/value_view.py), [dict_view.py](../meltygui/view/common/dict_view.py); tests [routing and rows](../tests/test_gui_any.py), [views](../tests/test_gui_any_view.py) |
-| Parameters built by their type, `draw_function` | `constructor`, `Ask`, `asking` in [gui_prototype.py](../meltygui/core/rendering/gui_prototype.py), `kind` in [lib.rs](../native/gui_prototype/src/lib.rs), [function_view.py](../meltygui/view/function_view.py); tests [built parameters](../tests/test_gui_value.py), [the function view](../tests/test_function_view.py); [example](../examples/gui_function.py) |
+| Parameters built by their type, `draw_function` | `constructor`, `Ask`, `asking` in [gui_prototype.py](../meltygui/core/rendering/gui_prototype.py), `kind` in [lib.rs](../native/gui_prototype/src/lib.rs), [function_view.py](../meltygui/view/common/function_view.py); tests [built parameters](../tests/test_gui_value.py), [the function view](../tests/test_function_view.py); [example](../examples/gui_function.py) |
 | Session persistence | [app_session.py](../meltygui/core/runtime/app_session.py), [load_save_v2.py](../meltygui/core/conversion/load_save_v2.py) |
 | Contract tests | [a view follows its caller](../tests/test_gui_immediate.py), [the value parameter](../tests/test_gui_value.py), [identity](../tests/test_gui_identity.py), [persistence](../tests/test_gui_persistence.py), [positions](../tests/test_gui_position_api.py), [scroll/geometry](../tests/test_gui_scroll_geometry.py) |
 | Interactive and measured checks | [scroll lab](../examples/gui_scroll_lab.py), [benchmark](../tests/benchmark_gui_scrolling.py) |

@@ -9,7 +9,7 @@ here keeps an open flag.
 """
 from meltygui import gui, os_window, imgui
 from meltygui.core.conversion.dict_conversion import DictConversion
-from meltygui.view.editor_view import draw_editor
+from meltygui.view.common.editor_view import draw_editor
 import meltygui.core.windowing.window_constants as glfw
 
 # Levers: a list row's height, the popups' colours.

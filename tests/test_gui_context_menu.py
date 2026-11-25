@@ -14,8 +14,8 @@ from editor_host import Host
 from meltygui.core.input import context_menu as menus
 from meltygui.core.input.context_menu import context_menu
 from meltygui.core.rendering.gui_prototype import AFTER, _renderer_name, gui
-from meltygui.view import choice_view
-from meltygui.view.context_menu_view import GAP, draw_context_menu
+from meltygui.view.common import choice_view
+from meltygui.view.common.context_menu_view import GAP, draw_context_menu
 from meltygui.view.common.value_view import ROW
 
 PICKS = []          # what the options did

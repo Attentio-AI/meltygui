@@ -31,7 +31,7 @@ from meltygui.model.editor_model import Analysis
 from meltygui.model.roster_model import project
 from meltygui.model.source_model import Source
 from meltygui.state.editor_state import EditorState
-from meltygui.view.editor_view import draw_editor
+from meltygui.view.common.editor_view import draw_editor
 
 # Lever: the tints "Next sky tint" goes through.
 SKIES = [(0.9, 0.2, 0.3), (0.2, 0.8, 0.3), (0.95, 0.75, 0.1), (0.2, 0.5, 0.9)]

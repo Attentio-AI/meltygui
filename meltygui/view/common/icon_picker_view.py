@@ -19,7 +19,7 @@ import meltygui.core.windowing.window_constants as glfw
 from meltygui.core.rendering.gui_prototype import gui
 from meltygui.editor.inline import inline
 from meltygui.editor.keys import printable
-from meltygui.view.editor_view import LINE, font, look
+from meltygui.view.common.editor_view import LINE, font, look
 
 # Levers: the grid's columns and rows, a cell's size in pixels, the space around the grid.
 COLUMNS = 12

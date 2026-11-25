@@ -25,7 +25,7 @@ from meltygui import os_window, imgui
 from meltygui.model.editor_model import Analysis
 from meltygui.model.source_model import Source
 from meltygui.state.editor_state import EditorState
-from meltygui.view.editor_view import draw_editor
+from meltygui.view.common.editor_view import draw_editor
 from meltygui.editor.inline import inline
 
 if len(sys.argv) > 1:

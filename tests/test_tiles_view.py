@@ -1,5 +1,5 @@
-"""The tree edits and the pointer tests of draw_tiles (meltygui/view/tiles_view.py)."""
-from meltygui.view.tiles_view import GAP, REACH, aim, blank, chosen, find, join, mend, merge, split, tidy, title, track, under
+"""The tree edits and the pointer tests of draw_tiles (meltygui/view/common/tiles_view.py)."""
+from meltygui.view.common.tiles_view import GAP, REACH, aim, blank, chosen, find, join, mend, merge, split, tidy, title, track, under
 
 
 def tree():

@@ -366,13 +366,22 @@ def app(width=None, height=None, cache=None):
   close, each value that changed is written over its default in the file.
   For what belongs in the code, such as a window's start size or a font size
   the developer tunes while the app runs. The values are literals (numbers,
-  texts, `True`, `False`, `None`, lists, tuples, dicts, sets), each assigned
-  once at the top of the class. A list or dict too long for its line is
-  written over indented lines, a tree one level per indent (`wrap` in
+  texts, `True`, `False`, `None`, `Enum` members, dataclass objects, lists, tuples, dicts, sets), each assigned
+  once at the top of the class. The layout of a
+  field is kept: a changed number or text is written where it stands, and
+  the line breaks and comments around it stay. New code gets a default
+  layout, as does a field in which a list or dict grew past its line:
+  numbers and texts share a line, anything
+  else has its own, and a dict inside is opened a key a line (`wrap` in
   [tree_model.py](../meltygui/model/tree_model.py); levers `WIDTH`, `TAB`).
-  A default that is an expression (`2 / 3`) or
-  that was edited in the file while the app ran is left as it is, and stderr
-  says so.
+  A default that was edited in the file while the app ran is left as it is,
+  and stderr says so. An expression in the file (`2 / 3`, `Mode.FAST` inside
+  a dict) stays while its own value is unchanged; once it changed, its literal
+  replaces it and stderr says so. An `Enum` member is written by its name
+  (`Mode.FAST`), which the file has to know: import the class by name
+  (`from modes import Mode`), not through its module. A dataclass object is written into its constructor
+  call, each argument where the call gives it (`Point(5, y=6)`); one the
+  file has no call for is written whole (`Point(x=5, y=6)`).
 - This is the one way an app keeps state. `meltygui.persisted(...)` and a
   `DictConversion` held as the app's model are how older apps did it: they
   still work, new code uses neither.
@@ -508,7 +517,7 @@ def dropdown(input_value, choices=(), width=0.0, height=0.0, event=None):
   row: `options(value, key=text, popup=opened, choices=choice, left=width,
   top=index * ROW, ...)`. A pick in it comes back as the call's return; when
   another row is selected the call is no longer made and the submenu closes.
-  `options` in [choice_view.py](../meltygui/view/choice_view.py) is the
+  `options` in [choice_view.py](../meltygui/view/common/choice_view.py) is the
   worked example.
 - Until `9ed33b19b8e3` is fixed, draw the anchor after the popup call, from the
   value it returned (section 14).
@@ -625,7 +634,7 @@ What follows from the first row:
 - **A divider drag runs the views it resizes, not the view that declared the
   layout.** A view that keeps the sizes of its cells in its value asks for
   them, `layout.sizes()`, and runs once when the drag ends: `place` in
-  [tiles_view.py](../meltygui/view/tiles_view.py). Drawing of your own inside
+  [tiles_view.py](../meltygui/view/common/tiles_view.py). Drawing of your own inside
   a cell (anything but child views and nested layouts) makes the layout one
   that is recaptured on every frame of a drag, and its owner runs each time.
 - The root in the example is `use_cache=False`: it runs on every frame the
@@ -701,11 +710,11 @@ changed, model.gain = meltygui.rust.draw_float(model.gain, name='gain', left=8.0
 - **Name**: `draw_<thing>` (`draw_bool`, `draw_collection`). A helper view
   that only serves one public view keeps a short plain name in that view's
   file (`branch` and `end` in [dict_view.py](../meltygui/view/common/dict_view.py)).
-- **Home**: `meltygui/view/<feature>_view.py`, beside the views of the same
-  feature. A default view (`@is_default_for` above `@gui`, what `draw_any`
-  draws a value with) goes in
-  [meltygui/view/common/](../meltygui/view/common/) instead, as
-  `common/<thing>_view.py`: the defaults are all in that one folder.
+- **Home**: [meltygui/view/common/](../meltygui/view/common/), as
+  `common/<thing>_view.py`. The default views (`@is_default_for` above
+  `@gui`, what `draw_any` draws a value with) and the common widgets are all
+  in that one folder; `meltygui/view/` itself is the legacy `@render_func`
+  views.
 - **Publish**: run `.venv/bin/python stubs.py`. It finds every module-level
   `@gui` function named `draw_<thing>`, rewrites `VIEWS` in
   [rust.py](../meltygui/rust.py) and the stubs the IDE completes from.
@@ -734,11 +743,12 @@ What is there already:
 | --- | --- |
 | A bool, number or line of text to edit | `draw_bool`, `draw_int`, `draw_float`, `draw_str` from `meltygui.rust` |
 | Any value, nested dicts and lists, dataclasses | `meltygui.rust.draw_any(value, name=...)`; a view of your own for a type, a key name or a shape is `@is_default_for(...)` above `@gui` |
-| Code or long text | `draw_editor`, from `meltygui.view.editor_view` for now ([NATIVE_EDITOR.md](NATIVE_EDITOR.md#using-draw_editor)) |
+| Code or long text | `draw_editor`, from `meltygui.view.common.editor_view` for now ([NATIVE_EDITOR.md](NATIVE_EDITOR.md#using-draw_editor)) |
 | A button | `draw_button` from `meltygui.rust`: `pressed, _ = draw_button('Run', name='run')` |
-| A function to call with arguments the user edits | `ran, _ = draw_function(fit, name='fit')` from `meltygui.rust`: its parameters as values (`draw_any` of a dict the view keeps, each starting at its default or what its type builds) and a button that calls it, in that run, so only for a call that returns at once. `ran` is true in the run of a call that returned; what it returned is the view's `result` (`ran, _, state = draw_function(fit, return_extras=True)`, then `state.result`); an exception is shown under the button. A class is called the same way and builds an instance ([function_view.py](../meltygui/view/function_view.py)) |
-| One of a few choices | `draw_dropdown(value, choices=CHOICES)` from `meltygui.rust`. `CHOICES` is a sequence of the choices (`label=` names those that are not text) or a dict `{label: choice}`; in a dict a value that is a dict is a submenu, to any depth, and the value is the leaf picked ([choice_view.py](../meltygui/view/choice_view.py)) |
-| Tiles the user splits and joins from their corners, as in Blender | `draw_tiles(tree, name='tiles', views=VIEWS, width=width, height=height)` from `meltygui.rust`; `VIEWS` is a module tuple of `@gui` views of a tile's dict, and each tile picks one from a dropdown in its head; the tree is plain dicts and may start as `{}` or bare nested `{'cells': [{}, {}]}` (ids, axes and sizes are filled in); a divider drag runs only the resized tiles, and `draw_tiles` once at its end to write the sizes; no cell goes around it: where it ends on the window's edge a divider pushed against that edge resizes the window, and given a `width` / `height` elsewhere it keeps them and the push moves the window's left / top edge; `width=None` / `height=None` wraps it to its tiles' minimums ([tiles_view.py](../meltygui/view/tiles_view.py)) |
+| A function to call with arguments the user edits | `ran, _ = draw_function(fit, name='fit')` from `meltygui.rust`: its parameters as values (`draw_any` of a dict the view keeps, each starting at its default or what its type builds) and a button that calls it, in that run, so only for a call that returns at once. `ran` is true in the run of a call that returned; what it returned is the view's `result` (`ran, _, state = draw_function(fit, return_extras=True)`, then `state.result`); an exception is shown under the button. A class is called the same way and builds an instance ([function_view.py](../meltygui/view/common/function_view.py)) |
+| One of a few choices | `draw_dropdown(value, choices=CHOICES)` from `meltygui.rust`. `CHOICES` is a sequence of the choices (`label=` names those that are not text) or a dict `{label: choice}`; in a dict a value that is a dict is a submenu, to any depth, and the value is the leaf picked ([choice_view.py](../meltygui/view/common/choice_view.py)) |
+| Tiles the user splits and joins from their corners, as in Blender | `draw_tiles(tree, name='tiles', views=VIEWS, width=width, height=height)` from `meltygui.rust`; `VIEWS` is a module tuple of `@gui` views of a tile's dict, and each tile picks one from a dropdown in its head; the tree is plain dicts and may start as `{}` or bare nested `{'cells': [{}, {}]}` (ids, axes and sizes are filled in); a divider drag runs only the resized tiles, and `draw_tiles` once at its end to write the sizes; no cell goes around it: where it ends on the window's edge a divider pushed against that edge resizes the window, and given a `width` / `height` elsewhere it keeps them and the push moves the window's left / top edge; `width=None` / `height=None` wraps it to its tiles' minimums ([tiles_view.py](../meltygui/view/common/tiles_view.py)) |
+| A member of an `Enum` | `changed, mode = draw_enum(mode, name='mode', width=240.0)` from `meltygui.rust`, and what `draw_any` draws one with: the members side by side, the current one lit, a press picks. `IntEnum` and `StrEnum` stay what they are; a `Flag` holds several, each flipped by a press; members that do not fit the width are a dropdown; `width=None` is as wide as the row ([enum_view.py](../meltygui/view/common/enum_view.py)) |
 | A colour to edit | `changed, tint = draw_color(tint, name='tint', width=60.0)` from `meltygui.rust`: a chip, and a press opens the picker under it. `draw_color_picker(tint, ...)` is the picker by itself, sized like any view: its field keeps its shape and is as large as a size that was given lets it be; a height that wraps (`height=None`) is the picker's fixed least, a width that wraps is as wide as the colours of the hue (`extent(len(tint))` of its file is the size for a popup). A colour is an extended sRGB `(r, g, b)` or `(r, g, b, a)`, tuple or list: the picker covers Display P3 and, above white, up to `headroom=` times white (32, five stops); `hardware_max=` and `sdr_white_max=` tell it, in nits, the panel's peak (nothing brighter is drawn) and SDR white at full brightness (where the display does not say); `selector=` picks its field: `meltygui.HDR` (the default, one P3 square under the HDR band), `meltygui.SRGB_PLUS` (the sRGB square with P3 beside and HDR above) `meltygui.SRGB` (the sRGB square alone) `meltygui.PERCEPTUAL` (Oklch: lightness up, chroma across, the field shaped like the hue's gamut) or, as an experiment, `meltygui.DYNAMIC_PERCEPTUAL` (the same in JzCzhz from the nits the panel emits, so the shape follows the desktop's brightness) ([color_picker_view.py](../meltygui/view/common/color_picker_view.py), [examples/gui_color.py](../examples/gui_color.py)) |
 | A popup of your own, a picker | Section 7; [examples/gui_popups.py](../examples/gui_popups.py) |
 | A right click menu on a view | `@context_menu({label: function})` from `meltygui`, above `@gui` (section 7) |
@@ -790,6 +800,7 @@ did not check.
 | The view that opened a popup is not run again with the pick (`9ed33b19b8e3`) | Draw after the popup call, from its return |
 | A view is not run again when its caller passes back the edit it returned: an ImGui button or checkbox that drew before the edit stays stale until the pointer moves (`90293f1fa9dd`). A view that was passed nothing is run again | Draw after handling the input, or `cache.wake_next(cache.current)` in the run that returns the edit |
 | A pick in a popup opened from a popup (a submenu) runs the outer popup and its caller twice in that frame (`1bd0b2d648ed`) | Nothing: the value is right, the double render mark shows for a second |
+| A dropdown that is a row of `draw_collection` runs its list twice in the frame it opens (`4bb98dbe87c9`) | Nothing: the list is right, the double render mark shows for a second |
 | A left drag on an OS window's body does not move it unless the root holds a `columns` / `rows` layout (`78d4ccd04ec6`) | Drag the title bar |
 | A view larger than 8192 px raises (`c3b99fd82886`) | Child views in a scroll view |
 | The wheel carries no modifiers and a scroll view takes it first (`c1cc6c3481b5`) | No Ctrl+wheel zoom yet |

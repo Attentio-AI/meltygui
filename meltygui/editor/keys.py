@@ -154,7 +154,7 @@ def _icon(ed, desk): edit.icon(ed.doc)
 # where the editor's steps live (history.py).
 # Ctrl+B (go to definition, usages) is not bound here either: it is asked of
 # the project's roster and answered on a later run, so the view sequences it
-# (`typed` in view/editor_view.py, editor/lookup.py), as it does Ctrl+Space.
+# (`typed` in view/common/editor_view.py, editor/lookup.py), as it does Ctrl+Space.
 # Ctrl+Shift+B (the external editor) and Ctrl+F (the find bar, editor/find.py)
 # are handled there too.
 

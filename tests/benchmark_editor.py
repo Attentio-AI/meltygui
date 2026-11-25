@@ -39,7 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import conftest  # noqa: F401  (creates the ImGui context)
 import meltygui.core.windowing.window_constants as glfw
-import meltygui.view.editor_view as view
+import meltygui.view.common.editor_view as view
 from editor_host import Host
 from meltygui.editor import syntax
 from meltygui.model.source_model import Source
